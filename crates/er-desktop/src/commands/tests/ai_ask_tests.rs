@@ -1,9 +1,9 @@
-//! The card asks on the flag path: each reads the tab's content and the
-//! settings view, shows its pending reply in `jobs`, and lands its answer in
-//! the bucket it captured, all with the App locked.
+//! The card asks: each reads the tab's content and the settings view, shows
+//! its pending reply in `jobs`, and lands its answer in the bucket it
+//! captured.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, PoisonError};
+use std::sync::Arc;
 
 use er_engine::tab_identity::DiffMode;
 use er_engine::tabs_record::TabDescriptor;
@@ -15,7 +15,7 @@ use super::arena_resource_tests::{bucket, local_ports, open, wait_until};
 use super::diff_command_tests::send;
 use super::diff_resource_tests::with_storage;
 use super::{review_flow_test_state, ReviewFlowTestDir};
-use crate::commands::{content_routes, AppState};
+use crate::commands::{content_routes, DesktopState};
 use crate::service::{actor_key, ServiceState};
 
 /// A provider that waits for the gate file, then answers with its own
@@ -47,14 +47,14 @@ args = ["mark-second"]
 }
 
 /// A state whose asks run the gated provider, and the gate.
-pub(super) fn asking(dir: &ReviewFlowTestDir) -> (AppState, PathBuf) {
+pub(super) fn asking(dir: &ReviewFlowTestDir) -> (DesktopState, PathBuf) {
     let gate = dir.path().join("gate");
     let path = dir.path().join("settings").join("config.toml");
     std::fs::create_dir_all(dir.path().join("settings")).unwrap_or_else(|e| panic!("{e}"));
     std::fs::write(&path, config(&gate)).unwrap_or_else(|e| panic!("config: {e}"));
     let mut state = review_flow_test_state(dir);
     let ports = local_ports();
-    state.desktop.ports = ports.clone();
+    state.ports = ports.clone();
     let deps = WorkspaceDeps::new(ports);
     state.service = Arc::new(ServiceState::with_deps(deps, |_| {}).with_config_path(path));
     (state, gate)
@@ -69,7 +69,7 @@ fn wire(key: TabKey) -> er_protocol::TabKey {
 }
 
 /// A question on the tab's first file, written through its actor.
-pub(super) fn question(state: &AppState, (key, tab): &(TabKey, TabDescriptor)) -> String {
+pub(super) fn question(state: &DesktopState, (key, tab): &(TabKey, TabDescriptor)) -> String {
     let _ = bucket(state, &(*key, tab.clone()));
     let content = state
         .service
@@ -120,14 +120,14 @@ pub(super) fn replies(bucket: &str, question: &str) -> Vec<(String, Option<Strin
         .collect()
 }
 
-pub(super) fn jobs(state: &AppState) -> Jobs {
-    match crate::resources::fetch(&state.desktop, ResourceKey::Jobs).map(|f| f.value) {
+pub(super) fn jobs(state: &DesktopState) -> Jobs {
+    match crate::resources::fetch(&state, ResourceKey::Jobs).map(|f| f.value) {
         Ok(Resource::Jobs(jobs)) => jobs,
         other => panic!("not jobs: {other:?}"),
     }
 }
 
-fn pending(state: &AppState) -> Vec<String> {
+fn pending(state: &DesktopState) -> Vec<String> {
     jobs(state)
         .ai_replies
         .into_iter()
@@ -135,7 +135,7 @@ fn pending(state: &AppState) -> Vec<String> {
         .collect()
 }
 
-fn ask(state: &AppState, tab: TabKey, thread: &str) -> Ack {
+fn ask(state: &DesktopState, tab: TabKey, thread: &str) -> Ack {
     let command = Command::AskAi {
         tab: wire(tab),
         thread_id: thread.to_string(),
@@ -144,7 +144,7 @@ fn ask(state: &AppState, tab: TabKey, thread: &str) -> Ack {
     send(state, "ask_ai", command).unwrap_or_else(|e| panic!("{e:?}"))
 }
 
-/// With the App locked, an `er_send` ask shows its reply as pending in
+/// An `er_send` ask shows its reply as pending in
 /// `jobs`, named by the `Ack`, until the answer lands; then the pending
 /// entry clears and the answer is the AI's reply in the thread.
 #[test]
@@ -171,11 +171,10 @@ fn an_ask_shows_its_pending_reply_in_jobs_until_the_answer_lands() {
     });
 }
 
-/// With the flag on, a pick saved through `er_send` runs the next ask with
-/// its model, and the ask starts with the App locked: the selection comes
-/// from the settings view, never the App's session pick.
+/// A pick saved through `er_send` runs the next ask with its model: the
+/// selection comes from the settings view.
 #[test]
-fn a_saved_pick_runs_the_next_ask_with_the_app_locked() {
+fn a_saved_pick_runs_the_next_ask() {
     with_storage(|dir| {
         let (state, gate) = asking(dir);
         release(&gate);
@@ -190,10 +189,8 @@ fn a_saved_pick_runs_the_next_ask_with_the_app_locked() {
         assert!(picked.is_ok(), "{picked:?}");
 
         let thread = asked.clone();
-        let started = super::while_the_app_is_locked(&state, "the ask", move |state| {
-            crate::commands::ask_on_desktop(state, |desktop| {
-                crate::ai_ask::ask(desktop, None, thread, "Explain".into())
-            })
+        let started = super::on_a_thread(&state, "the ask", move |state| {
+            crate::ai_ask::ask(state, None, thread, "Explain".into())
         });
         assert!(started.is_ok(), "{:?}", started.map(drop));
 
@@ -205,11 +202,10 @@ fn a_saved_pick_runs_the_next_ask_with_the_app_locked() {
     });
 }
 
-/// With the App held for the whole run, an ask on a thread and a validation
-/// of a finding each start through the Tauri commands' flag path, land their
+/// An ask on a thread and a validation of a finding each start, land their
 /// answers (a reply, a finding response) and clear their pending entries.
 #[test]
-fn an_ask_and_a_validation_land_their_answers_with_the_app_locked() {
+fn an_ask_and_a_validation_land_their_answers() {
     with_storage(|dir| {
         let (state, gate) = asking(dir);
         let tab = open(&state, dir.path(), "a");
@@ -217,21 +213,13 @@ fn an_ask_and_a_validation_land_their_answers_with_the_app_locked() {
         let bucket = bucket(&state, &tab);
         write_finding(&state, &tab, &bucket);
 
-        let held = state.app.lock().unwrap_or_else(PoisonError::into_inner);
-        let (done, finished) = std::sync::mpsc::channel();
-        let calling = state.clone();
         let thread = asked.clone();
-        std::thread::spawn(move || {
-            let asked = crate::commands::ask_on_desktop(&calling, |desktop| {
-                crate::ai_ask::ask(desktop, None, thread, "Explain".into())
-            });
-            let validated = crate::commands::ask_on_desktop(&calling, |desktop| {
-                crate::ai_ask::validate(desktop, None, None, Some("f-1".into()))
-            });
-            let _ = done.send((asked.is_ok(), validated.is_ok()));
+        let started = super::on_a_thread(&state, "the asks", move |state| {
+            let asked = crate::ai_ask::ask(state, None, thread, "Explain".into());
+            let validated = crate::ai_ask::validate(state, None, None, Some("f-1".into()));
+            (asked.is_ok(), validated.is_ok())
         });
-        let started = finished.recv_timeout(std::time::Duration::from_secs(10));
-        assert_eq!(started, Ok((true, true)), "the asks waited on the App lock");
+        assert_eq!(started, (true, true), "an ask did not start");
         let mut waiting = pending(&state);
         waiting.sort();
         assert_eq!(waiting, ["finding:f-1".to_string(), asked.clone()]);
@@ -242,13 +230,16 @@ fn an_ask_and_a_validation_land_their_answers_with_the_app_locked() {
         wait_until("the pending replies to clear", || {
             pending(&state).is_empty()
         });
-        drop(held);
         assert_eq!(replies(&bucket, &asked)[0].0, "ai");
     });
 }
 
 /// A finding in the tab's review, read into its content.
-pub(super) fn write_finding(state: &AppState, (key, tab): &(TabKey, TabDescriptor), bucket: &str) {
+pub(super) fn write_finding(
+    state: &DesktopState,
+    (key, tab): &(TabKey, TabDescriptor),
+    bucket: &str,
+) {
     er_engine::test_support::write_sidecar_json::<er_engine::ai::ErReview>(
         Path::new(bucket),
         serde_json::json!({
@@ -290,23 +281,23 @@ fn responses(bucket: &str) -> Vec<String> {
         .collect()
 }
 
-/// With the App locked, an AI-assisted finding reply creates the finding's
-/// thread through the workspace and shows the reply being written on it.
+/// An AI-assisted finding reply creates the finding's thread through the
+/// workspace and shows the reply being written on it.
 #[test]
-fn an_ai_assisted_finding_reply_creates_the_thread_with_the_app_locked() {
+fn an_ai_assisted_finding_reply_creates_the_thread() {
     with_storage(|dir| {
         let (state, gate) = asking(dir);
         let tab = open(&state, dir.path(), "a");
         let bucket = bucket(&state, &tab);
         write_finding(&state, &tab, &bucket);
 
-        let replied = super::while_the_app_is_locked(&state, "the finding reply", |state| {
-            crate::commands::reply_to_finding_on_service(
+        let replied = super::on_a_thread(&state, "the finding reply", |state| {
+            crate::ai_ask::ask_on_finding(
                 state,
+                None,
+                None,
                 "f-1".into(),
                 "Is this right?".into(),
-                true,
-                None,
                 None,
             )
         });
@@ -350,7 +341,7 @@ fn a_closed_tab_still_gets_its_answer_in_the_captured_bucket() {
         let asked = question(&state, &tab);
         let bucket = bucket(&state, &tab);
         ask(&state, tab.0, &asked);
-        let closed = content_routes::close_key(&state.desktop, tab.0);
+        let closed = content_routes::close_key(&state, tab.0);
         assert!(closed.is_ok(), "{closed:?}");
         assert!(
             !state
@@ -409,13 +400,8 @@ fn a_late_answer_lands_in_the_view_the_ask_was_made_on() {
             .content(tab.0, &tab.1)
             .is_some_and(|c| c.tab.mode == DiffMode::Branch));
         ask(&state, tab.0, &asked);
-        let moved = content_routes::set_tab_mode(
-            &state.desktop,
-            tab.0,
-            "unstaged",
-            DiffMode::Unstaged,
-            None,
-        );
+        let moved =
+            content_routes::set_tab_mode(&state, tab.0, "unstaged", DiffMode::Unstaged, None);
         assert!(moved.is_ok(), "{moved:?}");
         wait_until("the unstaged view", || {
             state

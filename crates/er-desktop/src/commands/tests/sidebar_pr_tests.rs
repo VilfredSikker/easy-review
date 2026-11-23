@@ -1,7 +1,7 @@
-//! The flag-on PR lists: `prs(remote)` holds the snapshot's lists, the PR
-//! commands go through `er_send` to the sidebar's owner, which applies the
-//! dismissed filter and the saved cap, and the head probe's target follows
-//! the registry with the App locked.
+//! The PR lists: `prs(remote)` holds each project's lists, the PR commands go
+//! through `er_send` to the sidebar's owner, which applies the dismissed
+//! filter and the saved cap, and the head probe's target follows the
+//! registry.
 
 use std::time::{Duration, Instant};
 
@@ -9,12 +9,12 @@ use er_engine::tabs_record::{TabDescriptor, TabKind};
 use er_protocol::{Command, ErErrorKind, Prs, Resource, ResourceKey, ResourceVersion};
 use er_service::AppCommand;
 
-use super::{review_flow_test_state, snap_from, ReviewFlowTestDir};
+use super::{review_flow_test_state, ReviewFlowTestDir};
 use crate::app_owner::startup::pr_head_probe_target;
-use crate::commands::AppState;
 use crate::projects::{self, ProjectRecord, ProjectsFile};
 use crate::resources;
 use crate::snapshot::PrInfo;
+use crate::state::DesktopState;
 
 fn with_storage(test: impl FnOnce(&ReviewFlowTestDir)) {
     let dir = ReviewFlowTestDir::new();
@@ -60,11 +60,11 @@ fn pr(number: u64, state: &str, author: &str) -> PrInfo {
     .unwrap()
 }
 
-fn fetch_prs(state: &AppState, remote: &str) -> (u64, Prs) {
+fn fetch_prs(state: &DesktopState, remote: &str) -> (u64, Prs) {
     let key = ResourceKey::Prs {
         remote: remote.into(),
     };
-    let fetched = resources::fetch(&state.desktop, key).unwrap();
+    let fetched = resources::fetch(&state, key).unwrap();
     let Resource::Prs(prs) = fetched.value else {
         panic!("{:?}", fetched.value);
     };
@@ -81,7 +81,7 @@ fn lists(prs: &Prs, project: &str) -> er_protocol::ProjectPrs {
 
 /// Project `p` on `acme/p`, signed in as `me`: one PR of mine, two to
 /// review and one merged.
-fn command_fixture(dir: &ReviewFlowTestDir) -> AppState {
+fn command_fixture(dir: &ReviewFlowTestDir) -> DesktopState {
     let mut state = review_flow_test_state(dir);
     state.ports = er_engine::ports::Ports {
         git: std::sync::Arc::new(er_git::FakeGit::default()),
@@ -102,9 +102,9 @@ fn command_fixture(dir: &ReviewFlowTestDir) -> AppState {
     state
 }
 
-fn send(state: &AppState, command: Command) -> er_protocol::Ack {
+fn send(state: &DesktopState, command: Command) -> er_protocol::Ack {
     resources::send::apply(
-        &state.desktop,
+        &state,
         command,
         &resources::send::Effects {
             notify: &|_, _| {},
@@ -236,7 +236,7 @@ fn the_save_pr_reports_its_flag_on_median() {
             let fetched: Vec<_> = ack
                 .changed
                 .into_iter()
-                .map(|changed| resources::fetch(&state.desktop, changed.key))
+                .map(|changed| resources::fetch(&state, changed.key))
                 .collect::<Result<_, _>>()
                 .unwrap_or_else(|e| panic!("fetch: {e:?}"));
             bytes = serde_json::to_vec(&fetched).map(|v| v.len()).unwrap_or(0);
@@ -257,116 +257,6 @@ fn the_save_pr_reports_its_flag_on_median() {
     });
 }
 
-/// Every project's lists in `prs(remote)` name what the snapshot's project
-/// rows list, in their order, and the rows carry the fields the snapshot's
-/// rows show: two projects share a remote and dismiss differently, one is
-/// known only by its remote, and more PRs merged than the list keeps.
-#[test]
-fn the_remote_prs_match_the_snapshot_lists() {
-    with_storage(|dir| {
-        let state = review_flow_test_state(dir);
-        let active_root = state.app.lock().unwrap().tab().repo_root.clone();
-        let entries = |numbers: &[(u64, u64)], at: &str| -> serde_json::Value {
-            numbers
-                .iter()
-                .map(|(number, ms)| {
-                    serde_json::json!({"number": number, at: ms, "title": format!("T {number}")})
-                })
-                .collect()
-        };
-        let mut active = record("active", &active_root, "acme/widgets");
-        active.dismissed_prs = vec![3, 100];
-        active.saved_prs =
-            serde_json::from_value(entries(&[(5, 1), (99, 2)], "saved_at_ms")).unwrap();
-        active.recent_prs =
-            serde_json::from_value(entries(&[(1, 2), (6, 1)], "viewed_at_ms")).unwrap();
-        let twin = record("twin", "/src/twin", "acme/widgets");
-        let mut remote = record("remote", "", "acme/gadgets");
-        remote.saved_prs = serde_json::from_value(entries(&[(11, 1)], "saved_at_ms")).unwrap();
-        save(vec![active, twin, remote]);
-        *state.gh_user.lock().unwrap() = Some("me".into());
-        let mut approved = pr(6, "OPEN", "someone");
-        approved.latest_reviewer_states = vec![("me".into(), "APPROVED".into())];
-        let mut draft = pr(4, "OPEN", "someone");
-        draft.is_draft = true;
-        let mut widgets = vec![
-            pr(1, "OPEN", "me"),
-            pr(3, "OPEN", "someone"),
-            draft,
-            pr(5, "OPEN", "someone"),
-            approved,
-        ];
-        widgets.extend((100..127).map(|number| pr(number, "MERGED", "someone")));
-        state.pr_cache.lock().unwrap().extend([
-            ("acme/widgets".to_string(), widgets),
-            ("acme/gadgets".to_string(), vec![pr(12, "OPEN", "me")]),
-        ]);
-        state.app_owner.publish();
-
-        let snapshot = {
-            let app = state.app.lock().unwrap();
-            snap_from(&app, &state)
-        };
-        let numbers = |prs: &[PrInfo]| prs.iter().map(|pr| pr.number).collect::<Vec<_>>();
-        for row in &snapshot.projects {
-            let remote = row.remote.as_deref().unwrap();
-            let (_, prs) = fetch_prs(&state, remote);
-            let wire = lists(&prs, &row.id);
-            let id = &row.id;
-            assert_eq!(wire.mine, numbers(&row.my_prs), "{id} mine");
-            assert_eq!(
-                wire.to_review,
-                numbers(&row.prs_to_review),
-                "{id} to review"
-            );
-            assert_eq!(
-                wire.recently_merged,
-                numbers(&row.recently_merged),
-                "{id} merged"
-            );
-            assert_eq!(wire.saved, numbers(&row.saved_prs), "{id} saved");
-            assert_eq!(wire.recent, numbers(&row.recent_prs), "{id} recent");
-            assert_eq!(wire.dismissed, row.dismissed_prs, "{id} dismissed");
-            let row_of = |number: u64| prs.rows.iter().find(|r| r.number == number).unwrap();
-            let listed = row.my_prs.iter().chain(&row.prs_to_review);
-            for pr in listed.chain(&row.recently_merged) {
-                assert_eq!(
-                    row_of(pr.number).approved_by_me,
-                    pr.approved_by_me,
-                    "{id} #{}",
-                    pr.number
-                );
-            }
-            let shown = row
-                .my_prs
-                .iter()
-                .chain(&row.prs_to_review)
-                .chain(&row.saved_prs);
-            for pr in shown.chain(&row.recent_prs).chain(&row.recently_merged) {
-                let wire = row_of(pr.number);
-                assert_eq!(
-                    (&wire.title, &wire.head_ref, &wire.state, &wire.head_oid),
-                    (&pr.title, &pr.head_ref, &pr.state, &pr.head_oid),
-                    "{id} #{}",
-                    pr.number
-                );
-            }
-        }
-        let active = &snapshot.projects[0];
-        assert_eq!(
-            numbers(&active.saved_prs),
-            vec![99, 5],
-            "the fixture orders saves"
-        );
-        assert_eq!(
-            active.recently_merged.len(),
-            25,
-            "the fixture fills the cap"
-        );
-        assert_eq!(numbers(&snapshot.projects[1].prs_to_review), vec![3, 5]);
-    });
-}
-
 /// `available_prs(project)` is computed on read at version 0: the cached PRs
 /// the project neither tracks nor dismissed that are not the user's.
 #[test]
@@ -383,7 +273,7 @@ fn the_available_prs_are_computed_on_read() {
         let key = ResourceKey::AvailablePrs {
             project: "p".into(),
         };
-        let fetched = resources::fetch(&state.desktop, key.clone()).unwrap();
+        let fetched = resources::fetch(&state, key.clone()).unwrap();
         assert_eq!(fetched.version, ResourceVersion(0));
         let Resource::AvailablePrs(available) = fetched.value else {
             panic!("{:?}", fetched.value);
@@ -399,7 +289,7 @@ fn the_available_prs_are_computed_on_read() {
         );
         assert_eq!(projects::load().projects[0].tracked_prs, Vec::<u64>::new());
         let missing = resources::fetch(
-            &state.desktop,
+            &state,
             ResourceKey::AvailablePrs {
                 project: "gone".into(),
             },
@@ -447,7 +337,7 @@ fn every_pr_command_reaches_the_sidebar_owner() {
         ];
         for command in commands {
             let applied = resources::send::apply(
-                &state.desktop,
+                &state,
                 command.clone(),
                 &resources::send::Effects {
                     notify: &|_, _| {},
@@ -459,7 +349,7 @@ fn every_pr_command_reaches_the_sidebar_owner() {
             assert!(applied.is_ok(), "{command:?}: {applied:?}");
         }
         let missing = resources::send::apply(
-            &state.desktop,
+            &state,
             Command::RefreshProjectPrList {
                 project: "gone".into(),
             },
@@ -484,10 +374,9 @@ fn every_pr_command_reaches_the_sidebar_owner() {
     });
 }
 
-/// The head probe's target is the registry's active PR tab, read with the
-/// App locked. Read from the App, a held lock skips the probe.
+/// The head probe's target is the registry's active PR tab.
 #[test]
-fn the_probe_target_reads_the_registry_with_the_app_locked() {
+fn the_probe_target_reads_the_registry() {
     with_storage(|dir| {
         let state = review_flow_test_state(dir);
         let tab = TabDescriptor {
@@ -506,7 +395,6 @@ fn the_probe_target_reads_the_registry_with_the_app_locked() {
             .app_registry()
             .send(AppCommand::NewTab { tab });
         assert!(sent.is_ok(), "{sent:?}");
-        let _held = state.app.lock().unwrap();
         assert_eq!(
             pr_head_probe_target(&state),
             Some(("acme/widgets".to_string(), 7))

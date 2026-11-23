@@ -1,7 +1,6 @@
-//! The flag-on sidebar wiring: the startup registration and the metadata
-//! interval read the registry and never the App, the tick warms and
-//! publishes from it, the owner's publishes reach the wire, and the owner's
-//! resources match the snapshot's project rows they replace.
+//! The sidebar wiring: the startup registration and the metadata interval
+//! read the registry, the tick warms and publishes from it, and the owner's
+//! publishes reach the wire.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -13,10 +12,10 @@ use er_engine::tabs_record::{TabDescriptor, TabKind};
 use er_protocol::{Command, ErErrorKind, Resource, ResourceChanged, ResourceKey, ResourceVersion};
 use er_service::AppCommand;
 
-use super::{git_fixture_command, review_flow_test_state, snap_from, ReviewFlowTestDir};
+use super::{git_fixture_command, review_flow_test_state, ReviewFlowTestDir};
 use crate::app_owner::startup::{meta_refresh_interval, register_open_projects};
 use crate::app_owner::SidebarOwner;
-use crate::commands::{content_routes, AppState};
+use crate::commands::{content_routes, DesktopState};
 use crate::projects::{self, ProjectRecord, ProjectsFile};
 use crate::resources::{self, relay, tick, Watched};
 use crate::service::ServiceState;
@@ -59,7 +58,7 @@ fn working(root: &Path) -> TabDescriptor {
     }
 }
 
-fn new_tab(state: &AppState, tab: TabDescriptor) {
+fn new_tab(state: &DesktopState, tab: TabDescriptor) {
     let sent = state
         .service
         .app_registry()
@@ -67,13 +66,10 @@ fn new_tab(state: &AppState, tab: TabDescriptor) {
     assert!(sent.is_ok(), "{sent:?}");
 }
 
-/// The App holds its startup tab on `app-repo`; the registry lists two
-/// saved tabs on two other repositories, as it does before the restore.
-/// Git is real, so registration resolves each root as the app does.
-fn registry_fixture(dir: &ReviewFlowTestDir) -> (AppState, BTreeSet<String>) {
+/// The registry lists two saved tabs on two repositories. Git is real, so
+/// registration resolves each root as the app does.
+fn registry_fixture(dir: &ReviewFlowTestDir) -> (DesktopState, BTreeSet<String>) {
     let mut state = review_flow_test_state(dir);
-    let startup = repo(dir, "app-repo");
-    state.app.lock().unwrap().tab_mut().repo_root = startup.to_string_lossy().into_owned();
     state.ports = er_engine::ports::Ports {
         git: er_engine::ports::Ports::cli().git,
         github: Arc::new(er_engine::github::FakeGitHub::default()),
@@ -98,8 +94,7 @@ fn registered_roots() -> BTreeSet<String> {
         .collect()
 }
 
-/// Before the restore the App holds only its startup tab, so a registration
-/// that read the App would register that root and miss both saved ones.
+/// The registration registers the project of every tab the registry lists.
 #[test]
 fn the_startup_registration_registers_the_registry_tabs() {
     with_storage(|dir| {
@@ -111,31 +106,10 @@ fn the_startup_registration_registers_the_registry_tabs() {
     });
 }
 
-/// After the restore the App holds the same tabs, and its lock is the tab
-/// follower's; the registration finishes with the App locked.
+/// The interval follows the registry's active tab: a remote PR waits twice
+/// as long.
 #[test]
-fn the_startup_registration_runs_with_the_app_locked() {
-    with_storage(|dir| {
-        let (state, saved) = registry_fixture(dir);
-        let held = state.app.lock().unwrap();
-        let (done, finished) = mpsc::channel();
-        let registering = state.clone();
-        std::thread::spawn(move || {
-            register_open_projects(&registering);
-            let _ = done.send(());
-        });
-        let finished = finished.recv_timeout(WAIT);
-        drop(held);
-        assert!(finished.is_ok(), "the registration waited on the App");
-        assert_eq!(registered_roots(), saved);
-    });
-}
-
-/// The interval follows the registry's active tab with the App locked: a
-/// remote PR waits twice as long. Read from the App, a held lock reads as
-/// a local tab.
-#[test]
-fn the_meta_interval_reads_the_active_tab_with_the_app_locked() {
+fn the_meta_interval_reads_the_active_tab() {
     with_storage(|dir| {
         let state = review_flow_test_state(dir);
         new_tab(
@@ -148,11 +122,8 @@ fn the_meta_interval_reads_the_active_tab_with_the_app_locked() {
                 ..working(Path::new(""))
             },
         );
-        let held = state.app.lock().unwrap();
         assert_eq!(meta_refresh_interval(&state), Duration::from_secs(120));
-        drop(held);
         new_tab(&state, working(&dir.path().join("local")));
-        let _held = state.app.lock().unwrap();
         assert_eq!(meta_refresh_interval(&state), Duration::from_secs(60));
     });
 }
@@ -169,9 +140,9 @@ fn service_git() -> er_git::FakeGit {
         .with_remote_url(Ok("https://github.com/acme/widgets.git".to_string()))
 }
 
-/// A loaded tab on `loaded`, active in the registry, beside the App's tab on
-/// `app-repo`; the desktop's git records what the tick asks of it.
-fn loaded_fixture(dir: &ReviewFlowTestDir) -> (AppState, String, Arc<er_git::FakeGit>) {
+/// A loaded tab on `loaded`, active in the registry; the desktop's git
+/// records what the tick asks of it.
+fn loaded_fixture(dir: &ReviewFlowTestDir) -> (DesktopState, String, Arc<er_git::FakeGit>) {
     let desktop_git = er_git::FakeGit::default()
         .with_list_worktrees(Ok(Vec::new()))
         .with_branch_merged(Ok(String::new()));
@@ -182,10 +153,8 @@ fn loaded_fixture(dir: &ReviewFlowTestDir) -> (AppState, String, Arc<er_git::Fak
 fn loaded_with(
     dir: &ReviewFlowTestDir,
     desktop_git: er_git::FakeGit,
-) -> (AppState, String, Arc<er_git::FakeGit>) {
+) -> (DesktopState, String, Arc<er_git::FakeGit>) {
     let mut state = review_flow_test_state(dir);
-    state.app.lock().unwrap().tab_mut().repo_root =
-        dir.path().join("app-repo").to_string_lossy().into_owned();
     let service_ports = er_engine::ports::Ports {
         git: Arc::new(service_git()),
         github: Arc::new(er_engine::github::FakeGitHub::default()),
@@ -214,19 +183,16 @@ fn loaded_with(
 }
 
 /// The tick warms the worktree list of the registry's active tab, with the
-/// base its loaded content holds, and never the App's tab.
+/// base its loaded content holds.
 #[test]
 fn the_tick_warms_the_registry_active_tab() {
     with_storage(|dir| {
         let (state, root, git) = loaded_fixture(dir);
-        tick::run(&state.desktop);
+        tick::run(&state);
         let warmed = format!("list_worktrees(repo_root={root:?})");
         wait_until("the warm of the active tab", || {
             git.calls().contains(&warmed)
         });
-        let app_root = state.app.lock().unwrap().tab().repo_root.clone();
-        let app_warm = format!("list_worktrees(repo_root={app_root:?})");
-        assert!(!git.calls().contains(&app_warm), "{:?}", git.calls());
     });
 }
 
@@ -267,7 +233,7 @@ fn the_tick_serves_the_active_tab_worktrees_as_build_worktrees_lists_them() {
             dismissed_branches: vec!["gone".into()],
             ..record("p", &root, Some("acme/widgets"))
         }]);
-        tick::run(&state.desktop);
+        tick::run(&state);
         // The fake answers the merged list for any base, so the rows alone
         // cannot show the tick asked with the loaded tab's base.
         let merged_asks: Vec<String> = git
@@ -282,13 +248,13 @@ fn the_tick_serves_the_active_tab_worktrees_as_build_worktrees_lists_them() {
         );
 
         let key = ResourceKey::Worktrees { root: root.clone() };
-        let fetched = resources::fetch(&state.desktop, key.clone()).unwrap();
+        let fetched = resources::fetch(&state, key.clone()).unwrap();
         assert!(fetched.version.0 > 0, "the tick published no worktrees");
-        assert_eq!(resources::version(&state.desktop, key), Ok(fetched.version));
+        assert_eq!(resources::version(&state, key), Ok(fetched.version));
         let Resource::Worktrees(served) = fetched.value else {
             panic!("{:?}", fetched.value);
         };
-        let ports = &state.desktop.ports;
+        let ports = &state.ports;
         let listed =
             crate::snapshot::build_worktrees(&*ports.github, &*ports.git, &root, "main", &root);
         let listed: Vec<_> = listed
@@ -395,7 +361,7 @@ fn record(id: &str, root: &str, remote: Option<&str>) -> ProjectRecord {
     }
 }
 
-fn branches_version(state: &AppState, project: &str) -> u64 {
+fn branches_version(state: &DesktopState, project: &str) -> u64 {
     state.app_owner.branches(project).0
 }
 
@@ -413,7 +379,7 @@ fn a_pr_cache_write_reaches_the_branches_within_one_tick() {
             .lock()
             .unwrap()
             .insert("acme/p".into(), vec![pr(9, "feature", "someone")]);
-        tick::run(&state.desktop);
+        tick::run(&state);
         assert!(
             branches_version(&state, "p") > before,
             "the tick did not publish"
@@ -439,7 +405,7 @@ fn an_owner_publish_reaches_the_wire() {
         std::thread::sleep(Duration::from_millis(100));
         while wakes.try_recv().is_ok() {}
         let (tx, bursts) = mpsc::channel();
-        relay::spawn(state.desktop.clone(), wakes, move |moved| {
+        relay::spawn(state.clone(), wakes, move |moved| {
             let _ = tx.send(moved);
         });
 
@@ -453,125 +419,12 @@ fn an_owner_publish_reaches_the_wire() {
             keys.contains(&Watched::Sidebar(ResourceKey::Projects)),
             "{keys:?}"
         );
-        let fetched = resources::fetch(&state.desktop, ResourceKey::Projects).unwrap();
+        let fetched = resources::fetch(&state, ResourceKey::Projects).unwrap();
         let Resource::Projects(projects) = fetched.value else {
             panic!("{:?}", fetched.value);
         };
         assert_eq!(projects.projects[0].id, "p");
         assert!(projects.projects[0].remote_only);
-    });
-}
-
-/// Each project row and branch list the owner publishes holds what the
-/// snapshot's project rows show, and the wire carries enough to derive
-/// which branch is current: the viewed branch for the active project and
-/// the checkout's branch for the others.
-#[test]
-fn the_sidebar_resources_match_the_snapshot_projects() {
-    with_storage(|dir| {
-        let state = review_flow_test_state(dir);
-        let active_root = state.app.lock().unwrap().tab().repo_root.clone();
-        save(vec![
-            record("active", &active_root, Some("acme/widgets")),
-            record("other", "/src/other", Some("acme/other")),
-            record("remote", "", Some("acme/gadgets")),
-        ]);
-        *state.gh_user.lock().unwrap() = Some("me".into());
-        state.pr_cache.lock().unwrap().extend([
-            ("acme/widgets".to_string(), vec![pr(7, "feature", "me")]),
-            ("acme/other".to_string(), vec![pr(8, "old", "someone")]),
-        ]);
-        state.app_owner.refresh_meta(&meta_git(), "");
-        state.app_owner.publish();
-
-        let (snapshot, viewed) = {
-            let app = state.app.lock().unwrap();
-            let tab = app.tab();
-            let viewed = tab
-                .local_branch_view
-                .clone()
-                .unwrap_or_else(|| tab.current_branch.clone());
-            (snap_from(&app, &state), viewed)
-        };
-        let (_, wire) = state.app_owner.projects();
-        assert_eq!(wire.projects.len(), snapshot.projects.len());
-        for (row, project) in snapshot.projects.iter().zip(&wire.projects) {
-            assert_eq!(
-                (&row.id, &row.name, &row.root_path, &row.remote),
-                (
-                    &project.id,
-                    &project.name,
-                    &project.root_path,
-                    &project.remote
-                )
-            );
-            assert_eq!(row.remote_only, project.remote_only);
-            assert_eq!(row.auto_triage_max_diff_kb, project.auto_triage_max_diff_kb);
-            assert_eq!(row.review_ignore_globs, project.review_ignore_globs);
-
-            let (_, branches) = state.app_owner.branches(&project.id);
-            let current = if row.is_active {
-                &viewed
-            } else {
-                &branches.current_branch
-            };
-            for (rows, wire) in [
-                (&row.local_branches, &branches.local_branches),
-                (&row.auto_branches, &branches.auto_branches),
-            ] {
-                let rows: Vec<_> = rows
-                    .iter()
-                    .map(|b| {
-                        (
-                            &b.name,
-                            &b.upstream,
-                            b.is_merged,
-                            &b.worktree_path,
-                            b.pr_number,
-                            b.is_current,
-                        )
-                    })
-                    .collect();
-                let wire: Vec<_> = wire
-                    .iter()
-                    .map(|b| {
-                        (
-                            &b.name,
-                            &b.upstream,
-                            b.is_merged,
-                            &b.worktree_path,
-                            b.pr_number,
-                            &b.name == current,
-                        )
-                    })
-                    .collect();
-                assert_eq!(rows, wire, "{}", project.id);
-            }
-        }
-        let numbered: Vec<_> = ["active", "other"]
-            .iter()
-            .map(|id| {
-                let (_, branches) = state.app_owner.branches(id);
-                branches
-                    .local_branches
-                    .iter()
-                    .chain(&branches.auto_branches)
-                    .filter_map(|b| b.pr_number)
-                    .collect::<Vec<_>>()
-            })
-            .collect();
-        assert_eq!(
-            numbered,
-            vec![vec![7], vec![8]],
-            "the fixture covers PR numbers"
-        );
-        let (_, branches) = state.app_owner.branches("active");
-        let feature = branches.local_branches.iter().find(|b| b.name == "feature");
-        assert_eq!(
-            feature.and_then(|b| b.worktree_path.as_deref()),
-            Some("/src/feature-tree"),
-            "the fixture covers worktree paths"
-        );
     });
 }
 
@@ -589,7 +442,7 @@ fn command_git() -> er_git::FakeGit {
 }
 
 /// The registered projects `a` and `b`, published, with the command git.
-fn command_fixture(dir: &ReviewFlowTestDir) -> AppState {
+fn command_fixture(dir: &ReviewFlowTestDir) -> DesktopState {
     let mut state = review_flow_test_state(dir);
     state.ports = er_engine::ports::Ports {
         git: Arc::new(command_git()),
@@ -604,8 +457,8 @@ fn command_fixture(dir: &ReviewFlowTestDir) -> AppState {
     state
 }
 
-fn project_ids(state: &AppState) -> Vec<String> {
-    let fetched = resources::fetch(&state.desktop, ResourceKey::Projects).unwrap();
+fn project_ids(state: &DesktopState) -> Vec<String> {
+    let fetched = resources::fetch(&state, ResourceKey::Projects).unwrap();
     let Resource::Projects(projects) = fetched.value else {
         panic!("{:?}", fetched.value);
     };
@@ -619,7 +472,7 @@ fn a_project_command_answers_the_versions_it_moved() {
     with_storage(|dir| {
         let state = command_fixture(dir);
         let ack = resources::send(
-            &state.desktop,
+            &state,
             Command::ReorderProjects {
                 ordered: vec!["b".into(), "a".into()],
             },
@@ -636,7 +489,7 @@ fn a_project_command_answers_the_versions_it_moved() {
         assert_eq!(project_ids(&state), ["b", "a"]);
 
         resources::send(
-            &state.desktop,
+            &state,
             Command::DeleteProject {
                 project: "a".into(),
             },
@@ -653,7 +506,7 @@ fn er_send_routes_a_project_command_to_the_sidebar_owner() {
     with_storage(|dir| {
         let state = command_fixture(dir);
         let applied = resources::send::apply(
-            &state.desktop,
+            &state,
             Command::ReorderProjects {
                 ordered: vec!["b".into(), "a".into()],
             },
@@ -675,7 +528,7 @@ fn er_send_routes_a_project_command_to_the_sidebar_owner() {
         );
         assert!(applied.uninstalled.is_none());
         assert_eq!(project_ids(&state), ["b", "a"]);
-        assert!(state.desktop.service.settings_if_started().is_none());
+        assert!(state.service.settings_if_started().is_none());
     });
 }
 
@@ -686,7 +539,7 @@ fn tracking_a_branch_answers_its_branches() {
     with_storage(|dir| {
         let state = command_fixture(dir);
         let ack = resources::send(
-            &state.desktop,
+            &state,
             Command::AddTrackedBranch {
                 project: "a".into(),
                 name: "spare".into(),
@@ -709,7 +562,7 @@ fn tracking_a_branch_answers_its_branches() {
         assert_eq!(local, ["main", "spare"]);
 
         resources::send(
-            &state.desktop,
+            &state,
             Command::RemoveTrackedBranch {
                 project: "a".into(),
                 name: "spare".into(),
@@ -728,7 +581,7 @@ fn the_available_branches_are_computed_on_read() {
     with_storage(|dir| {
         let state = command_fixture(dir);
         resources::send(
-            &state.desktop,
+            &state,
             Command::AddTrackedBranch {
                 project: "a".into(),
                 name: "feature".into(),
@@ -738,16 +591,13 @@ fn the_available_branches_are_computed_on_read() {
         let key = ResourceKey::AvailableBranches {
             project: "a".into(),
         };
-        let fetched = resources::fetch(&state.desktop, key.clone()).unwrap();
+        let fetched = resources::fetch(&state, key.clone()).unwrap();
         assert_eq!(fetched.version, ResourceVersion(0));
         let Resource::AvailableBranches(available) = fetched.value else {
             panic!("{:?}", fetched.value);
         };
         assert_eq!(available.branches, ["spare"]);
-        assert_eq!(
-            resources::version(&state.desktop, key),
-            Ok(ResourceVersion(0))
-        );
+        assert_eq!(resources::version(&state, key), Ok(ResourceVersion(0)));
     });
 }
 
@@ -758,21 +608,21 @@ fn a_project_command_on_an_unknown_project_is_not_found() {
     with_storage(|dir| {
         let state = command_fixture(dir);
         let missing = resources::send(
-            &state.desktop,
+            &state,
             Command::DeleteProject {
                 project: "gone".into(),
             },
         );
         assert_eq!(missing.map_err(|e| e.kind), Err(ErErrorKind::NotFound));
         let read = resources::fetch(
-            &state.desktop,
+            &state,
             ResourceKey::AvailableBranches {
                 project: "gone".into(),
             },
         );
         assert_eq!(read.map_err(|e| e.kind), Err(ErErrorKind::NotFound));
         let checked_out = resources::send(
-            &state.desktop,
+            &state,
             Command::RemoveTrackedBranch {
                 project: "a".into(),
                 name: "main".into(),

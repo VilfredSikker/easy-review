@@ -98,7 +98,6 @@ fn run_github_pr_action_blocking(
 /// from the registry and its PR from the tab's content and the PR cache, so
 /// a confirm left open across a tab switch never lands on another PR. The
 /// `Ack` names `pr_status` after the refresh the action runs.
-#[cfg(feature = "v1-service")]
 pub fn run_on_tab(
     desktop: &DesktopState,
     wire: er_protocol::TabKey,

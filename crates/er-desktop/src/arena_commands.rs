@@ -3,8 +3,6 @@
 use crate::commands::AppState;
 use crate::snapshot::{ArenaRunSnapshotWire, ArenaRunSummaryWire};
 use er_engine::app::App;
-#[cfg(not(feature = "v1-service"))]
-use er_engine::arena::{estimate_batch_cost_usd, ArenaBatchStartParams, ArenaStartParams};
 use er_engine::arena::{
     AgentGroupStart, ArenaDiffPreview, ArenaProgressState, ArenaScope, ReviewerRef, Verdict,
 };
@@ -136,35 +134,9 @@ pub fn arena_estimate(
     req: ArenaEstimateRequest,
     state: State<AppState>,
 ) -> Result<ArenaDiffPreview, String> {
-    #[cfg(feature = "v1-service")]
     return on_active(&state, |desktop, tab| {
         crate::arena_service::estimate(desktop, tab, &estimate_plan(req))
     });
-    #[cfg(not(feature = "v1-service"))]
-    arena_estimate_local(req, state)
-}
-
-#[cfg(not(feature = "v1-service"))]
-fn arena_estimate_local(
-    req: ArenaEstimateRequest,
-    state: State<AppState>,
-) -> Result<ArenaDiffPreview, String> {
-    let reviewers = wire_reviewers(&req.reviewers);
-    let scope = parse_scope(&req.scope);
-    let app = state.app.lock().map_err(|e| e.to_string())?;
-    let arbiter = req.arbiter.as_ref().map(|a| ReviewerRef {
-        provider_id: a.provider_id.clone(),
-        model_id: a.model_id.clone(),
-        agent_kind: a.agent_kind.clone(),
-    });
-    app.arena_preview(
-        scope,
-        req.files.as_deref(),
-        &reviewers,
-        req.rounds,
-        arbiter.as_ref(),
-    )
-    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -172,55 +144,9 @@ pub fn arena_estimate_batch(
     req: ArenaBatchEstimateRequest,
     state: State<AppState>,
 ) -> Result<ArenaDiffPreview, String> {
-    #[cfg(feature = "v1-service")]
     return on_active(&state, |desktop, tab| {
         crate::arena_service::estimate_batch(desktop, tab, &estimate_batch_params(req))
     });
-    #[cfg(not(feature = "v1-service"))]
-    arena_estimate_batch_local(req, state)
-}
-
-#[cfg(not(feature = "v1-service"))]
-fn arena_estimate_batch_local(
-    req: ArenaBatchEstimateRequest,
-    state: State<AppState>,
-) -> Result<ArenaDiffPreview, String> {
-    let scope = parse_scope(&req.scope);
-    let app = state.app.lock().map_err(|e| e.to_string())?;
-    let tab = app.tab();
-    let raw_diff = tab
-        .raw_diff_for_arena(scope, req.files.as_deref())
-        .map_err(|e| e.to_string())?;
-    let batch = ArenaBatchStartParams {
-        scope,
-        files: req.files,
-        rounds: req.rounds,
-        arbiter: req.arbiter.map(|a| ReviewerRef {
-            provider_id: a.provider_id,
-            model_id: a.model_id,
-            agent_kind: a.agent_kind,
-        }),
-        confirm: false,
-        groups: wire_groups(&req.groups),
-        effort: None,
-    };
-    let cost_usd = estimate_batch_cost_usd(raw_diff.len(), &batch, &app.config.ai_hub);
-    Ok(ArenaDiffPreview {
-        diff_bytes: raw_diff.len(),
-        cost_usd,
-        latency_sec: er_engine::arena::estimate_latency_sec(
-            &batch
-                .groups
-                .iter()
-                .flat_map(|g| g.models.iter())
-                .cloned()
-                .collect::<Vec<_>>(),
-            req.rounds,
-            &app.config.ai_hub,
-        ),
-        cost_limit_usd: er_engine::arena::DEFAULT_COST_LIMIT_USD,
-        max_rounds: er_engine::arena::ARENA_ROUNDS_V1,
-    })
 }
 
 #[tauri::command]
@@ -228,7 +154,6 @@ pub async fn arena_start(
     req: ArenaStartRequest,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
-    #[cfg(feature = "v1-service")]
     return {
         let state = state.inner().clone();
         crate::commands::run_blocking(move || {
@@ -238,67 +163,11 @@ pub async fn arena_start(
         })
         .await
     };
-    #[cfg(not(feature = "v1-service"))]
-    arena_start_local(req, state).await
-}
-
-#[cfg(not(feature = "v1-service"))]
-async fn arena_start_local(
-    req: ArenaStartRequest,
-    state: State<'_, AppState>,
-) -> Result<String, String> {
-    let state = state.inner().clone();
-    // Off the main thread: starting a run does git and file IO under the App
-    // lock, and a sync command doing that blocks the one thread that also
-    // pumps the window.
-    crate::commands::run_blocking(move || {
-        crate::dev_log::arena_line(format!(
-            "arena_start: reviewers={} scope={} rounds={:?} confirm={}",
-            req.reviewers.len(),
-            req.scope,
-            req.rounds,
-            req.confirm.unwrap_or(false)
-        ));
-        let reviewers = wire_reviewers(&req.reviewers);
-        let scope = parse_scope(&req.scope);
-        let arbiter = req.arbiter.map(|a| ReviewerRef {
-            provider_id: a.provider_id,
-            model_id: a.model_id,
-            agent_kind: a.agent_kind,
-        });
-        let params = ArenaStartParams {
-            title: req.title,
-            reviewers,
-            scope,
-            files: req.files,
-            rounds: req.rounds,
-            arbiter,
-            confirm: req.confirm.unwrap_or(false),
-            agent_kind: req.agent_kind,
-            effort: req.effort,
-        };
-        let run_id = {
-            let mut app = state.app.lock().map_err(|e| {
-                let msg = e.to_string();
-                crate::dev_log::arena_line(format!("arena_start: lock app failed: {msg}"));
-                msg
-            })?;
-            app.arena_start(params).map_err(|e| {
-                let msg = e.to_string();
-                crate::dev_log::arena_line(format!("arena_start: engine failed: {msg}"));
-                msg
-            })?
-        };
-        crate::dev_log::arena_line(format!("arena_start: ok run_id={run_id}"));
-        state.desktop_revision.fetch_add(1, Ordering::Relaxed);
-        Ok(run_id)
-    })
-    .await
 }
 
 /// The flag path checks the painted bucket against the named tab's content
 /// in `flow_service`.
-#[cfg(any(not(feature = "v1-service"), test))]
+#[cfg(test)]
 pub(crate) fn validate_review_flow_bucket(app: &App, expected_er_dir: &str) -> Result<(), String> {
     let active_er_dir = app.tab().er_dir();
     if active_er_dir != expected_er_dir {
@@ -316,21 +185,10 @@ pub async fn start_review_flow(
     state: State<'_, AppState>,
 ) -> Result<crate::snapshot::AppSnapshot, String> {
     let state = state.inner().clone();
-    #[cfg(feature = "v1-service")]
     return crate::commands::run_blocking(move || {
         flow_on_active(&state, er_dir, crate::flow_service::Control::Start(scope))
     })
     .await;
-    #[cfg(not(feature = "v1-service"))]
-    crate::commands::run_blocking(move || {
-        let mut app = state.app.lock().map_err(|e| e.to_string())?;
-        validate_review_flow_bucket(&app, &er_dir)?;
-        let scope = crate::commands::resolve_review_scope(&scope, app.tab())?;
-        app.start_review_flow(&scope).map_err(|e| e.to_string())?;
-        state.desktop_revision.fetch_add(1, Ordering::Relaxed);
-        Ok(crate::commands::snap_from_command(&app, &state))
-    })
-    .await
 }
 
 #[tauri::command]
@@ -339,21 +197,10 @@ pub async fn confirm_review_flow(
     state: State<'_, AppState>,
 ) -> Result<crate::snapshot::AppSnapshot, String> {
     let state = state.inner().clone();
-    #[cfg(feature = "v1-service")]
     return crate::commands::run_blocking(move || {
         flow_on_active(&state, er_dir, crate::flow_service::Control::Confirm)
     })
     .await;
-    #[cfg(not(feature = "v1-service"))]
-    crate::commands::run_blocking(move || {
-        let mut app = state.app.lock().map_err(|e| e.to_string())?;
-        validate_review_flow_bucket(&app, &er_dir)?;
-        app.confirm_review_flow(&er_dir)
-            .map_err(|e| e.to_string())?;
-        state.desktop_revision.fetch_add(1, Ordering::Relaxed);
-        Ok(crate::commands::snap_from_command(&app, &state))
-    })
-    .await
 }
 
 #[tauri::command]
@@ -362,21 +209,10 @@ pub async fn decline_review_flow(
     state: State<'_, AppState>,
 ) -> Result<crate::snapshot::AppSnapshot, String> {
     let state = state.inner().clone();
-    #[cfg(feature = "v1-service")]
     return crate::commands::run_blocking(move || {
         flow_on_active(&state, er_dir, crate::flow_service::Control::Decline)
     })
     .await;
-    #[cfg(not(feature = "v1-service"))]
-    crate::commands::run_blocking(move || {
-        let mut app = state.app.lock().map_err(|e| e.to_string())?;
-        validate_review_flow_bucket(&app, &er_dir)?;
-        app.decline_review_flow(&er_dir)
-            .map_err(|e| e.to_string())?;
-        state.desktop_revision.fetch_add(1, Ordering::Relaxed);
-        Ok(crate::commands::snap_from_command(&app, &state))
-    })
-    .await
 }
 
 #[tauri::command]
@@ -385,20 +221,10 @@ pub async fn rerun_review_flow(
     state: State<'_, AppState>,
 ) -> Result<crate::snapshot::AppSnapshot, String> {
     let state = state.inner().clone();
-    #[cfg(feature = "v1-service")]
     return crate::commands::run_blocking(move || {
         flow_on_active(&state, er_dir, crate::flow_service::Control::Rerun)
     })
     .await;
-    #[cfg(not(feature = "v1-service"))]
-    crate::commands::run_blocking(move || {
-        let mut app = state.app.lock().map_err(|e| e.to_string())?;
-        validate_review_flow_bucket(&app, &er_dir)?;
-        app.rerun_review_flow(&er_dir).map_err(|e| e.to_string())?;
-        state.desktop_revision.fetch_add(1, Ordering::Relaxed);
-        Ok(crate::commands::snap_from_command(&app, &state))
-    })
-    .await
 }
 
 #[tauri::command]
@@ -407,22 +233,10 @@ pub async fn cancel_review_flow(
     state: State<'_, AppState>,
 ) -> Result<crate::snapshot::AppSnapshot, String> {
     let state = state.inner().clone();
-    #[cfg(feature = "v1-service")]
     return crate::commands::run_blocking(move || {
         flow_on_active(&state, er_dir, crate::flow_service::Control::Cancel)
     })
     .await;
-    #[cfg(not(feature = "v1-service"))]
-    crate::commands::run_blocking(move || {
-        let mut app = state.app.lock().map_err(|e| e.to_string())?;
-        validate_review_flow_bucket(&app, &er_dir)?;
-        if !app.cancel_review_flow(&er_dir) {
-            return Err("There is no running review flow to cancel".into());
-        }
-        state.desktop_revision.fetch_add(1, Ordering::Relaxed);
-        Ok(crate::commands::snap_from_command(&app, &state))
-    })
-    .await
 }
 
 /// Accept selected findings from the arena run captured by a review flow.
@@ -436,7 +250,6 @@ pub async fn flow_accept_findings(
     state: State<'_, AppState>,
 ) -> Result<crate::snapshot::AppSnapshot, String> {
     let state = state.inner().clone();
-    #[cfg(feature = "v1-service")]
     return crate::commands::run_blocking(move || {
         let bucket = er_dir.clone();
         crate::flow_service::entry(&state.desktop, None)
@@ -453,15 +266,6 @@ pub async fn flow_accept_findings(
         Ok(crate::commands::snap_from_command(&app, &state))
     })
     .await;
-    #[cfg(not(feature = "v1-service"))]
-    crate::commands::run_blocking(move || {
-        let mut app = state.app.lock().map_err(|e| e.to_string())?;
-        app.accept_review_flow_findings(&er_dir, &run_id, finding_ids)
-            .map_err(|e| e.to_string())?;
-        state.desktop_revision.fetch_add(1, Ordering::Relaxed);
-        Ok(crate::commands::snap_from_command(&app, &state))
-    })
-    .await
 }
 
 /// Fetch a review-flow arena run from its captured bucket. Unlike `arena_get`,
@@ -473,7 +277,6 @@ pub async fn flow_get_run(
     state: State<'_, AppState>,
 ) -> Result<ArenaRunSnapshotWire, String> {
     let state = state.inner().clone();
-    #[cfg(feature = "v1-service")]
     return crate::commands::run_blocking(move || {
         crate::flow_service::entry(&state.desktop, None)
             .and_then(|active| {
@@ -482,24 +285,6 @@ pub async fn flow_get_run(
             .map_err(|error| error.message)
     })
     .await;
-    #[cfg(not(feature = "v1-service"))]
-    crate::commands::run_blocking(move || {
-        let app = state.app.lock().map_err(|e| e.to_string())?;
-        // Validate both the flow's captured bucket and run id before reading
-        // from the explicit path below.
-        app.review_flow_results(&er_dir, &run_id)
-            .map_err(|e| e.to_string())?;
-        let paths = er_engine::arena::ArenaPaths::for_run(std::path::Path::new(&er_dir), &run_id);
-        let mut run = er_engine::arena::load_run(&paths).map_err(|e| e.to_string())?;
-        if let Some(control) = app.arena_runs.get(&run_id) {
-            run.status = control.status();
-        }
-        Ok(er_engine::arena::build_snapshot_with_config(
-            &app.config,
-            run,
-        ))
-    })
-    .await
 }
 
 /// Validate the current tab's expert findings: dedupe them and rule on the
@@ -511,7 +296,6 @@ pub async fn flow_get_run(
 /// main thread otherwise.
 #[tauri::command]
 pub async fn arena_validate_findings(state: State<'_, AppState>) -> Result<Option<String>, String> {
-    #[cfg(feature = "v1-service")]
     return {
         let state = state.inner().clone();
         crate::commands::run_blocking(move || {
@@ -521,26 +305,6 @@ pub async fn arena_validate_findings(state: State<'_, AppState>) -> Result<Optio
         })
         .await
     };
-    #[cfg(not(feature = "v1-service"))]
-    arena_validate_findings_local(state).await
-}
-
-#[cfg(not(feature = "v1-service"))]
-async fn arena_validate_findings_local(
-    state: State<'_, AppState>,
-) -> Result<Option<String>, String> {
-    let app = state.app.clone();
-    let revision = state.desktop_revision.clone();
-    crate::commands::run_blocking(move || {
-        let run_id = {
-            let mut app = app.lock().map_err(|e| e.to_string())?;
-            app.arena_start_seeded().map_err(|e| e.to_string())?
-        };
-        crate::dev_log::arena_line(format!("arena_validate_findings: {run_id:?}"));
-        revision.fetch_add(1, Ordering::Relaxed);
-        Ok(run_id)
-    })
-    .await
 }
 
 #[tauri::command]
@@ -548,7 +312,6 @@ pub async fn arena_start_batch(
     req: ArenaBatchStartRequest,
     state: State<'_, AppState>,
 ) -> Result<Vec<String>, String> {
-    #[cfg(feature = "v1-service")]
     return {
         let state = state.inner().clone();
         crate::commands::run_blocking(move || {
@@ -558,39 +321,6 @@ pub async fn arena_start_batch(
         })
         .await
     };
-    #[cfg(not(feature = "v1-service"))]
-    arena_start_batch_local(req, state).await
-}
-
-#[cfg(not(feature = "v1-service"))]
-async fn arena_start_batch_local(
-    req: ArenaBatchStartRequest,
-    state: State<'_, AppState>,
-) -> Result<Vec<String>, String> {
-    let state = state.inner().clone();
-    // Off the main thread, for the same reason as `arena_start`.
-    crate::commands::run_blocking(move || {
-        let batch = ArenaBatchStartParams {
-            scope: parse_scope(&req.scope),
-            files: req.files,
-            rounds: req.rounds,
-            arbiter: req.arbiter.map(|a| ReviewerRef {
-                provider_id: a.provider_id,
-                model_id: a.model_id,
-                agent_kind: a.agent_kind,
-            }),
-            confirm: req.confirm.unwrap_or(false),
-            groups: wire_groups(&req.groups),
-            effort: req.effort,
-        };
-        let run_ids = {
-            let mut app = state.app.lock().map_err(|e| e.to_string())?;
-            app.arena_start_batch(batch).map_err(|e| e.to_string())?
-        };
-        state.desktop_revision.fetch_add(1, Ordering::Relaxed);
-        Ok(run_ids)
-    })
-    .await
 }
 
 #[tauri::command]
@@ -598,26 +328,9 @@ pub fn arena_accept_findings(
     req: ArenaAcceptRequest,
     state: State<AppState>,
 ) -> Result<usize, String> {
-    #[cfg(feature = "v1-service")]
     return on_active(&state, |desktop, tab| {
         crate::arena_service::accept_findings(desktop, tab, req.run_id, req.finding_ids)
     });
-    #[cfg(not(feature = "v1-service"))]
-    arena_accept_findings_local(req, state)
-}
-
-#[cfg(not(feature = "v1-service"))]
-fn arena_accept_findings_local(
-    req: ArenaAcceptRequest,
-    state: State<AppState>,
-) -> Result<usize, String> {
-    let n = {
-        let mut app = state.app.lock().map_err(|e| e.to_string())?;
-        app.arena_accept_findings(&req.run_id, req.finding_ids)
-            .map_err(|e| e.to_string())?
-    };
-    state.desktop_revision.fetch_add(1, Ordering::Relaxed);
-    Ok(n)
 }
 
 #[tauri::command]
@@ -625,101 +338,37 @@ pub fn arena_progress(
     run_id: String,
     state: State<AppState>,
 ) -> Result<ArenaProgressState, String> {
-    #[cfg(feature = "v1-service")]
     return on_active(&state, |desktop, tab| {
         Ok(crate::arena_service::progress(desktop, tab, &run_id))
     });
-    #[cfg(not(feature = "v1-service"))]
-    arena_progress_local(run_id, state)
-}
-
-#[cfg(not(feature = "v1-service"))]
-fn arena_progress_local(
-    run_id: String,
-    state: State<AppState>,
-) -> Result<ArenaProgressState, String> {
-    let app = state.app.lock().map_err(|e| e.to_string())?;
-    app.arena_progress(&run_id).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn arena_get(run_id: String, state: State<AppState>) -> Result<ArenaRunSnapshotWire, String> {
-    #[cfg(feature = "v1-service")]
     return on_active(&state, |desktop, tab| {
         crate::arena_service::get(desktop, tab, &run_id)
     });
-    #[cfg(not(feature = "v1-service"))]
-    arena_get_local(run_id, state)
-}
-
-#[cfg(not(feature = "v1-service"))]
-fn arena_get_local(run_id: String, state: State<AppState>) -> Result<ArenaRunSnapshotWire, String> {
-    let snap = {
-        let app = state.app.lock().map_err(|e| e.to_string())?;
-        app.arena_get_snapshot(&run_id).map_err(|e| e.to_string())?
-    };
-    Ok(wire_snapshot(snap))
 }
 
 #[tauri::command]
 pub fn arena_list(state: State<AppState>) -> Result<Vec<ArenaRunSummaryWire>, String> {
-    #[cfg(feature = "v1-service")]
     return on_active(&state, |desktop, tab| {
         crate::arena_service::list(desktop, tab)
     });
-    #[cfg(not(feature = "v1-service"))]
-    arena_list_local(state)
-}
-
-#[cfg(not(feature = "v1-service"))]
-fn arena_list_local(state: State<AppState>) -> Result<Vec<ArenaRunSummaryWire>, String> {
-    let summaries = {
-        let app = state.app.lock().map_err(|e| e.to_string())?;
-        let branch = app.arena_branch_ref();
-        app.arena_list_summaries(Some(&branch))
-            .map_err(|e| e.to_string())?
-    };
-    Ok(summaries)
 }
 
 #[tauri::command]
 pub fn arena_delete(run_id: String, state: State<AppState>) -> Result<(), String> {
-    #[cfg(feature = "v1-service")]
     return on_active(&state, |desktop, tab| {
         crate::arena_service::delete(desktop, tab, run_id)
     });
-    #[cfg(not(feature = "v1-service"))]
-    arena_delete_local(run_id, state)
-}
-
-#[cfg(not(feature = "v1-service"))]
-fn arena_delete_local(run_id: String, state: State<AppState>) -> Result<(), String> {
-    {
-        let mut app = state.app.lock().map_err(|e| e.to_string())?;
-        app.arena_delete(&run_id).map_err(|e| e.to_string())?;
-    }
-    state.desktop_revision.fetch_add(1, Ordering::Relaxed);
-    Ok(())
 }
 
 #[tauri::command]
 pub fn arena_cancel(run_id: String, state: State<AppState>) -> Result<(), String> {
-    #[cfg(feature = "v1-service")]
     return on_active(&state, |desktop, tab| {
         crate::arena_service::cancel(desktop, tab, run_id)
     });
-    #[cfg(not(feature = "v1-service"))]
-    arena_cancel_local(run_id, state)
-}
-
-#[cfg(not(feature = "v1-service"))]
-fn arena_cancel_local(run_id: String, state: State<AppState>) -> Result<(), String> {
-    {
-        let mut app = state.app.lock().map_err(|e| e.to_string())?;
-        app.arena_cancel(&run_id).map_err(|e| e.to_string())?;
-    }
-    state.desktop_revision.fetch_add(1, Ordering::Relaxed);
-    Ok(())
 }
 
 #[tauri::command]
@@ -727,7 +376,6 @@ pub fn arena_override(
     req: ArenaOverrideRequest,
     state: State<AppState>,
 ) -> Result<ArenaRunSnapshotWire, String> {
-    #[cfg(feature = "v1-service")]
     return on_active(&state, |desktop, tab| {
         let run_id = req.run_id.clone();
         let verdict = parse_verdict(&req.verdict);
@@ -741,35 +389,10 @@ pub fn arena_override(
         )?;
         crate::arena_service::get(desktop, tab, &run_id)
     });
-    #[cfg(not(feature = "v1-service"))]
-    arena_override_local(req, state)
-}
-
-#[cfg(not(feature = "v1-service"))]
-fn arena_override_local(
-    req: ArenaOverrideRequest,
-    state: State<AppState>,
-) -> Result<ArenaRunSnapshotWire, String> {
-    let snap = {
-        let mut app = state.app.lock().map_err(|e| e.to_string())?;
-        let _finding = app
-            .arena_override_finding(
-                &req.run_id,
-                &req.finding_id,
-                parse_verdict(&req.verdict),
-                req.note,
-            )
-            .map_err(|e| e.to_string())?;
-        app.arena_get_snapshot(&req.run_id)
-            .map_err(|e| e.to_string())?
-    };
-    state.desktop_revision.fetch_add(1, Ordering::Relaxed);
-    Ok(wire_snapshot(snap))
 }
 
 /// Runs a flag-on flow control on the registry's active tab with no App
 /// lock, then answers the App's snapshot, as the flag-off command does.
-#[cfg(feature = "v1-service")]
 pub(crate) fn flow_on_active(
     state: &AppState,
     er_dir: String,
@@ -784,7 +407,6 @@ pub(crate) fn flow_on_active(
 
 /// Runs a flag-on arena command on the registry's active tab, the tab the
 /// page shows, with no App lock.
-#[cfg(feature = "v1-service")]
 fn on_active<T>(
     desktop: &crate::state::DesktopState,
     run: impl FnOnce(
@@ -797,7 +419,6 @@ fn on_active<T>(
         .map_err(|error| error.message)
 }
 
-#[cfg(feature = "v1-service")]
 fn estimate_plan(req: ArenaEstimateRequest) -> crate::arena_service::Plan {
     crate::arena_service::Plan {
         scope: parse_scope(&req.scope),
@@ -808,7 +429,6 @@ fn estimate_plan(req: ArenaEstimateRequest) -> crate::arena_service::Plan {
     }
 }
 
-#[cfg(feature = "v1-service")]
 fn estimate_batch_params(
     req: ArenaBatchEstimateRequest,
 ) -> er_engine::arena::ArenaBatchStartParams {
@@ -823,7 +443,6 @@ fn estimate_batch_params(
     }
 }
 
-#[cfg(feature = "v1-service")]
 fn start_params(req: ArenaStartRequest) -> er_engine::arena::ArenaStartParams {
     er_engine::arena::ArenaStartParams {
         title: req.title,
@@ -838,7 +457,6 @@ fn start_params(req: ArenaStartRequest) -> er_engine::arena::ArenaStartParams {
     }
 }
 
-#[cfg(feature = "v1-service")]
 fn start_batch_params(req: ArenaBatchStartRequest) -> er_engine::arena::ArenaBatchStartParams {
     er_engine::arena::ArenaBatchStartParams {
         scope: parse_scope(&req.scope),
@@ -854,7 +472,6 @@ fn start_batch_params(req: ArenaBatchStartRequest) -> er_engine::arena::ArenaBat
 /// Tells the App's arena recovery which runs the actors own. Without it a tab
 /// switch marks an actor's running run stale, since the App's registry never
 /// holds it.
-#[cfg(feature = "v1-service")]
 pub fn attach_live_runs(app: &App, service: Arc<crate::service::ServiceState>) {
     app.set_arena_live_elsewhere(Arc::new(move |run_id| service.arena_run_live(run_id)));
 }
@@ -885,7 +502,7 @@ mod review_flow_command_tests {
     }
 }
 
-#[cfg(all(test, feature = "v1-service"))]
+#[cfg(test)]
 mod route_tests {
     /// The text of `fn name(` in `source`, up to its closing brace.
     fn body<'a>(source: &'a str, name: &str) -> &'a str {

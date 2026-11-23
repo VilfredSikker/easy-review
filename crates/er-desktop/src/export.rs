@@ -20,7 +20,6 @@ pub fn render_markdown(tab: &TabState, options: &ExportOptions) -> String {
 
 /// A tab's published content rendered with `options`: its branch, its AI
 /// section, and the UI annotations in its view bucket, `context.er_dir`.
-#[cfg(feature = "v1-service")]
 pub fn render_content(content: &er_service::TabContent, options: &ExportOptions) -> String {
     let source = er_engine::review_export::ExportSource {
         branch: &content.tab.current_branch,

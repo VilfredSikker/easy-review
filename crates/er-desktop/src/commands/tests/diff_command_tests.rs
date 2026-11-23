@@ -8,11 +8,11 @@ use er_engine::TabKey;
 use er_protocol::{Ack, Command, ErError, Resource, ResourceKey, TabDiff};
 
 use super::diff_resource_tests::{fake_ports, state_over, with_storage};
-use super::while_the_app_is_locked;
-use crate::commands::{content_routes, AppState};
+use super::on_a_thread;
+use crate::commands::{content_routes, DesktopState};
 use crate::resources::send::{apply, Effects};
 
-pub(super) fn with_tab(test: impl FnOnce(&AppState, (TabKey, TabDescriptor))) {
+pub(super) fn with_tab(test: impl FnOnce(&DesktopState, (TabKey, TabDescriptor))) {
     with_storage(|dir| {
         let state = state_over(dir, fake_ports());
         let root = dir.path().join("repo");
@@ -28,23 +28,27 @@ pub(super) fn with_tab(test: impl FnOnce(&AppState, (TabKey, TabDescriptor))) {
     });
 }
 
-pub(super) fn send(state: &AppState, name: &'static str, command: Command) -> Result<Ack, ErError> {
-    while_the_app_is_locked(state, name, move |state| {
+pub(super) fn send(
+    state: &DesktopState,
+    name: &'static str,
+    command: Command,
+) -> Result<Ack, ErError> {
+    on_a_thread(state, name, move |state| {
         let effects = Effects {
             notify: &|_, _| {},
             check_update: || panic!("no update check in this test"),
             webviews: &crate::browser_webview::NoWebviews,
             pick_folder: &|| None,
         };
-        apply(&state.desktop, command, &effects).map(|applied| applied.ack)
+        apply(&state, command, &effects).map(|applied| applied.ack)
     })
 }
 
-pub(super) fn diff(state: &AppState, key: TabKey) -> (u64, TabDiff) {
+pub(super) fn diff(state: &DesktopState, key: TabKey) -> (u64, TabDiff) {
     let key = ResourceKey::Diff {
         tab: er_service::wire_tab_key(key),
     };
-    let fetched = crate::resources::fetch(&state.desktop, key).unwrap_or_else(|e| panic!("{e:?}"));
+    let fetched = crate::resources::fetch(&state, key).unwrap_or_else(|e| panic!("{e:?}"));
     match fetched.value {
         Resource::Diff(diff) => (fetched.version.0, *diff),
         other => panic!("not a diff: {other:?}"),
@@ -53,7 +57,7 @@ pub(super) fn diff(state: &AppState, key: TabKey) -> (u64, TabDiff) {
 
 /// The `Ack` names the tab's diff at the version a fetch then answers, above
 /// the one before the command.
-fn assert_moved(state: &AppState, key: TabKey, before: u64, ack: &Ack) -> TabDiff {
+fn assert_moved(state: &DesktopState, key: TabKey, before: u64, ack: &Ack) -> TabDiff {
     let (version, diff) = diff(state, key);
     assert!(version > before, "the diff stayed at {before}");
     let named: Vec<u64> = ack

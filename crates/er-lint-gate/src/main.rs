@@ -442,8 +442,8 @@ fn run(flags: &Flags) -> anyhow::Result<bool> {
             "--message-format=json",
         ],
     )?;
-    // The feature pass compiles the packages that declare the flag with it on,
-    // so feature-only code is linted too. It repeats shared diagnostics; both
+    // The feature pass compiles er-tui, the one package that declares the
+    // flag, with it on, so feature-only code is linted too. It repeats shared diagnostics; both
     // streams go through one parse, which keeps one count per site for the
     // budget, `--accept-warnings`, `--prune` and the stale check.
     let (feature_stream, feature_success) = clippy_json(
@@ -452,12 +452,10 @@ fn run(flags: &Flags) -> anyhow::Result<bool> {
         &[
             "clippy",
             "-p",
-            "er-desktop",
-            "-p",
             "er-tui",
             "--all-targets",
             "--features",
-            "er-desktop/v1-service,er-tui/v1-service",
+            "er-tui/v1-service",
             "--message-format=json",
         ],
     )?;

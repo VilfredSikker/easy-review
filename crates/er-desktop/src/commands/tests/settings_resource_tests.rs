@@ -10,12 +10,12 @@ use er_protocol::{
     ResourceChanged, ResourceKey, ResourceVersion, RiskTier, Settings,
 };
 
-use super::{review_flow_test_state, while_the_app_is_locked, ReviewFlowTestDir};
-use crate::commands::AppState;
+use super::{on_a_thread, review_flow_test_state, ReviewFlowTestDir};
 use crate::resources::relay;
 use crate::resources::send::{apply, Applied, Effects};
 use crate::resources::{self, Watched};
 use crate::service::ServiceState;
+use crate::state::DesktopState;
 
 const WAIT: Duration = Duration::from_secs(5);
 
@@ -46,12 +46,12 @@ fn effects(notify: &dyn Fn(NoticeLevel, String)) -> Effects<'_> {
     }
 }
 
-fn send(state: &AppState, command: Command) -> Result<Applied, er_protocol::ErError> {
-    apply(&state.desktop, command, &effects(&|_, _| {}))
+fn send(state: &DesktopState, command: Command) -> Result<Applied, er_protocol::ErError> {
+    apply(&state, command, &effects(&|_, _| {}))
 }
 
-fn fetch_settings(state: &AppState) -> (ResourceVersion, Settings) {
-    let fetched = resources::fetch(&state.desktop, ResourceKey::Settings)
+fn fetch_settings(state: &DesktopState) -> (ResourceVersion, Settings) {
+    let fetched = resources::fetch(&state, ResourceKey::Settings)
         .unwrap_or_else(|e| panic!("settings fetch: {e:?}"));
     match fetched.value {
         Resource::Settings(settings) => (fetched.version, *settings),
@@ -73,15 +73,13 @@ fn theme_row(settings: &Settings) -> Option<String> {
 }
 
 /// A settings write through `er_send` has one writer, the settings actor
-/// (ADR 0069): it returns while the App lock is held, the resource and the
-/// file carry it at the version its `Ack` names, and the App's copy does not.
+/// (ADR 0069): the resource and the file carry it at the version its `Ack`
+/// names.
 #[test]
 fn a_settings_write_through_er_send_has_the_actor_as_its_one_writer() {
     with_storage(|dir| {
         let state = review_flow_test_state(dir);
-        let before = state.app.lock().map(|app| app.config.display.theme.clone());
-        let applied =
-            while_the_app_is_locked(&state, "er_send", |state| send(state, theme("paper")));
+        let applied = on_a_thread(&state, "er_send", |state| send(state, theme("paper")));
         let ack = applied
             .unwrap_or_else(|e| panic!("the write failed: {e:?}"))
             .ack;
@@ -97,8 +95,6 @@ fn a_settings_write_through_er_send_has_the_actor_as_its_one_writer() {
         );
         let written = std::fs::read_to_string(config_path(dir)).unwrap_or_default();
         assert!(written.contains("paper"), "config.toml: {written}");
-        let after = state.app.lock().map(|app| app.config.display.theme.clone());
-        assert_eq!(after.ok(), before.ok(), "the App's copy was written");
     });
 }
 
@@ -131,49 +127,34 @@ fn a_refused_save_rolls_back_at_a_higher_version() {
     });
 }
 
-/// Drops every null, so a wire field the old answer left out compares equal.
-fn without_nulls(value: serde_json::Value) -> serde_json::Value {
-    match value {
-        serde_json::Value::Object(map) => map
-            .into_iter()
-            .filter(|(_, v)| !v.is_null())
-            .map(|(k, v)| (k, without_nulls(v)))
-            .collect(),
-        serde_json::Value::Array(items) => items.into_iter().map(without_nulls).collect(),
-        other => other,
-    }
-}
-
-/// The resource answers what the flag-off `get_config_hub` answers for the
-/// same config, so the page reads one shape in both builds.
+/// The `importance_*` fields are gone from the settings resource.
 #[test]
-fn the_settings_resource_matches_the_flag_off_answer() {
+fn the_settings_resource_has_no_importance_keys() {
+    fn keys(value: &serde_json::Value, out: &mut Vec<String>) {
+        match value {
+            serde_json::Value::Object(map) => {
+                for (key, child) in map {
+                    out.push(key.clone());
+                    keys(child, out);
+                }
+            }
+            serde_json::Value::Array(items) => items.iter().for_each(|item| keys(item, out)),
+            _ => {}
+        }
+    }
+
     with_storage(|dir| {
         let state = review_flow_test_state(dir);
         let (_, settings) = fetch_settings(&state);
-        let view = state.service.settings().view();
-        let old = crate::settings::GetConfigHubResponse::from_view(view.hub.clone(), Vec::new());
-        let mut old = without_nulls(serde_json::to_value(old).unwrap_or_default());
-        let mut new = without_nulls(serde_json::to_value(settings).unwrap_or_default());
-        if let Some(old) = old.as_object_mut() {
-            old.remove("warnings");
-        }
-        if let Some(new) = new.as_object_mut() {
-            // The page's preview and the view chrome are not in the old answer.
-            for key in [
-                "uninstallPreview",
-                "theme",
-                "features",
-                "display",
-                "arenaEnabled",
-            ] {
-                new.remove(key);
-            }
-        }
-        assert!(old
-            .get("providers")
-            .is_some_and(|p| p != &serde_json::json!([])));
-        assert_eq!(new, old);
+        let json = serde_json::to_value(settings).unwrap_or_default();
+        let mut found = Vec::new();
+        keys(&json, &mut found);
+        assert!(found.iter().any(|key| key == "general"), "{found:?}");
+        let importance: Vec<&String> = found
+            .iter()
+            .filter(|key| key.to_lowercase().contains("importance"))
+            .collect();
+        assert!(importance.is_empty(), "importance keys: {importance:?}");
     });
 }
 
@@ -192,7 +173,7 @@ fn a_settings_write_reaches_the_wire() {
         std::thread::sleep(Duration::from_millis(100));
         while wakes.try_recv().is_ok() {}
         let (tx, bursts) = mpsc::channel();
-        relay::spawn(state.desktop.clone(), wakes, move |moved| {
+        relay::spawn(state.clone(), wakes, move |moved| {
             let _ = tx.send(moved);
         });
 
@@ -228,7 +209,7 @@ fn a_risk_read_is_a_load_then_a_fetch_without_the_app() {
         );
         assert!(ruled.is_ok(), "{ruled:?}");
         let root = dir.path().join("repo").to_string_lossy().into_owned();
-        let (ack, fetched) = while_the_app_is_locked(&state, "the risk read", move |state| {
+        let (ack, fetched) = on_a_thread(&state, "the risk read", move |state| {
             let ack = send(
                 state,
                 Command::LoadRisk {
@@ -240,10 +221,7 @@ fn a_risk_read_is_a_load_then_a_fetch_without_the_app() {
             .unwrap_or_else(|e| panic!("the load failed: {e:?}"))
             .ack;
             let key = ack.created.clone().unwrap_or_default();
-            (
-                ack,
-                resources::fetch(&state.desktop, ResourceKey::Risk { key }),
-            )
+            (ack, resources::fetch(&state, ResourceKey::Risk { key }))
         });
         let fetched = fetched.unwrap_or_else(|e| panic!("risk fetch: {e:?}"));
         assert_eq!(
@@ -271,7 +249,7 @@ fn a_risk_read_is_a_load_then_a_fetch_without_the_app() {
         assert_eq!(risk.rules.iter().map(|r| r.file_count).sum::<usize>(), 1);
 
         let unknown = resources::fetch(
-            &state.desktop,
+            &state,
             ResourceKey::Risk {
                 key: "never-loaded".into(),
             },
@@ -306,7 +284,7 @@ fn an_editor_warning_arrives_as_a_notice() {
                 notices.push((level, message));
             }
         };
-        let applied = apply(&state.desktop, upsert, &effects(&notify));
+        let applied = apply(&state, upsert, &effects(&notify));
         assert!(applied.is_ok(), "{applied:?}");
         let notices = notices.into_inner().unwrap_or_default();
         assert_eq!(notices.len(), 1, "{notices:?}");

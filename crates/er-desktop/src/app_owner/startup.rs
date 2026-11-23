@@ -1,35 +1,28 @@
 //! The sidebar steps `main.rs` runs, kept in the library so the tests run
-//! the code the app runs. They are handed the `AppState` because the default
-//! build still reads the App here; the service build reads only what the
-//! registry and the settings actor publish.
+//! the code the app runs. They read only what the registry and the settings
+//! actor publish.
 
 use std::time::Duration;
 
 use er_engine::config::InboxConfig;
 
-use crate::commands::AppState;
-#[cfg(feature = "v1-service")]
 use crate::state::DesktopState;
 
 /// How long the metadata loop waits before its next refresh: twice as long
 /// while the active tab is a remote PR.
-pub fn meta_refresh_interval(state: &AppState) -> Duration {
-    #[cfg(feature = "v1-service")]
+pub fn meta_refresh_interval(state: &DesktopState) -> Duration {
     let remote = state
         .service
         .app_registry()
         .tabs_view()
         .active_entry()
         .is_some_and(|tab| tab.descriptor.kind == er_engine::tabs_record::TabKind::RemotePr);
-    #[cfg(not(feature = "v1-service"))]
-    let remote = state.app.try_lock().is_ok_and(|app| app.tab().is_remote());
     Duration::from_secs(if remote { 120 } else { 60 })
 }
 
 /// The root the first metadata pass reads on the service path: the
 /// registry's active tab's, read once the restore has run, or `fallback` when
 /// that tab has no local root (a remote PR) or no tab is open.
-#[cfg(feature = "v1-service")]
 pub fn launch_root(registry: &er_service::AppRegistry, fallback: Option<&str>) -> String {
     use er_engine::tabs_record::TabKind;
 
@@ -47,8 +40,7 @@ pub fn launch_root(registry: &er_service::AppRegistry, fallback: Option<&str>) -
 /// None when the tab shows no PR or its origin cannot be resolved, and, off
 /// the flag, while the App is busy: each skips this tick. On the flag the
 /// registry's active tab names it, so a held App lock never skips one.
-pub fn pr_head_probe_target(state: &AppState) -> Option<(String, u64)> {
-    #[cfg(feature = "v1-service")]
+pub fn pr_head_probe_target(state: &DesktopState) -> Option<(String, u64)> {
     let (remote, number, root) = {
         let view = state.service.app_registry().tabs_view();
         let tab = &view.active_entry()?.descriptor;
@@ -59,16 +51,6 @@ pub fn pr_head_probe_target(state: &AppState) -> Option<(String, u64)> {
             _ => None,
         };
         (remote, tab.pr_number?, tab.repo_root.clone())
-    };
-    #[cfg(not(feature = "v1-service"))]
-    let (remote, number, root) = {
-        let app = state.app.try_lock().ok()?;
-        let tab = app.tab();
-        (
-            tab.remote_repo.clone(),
-            tab.pr_number?,
-            tab.repo_root.clone(),
-        )
     };
     // A remote tab names its repository; a local PR tab resolves it from origin.
     if let Some(slug) = remote {
@@ -84,15 +66,11 @@ pub fn pr_head_probe_target(state: &AppState) -> Option<(String, u64)> {
 /// The inbox prefs the PR sweep and the setup hook's flush read. On the flag
 /// they come from the settings actor's view, which owns the config, so a held
 /// App lock never holds them up; off it, from the App's config.
-pub fn inbox_prefs(state: &AppState) -> InboxConfig {
-    #[cfg(feature = "v1-service")]
-    return settings_inbox_prefs(state);
-    #[cfg(not(feature = "v1-service"))]
-    return crate::commands::clone_inbox_prefs(&state.app);
+pub fn inbox_prefs(state: &DesktopState) -> InboxConfig {
+    settings_inbox_prefs(state)
 }
 
 /// The inbox prefs as the settings actor last published them.
-#[cfg(feature = "v1-service")]
 pub fn settings_inbox_prefs(desktop: &DesktopState) -> InboxConfig {
     desktop.service.settings().view().config.inbox.clone()
 }
@@ -100,7 +78,6 @@ pub fn settings_inbox_prefs(desktop: &DesktopState) -> InboxConfig {
 /// Has the sidebar's owner build `inbox` with the settings actor's prefs.
 /// A publish never starts the actor: until something starts it, the owner
 /// holds the inbox it has.
-#[cfg(feature = "v1-service")]
 pub fn read_inbox_prefs_from_settings(desktop: &DesktopState) {
     let service = std::sync::Arc::clone(&desktop.service);
     desktop.app_owner.read_inbox_prefs_from(move || {
@@ -111,7 +88,7 @@ pub fn read_inbox_prefs_from_settings(desktop: &DesktopState) {
 
 /// The setup hook's step: shows the inbox items the sweep added before the
 /// window had a handle to notify through.
-pub fn flush_pending_notifications(state: &AppState) {
+pub fn flush_pending_notifications(state: &DesktopState) {
     let prefs = inbox_prefs(state);
     crate::commands::flush_pending_native_notifications(
         &state.inbox,
@@ -125,8 +102,7 @@ pub fn flush_pending_notifications(state: &AppState) {
 /// publishes. It reads the registry's list and never the App: before the
 /// restore the App holds only its startup tab, and once the tabs follow the
 /// registry the App's lock belongs to the follower.
-#[cfg(feature = "v1-service")]
-pub fn register_open_projects(state: &AppState) {
+pub fn register_open_projects(state: &DesktopState) {
     use crate::projects::{self, TabProjectRef};
 
     let view = state.service.app_registry().tabs_view();

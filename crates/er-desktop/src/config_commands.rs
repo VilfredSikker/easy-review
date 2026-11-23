@@ -137,66 +137,36 @@ pub async fn delete_ai_model(
 // ── Command bodies: one per command, each split by the feature ──────────────
 
 pub(crate) fn config_hub(state: &AppState) -> Result<GetConfigHubResponse, String> {
-    #[cfg(feature = "v1-service")]
     return service_route::config_hub(&state.service);
-    #[cfg(not(feature = "v1-service"))]
-    {
-        let mut app = state.app.lock().map_err(|e| e.to_string())?;
-        // Reopening Settings is the desktop's reload point: a file the user
-        // repaired in place is adopted here, before the page reads the config.
-        app.reload_config_if_failed();
-        Ok(flag_off::hub_response(&app, Vec::new()))
-    }
 }
 
 pub(crate) fn apply_patch(
     state: &AppState,
     patch: ConfigPatch,
 ) -> Result<GetConfigHubResponse, String> {
-    #[cfg(feature = "v1-service")]
     return service_route::apply_patch(&state.service, patch);
-    #[cfg(not(feature = "v1-service"))]
-    flag_off::apply_patch(state, patch)
 }
 
 pub(crate) fn save_global(state: &AppState) -> Result<AppSnapshot, String> {
-    #[cfg(feature = "v1-service")]
     return service_route::save_global(&state.service);
-    #[cfg(not(feature = "v1-service"))]
-    flag_off::save_global(state)
 }
 
 pub(crate) fn uninstall_preview(
     state: &AppState,
     options: UninstallOptions,
 ) -> Result<UninstallPreview, String> {
-    #[cfg(feature = "v1-service")]
     return service_route::uninstall_preview(&state.service, options);
-    #[cfg(not(feature = "v1-service"))]
-    {
-        let _ = state;
-        Ok(er_engine::uninstall::preview(&options))
-    }
 }
 
 fn uninstall(state: &AppState, options: UninstallOptions) -> Result<UninstallResult, String> {
-    #[cfg(feature = "v1-service")]
     return service_route::uninstall(&state.service, options);
-    #[cfg(not(feature = "v1-service"))]
-    {
-        let _ = state;
-        er_engine::uninstall::run(&options)
-    }
 }
 
 pub(crate) fn review_flow_models(
     state: &AppState,
     groups: ReviewModelGroups,
 ) -> Result<GetConfigHubResponse, String> {
-    #[cfg(feature = "v1-service")]
     return service_route::review_flow_models(&state.service, groups);
-    #[cfg(not(feature = "v1-service"))]
-    flag_off::review_flow_models(state, groups)
 }
 
 pub(crate) fn refresh_models(
@@ -204,30 +174,21 @@ pub(crate) fn refresh_models(
     provider_id: Option<String>,
     force: bool,
 ) -> Result<RefreshAiModelsResponse, String> {
-    #[cfg(feature = "v1-service")]
     return service_route::refresh_models(&state.service, provider_id, force);
-    #[cfg(not(feature = "v1-service"))]
-    flag_off::refresh_models(state, provider_id, force)
 }
 
 pub(crate) fn provider_upsert(
     state: &AppState,
     provider: ProviderUpsert,
 ) -> Result<GetConfigHubResponse, String> {
-    #[cfg(feature = "v1-service")]
     return service_route::provider_upsert(&state.service, provider);
-    #[cfg(not(feature = "v1-service"))]
-    flag_off::provider_upsert(state, provider)
 }
 
 pub(crate) fn provider_delete(
     state: &AppState,
     provider_id: String,
 ) -> Result<GetConfigHubResponse, String> {
-    #[cfg(feature = "v1-service")]
     return service_route::provider_delete(&state.service, provider_id);
-    #[cfg(not(feature = "v1-service"))]
-    flag_off::provider_delete(state, provider_id)
 }
 
 pub(crate) fn model_upsert(
@@ -235,10 +196,7 @@ pub(crate) fn model_upsert(
     provider_id: String,
     model: ModelUpsert,
 ) -> Result<GetConfigHubResponse, String> {
-    #[cfg(feature = "v1-service")]
     return service_route::model_upsert(&state.service, provider_id, model);
-    #[cfg(not(feature = "v1-service"))]
-    flag_off::model_upsert(state, provider_id, model)
 }
 
 pub(crate) fn model_delete(
@@ -246,10 +204,7 @@ pub(crate) fn model_delete(
     provider_id: String,
     model_id: String,
 ) -> Result<GetConfigHubResponse, String> {
-    #[cfg(feature = "v1-service")]
     return service_route::model_delete(&state.service, provider_id, model_id);
-    #[cfg(not(feature = "v1-service"))]
-    flag_off::model_delete(state, provider_id, model_id)
 }
 
 // ── Uninstall ───────────────────────────────────────────────────────────────
@@ -289,7 +244,6 @@ pub(crate) fn finish_uninstall(
 
 // ── The flag path: the settings actor ───────────────────────────────────────
 
-#[cfg(feature = "v1-service")]
 mod service_route {
     use er_engine::config::{ModelUpsert, ProviderUpsert, ReviewModelGroups};
     use er_engine::uninstall::{UninstallOptions, UninstallPreview, UninstallResult};
@@ -437,325 +391,3 @@ mod service_route {
 }
 
 // ── The flag-off path: `App.config` under the App lock ──────────────────────
-
-#[cfg(not(feature = "v1-service"))]
-mod flag_off {
-    use er_engine::app::{App, DiffMode};
-    use er_engine::config::{
-        apply_config_field, config_hub_view, save_config, ErConfig, FeatureFlags, ModelUpsert,
-        ProviderUpsert, ReviewModelGroups,
-    };
-
-    use super::{ConfigPatch, GetConfigHubResponse, RefreshAiModelsResponse};
-    use crate::commands::{map_ai_providers, snap_from, AiProviderInfo, AppState};
-    use crate::snapshot::AppSnapshot;
-
-    pub(super) fn hub_response(app: &App, warnings: Vec<String>) -> GetConfigHubResponse {
-        GetConfigHubResponse::from_view(config_hub_view(&app.config), warnings)
-    }
-
-    fn bump_revision(state: &AppState) {
-        state
-            .desktop_revision
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    }
-
-    const fn feature_allows_mode(features: &FeatureFlags, mode: DiffMode) -> bool {
-        match mode {
-            DiffMode::Branch => features.view_branch,
-            DiffMode::Unstaged => features.view_unstaged,
-            DiffMode::Staged => features.view_staged,
-            DiffMode::History => features.view_history,
-            DiffMode::Conflicts => features.view_conflicts,
-            DiffMode::Hidden => features.view_hidden,
-            DiffMode::Tour => features.view_tour,
-            DiffMode::PrDiff => true, // PrDiff is always allowed when the tab is in PR mode
-        }
-    }
-
-    fn clamp_tab_mode_to_features(app: &mut App) {
-        let current = app.tab().mode;
-        if feature_allows_mode(&app.config.features, current) {
-            return;
-        }
-        for candidate in [
-            DiffMode::Branch,
-            DiffMode::Unstaged,
-            DiffMode::Staged,
-            DiffMode::History,
-            DiffMode::Conflicts,
-            DiffMode::Hidden,
-        ] {
-            if feature_allows_mode(&app.config.features, candidate) {
-                app.tab_mut().set_mode(candidate);
-                return;
-            }
-        }
-    }
-
-    fn apply_config_side_effects(app: &mut App, watched_changed: bool) {
-        if watched_changed {
-            app.tab_mut().watched_config = app.config.watched.clone();
-            app.tab_mut().refresh_watched_files();
-        }
-        // The filter and the header resolve the per-repo tables off the tab, so
-        // a config change has to reach the tabs that are already open.
-        app.sync_repo_rules_to_tabs();
-        clamp_tab_mode_to_features(app);
-    }
-
-    fn list_providers(app: &App) -> Vec<AiProviderInfo> {
-        let hub = &app.config.ai_hub;
-        let selection = hub.resolve_default_selection(&app.config.agent);
-        map_ai_providers(
-            hub,
-            selection.provider_id.as_deref(),
-            selection.model_id.as_deref(),
-        )
-    }
-
-    pub(super) fn apply_patch(
-        state: &AppState,
-        patch: ConfigPatch,
-    ) -> Result<GetConfigHubResponse, String> {
-        let mut app = state.app.lock().map_err(|e| e.to_string())?;
-        let watched_changed = apply_config_field(&mut app.config, &patch.key, patch.value);
-        save_config(&app.config).map_err(|e| e.to_string())?;
-        apply_config_side_effects(&mut app, watched_changed);
-        // Only resync session selection when AI Hub defaults actually changed —
-        // theme/display patches must not wipe a palette pick.
-        if patch.key.starts_with("ai_hub.") {
-            app.sync_ai_selection_from_defaults();
-        }
-        bump_revision(state);
-        Ok(hub_response(&app, Vec::new()))
-    }
-
-    pub(super) fn save_global(state: &AppState) -> Result<AppSnapshot, String> {
-        let app = state.app.lock().map_err(|e| e.to_string())?;
-        save_config(&app.config).map_err(|e| e.to_string())?;
-        drop(app);
-        let mut app = state.app.lock().map_err(|e| e.to_string())?;
-        app.notify("Saved to global config");
-        bump_revision(state);
-        Ok(snap_from(&app, state))
-    }
-
-    pub(super) fn persist_review_models(
-        config: &mut ErConfig,
-        groups: ReviewModelGroups,
-        save: impl FnOnce(&ErConfig) -> Result<(), String>,
-    ) -> Result<(), String> {
-        config
-            .ai_hub
-            .validate_review_models(&groups)
-            .map_err(|error| error.to_string())?;
-        let mut next = config.clone();
-        next.ai_hub.review_models = groups;
-        save(&next)?;
-        *config = next;
-        Ok(())
-    }
-
-    pub(super) fn review_flow_models(
-        state: &AppState,
-        groups: ReviewModelGroups,
-    ) -> Result<GetConfigHubResponse, String> {
-        let mut app = state.app.lock().map_err(|error| error.to_string())?;
-        persist_review_models(&mut app.config, groups, |next| {
-            save_config(next).map_err(|error| error.to_string())
-        })?;
-        bump_revision(state);
-        Ok(hub_response(&app, Vec::new()))
-    }
-
-    pub(super) fn refresh_models(
-        state: &AppState,
-        provider_id: Option<String>,
-        force: bool,
-    ) -> Result<RefreshAiModelsResponse, String> {
-        let mut errors = Vec::new();
-        let targets: Vec<(String, Vec<String>)> = {
-            let app = state.app.lock().map_err(|e| e.to_string())?;
-            if !app.config.features.model_discovery {
-                return Ok(RefreshAiModelsResponse {
-                    providers: list_providers(&app),
-                    errors: vec!["Model discovery is turned off in Settings → AI".into()],
-                });
-            }
-            app.config
-                .ai_hub
-                .providers
-                .iter()
-                .filter(|(id, p)| {
-                    !p.models_command.is_empty()
-                        && provider_id
-                            .as_ref()
-                            .map(|want| want == id.as_str())
-                            .unwrap_or(true)
-                })
-                .map(|(id, p)| (id.clone(), p.models_command.clone()))
-                .collect()
-        };
-
-        for (pid, command) in targets {
-            let cache = er_engine::model_discovery::load_valid_cache(&pid, &command);
-            let fresh = cache
-                .as_ref()
-                .map(er_engine::model_discovery::cache_is_fresh)
-                .unwrap_or(false);
-            if fresh && !force {
-                if let Some(cache) = cache {
-                    let mut app = state.app.lock().map_err(|e| e.to_string())?;
-                    app.apply_discovered_models(&pid, &cache.models);
-                }
-                continue;
-            }
-
-            {
-                let mut app = state.app.lock().map_err(|e| e.to_string())?;
-                if !app.model_discovery_inflight.insert(pid.clone()) {
-                    continue;
-                }
-            }
-
-            let result = er_engine::model_discovery::discover_and_cache(&pid, &command);
-
-            let mut app = state.app.lock().map_err(|e| e.to_string())?;
-            app.model_discovery_inflight.remove(&pid);
-            match result {
-                Ok(models) => {
-                    app.apply_discovered_models(&pid, &models);
-                }
-                Err(e) => {
-                    // Stale-while-revalidate: keep serving prior cache if present.
-                    if let Some(cache) = cache {
-                        app.apply_discovered_models(&pid, &cache.models);
-                    }
-                    log::warn!("refresh_ai_models({pid}): {e}");
-                    errors.push(format!("{pid}: {e:#}"));
-                }
-            }
-        }
-
-        bump_revision(state);
-        let app = state.app.lock().map_err(|e| e.to_string())?;
-        Ok(RefreshAiModelsResponse {
-            providers: list_providers(&app),
-            errors,
-        })
-    }
-
-    pub(super) fn provider_upsert(
-        state: &AppState,
-        provider: ProviderUpsert,
-    ) -> Result<GetConfigHubResponse, String> {
-        let mut app = state.app.lock().map_err(|e| e.to_string())?;
-        let edit = er_engine::config::hub_edits::upsert_provider(&mut app.config, provider)?;
-        save_config(&app.config).map_err(|e| e.to_string())?;
-        if edit.defaults_changed {
-            app.sync_ai_selection_from_defaults();
-        }
-        bump_revision(state);
-        Ok(hub_response(&app, edit.warnings))
-    }
-
-    pub(super) fn provider_delete(
-        state: &AppState,
-        provider_id: String,
-    ) -> Result<GetConfigHubResponse, String> {
-        let mut app = state.app.lock().map_err(|e| e.to_string())?;
-        er_engine::config::hub_edits::delete_provider(&mut app.config, &provider_id)?;
-        save_config(&app.config).map_err(|e| e.to_string())?;
-        app.sync_ai_selection_from_defaults();
-        bump_revision(state);
-        Ok(hub_response(&app, Vec::new()))
-    }
-
-    pub(super) fn model_upsert(
-        state: &AppState,
-        provider_id: String,
-        model: ModelUpsert,
-    ) -> Result<GetConfigHubResponse, String> {
-        let mut app = state.app.lock().map_err(|e| e.to_string())?;
-        let edit =
-            er_engine::config::hub_edits::upsert_model(&mut app.config, &provider_id, model)?;
-        save_config(&app.config).map_err(|e| e.to_string())?;
-        bump_revision(state);
-        Ok(hub_response(&app, edit.warnings))
-    }
-
-    pub(super) fn model_delete(
-        state: &AppState,
-        provider_id: String,
-        model_id: String,
-    ) -> Result<GetConfigHubResponse, String> {
-        let mut app = state.app.lock().map_err(|e| e.to_string())?;
-        er_engine::config::hub_edits::delete_model(&mut app.config, &provider_id, &model_id)?;
-        save_config(&app.config).map_err(|e| e.to_string())?;
-        app.sync_ai_selection_from_defaults();
-        bump_revision(state);
-        Ok(hub_response(&app, Vec::new()))
-    }
-}
-
-#[cfg(all(test, not(feature = "v1-service")))]
-mod review_model_settings_tests {
-    use super::flag_off::persist_review_models;
-    use er_engine::config::{supplement_ai_hub, ErConfig, ReviewModelRef};
-
-    fn config() -> ErConfig {
-        let mut config = ErConfig::default();
-        supplement_ai_hub(&mut config.ai_hub);
-        config
-    }
-
-    #[test]
-    fn review_model_save_keeps_standalone_defaults_and_persists_exact_groups() {
-        let mut config = config();
-        let original_provider = config.ai_hub.default_provider.clone();
-        let original_model = config.ai_hub.default_model.clone();
-        let mut groups = config.ai_hub.review_models.clone();
-        groups.fast = vec![ReviewModelRef {
-            provider_id: "codex".into(),
-            model_id: "gpt-6-luna".into(),
-        }];
-        let mut saved = None;
-        persist_review_models(&mut config, groups.clone(), |next| {
-            saved = Some(next.ai_hub.review_models.clone());
-            Ok(())
-        })
-        .unwrap();
-        assert_eq!(saved, Some(groups.clone()));
-        assert_eq!(config.ai_hub.review_models, groups);
-        assert_eq!(config.ai_hub.default_provider, original_provider);
-        assert_eq!(config.ai_hub.default_model, original_model);
-    }
-
-    #[test]
-    fn review_model_save_failure_leaves_live_config_unchanged() {
-        let mut config = config();
-        let original = serde_json::to_value(&config).unwrap();
-        let mut groups = config.ai_hub.review_models.clone();
-        groups.fast.reverse();
-        let result = persist_review_models(&mut config, groups, |_| Err("disk full".into()));
-        assert_eq!(result.unwrap_err(), "disk full");
-        assert_eq!(serde_json::to_value(&config).unwrap(), original);
-    }
-
-    #[test]
-    fn review_model_validation_failure_does_not_persist_or_mutate() {
-        let mut config = config();
-        let original = serde_json::to_value(&config).unwrap();
-        let mut groups = config.ai_hub.review_models.clone();
-        groups.advanced.clear();
-        let mut persisted = false;
-        let result = persist_review_models(&mut config, groups, |_| {
-            persisted = true;
-            Ok(())
-        });
-        assert!(result.is_err());
-        assert!(!persisted);
-        assert_eq!(serde_json::to_value(&config).unwrap(), original);
-    }
-}

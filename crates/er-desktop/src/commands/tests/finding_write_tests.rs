@@ -15,15 +15,15 @@ use serde_json::json;
 
 use super::annotation_write_tests::{annotations, view};
 use super::diff_command_tests::{send, with_tab};
-use crate::commands::AppState;
 use crate::resources::send::{apply, Effects};
 use crate::service::actor_key;
 use crate::snapshot::PendingAiReply;
+use crate::state::DesktopState;
 
 /// A review with a finding that has a response and a linked GitHub thread,
 /// a checklist, triage and a diagram, in `key`'s buckets, read into its AI
 /// section.
-fn seed(state: &AppState, key: TabKey, tab: &TabDescriptor) -> String {
+fn seed(state: &DesktopState, key: TabKey, tab: &TabDescriptor) -> String {
     let content = state.service.content(key, tab).expect("the loaded tab");
     let (er_dir, comments_dir) = (&content.context.er_dir, &content.context.comments_dir);
     let dir = Path::new(er_dir);
@@ -72,7 +72,7 @@ fn seed_artifacts(dir: &Path) {
     );
 }
 
-fn reload(state: &AppState, key: TabKey, tab: &TabDescriptor) {
+fn reload(state: &DesktopState, key: TabKey, tab: &TabDescriptor) {
     let reloaded = state
         .service
         .send(&actor_key(tab), er_service::Command::ReloadSidecars { key });
@@ -234,7 +234,7 @@ fn a_finding_resolve_moves_the_annotations_once_across_the_next_tick() {
         let (written, _) = annotations(state, key);
         assert!(written > before, "the resolve moved no version");
 
-        crate::resources::tick::run(&state.desktop);
+        crate::resources::tick::run(&state);
         std::thread::sleep(Duration::from_millis(500));
 
         assert_eq!(
@@ -348,7 +348,7 @@ fn removing_a_finding_thread_drops_its_pending_ai_reply_from_jobs() {
             started_at_ms: 1,
             ai_action: Some(er_engine::ai::AI_ACTION_ASK),
         };
-        state.desktop.pending_ai_replies.insert("c-1".into(), reply);
+        state.pending_ai_replies.insert("c-1".into(), reply);
         let remove = Command::RemoveFindingThread {
             tab: er_service::wire_tab_key(key),
             view: view(state, key),
@@ -357,8 +357,8 @@ fn removing_a_finding_thread_drops_its_pending_ai_reply_from_jobs() {
 
         let ack = send(state, "remove finding thread", remove).unwrap_or_else(|e| panic!("{e:?}"));
 
-        let jobs = crate::resources::fetch(&state.desktop, ResourceKey::Jobs)
-            .unwrap_or_else(|e| panic!("{e:?}"));
+        let jobs =
+            crate::resources::fetch(&state, ResourceKey::Jobs).unwrap_or_else(|e| panic!("{e:?}"));
         let Resource::Jobs(listed) = jobs.value else {
             panic!("not jobs: {:?}", jobs.value);
         };
@@ -402,7 +402,7 @@ fn two_checklist_toggles_sent_together_flip_the_item_twice() {
                 webviews: &crate::browser_webview::NoWebviews,
                 pick_folder: &|| None,
             };
-            apply(&state.desktop, command, &effects).map(|applied| applied.ack)
+            apply(&state, command, &effects).map(|applied| applied.ack)
         };
         let rounds = 20;
         let mut flipped_once = 0;

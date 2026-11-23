@@ -1,6 +1,5 @@
-//! The flag-on content routes, run while this thread holds the App lock: each
-//! returns within the harness's bound, and moves only the active tab's
-//! content, on that tab's actor.
+//! The content routes: each returns within the harness's bound, and moves
+//! only the active tab's content, on that tab's actor.
 
 use std::sync::Arc;
 
@@ -9,8 +8,8 @@ use er_engine::tabs_record::TabDescriptor;
 use er_engine::TabKey;
 use er_service::{Command, TabContent};
 
-use super::{review_flow_test_state, while_the_app_is_locked, ReviewFlowTestDir};
-use crate::commands::{content_routes, AppState};
+use super::{active_key, on_a_thread, review_flow_test_state, ReviewFlowTestDir};
+use crate::commands::{content_routes, DesktopState};
 use crate::service::{actor_key, ServiceState};
 
 /// Over the lazy-parse size, with more files than a lazy diff parses up
@@ -47,13 +46,13 @@ fn ports() -> er_engine::ports::Ports {
 
 /// Two working tabs on two repos, so on two actors, the second one active.
 struct Fixture {
-    state: AppState,
+    state: DesktopState,
     first: (TabKey, TabDescriptor),
     active: (TabKey, TabDescriptor),
 }
 
 /// A desktop state whose service runs on `ports`.
-fn state_over(dir: &ReviewFlowTestDir, ports: er_engine::ports::Ports) -> AppState {
+fn state_over(dir: &ReviewFlowTestDir, ports: er_engine::ports::Ports) -> DesktopState {
     let mut state = review_flow_test_state(dir);
     let settings = dir.path().join("settings").join("config.toml");
     state.service = Arc::new(ServiceState::with_settings_path(ports, settings));
@@ -66,7 +65,7 @@ fn fixture(dir: &ReviewFlowTestDir) -> Fixture {
         let root = dir.path().join(repo);
         std::fs::create_dir_all(&root).unwrap_or_else(|e| panic!("repo dir: {e}"));
         let tab = content_routes::working_tab(root.to_string_lossy().into_owned());
-        let opened = while_the_app_is_locked(&state, "open", move |state| {
+        let opened = on_a_thread(&state, "open", move |state| {
             content_routes::open(state, tab, false)
         });
         assert!(opened.is_ok(), "{opened:?}");
@@ -82,14 +81,14 @@ fn fixture(dir: &ReviewFlowTestDir) -> Fixture {
     }
 }
 
-fn content(state: &AppState, (key, tab): &(TabKey, TabDescriptor)) -> Arc<TabContent> {
+fn content(state: &DesktopState, (key, tab): &(TabKey, TabDescriptor)) -> Arc<TabContent> {
     state
         .service
         .content(*key, tab)
         .unwrap_or_else(|| panic!("no content under {key:?}"))
 }
 
-fn revision(state: &AppState, tab: &(TabKey, TabDescriptor)) -> u64 {
+fn revision(state: &DesktopState, tab: &(TabKey, TabDescriptor)) -> u64 {
     state
         .service
         .published_view(&actor_key(&tab.1))
@@ -102,51 +101,49 @@ fn with_storage(test: impl FnOnce(&ReviewFlowTestDir)) {
     er_engine::storage::with_process_test_storage_root(storage, || test(&dir));
 }
 
-type Route = fn(&AppState) -> Result<(), String>;
+type Route = fn(&DesktopState) -> Result<(), String>;
 
-/// Each routed command, as its Tauri command calls it.
-const ROUTES: [(&str, Route); 7] = [
+/// Each routed command on the active tab, as its `er_send` mapping calls it.
+const ROUTES: [(&str, Route); 5] = [
     ("refresh_diff", |state| {
-        content_routes::refresh(state, false).map(drop)
+        content_routes::refresh_tab(state, active_key(state), false).map(drop)
     }),
     ("set_mode", |state| {
-        content_routes::set_mode(state, "staged", DiffMode::Staged, None, None).map(drop)
-    }),
-    ("select_file", |state| {
-        content_routes::select_file(state, 3).map(drop)
-    }),
-    ("request_file_content", |state| {
-        content_routes::request_file_content(state, &[4, 5])
+        let key = active_key(state);
+        content_routes::set_tab_mode(state, key, "staged", DiffMode::Staged, None)
     }),
     ("mark_reviewed", |state| {
-        content_routes::write_reviewed(state, |context| Command::MarkReviewed {
-            context,
-            path: "src/f0.rs".to_string(),
-            reviewed: true,
+        content_routes::write_keyed(state, active_key(state), None, |context| {
+            Command::MarkReviewed {
+                context,
+                path: "src/f0.rs".to_string(),
+                reviewed: true,
+            }
         })
-        .map(drop)
     }),
     ("toggle_reviewed", |state| {
-        content_routes::write_reviewed(state, |context| Command::ToggleReviewed {
-            context,
-            path: "src/f1.rs".to_string(),
+        content_routes::write_keyed(state, active_key(state), None, |context| {
+            Command::ToggleReviewed {
+                context,
+                path: "src/f1.rs".to_string(),
+            }
         })
-        .map(drop)
     }),
     ("unmark_reviewed", |state| {
-        content_routes::write_reviewed(state, |context| Command::MarkReviewed {
-            context,
-            path: "src/f1.rs".to_string(),
-            reviewed: false,
+        content_routes::write_keyed(state, active_key(state), None, |context| {
+            Command::MarkReviewed {
+                context,
+                path: "src/f1.rs".to_string(),
+                reviewed: false,
+            }
         })
-        .map(drop)
     }),
 ];
 
 /// The first tab's actor and content must not move while the routes act on
 /// the active tab; the active tab's must.
 #[test]
-fn each_content_route_moves_only_the_active_tab_without_the_app_lock() {
+fn each_content_route_moves_only_the_active_tab() {
     with_storage(|dir| {
         let Fixture {
             state,
@@ -159,7 +156,7 @@ fn each_content_route_moves_only_the_active_tab_without_the_app_lock() {
         for (name, route) in ROUTES {
             let before = content(&state, &active);
             let active_revision = revision(&state, &active);
-            let result = while_the_app_is_locked(&state, name, route);
+            let result = on_a_thread(&state, name, route);
             assert!(result.is_ok(), "{name}: {result:?}");
             let after = content(&state, &active);
             assert!(
@@ -182,16 +179,9 @@ fn each_content_route_moves_only_the_active_tab_without_the_app_lock() {
         );
         let active_after = content(&state, &active);
         assert_eq!(active_after.tab.mode, DiffMode::Staged);
-        assert!(
-            !active_after.diff.files[3].hunks.is_empty(),
-            "select parsed nothing"
-        );
-        assert!(!active_after.diff.files[5].hunks.is_empty());
         assert!(active_after.reviewed.marks.contains_key("src/f0.rs"));
         let unmarked = !active_after.reviewed.marks.contains_key("src/f1.rs");
         assert!(unmarked, "the toggled mark stayed");
-        let nav = state.view.lock().map(|view| view.nav(active.0));
-        assert_eq!(nav.map(|nav| nav.selected_file).ok(), Some(3));
     });
 }
 
@@ -205,8 +195,9 @@ fn closing_a_tab_drops_its_content() {
             active,
         } = fixture(dir);
 
-        let closed = while_the_app_is_locked(&state, "close_tab", |state| {
-            content_routes::close(state, 1).map(drop)
+        let key = active.0;
+        let closed = on_a_thread(&state, "close_tab", move |state| {
+            content_routes::close_key(state, key).map(drop)
         });
 
         assert!(closed.is_ok(), "{closed:?}");
@@ -237,7 +228,7 @@ fn the_backend_tick_brings_an_outside_write_into_the_active_content() {
             }),
         );
 
-        let sent = while_the_app_is_locked(&state, "backend tick", |state| {
+        let sent = on_a_thread(&state, "backend tick", |state| {
             crate::resources::tick::reload_loaded_tabs(state)
         });
 
@@ -254,7 +245,7 @@ fn the_backend_tick_brings_an_outside_write_into_the_active_content() {
 }
 
 /// Every view loads on the active content, History, Conflicts and Hidden
-/// included, while the App lock is held.
+/// included.
 #[test]
 fn every_mode_reaches_the_active_content() {
     with_storage(|dir| {
@@ -278,8 +269,8 @@ fn every_mode_reaches_the_active_content() {
             ("history", DiffMode::History),
             ("tour", DiffMode::Tour),
         ] {
-            let switched = while_the_app_is_locked(&state, name, move |state| {
-                content_routes::set_mode(state, name, mode, None, None).map(drop)
+            let switched = on_a_thread(&state, name, move |state| {
+                content_routes::set_tab_mode(state, active_key(state), name, mode, None)
             });
             assert!(switched.is_ok(), "{name}: {switched:?}");
             assert_eq!(content(&state, &active).tab.mode, mode);
@@ -287,70 +278,6 @@ fn every_mode_reaches_the_active_content() {
         let toured = content(&state, &active);
         assert!(!toured.diff.files.is_empty(), "the tour loaded no diff");
     });
-}
-
-/// The `set_mode` command shows History on the content and leaves the App's
-/// tab where it was.
-#[test]
-fn a_history_switch_leaves_the_app_alone() {
-    with_storage(|dir| {
-        let Fixture { state, active, .. } = fixture(dir);
-        let before = state.app.lock().map(|app| app.tab().mode).ok();
-
-        let switched = crate::commands::set_mode_impl(&state, "history", None, None);
-
-        assert!(switched.is_ok(), "{:?}", switched.err());
-        assert_eq!(content(&state, &active).tab.mode, DiffMode::History);
-        let after = state.app.lock().map(|app| app.tab().mode).ok();
-        assert_eq!(after, before, "the switch reached the App");
-    });
-}
-
-/// No flag-on code reaches the App's History file selection: each call of
-/// `history_select_file` in er-desktop compiles only without the flag.
-#[test]
-fn no_flag_on_code_selects_a_history_file_on_the_app() {
-    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-    let mut uses = Vec::new();
-    nearest_cfgs(&src, "history_select_file(", &mut uses);
-    assert!(!uses.is_empty(), "the scan found no use to check");
-    for (file, cfg) in &uses {
-        assert_eq!(
-            cfg, "#[cfg(not(feature = \"v1-service\"))]",
-            "{file} selects a History file on the App with the flag on"
-        );
-    }
-}
-
-/// Each use of `needle` in the production sources under `dir`, with the
-/// nearest `cfg` above it, which is the one that compiles it.
-fn nearest_cfgs(dir: &std::path::Path, needle: &str, uses: &mut Vec<(String, String)>) {
-    let entries = std::fs::read_dir(dir).unwrap_or_else(|e| panic!("{}: {e}", dir.display()));
-    for path in entries.flatten().map(|entry| entry.path()) {
-        let name = path.to_string_lossy().into_owned();
-        if path.is_dir() {
-            if !name.ends_with("/tests") {
-                nearest_cfgs(&path, needle, uses);
-            }
-            continue;
-        }
-        if !name.ends_with(".rs") || name.contains("_tests") {
-            continue;
-        }
-        let text = std::fs::read_to_string(&path).unwrap_or_default();
-        let code = text.split("#[cfg(test)]\nmod tests").next().unwrap_or("");
-        for (at, _) in code.match_indices(needle) {
-            let mut lines = code.get(..at).unwrap_or("").rsplit('\n');
-            if lines
-                .next()
-                .is_some_and(|l| l.trim_start().starts_with("//"))
-            {
-                continue;
-            }
-            let cfg = lines.find(|l| l.trim_start().starts_with("#[cfg("));
-            uses.push((name.clone(), cfg.unwrap_or("").trim().to_string()));
-        }
-    }
 }
 
 /// A plain tab's git, which answers every ref and accepts every fetch.
@@ -372,8 +299,8 @@ fn ports_with_refs() -> (Arc<er_git::FakeGit>, er_engine::ports::Ports) {
     (fake, er_engine::ports::Ports { git, github })
 }
 
-fn open_one(state: &AppState, tab: TabDescriptor) -> (TabKey, TabDescriptor) {
-    let opened = while_the_app_is_locked(state, "open", move |state| {
+fn open_one(state: &DesktopState, tab: TabDescriptor) -> (TabKey, TabDescriptor) {
+    let opened = on_a_thread(state, "open", move |state| {
         content_routes::open(state, tab, false)
     });
     assert!(opened.is_ok(), "{opened:?}");
@@ -397,7 +324,9 @@ fn a_branch_sync_fetches_the_base_and_lines_the_probe_up() {
         let root = root.to_string_lossy().into_owned();
         let tab = open_one(&state, content_routes::working_tab(root.clone()));
 
-        let synced = while_the_app_is_locked(&state, "sync", content_routes::sync);
+        let synced = on_a_thread(&state, "sync", |state| {
+            content_routes::sync_tab(state, active_key(state))
+        });
 
         let synced = synced.unwrap_or_else(|e| panic!("sync: {e}"));
         let refspec = "+refs/heads/main:refs/remotes/origin/main";
@@ -441,7 +370,9 @@ fn a_pr_sync_adopts_the_listed_head_and_names_its_status() {
             cache.insert("acme/widgets".to_string(), vec![listed]);
         }
 
-        let synced = while_the_app_is_locked(&state, "sync", content_routes::sync);
+        let synced = on_a_thread(&state, "sync", |state| {
+            content_routes::sync_tab(state, active_key(state))
+        });
 
         let synced = synced.unwrap_or_else(|e| panic!("sync: {e}"));
         let head = content(&state, &tab).pr.head_oid.clone();

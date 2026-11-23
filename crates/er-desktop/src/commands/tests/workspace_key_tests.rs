@@ -1,19 +1,15 @@
-//! Every view of one tab names the same workspace actor: the App's tab, the
-//! descriptor it saves as, the descriptor an open sends, and the content the
-//! actor loads for it.
+//! Every view of one tab names the same workspace actor: the descriptor an
+//! open sends, and the content the actor loads for it.
 
 use std::sync::Arc;
 
-use er_engine::app::TabState;
 use er_engine::tab_identity::workspace_key;
 use er_engine::tabs_record::{TabDescriptor, TabKind};
 use er_service::{Command, OpenTarget};
 
-use super::{review_flow_test_state, while_the_app_is_locked, ReviewFlowTestDir};
-use crate::commands::{content_routes, service_open_remote_pr, AppState};
+use super::{on_a_thread, review_flow_test_state, ReviewFlowTestDir};
+use crate::commands::{content_routes, service_open_remote_pr, DesktopState};
 use crate::service::ServiceState;
-use crate::tabs::descriptor_from_tab;
-use crate::view_state::DesktopViewState;
 
 const REMOTE: &str = "acme/widgets";
 
@@ -43,7 +39,7 @@ fn ports() -> er_engine::ports::Ports {
     er_engine::ports::Ports { git, github }
 }
 
-fn state(dir: &ReviewFlowTestDir) -> AppState {
+fn state(dir: &ReviewFlowTestDir) -> DesktopState {
     let mut state = review_flow_test_state(dir);
     let settings = dir.path().join("settings").join("config.toml");
     state.service = Arc::new(ServiceState::with_settings_path(ports(), settings));
@@ -74,24 +70,10 @@ fn track_remote(root: &str) {
     crate::projects::invalidate_load_cache();
 }
 
-/// An App tab shaped the way its constructor leaves it.
-fn app_tab(root: &str, shape: impl FnOnce(&mut TabState)) -> TabState {
-    let mut tab = TabState::new_for_test(vec![]);
-    tab.repo_root = root.to_string();
-    shape(&mut tab);
-    tab
-}
-
-fn remote_tab(tab: &mut TabState) {
-    tab.remote_repo = Some(REMOTE.to_string());
-    tab.pr_number = Some(7);
-    tab.local_branch_view = None;
-}
-
 /// Opens `sent` as the open routes do, and answers the key the content's
 /// tab and context name, after checking it sits on the actor of that key.
-fn loaded_key(state: &AppState, sent: TabDescriptor) -> String {
-    let opened = while_the_app_is_locked(state, "open", move |state| {
+fn loaded_key(state: &DesktopState, sent: TabDescriptor) -> String {
+    let opened = on_a_thread(state, "open", move |state| {
         content_routes::open(state, sent, false).map(drop)
     });
     assert!(opened.is_ok(), "{opened:?}");
@@ -100,7 +82,7 @@ fn loaded_key(state: &AppState, sent: TabDescriptor) -> String {
 
 /// The key the active tab's content names in its tab and its context, after
 /// checking the content sits on the actor of that key.
-fn active_content_key(state: &AppState) -> String {
+fn active_content_key(state: &DesktopState) -> String {
     let view = state.service.app_registry().tabs_view();
     let entry = view.active_entry().expect("the opened tab is active");
     let content = state
@@ -121,8 +103,8 @@ fn active_content_key(state: &AppState) -> String {
     key
 }
 
-/// Each kind of tab: the App's tab, its saved descriptor, the open's
-/// descriptor and the loaded content agree on one key, and a remote PR keys
+/// Each kind of tab: the open's descriptor and the loaded content agree on
+/// one key, and a remote PR keys
 /// on its remote whether or not a project tracks it.
 #[test]
 fn every_view_of_a_tab_names_one_workspace() {
@@ -132,10 +114,6 @@ fn every_view_of_a_tab_names_one_workspace() {
         let worktree = dir.path().join("worktree");
         std::fs::create_dir_all(&worktree).expect("worktree dir");
         let worktree = worktree.to_string_lossy().into_owned();
-        let cwd = std::env::current_dir()
-            .expect("cwd")
-            .to_string_lossy()
-            .into_owned();
         let remote_key = workspace_key(None, REMOTE);
 
         let mut branch = content_routes::working_tab(root.clone());
@@ -158,63 +136,26 @@ fn every_view_of_a_tab_names_one_workspace() {
         })
         .expect("remote PR tab");
 
-        let rows: Vec<(&str, TabState, TabDescriptor, &str)> = vec![
-            (
-                "working",
-                app_tab(&root, |_| {}),
-                content_routes::working_tab(root.clone()),
-                &root,
-            ),
-            (
-                "local branch",
-                app_tab(&root, |tab| {
-                    tab.local_branch_view = Some("feature".to_string());
-                }),
-                branch,
-                &root,
-            ),
+        let rows: Vec<(&str, TabDescriptor, &str)> = vec![
+            ("working", content_routes::working_tab(root.clone()), &root),
+            ("local branch", branch, &root),
             (
                 "worktree",
-                app_tab(&worktree, |_| {}),
                 content_routes::working_tab(worktree.clone()),
                 &worktree,
             ),
-            (
-                "local PR",
-                app_tab(&root, |tab| {
-                    tab.remote_repo = Some(REMOTE.to_string());
-                    tab.pr_number = Some(8);
-                    tab.local_branch_view = Some("pr/8".to_string());
-                }),
-                local_pr,
-                &root,
-            ),
-            (
-                "remote PR",
-                app_tab(&cwd, remote_tab),
-                remote_pr,
-                &remote_key,
-            ),
+            ("local PR", local_pr, &root),
+            ("remote PR", remote_pr, &remote_key),
         ];
-        let view = DesktopViewState::default();
-        for (kind, app, sent, expected) in rows {
-            let saved = descriptor_from_tab(&app, &view);
-            assert_eq!(app.identity().workspace_key(), expected, "{kind}: App tab");
-            assert_eq!(saved.workspace_key(), expected, "{kind}: saved descriptor");
+        for (kind, sent, expected) in rows {
             assert_eq!(sent.workspace_key(), expected, "{kind}: open descriptor");
             assert_eq!(loaded_key(&state, sent), expected, "{kind}: content");
-            assert_eq!(
-                loaded_key(&state, saved),
-                expected,
-                "{kind}: restored content"
-            );
         }
 
         // A tracked remote still opens as a remote tab, on the remote's actor:
-        // the open's descriptor, its loaded content and an App tab on either
-        // the cwd or the project's root all name the remote's key.
+        // the open's descriptor and its loaded content name the remote's key.
         track_remote(&root);
-        let opened = while_the_app_is_locked(&state, "open_remote_pr", |state| {
+        let opened = on_a_thread(&state, "open_remote_pr", |state| {
             service_open_remote_pr(state, "acme".into(), "widgets".into(), 7, None).map(drop)
         });
         assert!(opened.is_ok(), "{opened:?}");
@@ -231,25 +172,6 @@ fn every_view_of_a_tab_names_one_workspace() {
             "tracked: open descriptor"
         );
         assert_eq!(active_content_key(&state), remote_key, "tracked: content");
-        for app_root in [&cwd, &root] {
-            let app = app_tab(app_root, remote_tab);
-            let saved = descriptor_from_tab(&app, &view);
-            assert_eq!(
-                app.identity().workspace_key(),
-                remote_key,
-                "tracked, App on {app_root}: App tab"
-            );
-            assert_eq!(
-                saved.workspace_key(),
-                remote_key,
-                "tracked, App on {app_root}: saved descriptor"
-            );
-            assert_eq!(
-                loaded_key(&state, saved),
-                remote_key,
-                "tracked, App on {app_root}: restored content"
-            );
-        }
     });
 }
 
@@ -260,7 +182,7 @@ fn every_view_of_a_tab_names_one_workspace() {
 fn a_remote_pr_tab_toggles_reviewed() {
     with_storage(|dir| {
         let state = state(dir);
-        let opened = while_the_app_is_locked(&state, "open_remote_pr", |state| {
+        let opened = on_a_thread(&state, "open_remote_pr", |state| {
             service_open_remote_pr(state, "acme".into(), "widgets".into(), 7, None).map(drop)
         });
         assert!(opened.is_ok(), "{opened:?}");
@@ -275,10 +197,12 @@ fn a_remote_pr_tab_toggles_reviewed() {
             "the open reached the remote's actor"
         );
 
-        let toggled = while_the_app_is_locked(&state, "toggle_reviewed", |state| {
-            content_routes::write_reviewed(state, |context| Command::ToggleReviewed {
-                context,
-                path: "src/a.rs".to_string(),
+        let toggled = on_a_thread(&state, "toggle_reviewed", |state| {
+            content_routes::write_keyed(state, super::active_key(state), None, |context| {
+                Command::ToggleReviewed {
+                    context,
+                    path: "src/a.rs".to_string(),
+                }
             })
             .map(drop)
         });

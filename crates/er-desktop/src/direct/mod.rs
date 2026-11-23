@@ -15,7 +15,6 @@ use er_protocol::{ErError, ErErrorKind};
 
 /// The published content of the tab `wire` names, loaded on its first use. A
 /// key the registry does not list answers `NotFound`.
-#[cfg(feature = "v1-service")]
 pub(crate) fn content_of(
     desktop: &crate::state::DesktopState,
     wire: er_protocol::TabKey,

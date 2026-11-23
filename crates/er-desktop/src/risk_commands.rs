@@ -53,7 +53,6 @@ pub(crate) fn risk_rules(
     remote_repo: Option<String>,
     paths: &[String],
 ) -> Result<RiskRulesView, String> {
-    #[cfg(feature = "v1-service")]
     {
         let settings = state.service.settings();
         settings
@@ -68,14 +67,5 @@ pub(crate) fn risk_rules(
             .risk_for(&repo_root, remote_repo.as_deref())
             .cloned()
             .ok_or_else(|| format!("No risk rules were loaded for {repo_root}"))
-    }
-    #[cfg(not(feature = "v1-service"))]
-    {
-        let _ = paths;
-        let config = state.app.lock().map_err(|e| e.to_string())?.config.clone();
-        let key =
-            er_engine::storage::rules_key(&*state.ports.git, &repo_root, remote_repo.as_deref());
-        let artifact = er_engine::config::load_risk_rules_table(&key);
-        Ok(er_engine::config::risk_rules_view(&config, &key, artifact))
     }
 }

@@ -17,8 +17,8 @@ use super::arena_resource_tests::{bucket, local_ports, open, wait_until};
 use super::diff_command_tests::send;
 use super::diff_resource_tests::{fake_ports, opened, raw_diff, with_storage};
 use super::{review_flow_test_state, ReviewFlowTestDir};
-use crate::commands::AppState;
 use crate::service::ServiceState;
+use crate::state::DesktopState;
 
 /// The files a gated agent reads and writes.
 struct Agent {
@@ -86,12 +86,12 @@ fn open_gate(gate: &Path) {
 /// end, so no agent outlives the test. One that did would hold a slot of
 /// the process's pool for a minute, and a later test at a cap of one would
 /// wait on it.
-fn release(state: &AppState, agent: &Agent) {
+fn release(state: &DesktopState, agent: &Agent) {
     for row in tasks(state)
         .into_iter()
         .filter(|row| row.status == "queued")
     {
-        state.desktop.tasks.cancel_queued(&row.id);
+        state.tasks.cancel_queued(&row.id);
     }
     open_gate(&agent.first);
     open_gate(&agent.second);
@@ -103,7 +103,7 @@ fn release(state: &AppState, agent: &Agent) {
 }
 
 /// A state whose tasks run the gated agent, under `cap` running reviews.
-fn tasking(dir: &ReviewFlowTestDir, cap: usize) -> (AppState, Agent) {
+fn tasking(dir: &ReviewFlowTestDir, cap: usize) -> (DesktopState, Agent) {
     tasking_on(dir, cap, local_ports())
 }
 
@@ -112,29 +112,29 @@ fn tasking_on(
     dir: &ReviewFlowTestDir,
     cap: usize,
     ports: er_engine::ports::Ports,
-) -> (AppState, Agent) {
+) -> (DesktopState, Agent) {
     let agent = Agent::in_dir(dir.path());
     let path = agent.settings.join("config.toml");
     std::fs::create_dir_all(&agent.settings).unwrap_or_else(|e| panic!("{e}"));
     std::fs::write(&path, agent.config(cap)).unwrap_or_else(|e| panic!("config: {e}"));
     let mut state = review_flow_test_state(dir);
-    state.desktop.ports = ports.clone();
+    state.ports = ports.clone();
     let deps = WorkspaceDeps::new(ports);
     state.service = Arc::new(ServiceState::with_deps(deps, |_| {}).with_config_path(path));
     (state, agent)
 }
 
-fn tasks(state: &AppState) -> Vec<TaskJob> {
+fn tasks(state: &DesktopState) -> Vec<TaskJob> {
     jobs(state).tasks
 }
 
-fn version(state: &AppState) -> u64 {
-    crate::resources::jobs::version(&state.desktop)
+fn version(state: &DesktopState) -> u64 {
+    crate::resources::jobs::version(&state)
 }
 
-fn log(state: &AppState, id: &str) -> Vec<String> {
+fn log(state: &DesktopState, id: &str) -> Vec<String> {
     let key = ResourceKey::TaskLog { id: id.to_string() };
-    match crate::resources::fetch(&state.desktop, key).map(|f| f.value) {
+    match crate::resources::fetch(&state, key).map(|f| f.value) {
         Ok(Resource::TaskLog(log)) => log.lines.into_iter().map(|l| l.text).collect(),
         other => panic!("not a task log: {other:?}"),
     }
@@ -142,17 +142,17 @@ fn log(state: &AppState, id: &str) -> Vec<String> {
 
 /// A task of `kind` on a bucket under `dir`, run with the settings view's
 /// config and saved pick, queued with the App locked. Answers its id.
-fn queued(state: &AppState, dir: &Path, kind: &str) -> String {
+fn queued(state: &DesktopState, dir: &Path, kind: &str) -> String {
     let launch = launch(state, dir, kind, "feature");
-    super::while_the_app_is_locked(state, "the enqueue", move |state| {
-        crate::tasks::enqueue(&state.desktop, launch)
+    super::on_a_thread(state, "the enqueue", move |state| {
+        crate::tasks::enqueue(&state, launch)
     })
     .unwrap_or_else(|e| panic!("{e}"))
 }
 
 /// A task of `kind` on `branch`, on a bucket under `dir`.
-fn launch(state: &AppState, dir: &Path, kind: &str, branch: &str) -> crate::tasks::Launch {
-    let config = crate::arena_service::config(&state.desktop);
+fn launch(state: &DesktopState, dir: &Path, kind: &str, branch: &str) -> crate::tasks::Launch {
+    let config = crate::arena_service::config(&state);
     let (provider_id, model_id, effort) = crate::ai_ask::selection(&config);
     let bucket = dir.join("bucket");
     std::fs::create_dir_all(&bucket).unwrap_or_else(|e| panic!("bucket: {e}"));
@@ -183,7 +183,7 @@ fn launch(state: &AppState, dir: &Path, kind: &str, branch: &str) -> crate::task
     }
 }
 
-fn row(state: &AppState, id: &str) -> Option<TaskJob> {
+fn row(state: &DesktopState, id: &str) -> Option<TaskJob> {
     tasks(state).into_iter().find(|row| row.id == id)
 }
 
@@ -298,15 +298,15 @@ fn a_finished_importance_run_refilters_the_loaded_tabs_on_its_repo() {
             "feature",
         );
         importance.target.repo_root.clone_from(&tab.repo_root);
-        let importance = super::while_the_app_is_locked(&state, "the enqueue", move |state| {
-            crate::tasks::enqueue(&state.desktop, importance)
+        let importance = super::on_a_thread(&state, "the enqueue", move |state| {
+            crate::tasks::enqueue(&state, importance)
         })
         .unwrap_or_else(|e| panic!("{e}"));
         let tier = || {
             let diff = ResourceKey::Diff {
                 tab: er_service::wire_tab_key(key),
             };
-            match crate::resources::fetch(&state.desktop, diff).map(|f| f.value) {
+            match crate::resources::fetch(&state, diff).map(|f| f.value) {
                 Ok(Resource::Diff(diff)) => (diff.files.iter())
                     .find(|f| f.path == "src/f2.rs")
                     .map(|f| f.risk_tier.clone()),
@@ -322,7 +322,7 @@ fn a_finished_importance_run_refilters_the_loaded_tabs_on_its_repo() {
         let store = er_engine::store_registry::store();
         assert!(committed.commit_to_store("widgets", &store).is_ok());
 
-        crate::tasks::finish(&state.desktop, &importance, Ok(()));
+        crate::tasks::finish(&state, &importance, Ok(()));
 
         let view = state.service.settings().view();
         assert!(
@@ -389,21 +389,19 @@ fn a_review_run_prepares_the_content_diff_with_the_app_locked() {
     });
 }
 
-/// The run commands' flag path never takes the App lock: the tour and a
-/// scoped triage each start with the App held.
+/// The tour and a scoped triage each start.
 #[test]
-fn the_run_commands_start_with_the_app_locked() {
+fn the_run_commands_start() {
     with_storage(|dir| {
         let (state, agent) = tasking(dir, 50);
         let tab: (TabKey, _) = open(&state, dir.path(), "a");
         let _ = bucket(&state, &tab);
-        let started = super::while_the_app_is_locked(&state, "the runs", |state| {
-            let tour =
-                crate::commands::ask_on_desktop(state, |desktop| crate::runs::tour(desktop, None));
-            let triage = crate::commands::ask_on_desktop(state, |desktop| {
-                let reviewers = vec!["triage".to_string()];
-                crate::runs::scoped(desktop, None, "branch".into(), Vec::new(), reviewers, None)
-            });
+        let started = super::on_a_thread(&state, "the runs", |state| {
+            let tour = crate::runs::tour(state, None).map_err(|e| e.message);
+            let reviewers = vec!["triage".to_string()];
+            let triage =
+                crate::runs::scoped(state, None, "branch".into(), Vec::new(), reviewers, None)
+                    .map_err(|e| e.message);
             (tour.map(drop), triage.map(drop))
         });
         assert_eq!(started, (Ok(()), Ok(())));
@@ -482,16 +480,16 @@ fn a_scoped_run_sends_one_notice() {
             reviewers: vec!["triage".into(), "general".into()],
             focus_prompt: None,
         };
-        let told = super::while_the_app_is_locked(&state, "the scoped run", move |state| {
+        let told = super::on_a_thread(&state, "the scoped run", move |state| {
             let effects = crate::resources::send::Effects {
                 notify: &|_, _| {},
                 check_update: || panic!("no update check in this test"),
                 webviews: &crate::browser_webview::NoWebviews,
                 pick_folder: &|| None,
             };
-            let _ = crate::resources::notice::told(&state.desktop);
-            crate::resources::send::apply(&state.desktop, command, &effects).map(drop)?;
-            Ok::<_, er_protocol::ErError>(crate::resources::notice::told(&state.desktop))
+            let _ = crate::resources::notice::told(&state);
+            crate::resources::send::apply(&state, command, &effects).map(drop)?;
+            Ok::<_, er_protocol::ErError>(crate::resources::notice::told(&state))
         });
         let told = told.unwrap_or_else(|e| panic!("{e:?}"));
         assert_eq!(told.len(), 1, "{told:?}");
@@ -510,12 +508,10 @@ fn a_queued_scoped_reviewer_tells_its_start_once() {
         let tab = open(&state, dir.path(), "a");
         let _ = bucket(&state, &tab);
         let reviewers = vec!["triage".to_string(), "general".to_string()];
-        let _ = crate::resources::notice::told(&state.desktop);
-        let ran = crate::commands::ask_on_desktop(&state, |desktop| {
-            crate::runs::scoped(desktop, None, "branch".into(), Vec::new(), reviewers, None)
-        });
+        let _ = crate::resources::notice::told(&state);
+        let ran = crate::runs::scoped(&state, None, "branch".into(), Vec::new(), reviewers, None);
         assert!(ran.is_ok(), "{:?}", ran.err());
-        let mut told = crate::resources::notice::told(&state.desktop);
+        let mut told = crate::resources::notice::told(&state);
         assert_eq!(told.len(), 1, "{told:?}");
         assert!(told[0].starts_with("Started 2 reviewer(s)"), "{told:?}");
         let queued = tasks(&state)
@@ -532,8 +528,8 @@ fn a_queued_scoped_reviewer_tells_its_start_once() {
         // hold the one slot; the tick's poll starts the queue once it frees.
         let deadline = Instant::now() + Duration::from_secs(60);
         loop {
-            crate::tasks::poll(&state.desktop);
-            told.extend(crate::resources::notice::told(&state.desktop));
+            crate::tasks::poll(&state);
+            told.extend(crate::resources::notice::told(&state));
             let done = tasks(&state).into_iter().any(|row| {
                 row.kind == "review" && !matches!(row.status.as_str(), "queued" | "running")
             });
@@ -546,7 +542,7 @@ fn a_queued_scoped_reviewer_tells_its_start_once() {
             );
             std::thread::sleep(Duration::from_millis(20));
         }
-        told.extend(crate::resources::notice::told(&state.desktop));
+        told.extend(crate::resources::notice::told(&state));
         let started: Vec<&String> = told
             .iter()
             .filter(|m| m.starts_with("review started ("))
@@ -572,12 +568,11 @@ fn a_second_run_of_a_running_lens_is_refused() {
         let (state, agent) = tasking(dir, 50);
         let tab: (TabKey, _) = open(&state, dir.path(), "a");
         let _ = bucket(&state, &tab);
-        let triage = |state: &AppState| {
-            crate::commands::ask_on_desktop(state, |desktop| {
-                let reviewers = vec!["triage".to_string()];
-                crate::runs::scoped(desktop, None, "branch".into(), Vec::new(), reviewers, None)
-            })
-            .map(drop)
+        let triage = |state: &DesktopState| {
+            let reviewers = vec!["triage".to_string()];
+            crate::runs::scoped(state, None, "branch".into(), Vec::new(), reviewers, None)
+                .map(drop)
+                .map_err(|e| e.message)
         };
         assert_eq!(triage(&state), Ok(()));
         let again = triage(&state).expect_err("a second triage started");
@@ -599,7 +594,7 @@ fn a_triage_request_shows_in_jobs() {
     with_storage(|dir| {
         let (state, _agent) = tasking(dir, 50);
         let before = version(&state);
-        let ctx = crate::commands::triage_ctx(&state.desktop);
+        let ctx = crate::commands::triage_ctx(&state);
         // No clone, so the request ends at once.
         crate::auto_triage::dispatch_branch_triage(&ctx, "p", "o/r", "", "feature", &[]);
         wait_until("the request to move jobs twice", || {
@@ -607,7 +602,7 @@ fn a_triage_request_shows_in_jobs() {
         });
 
         let held = "branch:o/r:other".to_string();
-        if let Ok(mut queue) = state.desktop.auto_triage_in_flight.lock() {
+        if let Ok(mut queue) = state.auto_triage_in_flight.lock() {
             queue.insert(held.clone());
         }
         assert_eq!(jobs(&state).triage, vec![held]);
@@ -625,13 +620,13 @@ fn a_sidebar_triage_queues_on_the_host_with_the_app_locked() {
                 .with_detect_base_branch(Ok("main".to_string()))
                 .with_diff_raw_range(Ok(raw_diff())),
         );
-        state.desktop.ports = er_engine::ports::Ports::with_git(git);
+        state.ports = er_engine::ports::Ports::with_git(git);
         let root = dir.path().join("a");
         std::fs::create_dir_all(&root).unwrap_or_else(|e| panic!("{e}"));
         let root = root.to_string_lossy().into_owned();
         let queued_root = root.clone();
-        super::while_the_app_is_locked(&state, "the sidebar triage", move |state| {
-            let ctx = crate::commands::triage_ctx(&state.desktop);
+        super::on_a_thread(&state, "the sidebar triage", move |state| {
+            let ctx = crate::commands::triage_ctx(&state);
             crate::auto_triage::dispatch_branch_triage(&ctx, "p", "o/r", &root, "feature", &[]);
             wait_until("a triage task in jobs", || {
                 tasks(state).iter().any(|row| row.kind == "triage")
@@ -660,16 +655,16 @@ fn a_sidebar_triage_sends_one_notice() {
                 .with_detect_base_branch(Ok("main".to_string()))
                 .with_diff_raw_range(Ok(raw_diff())),
         );
-        state.desktop.ports = er_engine::ports::Ports::with_git(git);
+        state.ports = er_engine::ports::Ports::with_git(git);
         let root = dir.path().join("a");
         std::fs::create_dir_all(&root).unwrap_or_else(|e| panic!("{e}"));
         let root = root.to_string_lossy().into_owned();
-        let _ = crate::resources::notice::told(&state.desktop);
-        let ctx = crate::commands::triage_ctx(&state.desktop);
+        let _ = crate::resources::notice::told(&state);
+        let ctx = crate::commands::triage_ctx(&state);
         crate::auto_triage::dispatch_branch_triage(&ctx, "p", "o/r", &root, "feature", &[]);
         let mut told = Vec::new();
         wait_until("the sidebar's notice", || {
-            told.extend(crate::resources::notice::told(&state.desktop));
+            told.extend(crate::resources::notice::told(&state));
             told.iter()
                 .any(|m| m.starts_with("Triage started for branch"))
         });
@@ -678,26 +673,9 @@ fn a_sidebar_triage_sends_one_notice() {
     });
 }
 
-/// The task log is read from the task host: the flag path of
-/// `get_background_task_log` names the host, and its App read sits in the
-/// flag-off arm alone. Sidebar triage and the tick's task duties name no App.
+/// Sidebar triage and the tick's task duties name no App.
 #[test]
-fn the_task_log_and_triage_are_off_the_app() {
-    let source = include_str!("../../commands.rs");
-    let body = source
-        .split("pub fn get_background_task_log(")
-        .nth(1)
-        .and_then(|rest| rest.split("\n}\n").next())
-        .unwrap_or_else(|| panic!("no get_background_task_log"));
-    assert!(body.contains(".log(&task_id)"), "{body}");
-    let app_read = body
-        .find("background_task_log_tail")
-        .unwrap_or_else(|| panic!("no flag-off arm"));
-    let flag_off = body
-        .find("#[cfg(not(feature = \"v1-service\"))]")
-        .unwrap_or_else(|| panic!("the App read is not behind the flag-off arm"));
-    assert!(flag_off < app_read, "{body}");
-
+fn triage_and_the_tick_are_off_the_app() {
     let triage = include_str!("../../auto_triage.rs");
     for word in ["er_engine::app", "App>", "app.lock"] {
         assert!(!triage.contains(word), "auto_triage.rs names {word}");
@@ -710,7 +688,10 @@ fn the_task_log_and_triage_are_off_the_app() {
 
 /// A note on the tab's first file, written through its actor; answers its id
 /// once the content holds it.
-fn note(state: &AppState, (key, tab): &(TabKey, er_engine::tabs_record::TabDescriptor)) -> String {
+fn note(
+    state: &DesktopState,
+    (key, tab): &(TabKey, er_engine::tabs_record::TabDescriptor),
+) -> String {
     let content = state
         .service
         .content(*key, tab)
@@ -875,7 +856,7 @@ fn two_clicks_at_once_queue_one_task() {
                         let (state, gate) = (&state, &gate);
                         scope.spawn(move || {
                             gate.wait();
-                            crate::tasks::enqueue(&state.desktop, one).is_ok()
+                            crate::tasks::enqueue(&state, one).is_ok()
                         })
                     })
                     .collect();
@@ -923,13 +904,13 @@ impl Launches {
 /// Sends `validate` on `target` once the gate opens; answers whether the
 /// host took it.
 fn send_at_gate(
-    state: &AppState,
+    state: &DesktopState,
     gate: &std::sync::Barrier,
     target: BackgroundTaskTarget,
     launches: &Launches,
 ) -> bool {
     gate.wait();
-    crate::tasks::hold_agent(&state.desktop, target, "validate", |_| launches.launch()).is_ok()
+    crate::tasks::hold_agent(&state, target, "validate", |_| launches.launch()).is_ok()
 }
 
 /// Two sends of the same tab command on one bucket at once start one
@@ -969,16 +950,11 @@ fn two_sends_at_once_start_one_agent() {
     });
 }
 
-/// The tick names the App only for its sidecar check and the App's
-/// notification, and the AI picker's saves name no App.
+/// The tick runs none of the App's task duties.
 #[test]
-fn the_tick_and_the_pick_leave_the_app() {
+fn the_tick_leaves_the_app() {
     let tick = include_str!("../../resources/tick.rs");
     for word in ["drain_agent_log", "check_commands", "poll_background_tasks"] {
         assert!(!tick.contains(word), "the tick runs {word}");
-    }
-    let pick = include_str!("../../ai_selection_service.rs");
-    for word in ["AppState", "er_engine::app", "current_ai_", "app.lock"] {
-        assert!(!pick.contains(word), "ai_selection_service.rs names {word}");
     }
 }

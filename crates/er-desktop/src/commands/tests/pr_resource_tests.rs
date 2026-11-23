@@ -5,17 +5,15 @@
 
 use std::sync::Arc;
 
-use er_engine::app::StackState;
-use er_engine::gh_stack::StackInfo;
 use er_protocol::{
     Command, PrStatus, Resource, ResourceChanged, ResourceKey, ResourceVersion, TabPr,
 };
 
 use super::diff_command_tests::send;
 use super::diff_resource_tests::{fake_git, state_over, with_storage};
-use super::while_the_app_is_locked;
+use super::on_a_thread;
 use crate::app_owner::SidebarOwner;
-use crate::commands::{content_routes, AppState};
+use crate::commands::{content_routes, DesktopState};
 use crate::snapshot::{GithubStatusSnapshot, PrInfo};
 
 fn stack_json() -> String {
@@ -32,7 +30,7 @@ fn stack_json() -> String {
 
 /// A working tab on a repo whose GitHub answers `gh stack view` with a
 /// two-layer stack, opened as the active tab.
-fn with_stacked_tab(test: impl FnOnce(&AppState, er_engine::TabKey)) {
+fn with_stacked_tab(test: impl FnOnce(&DesktopState, er_engine::TabKey)) {
     with_storage(|dir| {
         let git: Arc<dyn er_git::Git> = Arc::new(fake_git());
         let github =
@@ -49,9 +47,9 @@ fn with_stacked_tab(test: impl FnOnce(&AppState, er_engine::TabKey)) {
     });
 }
 
-fn pr(state: &AppState, key: er_engine::TabKey) -> (u64, TabPr) {
+fn pr(state: &DesktopState, key: er_engine::TabKey) -> (u64, TabPr) {
     let tab = er_service::wire_tab_key(key);
-    let fetched = crate::resources::fetch(&state.desktop, ResourceKey::Pr { tab })
+    let fetched = crate::resources::fetch(&state, ResourceKey::Pr { tab })
         .unwrap_or_else(|e| panic!("{e:?}"));
     match fetched.value {
         Resource::Pr(pr) => (fetched.version.0, *pr),
@@ -59,9 +57,9 @@ fn pr(state: &AppState, key: er_engine::TabKey) -> (u64, TabPr) {
     }
 }
 
-/// A stack refresh sent with the App locked lands in the PR section: the
-/// `Ack` names `pr(tab)` at a version above the one before, and `pr(tab)`
-/// at that version carries the stack as the snapshot's builder shows it.
+/// A stack refresh lands in the PR section: the `Ack` names `pr(tab)` at a
+/// version above the one before, and `pr(tab)` at that version carries the
+/// stack.
 #[test]
 fn a_stack_refresh_moves_pr_tab_and_carries_the_stack() {
     with_stacked_tab(|state, key| {
@@ -87,23 +85,6 @@ fn a_stack_refresh_moves_pr_tab_and_carries_the_stack() {
         let layers: Vec<&str> = stack.layers.iter().map(|l| l.branch.as_str()).collect();
         assert_eq!(layers, ["feature", "feature-2"]);
         assert_eq!((stack.position, stack.size), (Some(1), 2));
-
-        let info = er_engine::gh_stack::load_from_with(
-            &er_engine::github::FakeGitHub::default().with_stack_view_json(Ok(stack_json())),
-            &er_engine::gh_stack::StackSource::Checkout(String::new()),
-        );
-        assert!(matches!(info, StackInfo::Stack(_)), "{info:?}");
-        let state = StackState {
-            info: Some(info),
-            ..StackState::default()
-        };
-        let mut built = serde_json::to_value(crate::snapshot::snapshot_stack_state(true, &state))
-            .unwrap_or_else(|e| panic!("{e}"));
-        if let Some(fields) = built.as_object_mut() {
-            fields.remove("likely_stacked");
-        }
-        let wire = serde_json::to_value(&stack).unwrap_or_else(|e| panic!("{e}"));
-        assert_eq!(wire, built, "pr(tab)'s stack differs from the snapshot's");
     });
 }
 
@@ -155,8 +136,8 @@ fn a_stored_status_moves_pr_status_at_the_next_publish() {
             remote: "acme/widgets".into(),
             number: 7,
         };
-        let fetched = crate::resources::fetch(&state.desktop, wire.clone())
-            .unwrap_or_else(|e| panic!("{e:?}"));
+        let fetched =
+            crate::resources::fetch(&state, wire.clone()).unwrap_or_else(|e| panic!("{e:?}"));
         assert!(fetched.version.0 > 0, "the stored status moved no version");
         let Resource::PrStatus(held) = fetched.value else {
             panic!("not a status: {:?}", fetched.value);
@@ -209,19 +190,19 @@ fn the_status_loop_picks_the_active_pr_with_the_app_locked() {
                     pr_info(7, "feature", "OPEN"),
                 ],
             );
-        let picked = while_the_app_is_locked(state, "the status pick", |state| {
+        let picked = on_a_thread(state, "the status pick", |state| {
             crate::status_loop::pick(state)
         });
         assert_eq!(picked, Some(("acme".into(), "widgets".into(), 7)));
     });
 }
 
-fn status_of(state: &AppState, remote: &str, number: u64) -> (u64, PrStatus) {
+fn status_of(state: &DesktopState, remote: &str, number: u64) -> (u64, PrStatus) {
     let key = ResourceKey::PrStatus {
         remote: remote.into(),
         number,
     };
-    let fetched = crate::resources::fetch(&state.desktop, key).unwrap_or_else(|e| panic!("{e:?}"));
+    let fetched = crate::resources::fetch(&state, key).unwrap_or_else(|e| panic!("{e:?}"));
     match fetched.value {
         Resource::PrStatus(status) => (fetched.version.0, *status),
         other => panic!("not a status: {other:?}"),
@@ -243,7 +224,7 @@ fn a_status_fetch_shows_on_its_pr_status_while_it_runs() {
             number: 9,
         };
         let version = || {
-            crate::resources::version(&state.desktop, wire.clone())
+            crate::resources::version(&state, wire.clone())
                 .unwrap_or_else(|e| panic!("{e:?}"))
                 .0
         };
@@ -257,7 +238,7 @@ fn a_status_fetch_shows_on_its_pr_status_while_it_runs() {
         let (started, status) = status_of(&state, "acme/widgets", 9);
         assert!(status.fetching, "{status:?}");
         assert!(started > before, "{started} after {before}");
-        let watched = crate::resources::watched(&state.desktop);
+        let watched = crate::resources::watched(&state);
         let watched = watched.get(&crate::resources::Watched::Sidebar(wire.clone()));
         assert_eq!(watched, Some(&started));
         drop(fetch);
@@ -280,18 +261,16 @@ fn the_end_of_a_first_fetch_that_stored_nothing_is_pushed() {
             remote: "acme/widgets".into(),
             number: 9,
         });
-        let mut last = crate::resources::watched(&state.desktop);
+        let mut last = crate::resources::watched(&state);
         let fetch = state.begin_status_fetch(&key);
         assert!(fetch.is_some());
-        let began =
-            crate::resources::relay::moved(&mut last, crate::resources::watched(&state.desktop));
+        let began = crate::resources::relay::moved(&mut last, crate::resources::watched(&state));
         assert!(
             began.iter().any(|(k, _)| *k == wire),
             "begin not pushed: {began:?}"
         );
         drop(fetch);
-        let ended =
-            crate::resources::relay::moved(&mut last, crate::resources::watched(&state.desktop));
+        let ended = crate::resources::relay::moved(&mut last, crate::resources::watched(&state));
         let pushed = ended.iter().find(|(k, _)| *k == wire);
         assert!(pushed.is_some(), "end not pushed: {ended:?}");
         // What the page fetches for the pushed version says the fetch ended.
@@ -422,9 +401,9 @@ fn every_refresh_and_status_fetch_goes_through_its_guard() {
     }
 }
 
-fn jobs_of(state: &AppState) -> (u64, er_protocol::Jobs) {
-    let fetched = crate::resources::fetch(&state.desktop, ResourceKey::Jobs)
-        .unwrap_or_else(|e| panic!("{e:?}"));
+fn jobs_of(state: &DesktopState) -> (u64, er_protocol::Jobs) {
+    let fetched =
+        crate::resources::fetch(&state, ResourceKey::Jobs).unwrap_or_else(|e| panic!("{e:?}"));
     match fetched.value {
         Resource::Jobs(jobs) => (fetched.version.0, jobs),
         other => panic!("not jobs: {other:?}"),

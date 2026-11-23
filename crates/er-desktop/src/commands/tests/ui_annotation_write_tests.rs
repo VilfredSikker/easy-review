@@ -15,9 +15,9 @@ use super::annotation_write_tests::view;
 use super::annotations_resource_tests::branch_view_of_a_pr;
 use super::diff_command_tests::{send, with_tab};
 use super::diff_resource_tests::with_storage;
-use crate::commands::AppState;
 use crate::resources::tabs::Routed;
 use crate::resources::ui_annotation_writes;
+use crate::state::DesktopState;
 
 /// A one-pixel PNG's bytes do not matter here; the data URL's shape does.
 const SHOT: &str = "data:image/png;base64,iVBORw0KGgo=";
@@ -47,9 +47,9 @@ fn add(key: TabKey, view: PaintedView, id: &str, url: &str) -> Command {
 /// A write's own effect, read from the rows the fetch answers and its `Ack`.
 type Check<'a> = Box<dyn Fn(&[UiAnnotation], &Ack) + 'a>;
 
-fn fetched(state: &AppState, key: TabKey) -> (u64, Vec<UiAnnotation>) {
+fn fetched(state: &DesktopState, key: TabKey) -> (u64, Vec<UiAnnotation>) {
     let tab = er_service::wire_tab_key(key);
-    let fetched = crate::resources::fetch(&state.desktop, ResourceKey::UiAnnotations { tab })
+    let fetched = crate::resources::fetch(&state, ResourceKey::UiAnnotations { tab })
         .unwrap_or_else(|e| panic!("{e:?}"));
     match fetched.value {
         Resource::UiAnnotations(ui) => (fetched.version.0, ui.rows),
@@ -297,7 +297,7 @@ fn browser_annotation_writes_sent_together_each_land() {
                         }),
                     };
                     start.wait();
-                    match ui_annotation_writes::apply(&state.desktop, command) {
+                    match ui_annotation_writes::apply(&state, command) {
                         Routed::Applied(Ok(_)) => {}
                         Routed::Applied(Err(e)) => panic!("{id}: {e:?}"),
                         Routed::Other(_) => panic!("{id} was not a browser annotation write"),

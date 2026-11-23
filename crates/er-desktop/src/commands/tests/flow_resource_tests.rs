@@ -15,7 +15,7 @@ use super::arena_resource_tests::{bucket, local_ports, open, wait_until, Holding
 use super::diff_command_tests::send;
 use super::diff_resource_tests::{listed, with_storage};
 use super::{review_flow_test_state, ReviewFlowTestDir};
-use crate::commands::{content_routes, AppState};
+use crate::commands::{content_routes, DesktopState};
 use crate::flow_service::{self, Control};
 use crate::service::{actor_key, ServiceState};
 
@@ -45,7 +45,7 @@ pub(super) fn flow_state(
     dir: &ReviewFlowTestDir,
     ports: er_engine::ports::Ports,
     sink: Arc<HoldingSink>,
-) -> AppState {
+) -> DesktopState {
     let deps = WorkspaceDeps::new(ports.clone()).with_jobs(sink);
     state_with(dir, ports, deps, FLOW_CONFIG)
 }
@@ -57,13 +57,13 @@ pub(super) fn state_with(
     ports: er_engine::ports::Ports,
     deps: WorkspaceDeps,
     config: &str,
-) -> AppState {
+) -> DesktopState {
     let path = dir.path().join("settings").join("config.toml");
     std::fs::create_dir_all(path.parent().unwrap_or_else(|| Path::new("/")))
         .unwrap_or_else(|e| panic!("settings dir: {e}"));
     std::fs::write(&path, config).unwrap_or_else(|e| panic!("config: {e}"));
     let mut state = review_flow_test_state(dir);
-    state.desktop.ports = ports;
+    state.ports = ports;
     state.service = Arc::new(ServiceState::with_deps(deps, |_| {}).with_config_path(path));
     state
 }
@@ -91,11 +91,15 @@ fn write_interrupted_deep(bucket: &str) {
         .unwrap_or_else(|e| panic!("prepared diff hash: {e}"));
 }
 
-fn descriptor_bucket(state: &AppState, tab: &er_engine::tabs_record::TabDescriptor) -> String {
-    er_service::descriptor_bucket(&*state.desktop.ports.git, tab).unwrap_or_else(|e| panic!("{e}"))
+fn descriptor_bucket(state: &DesktopState, tab: &er_engine::tabs_record::TabDescriptor) -> String {
+    er_service::descriptor_bucket(&*state.ports.git, tab).unwrap_or_else(|e| panic!("{e}"))
 }
 
-fn recovered(state: &AppState, tab: &er_engine::tabs_record::TabDescriptor, bucket: &str) -> bool {
+fn recovered(
+    state: &DesktopState,
+    tab: &er_engine::tabs_record::TabDescriptor,
+    bucket: &str,
+) -> bool {
     state
         .service
         .published_view(&actor_key(tab))
@@ -104,16 +108,11 @@ fn recovered(state: &AppState, tab: &er_engine::tabs_record::TabDescriptor, buck
 
 /// Starts a review of the branch view on `tab`, painted on `er_dir`, with
 /// the App locked.
-fn start(state: &AppState, tab: TabKey, er_dir: String) -> Result<(), ErError> {
-    super::while_the_app_is_locked(state, "flow start", move |state| {
+fn start(state: &DesktopState, tab: TabKey, er_dir: String) -> Result<(), ErError> {
+    super::on_a_thread(state, "flow start", move |state| {
         let wire = er_service::wire_tab_key(tab);
-        let tab = crate::arena_service::tab(&state.desktop, Some(wire))?;
-        flow_service::run(
-            &state.desktop,
-            &tab,
-            er_dir,
-            Control::Start("branch".into()),
-        )
+        let tab = crate::arena_service::tab(&state, Some(wire))?;
+        flow_service::run(&state, &tab, er_dir, Control::Start("branch".into()))
     })
 }
 
@@ -168,9 +167,9 @@ fn a_flow_context_takes_the_saved_effort_with_the_app_locked() {
         assert!(saved.is_ok(), "{saved:?}");
 
         let wire = er_service::wire_tab_key(tab.0);
-        let context = super::while_the_app_is_locked(&state, "flow context", move |state| {
-            let tab = crate::arena_service::tab(&state.desktop, Some(wire))?;
-            Ok::<_, ErError>(flow_service::context(&state.desktop, &tab, Some("branch")))
+        let context = super::on_a_thread(&state, "flow context", move |state| {
+            let tab = crate::arena_service::tab(&state, Some(wire))?;
+            Ok::<_, ErError>(flow_service::context(&state, &tab, Some("branch")))
         })
         .unwrap_or_else(|e| panic!("{e:?}"));
 
@@ -192,9 +191,9 @@ fn acceptance_fetches_the_diff_of_the_tab_that_shows_the_run_target() {
         let shown = open(&state, dir.path(), "a");
         let er_dir = bucket(&state, &shown);
         let wire = er_service::wire_tab_key(shown.0);
-        let target = super::while_the_app_is_locked(&state, "flow context", move |state| {
-            let tab = crate::arena_service::tab(&state.desktop, Some(wire))?;
-            Ok::<_, ErError>(flow_service::context(&state.desktop, &tab, Some("branch")))
+        let target = super::on_a_thread(&state, "flow context", move |state| {
+            let tab = crate::arena_service::tab(&state, Some(wire))?;
+            Ok::<_, ErError>(flow_service::context(&state, &tab, Some("branch")))
         })
         .unwrap_or_else(|e| panic!("{e:?}"))
         .view
@@ -214,8 +213,8 @@ fn acceptance_fetches_the_diff_of_the_tab_that_shows_the_run_target() {
             "the fixture's tab does not show its own target"
         );
         let accept = |target: er_engine::task_target::BackgroundTaskTarget| {
-            super::while_the_app_is_locked(&state, "acceptance diff", move |state| {
-                flow_service::acceptance_diff(&state.desktop, &target)
+            super::on_a_thread(&state, "acceptance diff", move |state| {
+                flow_service::acceptance_diff(&state, &target)
             })
         };
 
@@ -226,7 +225,7 @@ fn acceptance_fetches_the_diff_of_the_tab_that_shows_the_run_target() {
         );
 
         let staged =
-            content_routes::set_tab_mode(&state.desktop, shown.0, "staged", DiffMode::Staged, None);
+            content_routes::set_tab_mode(&state, shown.0, "staged", DiffMode::Staged, None);
         assert!(staged.is_ok(), "{staged:?}");
         wait_until("the staged view to load", || {
             state
@@ -297,9 +296,9 @@ fn startup_recovery_recovers_each_listed_unloaded_tab_with_the_app_locked() {
             );
         }
 
-        super::while_the_app_is_locked(&state, "startup recovery", |state| {
+        super::on_a_thread(&state, "startup recovery", |state| {
             let tabs = state.service.app_registry().tabs_view();
-            flow_service::reconcile_on_load(&tabs, &state.desktop.ports, &state.service);
+            flow_service::reconcile_on_load(&tabs, &state.ports, &state.service);
         });
 
         for ((_, tab), bucket) in tabs.iter().zip(&buckets) {
@@ -321,7 +320,7 @@ fn a_flow_on_a_tab_moved_off_its_restore_mode_keys_by_its_content_bucket() {
         let state = flow_state(dir, local_ports(), Arc::clone(&sink));
         let moved = open(&state, dir.path(), "a");
         let staged =
-            content_routes::set_tab_mode(&state.desktop, moved.0, "staged", DiffMode::Staged, None);
+            content_routes::set_tab_mode(&state, moved.0, "staged", DiffMode::Staged, None);
         assert!(staged.is_ok(), "{staged:?}");
         wait_until("the staged view to load", || {
             state
@@ -336,10 +335,10 @@ fn a_flow_on_a_tab_moved_off_its_restore_mode_keys_by_its_content_bucket() {
             "the fixture's two buckets are one"
         );
         let other = open(&state, dir.path(), "b");
-        let active = flow_service::entry(&state.desktop, None).unwrap_or_else(|e| panic!("{e:?}"));
+        let active = flow_service::entry(&state, None).unwrap_or_else(|e| panic!("{e:?}"));
         assert_eq!(active.key, other.0);
 
-        let key = flow_service::flow_key(&state.desktop, &content_bucket, &active);
+        let key = flow_service::flow_key(&state, &content_bucket, &active);
 
         assert_eq!(key, actor_key(&moved.1));
         sink.release();
@@ -357,18 +356,17 @@ fn a_flow_command_finds_the_flow_actor_after_a_tab_switch() {
         let flow_tab = listed(&state, dir, "a");
         let other = listed(&state, dir, "b");
         let flow_bucket = descriptor_bucket(&state, &flow_tab.1);
-        let active =
-            || flow_service::entry(&state.desktop, None).unwrap_or_else(|e| panic!("{e:?}"));
+        let active = || flow_service::entry(&state, None).unwrap_or_else(|e| panic!("{e:?}"));
         assert_eq!(active().key, other.0);
 
         // No actor has published the flow yet: the listed tab on the bucket
         // names the actor.
-        let key = flow_service::flow_key(&state.desktop, &flow_bucket, &active());
+        let key = flow_service::flow_key(&state, &flow_bucket, &active());
         assert_eq!(key, actor_key(&flow_tab.1));
 
         write_interrupted_deep(&flow_bucket);
         let tabs = state.service.app_registry().tabs_view();
-        flow_service::reconcile_on_load(&tabs, &state.desktop.ports, &state.service);
+        flow_service::reconcile_on_load(&tabs, &state.ports, &state.service);
         wait_until("the recovered flow is published", || {
             recovered(&state, &flow_tab.1, &flow_bucket)
         });
@@ -384,7 +382,7 @@ fn a_flow_command_finds_the_flow_actor_after_a_tab_switch() {
             .service
             .send_app(AppCommand::CloseTab { key: flow_tab.0 });
         assert!(closed.is_ok(), "{closed:?}");
-        let key = flow_service::flow_key(&state.desktop, &flow_bucket, &active());
+        let key = flow_service::flow_key(&state, &flow_bucket, &active());
         assert_eq!(key, actor_key(&flow_tab.1));
         sink.release();
     });

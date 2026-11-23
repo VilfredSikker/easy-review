@@ -18,7 +18,7 @@ use er_service::WorkspaceDeps;
 use super::diff_command_tests::send;
 use super::diff_resource_tests::{raw_diff, with_storage};
 use super::{review_flow_test_state, ReviewFlowTestDir};
-use crate::commands::{content_routes, AppState};
+use crate::commands::{content_routes, DesktopState};
 use crate::service::{actor_key, ServiceState};
 
 const WAIT: Duration = Duration::from_secs(10);
@@ -95,13 +95,13 @@ pub(super) fn arena_state(
     dir: &ReviewFlowTestDir,
     ports: er_engine::ports::Ports,
     sink: Arc<HoldingSink>,
-) -> AppState {
+) -> DesktopState {
     let config = dir.path().join("settings").join("config.toml");
     std::fs::create_dir_all(config.parent().unwrap_or_else(|| Path::new("/")))
         .unwrap_or_else(|e| panic!("settings dir: {e}"));
     std::fs::write(&config, CONFIG).unwrap_or_else(|e| panic!("config: {e}"));
     let mut state = review_flow_test_state(dir);
-    state.desktop.ports = ports.clone();
+    state.ports = ports.clone();
     let deps = WorkspaceDeps::new(ports).with_jobs(sink);
     state.service = Arc::new(ServiceState::with_deps(deps, |_| {}).with_config_path(config));
     state
@@ -122,7 +122,7 @@ pub(super) fn local_ports() -> er_engine::ports::Ports {
 }
 
 /// Opens a Working tab on a directory of its own; it becomes the active tab.
-pub(super) fn open(state: &AppState, dir: &Path, name: &str) -> (TabKey, TabDescriptor) {
+pub(super) fn open(state: &DesktopState, dir: &Path, name: &str) -> (TabKey, TabDescriptor) {
     let root = dir.join(name);
     std::fs::create_dir_all(&root).unwrap_or_else(|e| panic!("{name}: {e}"));
     let tab = content_routes::working_tab(root.to_string_lossy().into_owned());
@@ -133,7 +133,7 @@ pub(super) fn open(state: &AppState, dir: &Path, name: &str) -> (TabKey, TabDesc
 }
 
 /// The tab's bucket once its content is published.
-pub(super) fn bucket(state: &AppState, (key, tab): &(TabKey, TabDescriptor)) -> String {
+pub(super) fn bucket(state: &DesktopState, (key, tab): &(TabKey, TabDescriptor)) -> String {
     wait_until("the tab's content", || {
         state.service.content(*key, tab).is_some()
     });
@@ -179,11 +179,11 @@ pub(super) fn record(bucket: &str, run_id: &str) -> Option<er_engine::arena::Are
 }
 
 /// Starts two fake reviewers on `tab` with the App locked; answers the run.
-pub(super) fn started(state: &AppState, tab: TabKey) -> String {
-    super::while_the_app_is_locked(state, "arena start", move |state| {
+pub(super) fn started(state: &DesktopState, tab: TabKey) -> String {
+    super::on_a_thread(state, "arena start", move |state| {
         let wire = er_service::wire_tab_key(tab);
-        let tab = crate::arena_service::tab(&state.desktop, Some(wire))?;
-        crate::arena_service::start(&state.desktop, &tab, params())
+        let tab = crate::arena_service::tab(&state, Some(wire))?;
+        crate::arena_service::start(&state, &tab, params())
     })
     .unwrap_or_else(|e| panic!("{e:?}"))
 }
@@ -284,14 +284,10 @@ fn an_arena_context_takes_the_viewed_branch_and_the_review_hash_with_the_app_loc
         });
 
         let wire = er_service::wire_tab_key(entry.0);
-        let arena = super::while_the_app_is_locked(&state, "arena context", move |state| {
-            let tab = crate::arena_service::tab(&state.desktop, Some(wire))?;
-            let config = crate::arena_service::config(&state.desktop);
-            Ok::<_, er_protocol::ErError>(crate::arena_service::context(
-                &state.desktop,
-                &tab,
-                config,
-            ))
+        let arena = super::on_a_thread(&state, "arena context", move |state| {
+            let tab = crate::arena_service::tab(&state, Some(wire))?;
+            let config = crate::arena_service::config(&state);
+            Ok::<_, er_protocol::ErError>(crate::arena_service::context(&state, &tab, config))
         })
         .unwrap_or_else(|e| panic!("{e:?}"));
 
@@ -348,7 +344,7 @@ fn a_tab_moved_off_its_restore_mode_lists_its_content_bucket() {
         let state = arena_state(dir, local_ports(), Arc::clone(&sink));
         let moved = open(&state, dir.path(), "a");
         let staged =
-            content_routes::set_tab_mode(&state.desktop, moved.0, "staged", DiffMode::Staged, None);
+            content_routes::set_tab_mode(&state, moved.0, "staged", DiffMode::Staged, None);
         assert!(staged.is_ok(), "{staged:?}");
         wait_until("the staged view to load", || {
             state
@@ -357,7 +353,7 @@ fn a_tab_moved_off_its_restore_mode_lists_its_content_bucket() {
                 .is_some_and(|c| c.tab.mode == DiffMode::Staged)
         });
         let content_bucket = bucket(&state, &moved);
-        let restore_bucket = er_service::descriptor_bucket(&*state.desktop.ports.git, &moved.1)
+        let restore_bucket = er_service::descriptor_bucket(&*state.ports.git, &moved.1)
             .unwrap_or_else(|e| panic!("{e}"));
         assert_ne!(
             content_bucket, restore_bucket,
@@ -365,11 +361,10 @@ fn a_tab_moved_off_its_restore_mode_lists_its_content_bucket() {
         );
         let other = open(&state, dir.path(), "b");
 
-        let tab =
-            crate::arena_service::tab(&state.desktop, Some(er_service::wire_tab_key(other.0)))
-                .unwrap_or_else(|e| panic!("{e:?}"));
-        let config = crate::arena_service::config(&state.desktop);
-        let arena = crate::arena_service::context(&state.desktop, &tab, config);
+        let tab = crate::arena_service::tab(&state, Some(er_service::wire_tab_key(other.0)))
+            .unwrap_or_else(|e| panic!("{e:?}"));
+        let config = crate::arena_service::config(&state);
+        let arena = crate::arena_service::context(&state, &tab, config);
 
         assert!(
             arena.buckets.contains(&content_bucket),

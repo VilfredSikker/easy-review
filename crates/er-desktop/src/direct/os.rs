@@ -11,9 +11,6 @@ use er_protocol::{ErError, OpenSource, OpenSourceKind};
 use tauri::State;
 
 use super::failed;
-#[cfg(not(feature = "v1-service"))]
-use crate::commands::AppState;
-#[cfg(feature = "v1-service")]
 use crate::state::DesktopState;
 
 /// What the open commands read of a tab: where a local edit can open, and
@@ -46,7 +43,6 @@ pub(crate) enum Target {
 
 const NO_FILE: &str = "No selected file";
 
-#[cfg(feature = "v1-service")]
 #[tauri::command]
 pub fn open_in_editor(
     tab: er_protocol::TabKey,
@@ -57,19 +53,8 @@ pub fn open_in_editor(
     open_source(tab, path, line, desktop)
 }
 
-#[cfg(not(feature = "v1-service"))]
-#[tauri::command]
-pub fn open_in_editor(
-    path: Option<String>,
-    line: Option<usize>,
-    state: State<AppState>,
-) -> Result<OpenSource, ErError> {
-    open_source(path, line, state)
-}
-
 /// Open the file in VS Code (`code -g path:line`) when a local checkout exists.
 /// No GitHub/browser fallback — desktop `e` key uses this exclusively.
-#[cfg(feature = "v1-service")]
 #[tauri::command]
 pub fn open_in_vscode(
     tab: er_protocol::TabKey,
@@ -78,20 +63,6 @@ pub fn open_in_vscode(
     desktop: State<DesktopState>,
 ) -> Result<OpenSource, ErError> {
     let source = content_source(&desktop, tab)?;
-    launch(
-        target(&source, path.as_deref(), line, Editor::VsCode),
-        Editor::VsCode,
-    )
-}
-
-#[cfg(not(feature = "v1-service"))]
-#[tauri::command]
-pub fn open_in_vscode(
-    path: Option<String>,
-    line: Option<usize>,
-    state: State<AppState>,
-) -> Result<OpenSource, ErError> {
-    let source = app_source(&state)?;
     launch(
         target(&source, path.as_deref(), line, Editor::VsCode),
         Editor::VsCode,
@@ -99,7 +70,6 @@ pub fn open_in_vscode(
 }
 
 /// Open the file in the editor when a local checkout holds it, else on GitHub.
-#[cfg(feature = "v1-service")]
 #[tauri::command]
 pub fn open_source(
     tab: er_protocol::TabKey,
@@ -114,22 +84,7 @@ pub fn open_source(
     )
 }
 
-#[cfg(not(feature = "v1-service"))]
-#[tauri::command]
-pub fn open_source(
-    path: Option<String>,
-    line: Option<usize>,
-    state: State<AppState>,
-) -> Result<OpenSource, ErError> {
-    let source = app_source(&state)?;
-    launch(
-        target(&source, path.as_deref(), line, Editor::Default),
-        Editor::Default,
-    )
-}
-
 /// The tab `wire` names, as its published content shows it.
-#[cfg(feature = "v1-service")]
 pub(crate) fn content_source(
     desktop: &DesktopState,
     wire: er_protocol::TabKey,
@@ -158,23 +113,6 @@ pub(crate) fn content_source(
         remote_repo: tab.remote_repo.clone(),
         repo_root: tab.repo_root.clone(),
         git: Arc::clone(&desktop.ports.git),
-    })
-}
-
-/// The App's active tab, read under its lock and released before any launch.
-#[cfg(not(feature = "v1-service"))]
-fn app_source(state: &AppState) -> Result<SourceTab, ErError> {
-    let app = state.app.lock().map_err(failed)?;
-    let tab = app.tab();
-    Ok(SourceTab {
-        local_root: tab.local_checkout_root().map(str::to_owned),
-        pr_head: tab.pr_data.as_ref().map(|pr| pr.head_branch.clone()),
-        pr_number: tab.pr_number,
-        local_branch_view: tab.local_branch_view.clone(),
-        current_branch: tab.current_branch.clone(),
-        remote_repo: tab.remote_repo.clone(),
-        repo_root: tab.repo_root.clone(),
-        git: Arc::clone(&tab.ports.git),
     })
 }
 
@@ -295,7 +233,6 @@ pub fn open_url_in_browser(url: String) -> Result<(), ErError> {
     crate::os_launch::open_external_url(&url).map_err(failed)
 }
 
-#[cfg(feature = "v1-service")]
 #[tauri::command]
 pub fn reveal_er_folder(
     tab: er_protocol::TabKey,
@@ -304,18 +241,7 @@ pub fn reveal_er_folder(
     reveal_folder(&view_bucket(&desktop, tab)?)
 }
 
-#[cfg(not(feature = "v1-service"))]
-#[tauri::command]
-pub fn reveal_er_folder(state: State<AppState>) -> Result<(), ErError> {
-    let er_dir = {
-        let app = state.app.lock().map_err(failed)?;
-        app.tab().er_dir()
-    };
-    reveal_folder(&er_dir)
-}
-
 /// The view bucket of the tab `wire` names: its content's `context.er_dir`.
-#[cfg(feature = "v1-service")]
 pub(crate) fn view_bucket(
     desktop: &DesktopState,
     wire: er_protocol::TabKey,

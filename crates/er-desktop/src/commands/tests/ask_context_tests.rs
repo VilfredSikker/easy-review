@@ -1,5 +1,4 @@
-//! The prompt context of an ask, read from a tab's published content with
-//! the flag on and from the App's tab with it off, by the same rules
+//! The prompt context of an ask, read from a tab's published content
 //! (`ask_context`): the raw diff, the branches, the provider's directory, and
 //! for a finding its fields and its line content.
 
@@ -8,9 +7,8 @@ use std::fmt::Write as _;
 use std::path::Path;
 use std::sync::Arc;
 
-use er_engine::app::TabState;
 use er_engine::ports::Ports;
-use er_engine::tab_identity::{resolve_descriptor, DiffMode};
+use er_engine::tab_identity::DiffMode;
 use er_engine::tabs_record::{TabDescriptor, TabKind};
 use er_engine::TabKey;
 use er_service::{TabContent, WorkspaceDeps};
@@ -18,8 +16,8 @@ use er_service::{TabContent, WorkspaceDeps};
 use super::arena_resource_tests::wait_until;
 use super::diff_resource_tests::with_storage;
 use super::{review_flow_test_state, ReviewFlowTestDir};
-use crate::ask_context::{finding_ask, AskContext, AskTab};
-use crate::commands::{content_routes, AppState};
+use crate::ask_context::{finding_ask, AskTab};
+use crate::commands::{content_routes, DesktopState};
 use crate::service::ServiceState;
 
 const HEAD: &str = "\
@@ -107,42 +105,10 @@ fn branch_view(repo: &str) -> TabDescriptor {
     tab
 }
 
-/// The App's side: the tab restored, refreshed, then switched through
-/// `steps`, with `parse`'s stub parsed as when the user opens it.
-fn app_tab(
-    ports: &Ports,
-    descriptor: &TabDescriptor,
-    steps: &[DiffMode],
-    parse: Option<&str>,
-) -> TabState {
-    let resolved = resolve_descriptor(&*ports.git, descriptor).unwrap_or_else(|e| panic!("{e}"));
-    let mut tab =
-        TabState::from_resolved(resolved, ports.clone()).unwrap_or_else(|e| panic!("{e}"));
-    let branch = er_engine::checkout::watched_branch(
-        tab.is_remote(),
-        tab.local_branch_view.as_deref(),
-        &tab.current_branch,
-    );
-    tab.local_branch_checkout_root = branch.and_then(|branch| {
-        er_engine::checkout::resolve_head_checkout(&*ports.git, &tab.repo_root, &branch)
-    });
-    tab.sync_managed_storage_light();
-    tab.refresh_diff()
-        .unwrap_or_else(|e| panic!("refresh: {e}"));
-    for step in steps {
-        tab.set_mode(*step);
-    }
-    if let Some(path) = parse {
-        let at = tab.files.iter().position(|f| f.path == path);
-        tab.ensure_file_parsed_at(at.unwrap_or_else(|| panic!("no {path} on the App")));
-    }
-    tab
-}
-
-/// The flag-on side: a state whose workspace reads `ports`.
-fn service_state(dir: &ReviewFlowTestDir, ports: &Ports) -> AppState {
+/// A state whose workspace reads `ports`.
+fn service_state(dir: &ReviewFlowTestDir, ports: &Ports) -> DesktopState {
     let mut state = review_flow_test_state(dir);
-    state.desktop.ports = ports.clone();
+    state.ports = ports.clone();
     let deps = WorkspaceDeps::new(ports.clone());
     let config = dir.path().join("settings").join("config.toml");
     state.service = Arc::new(ServiceState::with_deps(deps, |_| {}).with_config_path(config));
@@ -151,7 +117,7 @@ fn service_state(dir: &ReviewFlowTestDir, ports: &Ports) -> AppState {
 
 /// The tab opened in the registry and loaded, then switched to `mode`.
 fn content_tab(
-    state: &AppState,
+    state: &DesktopState,
     descriptor: &TabDescriptor,
     mode: Option<DiffMode>,
 ) -> (TabKey, Arc<TabContent>) {
@@ -167,7 +133,7 @@ fn content_tab(
         state.service.content(key, descriptor).is_some()
     });
     if let Some(mode) = mode {
-        let moved = content_routes::set_tab_mode(&state.desktop, key, mode.git_mode(), mode, None);
+        let moved = content_routes::set_tab_mode(&state, key, mode.git_mode(), mode, None);
         assert!(moved.is_ok(), "{moved:?}");
         wait_until("the switch", || {
             state
@@ -183,7 +149,7 @@ fn content_tab(
     (key, content)
 }
 
-/// What both sides must agree on in every view.
+/// The rows of an ask's context that every view sets.
 fn shown(tab: &AskTab<'_>) -> (String, String, String, String, Option<String>) {
     (
         tab.repo_root.to_string(),
@@ -195,17 +161,14 @@ fn shown(tab: &AskTab<'_>) -> (String, String, String, String, Option<String>) {
 }
 
 /// On a plain local tab in History, with the newest commit shown, the ask
-/// reads no raw diff on either side: the fetch refuses History. The content
-/// holds the commit's diff, which a step with no guard would answer. Files,
-/// finding fields and line content differ there by design: the App keeps the
-/// files of the view it left, the content keeps none.
+/// reads no raw diff: the fetch refuses History. The content holds the
+/// commit's diff, which a step with no guard would answer.
 #[test]
-fn a_history_ask_reads_the_same_raw_diff_branches_and_directory() {
+fn a_history_ask_reads_no_raw_diff() {
     with_storage(|dir| {
         let ports = ports(HEAD);
         let repo = repo(dir);
         let descriptor = content_routes::working_tab(repo.clone());
-        let app = app_tab(&ports, &descriptor, &[DiffMode::History], None);
         let state = service_state(dir, &ports);
         let (_, content) = content_tab(&state, &descriptor, Some(DiffMode::History));
         assert!(
@@ -213,9 +176,8 @@ fn a_history_ask_reads_the_same_raw_diff_branches_and_directory() {
             "the content shows no commit"
         );
 
-        let off = shown(&crate::commands::app_ask_tab(&app));
-        let on = shown(&crate::ai_ask::content_ask_tab(&state.desktop, &content));
-        assert_eq!(on, off);
+        let on = shown(&crate::ai_ask::content_ask_tab(&state, &content));
+        assert_eq!(on.0, repo);
         assert_eq!(on.4, None);
     });
 }
@@ -242,18 +204,14 @@ fn a_history_ask_on_an_unchecked_out_branch_reads_no_diff() {
             "the content shows no commit"
         );
 
-        assert_eq!(
-            er_service::ask_raw_diff(&state.desktop.ports, &content),
-            None
-        );
+        assert_eq!(er_service::ask_raw_diff(&state.ports, &content), None);
     });
 }
 
-/// A finding in a file the content holds as a stub, which the App parsed
-/// when the user opened it: with the flag on, the ask parses the stub first,
-/// so the whole context matches, line content included.
+/// A finding in a file the content holds as a stub: the ask parses the stub
+/// first, so it reads the finding's line content.
 #[test]
-fn a_finding_ask_on_a_stub_reads_the_same_context() {
+fn a_finding_ask_on_a_stub_reads_its_line_content() {
     with_storage(|dir| {
         let raw = lazy_raw();
         assert!(raw.len() > 200_000, "the fixture is not lazy");
@@ -264,17 +222,6 @@ fn a_finding_ask_on_a_stub_reads_the_same_context() {
             .unwrap_or_else(|e| panic!("{e}"));
         write_review(Path::new(&bucket), &raw);
         let path = "gen/f300.rs";
-
-        let app = app_tab(&ports, &descriptor, &[], Some(path));
-        assert!(app.lazy_mode, "the App did not parse lazily");
-        assert!(
-            app.files
-                .iter()
-                .any(|f| f.path == path && !f.hunks.is_empty()),
-            "the App did not parse the finding's file"
-        );
-        let off = finding_ask(crate::commands::app_ask_tab(&app), "f-1")
-            .unwrap_or_else(|e| panic!("{e}"));
 
         let state = service_state(dir, &ports);
         let (key, content) = content_tab(&state, &descriptor, None);
@@ -287,8 +234,7 @@ fn a_finding_ask_on_a_stub_reads_the_same_context() {
                 .any(|f| f.path == path && f.hunks.is_empty()),
             "the finding's file is not a stub"
         );
-        // A refresh parses the App's first file, the one it selects; the page
-        // asks the content for the file it shows.
+        // The page asks the content for the file it shows.
         let first = content.diff.files[0].path.clone();
         let parse = er_service::Command::ParseFiles {
             key,
@@ -299,17 +245,13 @@ fn a_finding_ask_on_a_stub_reads_the_same_context() {
             .service
             .send(&crate::service::actor_key(&descriptor), parse);
         assert!(parsed.is_ok(), "{parsed:?}");
-        let tab = crate::arena_service::tab(&state.desktop, Some(er_service::wire_tab_key(key)))
+        let tab = crate::arena_service::tab(&state, Some(er_service::wire_tab_key(key)))
             .unwrap_or_else(|e| panic!("{e:?}"));
-        let content = crate::ai_ask::parsed_for_finding(&state.desktop, &tab, "f-1");
-        let on = finding_ask(
-            crate::ai_ask::content_ask_tab(&state.desktop, &content),
-            "f-1",
-        )
-        .unwrap_or_else(|e| panic!("{e}"));
+        let content = crate::ai_ask::parsed_for_finding(&state, &tab, "f-1");
+        let on = finding_ask(crate::ai_ask::content_ask_tab(&state, &content), "f-1")
+            .unwrap_or_else(|e| panic!("{e}"));
 
-        assert!(off.line_content.is_some(), "the App read no line content");
-        assert_eq!(observed(&on), observed(&off));
+        assert!(on.line_content.is_some(), "the ask read no line content");
     });
 }
 
@@ -381,10 +323,6 @@ fn git(repo: &Path, args: &[&str]) {
         .output()
         .unwrap_or_else(|e| panic!("git: {e}"));
     assert!(output.status.success(), "git {args:?}: {output:?}");
-}
-
-fn observed(ask: &AskContext) -> String {
-    format!("{ask:?}")
 }
 
 fn write_review(bucket: &Path, raw: &str) {

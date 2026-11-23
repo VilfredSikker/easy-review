@@ -1,6 +1,5 @@
 <script lang="ts">
   import { onMount, tick, untrack } from "svelte";
-  import { invoke } from "@tauri-apps/api/core";
   import { openSource as openFile, selectedSource } from "$lib/tabCommands";
   import { devHeightProbeOn } from "$lib/dev/heightProbe";
   import { app, type DiffViewMode } from "$lib/stores/app.svelte";
@@ -8,7 +7,6 @@
   import { sessionResource } from "$lib/stores/sessionResource.svelte";
   import { diffResource, loadHashedHunks } from "$lib/stores/diffResource.svelte";
   import { layoutPanels } from "$lib/stores/layoutPanels.svelte";
-  import { tabViewKey } from "$lib/viewIdentity";
   import { diffSel } from "$lib/stores/diffSelection.svelte";
   import { diffScroll } from "$lib/stores/diffScroll.svelte";
   import { diffPreview } from "$lib/stores/diffPreview.svelte";
@@ -142,13 +140,6 @@
     if (a.size !== b.size) return false;
     for (const x of a) if (!b.has(x)) return false;
     return true;
-  }
-
-  function evictSpanKeysForPath(filePath: string): void {
-    const prefix = `${filePath}::`;
-    for (const key of _spansAppliedKeys) {
-      if (key.startsWith(prefix)) _spansAppliedKeys.delete(key);
-    }
   }
 
   function syntaxHighlightingEnabled(): boolean {
@@ -930,81 +921,15 @@
    *  holds the app mutex for one call). */
   const REQUEST_FILE_BATCH = 12;
 
-  // `request_file_content` returns only the requested files' `FileSnapshot`s
-  // (not the whole `AppSnapshot`), which we merge in place. This keeps the
-  // viewport-driven lazy round-trip cheap on large diffs — a fast-scroll burst
-  // that reveals several stubs is one call, not N full-snapshot serializations.
-  /** The view a lazy request was issued from. */
-  interface LazyRequestView {
-    tabKey: string | null;
-    tab: AppSnapshot["active_tab"] | undefined;
-    mode: AppSnapshot["mode"] | undefined;
-    base: AppSnapshot["base"] | undefined;
-    branch: AppSnapshot["branch"] | undefined;
-  }
-
-  function lazyRequestView(snap: AppSnapshot | null): LazyRequestView {
-    return {
-      tabKey: snap ? tabViewKey(snap) : null,
-      tab: snap?.active_tab,
-      mode: snap?.mode,
-      base: snap?.base,
-      branch: snap?.branch,
-    };
-  }
-
-  function viewChangedSince(req: LazyRequestView, snap: AppSnapshot): boolean {
-    return (
-      (req.tabKey !== null && tabViewKey(snap) !== req.tabKey) ||
-      snap.active_tab !== req.tab ||
-      snap.mode !== req.mode ||
-      snap.base !== req.base ||
-      snap.branch !== req.branch
-    );
-  }
-
-  function mergeLazyFile(snap: AppSnapshot, newFile: FileSnapshot): void {
-    const oldFile = snap.files.find((f) => f.source_index === newFile.source_index);
-    if (!oldFile) return;
-    const prevCacheKey = oldFile.cache_key;
-    oldFile.hunks = newFile.hunks;
-    oldFile.is_lazy_stub = newFile.is_lazy_stub;
-    oldFile.compacted = newFile.compacted;
-    oldFile.additions = newFile.additions;
-    oldFile.deletions = newFile.deletions;
-    oldFile.cache_key = newFile.cache_key;
-    // Keep delta_key in sync so later differential snapshots can omit
-    // this file's hunks against the content we just received.
-    oldFile.delta_key = newFile.delta_key;
-    // Parsed but still a stub → no hunks will ever come from this file; don't
-    // ask again until the context changes.
-    if (newFile.is_lazy_stub) _deadStubs.add(`${newFile.source_index}:${newFile.path}`);
-    // Only evict highlight spans when the hunks actually changed (cache_key
-    // changed) — skipping eviction on unchanged hunks avoids a redundant flush.
-    if (prevCacheKey !== newFile.cache_key) {
-      evictSpanKeysForPath(oldFile.path);
-    }
-  }
-
   async function requestLazyFiles(sourceIndices: number[]): Promise<void> {
     const fresh = sourceIndices.filter((i) => !_requestingFiles.has(i));
     if (fresh.length === 0) return;
     for (const i of fresh) _requestingFiles.add(i);
-    const reqView = lazyRequestView(pageView.current);
     try {
       // A file's hunks are fetched by the hash its row names.
       if (await loadHashedHunks((pageView.current?.files ?? []).filter((f) => fresh.includes(f.source_index)))) {
         scheduleHighlightDrain();
-        return;
       }
-      const loaded = await invoke<FileSnapshot[]>("request_file_content", {
-        sourceIndices: fresh,
-      });
-      if (!loaded || !pageView.current) return;
-      // Drop stale responses: the view changed while the round-trip was in flight.
-      if (viewChangedSince(reqView, pageView.current)) return;
-      for (const newFile of loaded) mergeLazyFile(pageView.current, newFile);
-      scheduleHighlightDrain();
     } finally {
       for (const i of fresh) _requestingFiles.delete(i);
     }

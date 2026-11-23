@@ -159,7 +159,8 @@ describe("resource source scans", () => {
     const store = stripped(APP_STORE);
     const start = store.indexOf("  async cmd(");
     const body = store.slice(start, store.indexOf("\n  }\n", start));
-    expect(body).toMatch(/await \(this\.routed\(command, args\) \?\? invoke\(command, args\)\);/);
+    expect(body).toMatch(/if \(routed === null\) throw new Error\(/);
+    expect(body).not.toMatch(/invoke/);
     const wiring = stripped(join("lib", "stores", "tabsResource.svelte.ts"));
     expect(wiring).toMatch(/app\.routeCmds\(\(command, args\) => tabsResource\.route\(command, args\)\);\s*routePrefetches\(/);
   });
@@ -212,10 +213,10 @@ describe("resource source scans", () => {
     expect(read(APP_ROOT)).not.toContain("er://revision");
   });
 
-  it("the review and screenshot reads go through the annotation reads, which fetch them with the flag on", () => {
+  it("the review and screenshot reads go through the annotation reads, which fetch them", () => {
     const old = /invoke(?:<[^>]*>)?\(\s*"(read_review_json|list_review_revisions|read_annotation_screenshot)"/;
     const callers = sources().filter((f) => old.test(stripped(f)));
-    expect(callers).toEqual([join("lib", "stores", "annotationReads.ts")]);
+    expect(callers).toEqual([]);
     const reads = stripped(join("lib", "stores", "annotationReads.ts"));
     for (const kind of ["review_json", "review_revisions", "annotation_screenshot"]) {
       expect(reads).toContain(`kind: "${kind}"`);

@@ -1,18 +1,18 @@
-//! The flag-on inbox: `inbox` holds the snapshot's items, unread count and
-//! last refresh, built on the server with the settings actor's prefs; the
-//! inbox commands go through `er_send` to the sidebar's owner; and the PR
-//! sweep and the setup hook read their prefs with the App locked.
+//! The inbox: `inbox` holds the items, unread count and last refresh, built
+//! on the server with the settings actor's prefs; the inbox commands go
+//! through `er_send` to the sidebar's owner; and the PR sweep and the setup
+//! hook read their prefs from the settings actor.
 
 use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 
 use er_protocol::{Command, ConfigFieldValue, ErErrorKind, Inbox, Resource, ResourceKey};
 
+use super::on_a_thread;
 use super::tab_resource_tests::{dir_in, register_project, send_locked, state as tab_state};
-use super::while_the_app_is_locked;
-use super::{review_flow_test_state, snap_from, ReviewFlowTestDir};
+use super::{review_flow_test_state, ReviewFlowTestDir};
 use crate::app_owner::{startup, AppOwner};
-use crate::commands::{content_routes, AppState};
+use crate::commands::{content_routes, DesktopState};
 use crate::inbox::{InboxItem, InboxTarget};
 use crate::resources;
 
@@ -45,7 +45,7 @@ fn item(id: &str, kind: &str, created_at_ms: u64, read_at_ms: Option<u64>) -> In
 }
 
 /// Three unread items and one read, newest first, last swept at 42.
-fn inbox_fixture(dir: &ReviewFlowTestDir) -> AppState {
+fn inbox_fixture(dir: &ReviewFlowTestDir) -> DesktopState {
     let state = review_flow_test_state(dir);
     {
         let mut inbox = state.inbox.lock().unwrap();
@@ -64,17 +64,17 @@ fn inbox_fixture(dir: &ReviewFlowTestDir) -> AppState {
     state
 }
 
-fn fetch_inbox(state: &AppState) -> (u64, Inbox) {
-    let fetched = resources::fetch(&state.desktop, ResourceKey::Inbox).unwrap();
+fn fetch_inbox(state: &DesktopState) -> (u64, Inbox) {
+    let fetched = resources::fetch(&state, ResourceKey::Inbox).unwrap();
     let Resource::Inbox(inbox) = fetched.value else {
         panic!("{:?}", fetched.value);
     };
     (fetched.version.0, inbox)
 }
 
-fn apply(state: &AppState, command: Command) -> Result<er_protocol::Ack, er_protocol::ErError> {
+fn apply(state: &DesktopState, command: Command) -> Result<er_protocol::Ack, er_protocol::ErError> {
     resources::send::apply(
-        &state.desktop,
+        &state,
         command,
         &resources::send::Effects {
             notify: &|_, _| {},
@@ -86,13 +86,12 @@ fn apply(state: &AppState, command: Command) -> Result<er_protocol::Ack, er_prot
     .map(|applied| applied.ack)
 }
 
-fn send(state: &AppState, command: Command) -> er_protocol::Ack {
+fn send(state: &DesktopState, command: Command) -> er_protocol::Ack {
     apply(state, command).unwrap()
 }
 
-/// Hides CI failures in the settings actor's config, and leaves the App's
-/// config showing them.
-fn hide_ci_in_settings(state: &AppState) {
+/// Hides CI failures in the settings actor's config.
+fn hide_ci_in_settings(state: &DesktopState) {
     send(
         state,
         Command::ApplyConfigPatch {
@@ -100,7 +99,6 @@ fn hide_ci_in_settings(state: &AppState) {
             value: ConfigFieldValue::Bool(false),
         },
     );
-    assert!(state.app.lock().unwrap().config.inbox.show.ci_failed);
 }
 
 /// Polls `done` for up to five seconds, and answers whether it came true.
@@ -198,78 +196,28 @@ fn every_inbox_command_reaches_the_sidebar_owner() {
     });
 }
 
-/// `inbox` lists what the snapshot lists, in its order, with the same fields
-/// and categories, and counts unread the same way: a kind the person hid is
-/// left out of the items and of the count. Each side reads its own prefs,
-/// so both hide CI failures here.
+/// A kind the person hid is left out of `inbox`'s items and of its unread
+/// count, and the items keep their order.
 #[test]
-fn the_inbox_matches_the_snapshot() {
+fn the_inbox_leaves_out_hidden_kinds() {
     with_storage(|dir| {
         let state = inbox_fixture(dir);
         hide_ci_in_settings(&state);
-        state.app.lock().unwrap().config.inbox.show.ci_failed = false;
         state.app_owner.publish();
 
         let (_, inbox) = fetch_inbox(&state);
-        let snap = snap_from(&state.app.lock().unwrap(), &state);
         assert_eq!(inbox.unread_count, 2);
-        assert_eq!(
-            usize::try_from(inbox.unread_count).unwrap(),
-            snap.inbox_unread_count
-        );
-        assert_eq!(inbox.last_refresh_ms, snap.inbox_last_refresh_ms);
-        assert_eq!(inbox.items.len(), snap.inbox_items.len());
-        for (wire, shown) in inbox.items.iter().zip(&snap.inbox_items) {
-            let fields = |w: &er_protocol::InboxItem| {
-                (
-                    w.id.clone(),
-                    w.kind.clone(),
-                    w.category.clone(),
-                    w.severity.clone(),
-                    w.title.clone(),
-                    w.body.clone(),
-                    w.source.clone(),
-                    w.created_at_ms,
-                    w.read_at_ms,
-                    w.dedupe_key.clone(),
-                )
-            };
-            let snapshot_fields = (
-                shown.id.clone(),
-                shown.kind.clone(),
-                shown.category.clone(),
-                shown.severity.clone(),
-                shown.title.clone(),
-                shown.body.clone(),
-                shown.source.clone(),
-                shown.created_at_ms,
-                shown.read_at_ms,
-                shown.dedupe_key.clone(),
-            );
-            assert_eq!(fields(wire), snapshot_fields);
-            let target = &wire.target;
-            let target = serde_json::json!({
-                "project_id": target.project_id,
-                "repo_root": target.repo_root,
-                "remote": target.remote,
-                "pr_number": target.pr_number,
-                "branch": target.branch,
-                "url": target.url,
-            });
-            assert_eq!(target, shown.target, "{}", wire.id);
-        }
         let ids: Vec<&str> = inbox.items.iter().map(|i| i.id.as_str()).collect();
         assert_eq!(ids, ["merged", "review", "ai"]);
     });
 }
 
-/// Runs `read` on another thread while this one holds the App's lock, and
-/// answers what it returned, or none when it waited on the App.
-fn with_the_app_locked<T: Send + 'static>(
-    state: &AppState,
-    read: impl FnOnce(&AppState) -> T + Send + 'static,
+/// Runs `read` on another thread, and answers what it returned, or none when
+/// it did not return in time.
+fn off_thread<T: Send + 'static>(
+    state: &DesktopState,
+    read: impl FnOnce(&DesktopState) -> T + Send + 'static,
 ) -> Option<T> {
-    let _held = state.app.lock().unwrap();
     let (tx, rx) = mpsc::channel();
     let worker = state.clone();
     std::thread::spawn(move || {
@@ -278,28 +226,26 @@ fn with_the_app_locked<T: Send + 'static>(
     rx.recv_timeout(Duration::from_secs(5)).ok()
 }
 
-/// The PR sweep's inbox prefs come from the settings actor's view, so a held
-/// App lock does not hold up the sweep, and the App's config is not what it
-/// reads.
+/// The PR sweep's inbox prefs come from the settings actor's view.
 #[test]
-fn the_sweep_reads_the_inbox_prefs_with_the_app_locked() {
+fn the_sweep_reads_the_inbox_prefs_off_thread() {
     with_storage(|dir| {
         let state = review_flow_test_state(dir);
         hide_ci_in_settings(&state);
-        let prefs = with_the_app_locked(&state, startup::inbox_prefs)
-            .expect("the sweep's prefs waited on the App");
+        let prefs =
+            off_thread(&state, startup::inbox_prefs).expect("the sweep's prefs never returned");
         assert!(!prefs.show.ci_failed);
     });
 }
 
 /// The setup hook flushes the pending native notifications with prefs from
-/// the settings actor, so it runs while the App is locked.
+/// the settings actor.
 #[test]
-fn the_setup_flush_reads_its_prefs_with_the_app_locked() {
+fn the_setup_flush_reads_its_prefs_off_thread() {
     with_storage(|dir| {
         let state = review_flow_test_state(dir);
-        let flushed = with_the_app_locked(&state, startup::flush_pending_notifications);
-        assert!(flushed.is_some(), "the setup flush waited on the App");
+        let flushed = off_thread(&state, startup::flush_pending_notifications);
+        assert!(flushed.is_some(), "the setup flush never returned");
     });
 }
 
@@ -338,27 +284,27 @@ fn register_remote_only(id: &str, remote: &str) {
 
 /// `tab_resource_tests`' state, which opens through fake ports, with the
 /// sidebar's owner reading its inbox prefs from that state's settings actor.
-fn open_state(dir: &ReviewFlowTestDir) -> AppState {
+fn open_state(dir: &ReviewFlowTestDir) -> DesktopState {
     let mut state = tab_state(dir);
-    state.desktop.app_owner = Arc::new(AppOwner::new(
+    state.app_owner = Arc::new(AppOwner::new(
         Arc::clone(&state.meta_cache),
         Arc::clone(&state.pr_cache),
         Arc::clone(&state.pr_cache_fetched_at),
         Arc::clone(&state.gh_user),
         Arc::clone(&state.inbox),
     ));
-    startup::read_inbox_prefs_from_settings(&state.desktop);
+    startup::read_inbox_prefs_from_settings(&state);
     state
 }
 
-/// An inbox open through `er_send` answers while the App is locked: it marks
+/// An inbox open through `er_send` marks
 /// the item read and opens its target in a new tab beside the active one, and
 /// its `Ack` names `inbox` and `tabs`, with the new tab as created. A target
 /// no project holds is refused after the read lands. A prefetch answers at
 /// once and moves nothing, and the remote item's warms the registry's remote
 /// open cache. An open with `replace` takes the active tab's place.
 #[test]
-fn an_inbox_open_reads_the_item_and_opens_its_target_with_the_app_locked() {
+fn an_inbox_open_reads_the_item_and_opens_its_target_off_thread() {
     with_storage(|dir| {
         let state = open_state(dir);
         let root = dir_in(dir, "widgets");
@@ -377,7 +323,7 @@ fn an_inbox_open_reads_the_item_and_opens_its_target_with_the_app_locked() {
         state.app_owner.publish();
         // A tab is active first, so an open that replaces it adds no tab.
         let working = content_routes::working_tab(dir_in(dir, "working"));
-        let opened = while_the_app_is_locked(&state, "open", move |state| {
+        let opened = on_a_thread(&state, "open", move |state| {
             content_routes::open(state, working, false)
         });
         assert!(opened.is_ok(), "{opened:?}");
@@ -393,7 +339,7 @@ fn an_inbox_open_reads_the_item_and_opens_its_target_with_the_app_locked() {
         let view = state.service.app_registry().tabs_view();
         assert_eq!(view.tabs.len(), before + 1, "the open added no tab");
         let tabs = ack.changed.iter().find(|c| c.key == ResourceKey::Tabs);
-        let version = crate::resources::version(&state.desktop, ResourceKey::Tabs);
+        let version = crate::resources::version(&state, ResourceKey::Tabs);
         assert_eq!(
             tabs.map(|c| c.version),
             version.ok(),
@@ -486,7 +432,7 @@ fn the_mark_read_reports_its_flag_on_median() {
             let fetched: Vec<_> = ack
                 .changed
                 .into_iter()
-                .map(|changed| resources::fetch(&state.desktop, changed.key))
+                .map(|changed| resources::fetch(&state, changed.key))
                 .collect::<Result<_, _>>()
                 .unwrap_or_else(|e| panic!("fetch: {e:?}"));
             bytes = serde_json::to_vec(&fetched).map(|v| v.len()).unwrap_or(0);

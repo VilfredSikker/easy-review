@@ -8,20 +8,20 @@ use er_protocol::{Ack, Command, ErErrorKind, PaintedView, Resource, ResourceKey,
 
 use super::diff_command_tests::{send, with_tab};
 use super::diff_resource_tests::{fake_git, fake_ports, state_over, with_storage};
-use crate::commands::{content_routes, AppState};
+use crate::commands::{content_routes, DesktopState};
 
-fn reviewed(state: &AppState, key: TabKey) -> (u64, TabReviewed) {
+fn reviewed(state: &DesktopState, key: TabKey) -> (u64, TabReviewed) {
     let key = ResourceKey::Reviewed {
         tab: er_service::wire_tab_key(key),
     };
-    let fetched = crate::resources::fetch(&state.desktop, key).unwrap_or_else(|e| panic!("{e:?}"));
+    let fetched = crate::resources::fetch(&state, key).unwrap_or_else(|e| panic!("{e:?}"));
     match fetched.value {
         Resource::Reviewed(reviewed) => (fetched.version.0, reviewed),
         other => panic!("not the marks: {other:?}"),
     }
 }
 
-fn marks(state: &AppState, key: TabKey) -> Vec<String> {
+fn marks(state: &DesktopState, key: TabKey) -> Vec<String> {
     reviewed(state, key).1.paths
 }
 
@@ -135,7 +135,7 @@ fn named(ack: &Ack) -> Vec<(ResourceKey, u64)> {
 }
 
 /// A tour whose one pillar holds `src/f0.rs`, in the tab's review bucket.
-fn seed_tour(state: &AppState, key: TabKey, tab: &er_engine::tabs_record::TabDescriptor) {
+fn seed_tour(state: &DesktopState, key: TabKey, tab: &er_engine::tabs_record::TabDescriptor) {
     let content = state.service.content(key, tab).expect("the loaded tab");
     er_engine::test_support::write_sidecar_json::<er_engine::ai::ErTour>(
         std::path::Path::new(&content.context.er_dir),
@@ -267,11 +267,11 @@ fn the_mark_reviewed_reports_its_flag_on_median() {
                     path,
                     reviewed: run % 2 == 0,
                 };
-                let applied = crate::resources::send::apply(&state.desktop, command, &effects);
+                let applied = crate::resources::send::apply(&state, command, &effects);
                 let ack = applied.unwrap_or_else(|e| panic!("{e:?}")).ack;
                 let keys = ack.changed.into_iter().map(|c| c.key);
                 let keys = keys.filter(|k| all || matches!(k, ResourceKey::Reviewed { .. }));
-                let fetched = crate::resources::fetch_all(&state.desktop, keys.collect())
+                let fetched = crate::resources::fetch_all(&state, keys.collect())
                     .unwrap_or_else(|e| panic!("{e:?}"));
                 bytes = serde_json::to_vec(&fetched).map(|v| v.len()).unwrap_or(0);
                 if run >= 5 {

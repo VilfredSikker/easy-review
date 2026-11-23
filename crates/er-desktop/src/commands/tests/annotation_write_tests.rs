@@ -16,13 +16,13 @@ use er_service::AppCommand;
 use super::diff_command_tests::{send, with_tab};
 use super::diff_resource_tests::{fake_ports, state_over, with_storage};
 use super::watcher_tests::{canonical, git};
-use crate::commands::{content_routes, AppState};
+use crate::commands::{content_routes, DesktopState};
 use crate::service::actor_key;
 use crate::snapshot::PendingAiReply;
 
-pub(super) fn annotations(state: &AppState, key: TabKey) -> (u64, Annotations) {
+pub(super) fn annotations(state: &DesktopState, key: TabKey) -> (u64, Annotations) {
     let tab = er_service::wire_tab_key(key);
-    let fetched = crate::resources::fetch(&state.desktop, ResourceKey::Annotations { tab })
+    let fetched = crate::resources::fetch(&state, ResourceKey::Annotations { tab })
         .unwrap_or_else(|e| panic!("{e:?}"));
     match fetched.value {
         Resource::Annotations(annotations) => (fetched.version.0, *annotations),
@@ -30,11 +30,11 @@ pub(super) fn annotations(state: &AppState, key: TabKey) -> (u64, Annotations) {
     }
 }
 
-pub(super) fn view(state: &AppState, key: TabKey) -> PaintedView {
+pub(super) fn view(state: &DesktopState, key: TabKey) -> PaintedView {
     annotations(state, key).1.view
 }
 
-fn thread_ids(state: &AppState, key: TabKey) -> Vec<String> {
+fn thread_ids(state: &DesktopState, key: TabKey) -> Vec<String> {
     let threads = annotations(state, key).1.ai.threads;
     threads.into_iter().map(|thread| thread.id).collect()
 }
@@ -57,7 +57,7 @@ fn question(key: TabKey, view: PaintedView, client_id: &str) -> Command {
 
 /// Opens a Working tab on a directory of its own and answers its key; the
 /// tab it opens is the active one.
-fn open(state: &AppState, dir: &Path, name: &str) -> TabKey {
+fn open(state: &DesktopState, dir: &Path, name: &str) -> TabKey {
     let root = dir.join(name);
     std::fs::create_dir_all(&root).unwrap_or_else(|e| panic!("{name}: {e}"));
     let tab = content_routes::working_tab(root.to_string_lossy().into_owned());
@@ -202,11 +202,8 @@ fn deleting_a_thread_drops_its_pending_ai_reply_from_jobs() {
             started_at_ms: 1,
             ai_action: Some(er_engine::ai::AI_ACTION_ASK),
         };
-        state
-            .desktop
-            .pending_ai_replies
-            .insert("q-1-5".into(), reply);
-        let jobs = || match crate::resources::fetch(&state.desktop, ResourceKey::Jobs) {
+        state.pending_ai_replies.insert("q-1-5".into(), reply);
+        let jobs = || match crate::resources::fetch(&state, ResourceKey::Jobs) {
             Ok(fetched) => match fetched.value {
                 Resource::Jobs(jobs) => (fetched.version.0, jobs.ai_replies),
                 other => panic!("{other:?}"),
@@ -237,7 +234,7 @@ fn deleting_a_thread_drops_its_pending_ai_reply_from_jobs() {
 }
 
 /// A repo whose README has an unstaged edit, open in its Unstaged view.
-fn readme_tab(state: &AppState, root: &Path) -> (TabKey, TabDescriptor) {
+fn readme_tab(state: &DesktopState, root: &Path) -> (TabKey, TabDescriptor) {
     std::fs::create_dir_all(root).unwrap_or_else(|e| panic!("repo dir: {e}"));
     git(root, &["init", "-q", "-b", "main"]);
     std::fs::write(root.join("README.md"), "# one\n").unwrap_or_else(|e| panic!("{e}"));
@@ -261,9 +258,9 @@ fn readme_tab(state: &AppState, root: &Path) -> (TabKey, TabDescriptor) {
 }
 
 /// README's preview key in the tab's content as it is now.
-fn readme_key(state: &AppState, key: TabKey) -> String {
+fn readme_key(state: &DesktopState, key: TabKey) -> String {
     let tab = er_service::wire_tab_key(key);
-    let context = match crate::resources::fetch(&state.desktop, ResourceKey::Diff { tab }) {
+    let context = match crate::resources::fetch(&state, ResourceKey::Diff { tab }) {
         Ok(fetched) => match fetched.value {
             Resource::Diff(diff) => diff.preview_context_key,
             other => panic!("not a diff: {other:?}"),
@@ -272,7 +269,7 @@ fn readme_key(state: &AppState, key: TabKey) -> String {
     };
     let path = "README.md".to_string();
     let preview = ResourceKey::FilePreview { tab, path, context };
-    match crate::resources::fetch(&state.desktop, preview).map(|f| f.value) {
+    match crate::resources::fetch(&state, preview).map(|f| f.value) {
         Ok(Resource::FilePreview(preview)) => preview.preview_key,
         other => panic!("not a preview: {other:?}"),
     }
@@ -363,11 +360,11 @@ fn the_add_question_reports_its_flag_on_median() {
         for run in 0..50 {
             let started = Instant::now();
             let command = question(key, painted.clone(), &format!("q-latency-{run}"));
-            let applied = crate::resources::send::apply(&state.desktop, command, &effects);
+            let applied = crate::resources::send::apply(&state, command, &effects);
             let ack = applied.unwrap_or_else(|e| panic!("{e:?}")).ack;
             let keys = ack.changed.into_iter().map(|c| c.key).collect();
-            let fetched = crate::resources::fetch_all(&state.desktop, keys)
-                .unwrap_or_else(|e| panic!("{e:?}"));
+            let fetched =
+                crate::resources::fetch_all(&state, keys).unwrap_or_else(|e| panic!("{e:?}"));
             bytes = serde_json::to_vec(&fetched).map(|v| v.len()).unwrap_or(0);
             if run >= 5 {
                 samples.push(started.elapsed());

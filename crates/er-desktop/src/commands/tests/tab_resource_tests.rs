@@ -13,12 +13,12 @@ use er_protocol::{
 };
 use er_service::wire_tab_key;
 
-use super::{review_flow_test_state, while_the_app_is_locked, ReviewFlowTestDir};
+use super::{on_a_thread, review_flow_test_state, ReviewFlowTestDir};
 use crate::browser_webview::TabWebviews;
-use crate::commands::{content_routes, AppState};
+use crate::commands::{content_routes, DesktopState};
 use crate::resources::send::{apply, Effects};
 use crate::service::ServiceState;
-use crate::view_state::{BrowserUpdate, ViewStateHandle};
+use crate::view_state::ViewStateHandle;
 
 const REMOTE: &str = "acme/widgets";
 const WAIT: Duration = Duration::from_secs(5);
@@ -69,7 +69,7 @@ fn remote_overview() -> er_engine::github::PrOverviewData {
     }
 }
 
-pub(super) fn state(dir: &ReviewFlowTestDir) -> AppState {
+pub(super) fn state(dir: &ReviewFlowTestDir) -> DesktopState {
     let mut state = review_flow_test_state(dir);
     let settings = dir.path().join("settings").join("config.toml");
     state.service = Arc::new(ServiceState::with_settings_path(ports(), settings));
@@ -137,12 +137,12 @@ impl TabWebviews for Webviews {
 
 /// Sends `command` through `er_send`'s body while the App is locked.
 pub(super) fn send_locked(
-    state: &AppState,
+    state: &DesktopState,
     command: Command,
     picked: Option<String>,
 ) -> Result<Ack, er_protocol::ErError> {
     let what = format!("{command:?}");
-    while_the_app_is_locked(state, &what, move |state| {
+    on_a_thread(state, &what, move |state| {
         let pick = move || picked.clone();
         let effects = Effects {
             notify: &|_, _| {},
@@ -150,16 +150,16 @@ pub(super) fn send_locked(
             webviews: &crate::browser_webview::NoWebviews,
             pick_folder: &pick,
         };
-        apply(&state.desktop, command, &effects).map(|applied| applied.ack)
+        apply(&state, command, &effects).map(|applied| applied.ack)
     })
 }
 
 /// Sends `command` and checks its `Ack` names `tabs` at the new revision.
-fn send_tab_command(state: &AppState, command: Command) -> er_service::TabsView {
+fn send_tab_command(state: &DesktopState, command: Command) -> er_service::TabsView {
     let what = format!("{command:?}");
     let ack = send_locked(state, command, None).unwrap_or_else(|e| panic!("{what}: {e:?}"));
     let view = state.service.app_registry().tabs_view();
-    let version = crate::resources::version(&state.desktop, ResourceKey::Tabs);
+    let version = crate::resources::version(&state, ResourceKey::Tabs);
     let version = version.unwrap_or_else(|e| panic!("{what}: {e:?}"));
     assert!(version.0 >= view.revision, "{what}: {version:?}");
     assert_eq!(
@@ -178,7 +178,7 @@ fn wire(key: TabKey) -> er_protocol::TabKey {
 }
 
 /// The kinds and labels the registry lists, in strip order.
-fn strip(state: &AppState) -> Vec<(TabKind, String)> {
+fn strip(state: &DesktopState) -> Vec<(TabKind, String)> {
     let view = state.service.app_registry().tabs_view();
     er_service::tabs_resource(&view)
         .tabs
@@ -310,12 +310,11 @@ fn every_tab_command_and_open_answers_through_er_send_with_the_app_locked() {
     });
 }
 
-/// Two working tabs, the second active in the registry. The App never
-/// follows here, so its own tab is another one.
-fn two_tabs(state: &AppState, dir: &ReviewFlowTestDir) -> (TabKey, TabKey) {
+/// Two working tabs, the second active in the registry.
+fn two_tabs(state: &DesktopState, dir: &ReviewFlowTestDir) -> (TabKey, TabKey) {
     for name in ["one", "two"] {
         let tab = content_routes::working_tab(dir_in(dir, name));
-        let opened = while_the_app_is_locked(state, "open", move |state| {
+        let opened = on_a_thread(state, "open", move |state| {
             content_routes::open(state, tab, false)
         });
         assert!(opened.is_ok(), "{opened:?}");
@@ -323,12 +322,10 @@ fn two_tabs(state: &AppState, dir: &ReviewFlowTestDir) -> (TabKey, TabKey) {
     let view = state.service.app_registry().tabs_view();
     let keys = (view.tabs[0].key, view.tabs[1].key);
     assert_eq!(view.active, Some(keys.1));
-    let app_key = state.app.lock().map(|app| app.tab().key());
-    assert_ne!(app_key.ok(), Some(keys.1), "the App holds another tab");
     keys
 }
 
-fn browser_of(state: &AppState, key: TabKey) -> crate::view_state::TabBrowserState {
+fn browser_of(state: &DesktopState, key: TabKey) -> crate::view_state::TabBrowserState {
     state
         .view
         .lock()
@@ -336,18 +333,17 @@ fn browser_of(state: &AppState, key: TabKey) -> crate::view_state::TabBrowserSta
         .unwrap_or_default()
 }
 
-/// With the App locked, the browser commands write the registry's active
-/// tab, drive its webview at its position, and answer its `view` version;
-/// the old commands' flag-on bodies do the same.
+/// The browser commands write the registry's active tab, drive its webview
+/// at its position, and answer its `view` version.
 #[test]
-fn the_browser_commands_write_the_registry_active_tab_with_the_app_locked() {
+fn the_browser_commands_write_the_registry_active_tab() {
     with_storage(|dir| {
         let state = state(dir);
         let (first, active) = two_tabs(&state, dir);
         let webviews = Arc::new(Webviews::default());
 
         let sent = Arc::clone(&webviews);
-        let ack = while_the_app_is_locked(&state, "update_tab_browser", move |state| {
+        let ack = on_a_thread(&state, "update_tab_browser", move |state| {
             let effects = Effects {
                 notify: &|_, _| {},
                 check_update: || panic!("no update check in this test"),
@@ -362,7 +358,7 @@ fn the_browser_commands_write_the_registry_active_tab_with_the_app_locked() {
                 tooltips: Some(true),
                 split_ratio: None,
             };
-            apply(&state.desktop, command, &effects).map(|applied| applied.ack)
+            apply(&state, command, &effects).map(|applied| applied.ack)
         });
         let ack = ack.unwrap_or_else(|e| panic!("update_tab_browser: {e:?}"));
         let written = browser_of(&state, active);
@@ -371,9 +367,8 @@ fn the_browser_commands_write_the_registry_active_tab_with_the_app_locked() {
         assert!(written.show_tooltips);
         assert_eq!(browser_of(&state, first), Default::default());
 
-        let fetched =
-            crate::resources::fetch(&state.desktop, ResourceKey::View { tab: wire(active) })
-                .unwrap_or_else(|e| panic!("view fetch: {e:?}"));
+        let fetched = crate::resources::fetch(&state, ResourceKey::View { tab: wire(active) })
+            .unwrap_or_else(|e| panic!("view fetch: {e:?}"));
         assert_eq!(
             ack.changed,
             vec![ResourceChanged {
@@ -389,41 +384,13 @@ fn the_browser_commands_write_the_registry_active_tab_with_the_app_locked() {
             other => panic!("not a view: {other:?}"),
         }
 
-        let routed = Arc::clone(&webviews);
-        let cycled = while_the_app_is_locked(&state, "cycle_tab_browser_layout", move |state| {
-            crate::commands::cycle_tab_browser_layout_routed(state, &*routed)
-        });
-        assert!(cycled.is_ok(), "{cycled:?}");
-        assert_eq!(
-            browser_of(&state, active).layout,
-            crate::view_state::BrowserLayout::Fullscreen
-        );
-        let routed = Arc::clone(&webviews);
-        let updated = while_the_app_is_locked(&state, "update_tab_browser", move |state| {
-            let update = BrowserUpdate {
-                annotate: Some(true),
-                ..BrowserUpdate::default()
-            };
-            crate::commands::update_tab_browser_routed(state, &*routed, update, false)
-        });
-        assert!(updated.is_ok(), "{updated:?}");
-        assert!(browser_of(&state, active).annotate_mode);
-        assert_eq!(browser_of(&state, first), Default::default());
-
         let steps = webviews.steps.lock().map(|s| s.clone()).unwrap_or_default();
-        assert_eq!(
-            steps,
-            vec![
-                ("show", active, 1),
-                ("show", active, 1),
-                ("sync", active, 1)
-            ]
-        );
+        assert_eq!(steps, vec![("show", active, 1)]);
     });
 }
 
-/// `cycle_tab_browser_layout` through `er_send` with the App locked moves the
-/// registry's active tab one layout on, shows its webview, and answers its
+/// `cycle_tab_browser_layout` through `er_send` moves the registry's active
+/// tab one layout on, shows its webview, and answers its
 /// `view` version.
 #[test]
 fn cycle_tab_browser_layout_through_er_send_moves_the_registry_active_tab() {
@@ -433,7 +400,7 @@ fn cycle_tab_browser_layout_through_er_send_moves_the_registry_active_tab() {
         let webviews = Arc::new(Webviews::default());
 
         let sent = Arc::clone(&webviews);
-        let ack = while_the_app_is_locked(&state, "cycle_tab_browser_layout", move |state| {
+        let ack = on_a_thread(&state, "cycle_tab_browser_layout", move |state| {
             let effects = Effects {
                 notify: &|_, _| {},
                 check_update: || panic!("no update check in this test"),
@@ -441,16 +408,15 @@ fn cycle_tab_browser_layout_through_er_send_moves_the_registry_active_tab() {
                 pick_folder: &|| None,
             };
             let command = Command::CycleTabBrowserLayout;
-            apply(&state.desktop, command, &effects).map(|applied| applied.ack)
+            apply(&state, command, &effects).map(|applied| applied.ack)
         });
         let ack = ack.unwrap_or_else(|e| panic!("cycle_tab_browser_layout: {e:?}"));
         let layout = browser_of(&state, active).layout;
         assert_eq!(layout, crate::view_state::BrowserLayout::Split);
         assert_eq!(browser_of(&state, first), Default::default());
 
-        let fetched =
-            crate::resources::fetch(&state.desktop, ResourceKey::View { tab: wire(active) })
-                .unwrap_or_else(|e| panic!("view fetch: {e:?}"));
+        let fetched = crate::resources::fetch(&state, ResourceKey::View { tab: wire(active) })
+            .unwrap_or_else(|e| panic!("view fetch: {e:?}"));
         assert_eq!(
             ack.changed,
             vec![ResourceChanged {
@@ -480,7 +446,6 @@ fn no_body_the_tab_arm_calls_reaches_the_app() {
         (commands, "fn service_open_project_branch("),
         (commands, "fn service_set_active_project("),
         (commands, "fn service_new_tab("),
-        (commands, "fn service_tab_command("),
         (commands, "pub(crate) fn prefetch_pr_open_impl("),
         (commands, "pub(crate) fn prefetch_remote_pr_open_impl("),
         (routes, "fn open("),
@@ -488,12 +453,7 @@ fn no_body_the_tab_arm_calls_reaches_the_app() {
         (routes, "fn close_key("),
         (routes, "fn drop_content("),
     ];
-    let forbidden = [
-        "tauri_app_handle",
-        "AppState",
-        ".app.lock",
-        "er_engine::app",
-    ];
+    let forbidden = ["tauri_app_handle", ".app.lock", "er_engine::app"];
     for (source, signature) in bodies {
         let body = source
             .split_once(signature)
@@ -508,10 +468,10 @@ fn no_body_the_tab_arm_calls_reaches_the_app() {
     }
 }
 
-/// With the App locked, a close's `TabsChanged` drops the closed tab's
-/// browser state over the registry's list, and keeps the other tab's.
+/// A close's `TabsChanged` drops the closed tab's browser state over the
+/// registry's list, and keeps the other tab's.
 #[test]
-fn a_close_prunes_the_closed_tabs_view_with_the_app_locked() {
+fn a_close_prunes_the_closed_tabs_view() {
     with_storage(|dir| {
         let state = state(dir);
         let (first, closed) = two_tabs(&state, dir);
@@ -522,12 +482,12 @@ fn a_close_prunes_the_closed_tabs_view_with_the_app_locked() {
         }
         crate::tabs::follow_service(
             &state.service,
-            Arc::clone(&state.app),
+            super::app_stub(),
             Arc::clone(&state.view),
             ports(),
         );
 
-        let pruned = while_the_app_is_locked(&state, "close_tab", move |state| {
+        let pruned = on_a_thread(&state, "close_tab", move |state| {
             let effects = Effects {
                 notify: &|_, _| {},
                 check_update: || panic!("no update check in this test"),
@@ -535,7 +495,7 @@ fn a_close_prunes_the_closed_tabs_view_with_the_app_locked() {
                 pick_folder: &|| None,
             };
             let closed_tab = Command::CloseTab { key: wire(closed) };
-            let ack = apply(&state.desktop, closed_tab, &effects).map(|applied| applied.ack);
+            let ack = apply(&state, closed_tab, &effects).map(|applied| applied.ack);
             assert!(ack.is_ok(), "{ack:?}");
             let deadline = Instant::now() + WAIT;
             while !browser_of(state, closed).url.is_empty() {
@@ -547,10 +507,7 @@ fn a_close_prunes_the_closed_tabs_view_with_the_app_locked() {
             true
         });
 
-        assert!(
-            pruned,
-            "the closed tab's browser state stayed while the App was locked"
-        );
+        assert!(pruned, "the closed tab's browser state stayed");
         assert_eq!(browser_of(&state, first).url, "http://localhost:5173/");
     });
 }
@@ -576,13 +533,13 @@ fn the_open_target_reports_its_flag_on_median() {
         let mut bytes = 0;
         for run in 0..RUNS {
             let started = Instant::now();
-            let ack = apply(&state.desktop, Command::NewTab, &effects)
+            let ack = apply(&state, Command::NewTab, &effects)
                 .unwrap_or_else(|e| panic!("new_tab: {e:?}"))
                 .ack;
             let keys: Vec<ResourceKey> = ack.changed.into_iter().map(|c| c.key).collect();
             let fetched: Vec<_> = keys
                 .into_iter()
-                .map(|key| crate::resources::fetch(&state.desktop, key))
+                .map(|key| crate::resources::fetch(&state, key))
                 .collect::<Result<_, _>>()
                 .unwrap_or_else(|e| panic!("fetch: {e:?}"));
             bytes = serde_json::to_vec(&fetched).map(|v| v.len()).unwrap_or(0);
@@ -592,7 +549,7 @@ fn the_open_target_reports_its_flag_on_median() {
             let opened = state.service.app_registry().tabs_view().active;
             if let Some(opened) = opened.filter(|key| *key != first) {
                 let close = Command::CloseTab { key: wire(opened) };
-                let _ = apply(&state.desktop, close, &effects);
+                let _ = apply(&state, close, &effects);
             }
         }
         samples.sort_unstable();
