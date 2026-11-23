@@ -29,15 +29,14 @@ use er_engine::ai::CommentType;
 #[cfg(test)]
 use er_engine::app::CardAiInvocation;
 use er_engine::app::{
-    build_card_ai_system_context, plan_card_ai_invocation, run_card_ai_subprocess, App,
-    CardAiContextParams, CommentTarget, DiffMode, InputMode,
+    plan_card_ai_invocation, run_card_ai_subprocess, App, CommentTarget, DiffMode, InputMode,
 };
 use er_engine::config::InboxConfig;
 
-const DEFAULT_ASK_AI_PROMPT: &str = "Elaborate on this and answer any question directly.";
+pub(crate) const DEFAULT_ASK_AI_PROMPT: &str = "Elaborate on this and answer any question directly.";
 
 /// Per-card validation: check whether a comment, question, or finding still holds.
-const VALIDATE_CARD_AI_PROMPT: &str = r#"Validate whether this review note is still accurate against the current code context provided.
+pub(crate) const VALIDATE_CARD_AI_PROMPT: &str = r#"Validate whether this review note is still accurate against the current code context provided.
 
 Use Read / grep / rg in the repository (see system context for repo_root and diff excerpt) before concluding. Up to ~10 reads for this finding; cite file:line evidence.
 
@@ -109,7 +108,7 @@ Reply with only the instruction in markdown — no preamble, no heading."#;
 /// The prompt for a one-click AI action on a question or note, keyed on the
 /// thread id prefix the stores use (`q-` question, `n-` note). `None` for any
 /// other thread: Ask AI and Elaborate act on the private stores only.
-fn card_action_prompt(thread_id: &str, ai_action: &str) -> Option<&'static str> {
+pub(crate) fn card_action_prompt(thread_id: &str, ai_action: &str) -> Option<&'static str> {
     let is_note = thread_id.starts_with("n-");
     if !is_note && !thread_id.starts_with("q-") {
         return None;
@@ -401,7 +400,7 @@ fn log_branch_open_phase(
     );
 }
 
-fn now_ms() -> u64 {
+pub(crate) fn now_ms() -> u64 {
     crate::inbox::now_epoch_ms()
 }
 
@@ -5452,7 +5451,7 @@ pub async fn validate_with_ai(
             finding_id.or_else(|| {
                 thread_id
                     .as_ref()
-                    .and_then(|tid| finding_id_for_thread(app.tab(), tid))
+                    .and_then(|tid| crate::ask_context::finding_id_for_thread(&app.tab().ai, tid))
             })
         };
         if let Some(fid) = resolved_finding {
@@ -5737,196 +5736,25 @@ fn ask_ai_impl(
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
     app.sync_ai_selection();
 
-    let (
-        file,
-        hunk_idx,
-        line_num,
-        comment_type,
-        thread_body,
-        repo_root,
-        base_branch,
-        current_branch,
-        work_dir,
-        files,
-        raw_diff,
-        hunk_index,
-        line_content,
-        finding_title,
-        finding_description,
-        provider_id,
-        model_id,
-        agent_model_fallback,
-    ) = {
-        let tab = app.tab();
-        let scope = match tab.mode {
-            DiffMode::Branch | DiffMode::Unstaged | DiffMode::Staged => {
-                tab.mode.git_mode().to_string()
-            }
-            _ => "branch".to_string(),
-        };
-        let raw_diff = tab.raw_diff_for_review(&scope).ok();
-        let work_dir = if tab.is_remote() {
-            tab.er_dir()
-        } else {
-            tab.repo_root.clone()
-        };
-
-        if thread_id.starts_with("q-") || thread_id.starts_with("n-") {
-            // Questions and notes share the `PrivateAnnotation` shape; pick the
-            // collection (and resulting CommentType) by id prefix.
-            let is_note = thread_id.starts_with("n-");
-            let items: &[er_engine::ai::PrivateAnnotation] = if is_note {
-                tab.ai
-                    .notes
-                    .as_ref()
-                    .map(|ns| ns.notes.as_slice())
-                    .unwrap_or(&[])
-            } else {
-                tab.ai
-                    .questions
-                    .as_ref()
-                    .map(|qs| qs.questions.as_slice())
-                    .unwrap_or(&[])
-            };
-            let q = items
-                .iter()
-                .find(|q| q.id == thread_id)
-                .ok_or(if is_note {
-                    "Note not found"
-                } else {
-                    "Question not found"
-                })
-                .map_err(|e| e.to_string())?;
-            let mut thread_body = String::new();
-            thread_body.push_str(&format!("{}:{}\n", q.file, q.line_start.unwrap_or(0)));
-            thread_body.push_str(&q.text);
-            for r in items
-                .iter()
-                .filter(|r| r.in_reply_to.as_deref() == Some(thread_id.as_str()))
-            {
-                thread_body.push_str(&format!("\n\n**{}** replied:\n{}", r.author, r.text));
-            }
-            let (finding_title, finding_description) =
-                finding_fields_for_ref(tab, q.finding_ref.as_deref());
-            let line_content = if q.line_content.trim().is_empty() {
-                None
-            } else {
-                Some(q.line_content.as_str())
-            };
-            (
-                q.file.clone(),
-                q.hunk_index.unwrap_or(0),
-                q.line_start,
-                if is_note {
-                    CommentType::Note
-                } else {
-                    CommentType::Question
-                },
-                thread_body,
-                tab.repo_root.clone(),
-                tab.base_branch.clone(),
-                tab.current_branch.clone(),
-                work_dir,
-                tab.files.clone(),
-                raw_diff,
-                q.hunk_index.unwrap_or(0),
-                line_content,
-                finding_title,
-                finding_description,
-                app.current_ai_provider.clone(),
-                app.current_ai_model.clone(),
-                app.config.agent.model.clone(),
-            )
-        } else {
-            let c = tab
-                .ai
-                .github_comments
-                .as_ref()
-                .and_then(|gc| gc.comments.iter().find(|c| c.id == thread_id))
-                .ok_or_else(|| "Comment not found".to_string())?;
-            let mut thread_body = String::new();
-            thread_body.push_str(&format!("{}:{}\n", c.file, c.line_start.unwrap_or(0)));
-            thread_body.push_str(&c.comment);
-            if let Some(gc) = &tab.ai.github_comments {
-                for r in gc
-                    .comments
-                    .iter()
-                    .filter(|r| r.in_reply_to.as_deref() == Some(thread_id.as_str()))
-                {
-                    thread_body.push_str(&format!("\n\n**{}** replied:\n{}", r.author, r.comment));
-                }
-            }
-            let (finding_title, finding_description) =
-                finding_fields_for_ref(tab, c.finding_ref.as_deref());
-            let line_content = if c.line_content.trim().is_empty() {
-                None
-            } else {
-                Some(c.line_content.as_str())
-            };
-            (
-                c.file.clone(),
-                c.hunk_index.unwrap_or(0),
-                c.line_start,
-                CommentType::GitHubComment,
-                thread_body,
-                tab.repo_root.clone(),
-                tab.base_branch.clone(),
-                tab.current_branch.clone(),
-                work_dir,
-                tab.files.clone(),
-                raw_diff,
-                c.hunk_index.unwrap_or(0),
-                line_content,
-                finding_title,
-                finding_description,
-                app.current_ai_provider.clone(),
-                app.current_ai_model.clone(),
-                app.config.agent.model.clone(),
-            )
-        }
-    };
-
-    let system_context = build_card_ai_system_context(&CardAiContextParams {
-        repo_root: &repo_root,
-        base_branch: &base_branch,
-        current_branch: &current_branch,
-        files: &files,
-        raw_diff: raw_diff.as_deref(),
-        file: &file,
-        hunk_index,
-        line_start: line_num,
-        line_content,
-        thread_body: &thread_body,
-        finding_title: finding_title.as_deref(),
-        finding_description: finding_description.as_deref(),
-    });
-
+    let (context, target) = crate::ask_context::thread_ask(app_ask_tab(app.tab()), &thread_id)?;
+    let system_context = context.system_prompt();
+    let model_id = app.current_ai_model.clone();
     let cfg = er_engine::config::load_global_config();
     let invocation = plan_card_ai_invocation(
         &cfg,
-        provider_id.as_deref(),
+        app.current_ai_provider.as_deref(),
         model_id.as_deref(),
         app.current_ai_effort.as_deref(),
-        work_dir,
+        context.work_dir.clone(),
     );
-    let model_for_subprocess: Option<String> = model_id.or_else(|| {
-        if agent_model_fallback.trim().is_empty() {
-            None
-        } else {
-            Some(agent_model_fallback)
-        }
-    });
+    let model_for_subprocess = card_model(model_id, app.config.agent.model.clone());
 
     // Mark thread as pending BEFORE spawning. Snapshot reads this map to
     // inject the "…thinking" placeholder reply.
-    let started_at = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0);
     state.pending_ai_replies.insert(
         thread_id.clone(),
         crate::snapshot::PendingAiReply {
-            started_at_ms: started_at,
+            started_at_ms: now_ms(),
             ai_action,
         },
     );
@@ -5942,10 +5770,7 @@ fn ask_ai_impl(
     let app_owner = Arc::clone(&state.app_owner);
     let desktop_revision = Arc::clone(&state.desktop_revision);
     let ports = state.ports.clone();
-    let thread_id_for_thread = thread_id.clone();
-    let repo_root_for_thread = repo_root;
-    let inv_for_thread = invocation;
-    let model_for_thread = model_for_subprocess;
+    let repo_root_for_thread = context.repo_root;
 
     // Build snapshot before releasing locks (test path expects synchronous
     // visibility of the pending state).
@@ -5955,39 +5780,34 @@ fn ask_ai_impl(
     drop(app);
 
     std::thread::spawn(move || {
-        // Drained on its own thread while the job blocks; the card UI has no
-        // log panel, so the lines go to the debug log.
-        let progress: Option<er_engine::app::ProgressSink> = Some(Arc::new(|line: &str| {
-            log::debug!("card ai: {line}");
-        }));
         let body = run_card_ai_subprocess(
-            &inv_for_thread,
+            &invocation,
             &system_context,
             &user_prompt,
-            model_for_thread.as_deref(),
-            progress,
+            model_for_subprocess.as_deref(),
+            Some(card_progress()),
         )
         .into_inner();
         // Take App lock to submit the reply.
         if let Ok(mut app) = app_arc.lock() {
-            let ai_action = match comment_type {
+            let ai_action = match target.kind {
                 CommentType::Question | CommentType::Note => ai_action,
                 CommentType::GitHubComment => None,
             };
             let _ = app.submit_ai_reply(
                 CommentTarget {
-                    file,
-                    hunk_idx,
-                    line_num,
+                    file: target.file,
+                    hunk_idx: target.hunk_idx,
+                    line_num: target.line_num,
                     line_num_end: None,
                 },
                 body,
-                comment_type,
-                Some(thread_id_for_thread.clone()),
+                target.kind,
+                Some(thread_id.clone()),
                 ai_action,
             );
         }
-        pending.remove([thread_id_for_thread.as_str()]);
+        pending.remove([thread_id.as_str()]);
         app_owner.refresh_meta(&*ports.git, &repo_root_for_thread);
         desktop_revision.fetch_add(1, Ordering::Relaxed);
     });
@@ -5995,51 +5815,41 @@ fn ask_ai_impl(
     Ok(snap)
 }
 
-fn finding_id_for_thread(tab: &er_engine::app::TabState, thread_id: &str) -> Option<String> {
-    if thread_id.starts_with("q-") {
-        tab.ai
-            .questions
-            .as_ref()
-            .and_then(|qs| qs.questions.iter().find(|q| q.id == thread_id))
-            .and_then(|q| q.finding_ref.clone())
-    } else if thread_id.starts_with("n-") {
-        tab.ai
-            .notes
-            .as_ref()
-            .and_then(|ns| ns.notes.iter().find(|n| n.id == thread_id))
-            .and_then(|n| n.finding_ref.clone())
-    } else {
-        tab.ai
-            .github_comments
-            .as_ref()
-            .and_then(|gc| gc.comments.iter().find(|c| c.id == thread_id))
-            .and_then(|c| c.finding_ref.clone())
+/// What an ask reads from the App's tab: the raw diff a review of the view
+/// reads, and the checkout, or a remote tab's bucket, as the provider's
+/// directory.
+fn app_ask_tab(tab: &er_engine::app::TabState) -> crate::ask_context::AskTab<'_> {
+    let scope = match tab.mode {
+        DiffMode::Branch | DiffMode::Unstaged | DiffMode::Staged => tab.mode.git_mode(),
+        _ => "branch",
+    };
+    crate::ask_context::AskTab {
+        repo_root: &tab.repo_root,
+        base_branch: &tab.base_branch,
+        current_branch: &tab.current_branch,
+        work_dir: if tab.is_remote() {
+            tab.er_dir()
+        } else {
+            tab.repo_root.clone()
+        },
+        files: tab.files.clone(),
+        raw_diff: tab.raw_diff_for_review(scope).ok(),
+        ai: &tab.ai,
     }
 }
 
-fn lookup_finding_fields(
-    tab: &er_engine::app::TabState,
-    finding_id: &str,
-) -> Result<(String, usize, Option<usize>, String, String), String> {
-    let review = tab
-        .ai
-        .review
-        .as_ref()
-        .ok_or_else(|| "No review loaded".to_string())?;
-    for (path, fr) in review.files.iter() {
-        for f in fr.findings.iter() {
-            if f.id == finding_id {
-                return Ok((
-                    path.clone(),
-                    f.hunk_index.unwrap_or(0),
-                    f.line_start,
-                    f.title.clone(),
-                    f.description.clone(),
-                ));
-            }
-        }
-    }
-    Err(format!("Finding not found: {finding_id}"))
+/// The model a card ask runs: the one picked, else the agent's.
+pub(crate) fn card_model(picked: Option<String>, agent_model: String) -> Option<String> {
+    picked.or_else(|| (!agent_model.trim().is_empty()).then_some(agent_model))
+}
+
+/// Where a card ask's progress lines go: the card UI has no log panel, so
+/// they go to the debug log, drained on their own thread while the job
+/// blocks.
+pub(crate) fn card_progress() -> er_engine::app::ProgressSink {
+    Arc::new(|line: &str| {
+        log::debug!("card ai: {line}");
+    })
 }
 
 /// Run AI validation on a finding; reply is stored in `Finding.responses`.
@@ -6051,121 +5861,25 @@ fn ask_ai_for_finding(
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
     app.sync_ai_selection();
 
-    let (
-        file,
-        _hunk_idx,
-        line_num,
-        finding_title,
-        finding_description,
-        repo_root,
-        base_branch,
-        current_branch,
-        work_dir,
-        files,
-        raw_diff,
-        hunk_index,
-        line_content,
-        provider_id,
-        model_id,
-        agent_model_fallback,
-        er_dir,
-    ) = {
-        let tab = app.tab();
-        let (file, hunk_idx, line_num, finding_title, finding_description) =
-            lookup_finding_fields(tab, &finding_id)?;
-        let scope = match tab.mode {
-            DiffMode::Branch | DiffMode::Unstaged | DiffMode::Staged => {
-                tab.mode.git_mode().to_string()
-            }
-            _ => "branch".to_string(),
-        };
-        let raw_diff = tab.raw_diff_for_review(&scope).ok();
-        let work_dir = if tab.is_remote() {
-            tab.er_dir()
-        } else {
-            tab.repo_root.clone()
-        };
-        let line_content = line_num.and_then(|ls| {
-            tab.files
-                .iter()
-                .find(|f| f.path == file)
-                .and_then(|df| df.hunks.get(hunk_idx))
-                .and_then(|h| h.lines.iter().find(|l| l.new_num == Some(ls)))
-                .map(|l| l.content.as_str())
-        });
-        (
-            file,
-            hunk_idx,
-            line_num,
-            finding_title,
-            finding_description,
-            tab.repo_root.clone(),
-            tab.base_branch.clone(),
-            tab.current_branch.clone(),
-            work_dir,
-            tab.files.clone(),
-            raw_diff,
-            hunk_idx,
-            line_content,
-            app.current_ai_provider.clone(),
-            app.current_ai_model.clone(),
-            app.config.agent.model.clone(),
-            tab.er_dir(),
-        )
-    };
-
-    let mut thread_body = format!("**Finding:** {finding_title}\n\n{finding_description}");
-    if let Some(review) = app.tab().ai.review.as_ref() {
-        for fr in review.files.values() {
-            if let Some(f) = fr.findings.iter().find(|f| f.id == finding_id) {
-                for r in &f.responses {
-                    thread_body.push_str(&format!("\n\n**AI** replied:\n{}", r.text));
-                }
-                break;
-            }
-        }
-    }
-
-    let system_context = build_card_ai_system_context(&CardAiContextParams {
-        repo_root: &repo_root,
-        base_branch: &base_branch,
-        current_branch: &current_branch,
-        files: &files,
-        raw_diff: raw_diff.as_deref(),
-        file: &file,
-        hunk_index,
-        line_start: line_num,
-        line_content,
-        thread_body: &thread_body,
-        finding_title: Some(finding_title.as_str()),
-        finding_description: Some(finding_description.as_str()),
-    });
-
+    let context = crate::ask_context::finding_ask(app_ask_tab(app.tab()), &finding_id)?;
+    let er_dir = app.tab().er_dir();
+    let system_context = context.system_prompt();
+    let model_id = app.current_ai_model.clone();
     let cfg = er_engine::config::load_global_config();
     let invocation = plan_card_ai_invocation(
         &cfg,
-        provider_id.as_deref(),
+        app.current_ai_provider.as_deref(),
         model_id.as_deref(),
         app.current_ai_effort.as_deref(),
-        work_dir,
+        context.work_dir.clone(),
     );
-    let model_for_subprocess: Option<String> = model_id.or_else(|| {
-        if agent_model_fallback.trim().is_empty() {
-            None
-        } else {
-            Some(agent_model_fallback)
-        }
-    });
+    let model_for_subprocess = card_model(model_id, app.config.agent.model.clone());
 
     let pending_key = format!("finding:{finding_id}");
-    let started_at = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0);
     state.pending_ai_replies.insert(
-        pending_key,
+        pending_key.clone(),
         crate::snapshot::PendingAiReply {
-            started_at_ms: started_at,
+            started_at_ms: now_ms(),
             ai_action: None,
         },
     );
@@ -6181,39 +5895,28 @@ fn ask_ai_for_finding(
     let app_owner = Arc::clone(&state.app_owner);
     let desktop_revision = Arc::clone(&state.desktop_revision);
     let ports = state.ports.clone();
-    let finding_id_for_thread = finding_id;
-    let er_dir_for_thread = er_dir;
-    let repo_root_for_thread = repo_root;
-    let inv_for_thread = invocation;
-    let model_for_thread = model_for_subprocess;
+    let repo_root_for_thread = context.repo_root;
 
     let snap = snap_from(&app, state);
     drop(app);
 
     std::thread::spawn(move || {
-        let progress: Option<er_engine::app::ProgressSink> = Some(Arc::new(|line: &str| {
-            log::debug!("card ai: {line}");
-        }));
         let body = run_card_ai_subprocess(
-            &inv_for_thread,
+            &invocation,
             &system_context,
             &user_prompt,
-            model_for_thread.as_deref(),
-            progress,
+            model_for_subprocess.as_deref(),
+            Some(card_progress()),
         )
         .into_inner();
         if let Ok(mut app) = app_arc.lock() {
-            if let Err(e) = er_engine::ai::append_finding_response(
-                &er_dir_for_thread,
-                &finding_id_for_thread,
-                &body,
-            ) {
+            if let Err(e) = er_engine::ai::append_finding_response(&er_dir, &finding_id, &body) {
                 app.notify(&format!("Failed to save finding validation: {e}"));
             } else {
                 app.tab_mut().reload_ai_state();
             }
         }
-        pending.remove([format!("finding:{finding_id_for_thread}").as_str()]);
+        pending.remove([pending_key.as_str()]);
         app_owner.refresh_meta(&*ports.git, &repo_root_for_thread);
         desktop_revision.fetch_add(1, Ordering::Relaxed);
     });
@@ -6264,26 +5967,6 @@ pub async fn delete_finding_response(
         Ok(snap_from_confirmed(&app, &state))
     })
     .await
-}
-
-fn finding_fields_for_ref(
-    tab: &er_engine::app::TabState,
-    finding_ref: Option<&str>,
-) -> (Option<String>, Option<String>) {
-    let Some(fid) = finding_ref else {
-        return (None, None);
-    };
-    let Some(review) = tab.ai.review.as_ref() else {
-        return (None, None);
-    };
-    for fr in review.files.values() {
-        for f in &fr.findings {
-            if f.id == fid {
-                return (Some(f.title.clone()), Some(f.description.clone()));
-            }
-        }
-    }
-    (None, None)
 }
 
 // ── PR URL open ──────────────────────────────────────────────────────────────
@@ -12770,6 +12453,8 @@ mod tests {
     mod annotation_write_tests;
     #[cfg(feature = "v1-service")]
     mod annotations_resource_tests;
+    #[cfg(feature = "v1-service")]
+    mod ask_context_tests;
     #[cfg(feature = "v1-service")]
     mod arena_resource_tests;
     #[cfg(feature = "v1-service")]
