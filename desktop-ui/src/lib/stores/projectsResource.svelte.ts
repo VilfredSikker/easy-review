@@ -44,4 +44,5 @@ readSidebarFrom({
   projects: () => projectsResource.projects,
   worktrees: () => worktreesResource.worktrees,
   detectedPrNumber: (snapshot, tab) => detectPrNumber(tab, snapshot.branch, projectsResource.heldPrs),
+  projectsLoaded: () => projectsResource.loaded,
 });

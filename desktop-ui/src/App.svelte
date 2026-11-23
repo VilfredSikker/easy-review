@@ -37,8 +37,7 @@
   import ConfigLoadBanner from "$lib/components/shell/ConfigLoadBanner.svelte";
   import TourEmptyState from "$lib/components/TourEmptyState.svelte";
   import { isReviewMainView } from "$lib/stores/reviewPageModel";
-  import { sidebarProjects } from "$lib/sidebarReads";
-  import { projectsResource } from "$lib/stores/projectsResource.svelte";
+  import { sidebarProjects, sidebarProjectsLoaded } from "$lib/sidebarReads";
   import { reviewPage } from "$lib/stores/reviewPage.svelte";
   import { refHighlight } from "$lib/stores/referenceHighlight.svelte";
   import OverviewView from "$lib/components/overview/OverviewView.svelte";
@@ -83,7 +82,7 @@
   const naturalEmpty = $derived(
     pageView.current !== null &&
       !hasOpenTabs &&
-      projectsResource.loaded &&
+      sidebarProjectsLoaded() &&
       pageView.current.branch === "" &&
       pageView.current.files.length === 0 &&
       sidebarProjects(pageView.current).length === 0,

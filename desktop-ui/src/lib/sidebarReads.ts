@@ -14,6 +14,8 @@ export interface SidebarReads {
   worktrees(snapshot: Pick<AppSnapshot, "worktrees">): WorktreeSnapshot[];
   /** `tab` is the snapshot's active tab, the one its branch belongs to. */
   detectedPrNumber(snapshot: DetectSnapshot, tab: TabSummary | undefined): number | null;
+  /** Whether the projects have arrived; the view's own field always has. */
+  projectsLoaded?(): boolean;
 }
 
 const fromSnapshot: SidebarReads = {
@@ -32,6 +34,11 @@ export function readSidebarFrom(next: SidebarReads): void {
 /** Empty while there is no snapshot. */
 export function sidebarProjects(snapshot: Pick<AppSnapshot, "projects"> | null | undefined): ProjectSnapshot[] {
   return snapshot ? reads.projects(snapshot) : [];
+}
+
+/** Whether the sidebar's projects have arrived, so an empty list means none. */
+export function sidebarProjectsLoaded(): boolean {
+  return reads.projectsLoaded?.() ?? true;
 }
 
 /** Empty while there is no snapshot. */
