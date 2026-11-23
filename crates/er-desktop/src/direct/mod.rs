@@ -18,7 +18,7 @@ pub(crate) fn content_of(
     wire: er_protocol::TabKey,
 ) -> Result<std::sync::Arc<er_service::TabContent>, ErError> {
     let key = er_service::resolve_tab_key(&desktop.service.app_registry().tabs_view(), wire)?;
-    crate::commands::content_routes::keyed_content(desktop, key, None)
+    crate::resources::content_routes::keyed_content(desktop, key, None)
         .map(|(content, _)| content)
         .map_err(failed)
 }

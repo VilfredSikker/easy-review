@@ -10,7 +10,7 @@ use er_engine::config::ErConfig;
 use er_protocol::{AppUpdate, Panels, Reviewer, Session, WatchStatus};
 use er_service::SettingsView;
 
-use crate::commands::AppUpdateInfo;
+use crate::route_helpers::AppUpdateInfo;
 use crate::state::DesktopState;
 
 /// `session`'s version, with the settings revision of `settings`: zero

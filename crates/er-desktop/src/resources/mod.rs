@@ -12,6 +12,7 @@ pub mod annotation_writes;
 pub mod annotations;
 pub mod arena;
 pub mod commands;
+pub(crate) mod content_routes;
 pub mod diff;
 pub mod flows;
 pub mod github_writes;

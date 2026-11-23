@@ -8,10 +8,9 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::inbox::InboxHandle;
 use crate::line_commits_cache::LineCommitsCache;
-use crate::pr_cache::PrCacheFetchedAtMap;
-use crate::snapshot::{
-    GhStatusCache, GhUser, MetaCache, PendingAiReplies, PendingAiReply, PrInfo,
-    WatchStatusSnapshot, WatchStatusState,
+use crate::page_view::{
+    GhStatusCache, GhUser, PendingAiReplies, PendingAiReply, PrInfo, WatchStatusSnapshot,
+    WatchStatusState,
 };
 
 #[derive(Clone)]
@@ -22,12 +21,10 @@ pub struct DesktopState {
     /// Desktop-only view state (ADR 0068).
     pub view: crate::view_state::ViewStateHandle,
     pub pr_cache: Arc<Mutex<HashMap<String, Vec<PrInfo>>>>,
-    pub pr_cache_fetched_at: PrCacheFetchedAtMap,
     /// Background-probed remote oid of the active branch tab's base branch,
     /// keyed by "{repo_root}\0{base_short}". Compared in build_snapshot against
     /// the local origin/<base> oid to detect a stale ("behind main") branch diff.
     pub branch_base_remote_oid: Arc<Mutex<HashMap<String, String>>>,
-    pub meta_cache: MetaCache,
     /// The sidebar's resources and the metadata cache's one writer.
     pub app_owner: Arc<crate::app_owner::AppOwner>,
     pub gh_user: GhUser,

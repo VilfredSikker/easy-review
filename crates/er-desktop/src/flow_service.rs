@@ -147,7 +147,7 @@ pub fn run(
 ) -> Result<(), ErError> {
     let command = match control {
         Control::Start(scope) => {
-            let scope = crate::commands::resolve_review_scope_in(&scope, tab.content.tab.mode)
+            let scope = crate::route_helpers::resolve_review_scope_in(&scope, tab.content.tab.mode)
                 .map_err(failed)?;
             FlowCommand::Start {
                 context: context(desktop, tab, Some(&scope)),

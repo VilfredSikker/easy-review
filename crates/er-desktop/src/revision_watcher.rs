@@ -1,6 +1,7 @@
 //! The revision watcher: follows `desktop_revision` and wakes the backend
 //! tick on each value it settles on, so the tick runs within about 50 ms of
-//! a real change and an idle app does no work.
+//! a real change. With no change the tick still runs every 2 s, the floor
+//! `resources::tick::INTERVAL` sets.
 //!
 //! It lives in the lib, so the tick it wakes is tested on the same loop the
 //! app runs.

@@ -19,9 +19,10 @@ use er_service::{
     TabContent, TabEntry,
 };
 
+use super::content_routes;
 use super::send::Effects;
 use super::tabs::Routed;
-use crate::commands::{self, content_routes};
+use crate::route_helpers;
 use crate::service::actor_key;
 use crate::state::DesktopState;
 use crate::view_state::TabFilter;
@@ -232,8 +233,8 @@ fn refresh(
         return Ok(());
     }
     let synced = content_routes::sync_tab(desktop, key).map_err(refused)?;
-    commands::kick_meta_refresh(desktop, synced.repo_root);
-    commands::refresh_status_after_sync(desktop, synced.status_key);
+    route_helpers::kick_meta_refresh(desktop, synced.repo_root);
+    route_helpers::refresh_status_after_sync(desktop, synced.status_key);
     let cleared = synced.reviewed_cleared;
     let landed = "Diff refreshed".to_string();
     let message = match cleared {
@@ -262,7 +263,8 @@ fn sync_pr(
         .remote
         .clone()
         .ok_or_else(|| refused("Project has no remote configured".into()))?;
-    let pr = commands::cache_single_pr_for_remote(desktop, &remote, pr_number).map_err(refused)?;
+    let pr =
+        route_helpers::cache_single_pr_for_remote(desktop, &remote, pr_number).map_err(refused)?;
     let tabs: Vec<TabEntry> = open_tabs(desktop)
         .filter(|entry| {
             let tab = &entry.descriptor;
@@ -284,7 +286,7 @@ fn sync_pr(
 fn remember_synced_diff(
     desktop: &DesktopState,
     project: &crate::projects::ProjectRecord,
-    pr: &crate::snapshot::PrInfo,
+    pr: &crate::page_view::PrInfo,
     tabs: &[TabEntry],
 ) {
     let Some(content) = tabs
@@ -299,7 +301,7 @@ fn remember_synced_diff(
         project_id: project.id.clone(),
         repo_root: project.root_path.clone(),
         pr_number: pr.number,
-        freshness: commands::freshness_from_pr_info(pr, head),
+        freshness: route_helpers::freshness_from_pr_info(pr, head),
     };
     if let Err(error) = desktop.service.send_app(command) {
         log::warn!("er-desktop: the synced PR's open cache was not warmed: {error}");

@@ -90,7 +90,7 @@ pub fn read_inbox_prefs_from_settings(desktop: &DesktopState) {
 /// window had a handle to notify through.
 pub fn flush_pending_notifications(state: &DesktopState) {
     let prefs = inbox_prefs(state);
-    crate::commands::flush_pending_native_notifications(
+    crate::route_helpers::flush_pending_native_notifications(
         &state.inbox,
         &state.tauri_app_handle,
         &prefs,

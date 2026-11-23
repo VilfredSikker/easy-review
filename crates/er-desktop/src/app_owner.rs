@@ -30,12 +30,12 @@ use er_protocol::{
 };
 
 use crate::inbox::{InboxHandle, InboxState};
-use crate::pr_cache::{self, PrCacheFetchedAtMap, PrCacheMap};
-use crate::projects::{self, ProjectRecord, ProjectsFile};
-use crate::snapshot::{
+use crate::page_view::{
     self, BranchInfo, GhStatusCache, GhUser, GithubStatusSnapshot, MetaCache, PrInfo, ProjectMeta,
     WorktreeSnapshot,
 };
+use crate::pr_cache::{self, PrCacheFetchedAtMap, PrCacheMap};
+use crate::projects::{self, ProjectRecord, ProjectsFile};
 
 pub mod startup;
 
@@ -167,14 +167,14 @@ impl AppOwner {
     /// Refreshes every project's metadata, then publishes. Answers whether
     /// the cache's fingerprint moved, which the snapshot's revision follows.
     pub fn refresh_meta(&self, git: &dyn er_engine::git::Git, active_root: &str) -> bool {
-        let moved = snapshot::refresh_meta_cache(git, active_root, &self.meta);
+        let moved = page_view::refresh_meta_cache(git, active_root, &self.meta);
         self.publish();
         moved
     }
 
     /// Refreshes one project's metadata, then publishes.
     pub fn refresh_project_meta(&self, git: &dyn er_engine::git::Git, project_id: &str) -> bool {
-        let moved = snapshot::refresh_meta_cache_for_project(git, project_id, &self.meta);
+        let moved = page_view::refresh_meta_cache_for_project(git, project_id, &self.meta);
         self.publish();
         moved
     }
@@ -739,7 +739,7 @@ fn project_prs(
     } else {
         let (mine, to_review) = listed_open_prs(cached, dismissed, me);
         let shown = cached.iter().filter(|pr| !dismissed.contains(&pr.number));
-        let merged = snapshot::recently_merged_prs(shown.cloned().collect());
+        let merged = page_view::recently_merged_prs(shown.cloned().collect());
         (
             numbers(mine),
             numbers(to_review),
@@ -780,7 +780,7 @@ fn entry_row(number: u64, title: &str, cached: &[PrInfo], rows: &mut Vec<PrRow>)
         return None;
     }
     if !rows.iter().any(|row| row.number == number) {
-        rows.push(pr_row(&snapshot::minimal_pr_info(number, title), None));
+        rows.push(pr_row(&page_view::minimal_pr_info(number, title), None));
     }
     Some(number)
 }

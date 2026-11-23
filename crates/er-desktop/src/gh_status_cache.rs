@@ -6,7 +6,7 @@ use anyhow::Result;
 use er_store::{Artifact, Loaded};
 use serde::{Deserialize, Serialize};
 
-use crate::snapshot::GithubStatusSnapshot;
+use crate::page_view::GithubStatusSnapshot;
 
 /// Live GitHub status cache: keyed by `(owner, repo, pr number)`.
 type GithubStatusCache = HashMap<(String, String, u64), GithubStatusSnapshot>;
@@ -162,7 +162,7 @@ pub fn status_is_fresh(last_updated: Option<&str>, now_secs: u64, ttl_secs: u64)
 
 /// Current time as epoch seconds, in the same format `fetch_github_status`
 ///
-/// writes to `GithubStatusSnapshot.last_updated` (`commands.rs:642-645`).
+/// writes to `GithubStatusSnapshot.last_updated` (`route_helpers.rs`).
 /// `now_secs` is a parameter on `status_is_fresh` (not called internally) so
 /// callers can pass a fixed value in tests; this just centralizes the
 /// `SystemTime` boilerplate for the two real call sites (`kick_active_gh_status`
@@ -201,7 +201,7 @@ mod tests {
             mergeable: Some("MERGEABLE".to_string()),
             labels: vec!["bug".to_string(), "priority".to_string()],
             checks: vec![
-                crate::snapshot::CheckSummary {
+                crate::page_view::CheckSummary {
                     name: "ci/build".to_string(),
                     status: "COMPLETED".to_string(),
                     conclusion: "SUCCESS".to_string(),
@@ -211,7 +211,7 @@ mod tests {
                     duration_secs: Some(112),
                     description: None,
                 },
-                crate::snapshot::CheckSummary {
+                crate::page_view::CheckSummary {
                     name: "ci/test".to_string(),
                     status: "COMPLETED".to_string(),
                     conclusion: "FAILURE".to_string(),
@@ -224,13 +224,13 @@ mod tests {
             ],
             comments_count: 3,
             reviews_count: 1,
-            recent_comments: vec![crate::snapshot::GhCommentSummary {
+            recent_comments: vec![crate::page_view::GhCommentSummary {
                 author: "bob".to_string(),
                 body: "LGTM".to_string(),
                 created_at: "2024-01-02T10:00:00Z".to_string(),
                 url: "https://github.com/comment/1".to_string(),
             }],
-            recent_reviews: vec![crate::snapshot::GhReviewSummary {
+            recent_reviews: vec![crate::page_view::GhReviewSummary {
                 author: "carol".to_string(),
                 state: "APPROVED".to_string(),
                 body: "Looks good".to_string(),

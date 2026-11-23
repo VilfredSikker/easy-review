@@ -12,9 +12,10 @@ use er_protocol::{
 };
 use er_service::{resolve_tab_key, wire_tab_key, AppCommand};
 
+use super::content_routes;
 use super::send::Effects;
 use crate::browser_webview::{webview_step, TabWebviews};
-use crate::commands::{self, content_routes};
+use crate::route_helpers;
 use crate::state::DesktopState;
 use crate::view_state::{BrowserLayout, BrowserUpdate, TabBrowserState};
 
@@ -27,7 +28,7 @@ pub enum Routed {
 /// Applies `command` when it is a tab command or an open.
 pub fn apply(desktop: &DesktopState, command: Command, effects: &Effects<'_>) -> Routed {
     let applied = match command {
-        Command::NewTab => commands::service_new_tab(desktop)
+        Command::NewTab => route_helpers::service_new_tab(desktop)
             .map_err(refused)
             .map(|()| opened(desktop)),
         Command::CloseTab { key } => close(desktop, key),
@@ -46,7 +47,7 @@ pub fn apply(desktop: &DesktopState, command: Command, effects: &Effects<'_>) ->
             pr_number,
             replace,
         } => open(desktop, || {
-            commands::service_open_pr_review(desktop, project_id, pr_number, Some(replace))
+            route_helpers::service_open_pr_review(desktop, project_id, pr_number, Some(replace))
         }),
         Command::OpenRemotePr {
             owner,
@@ -54,10 +55,10 @@ pub fn apply(desktop: &DesktopState, command: Command, effects: &Effects<'_>) ->
             number,
             replace,
         } => open(desktop, || {
-            commands::service_open_remote_pr(desktop, owner, repo, number, Some(replace))
+            route_helpers::service_open_remote_pr(desktop, owner, repo, number, Some(replace))
         }),
         Command::OpenPrUrl { url, replace } => open(desktop, || {
-            commands::service_open_pr_url(desktop, url, Some(replace))
+            route_helpers::service_open_pr_url(desktop, url, Some(replace))
         }),
         Command::OpenLocalBranch {
             project_id,
@@ -72,21 +73,23 @@ pub fn apply(desktop: &DesktopState, command: Command, effects: &Effects<'_>) ->
             branch,
             replace,
         } => open(desktop, || {
-            commands::service_open_project_branch(desktop, project_id, branch, replace)
+            route_helpers::service_open_project_branch(desktop, project_id, branch, replace)
         }),
         Command::OpenWorktree => match (effects.pick_folder)() {
-            Some(path) => open(desktop, || commands::service_open_folder(desktop, path)),
+            Some(path) => open(desktop, || {
+                route_helpers::service_open_folder(desktop, path)
+            }),
             None => Ok(Ack::default()),
         },
         Command::SetActiveProject { project_id } => open(desktop, || {
-            commands::service_set_active_project(desktop, &project_id)
+            route_helpers::service_set_active_project(desktop, &project_id)
         }),
         Command::PrefetchPrOpen {
             project_id,
             pr_number,
             hint,
         } => {
-            let hint = commands::PrOpenHint {
+            let hint = route_helpers::PrOpenHint {
                 base_ref: hint.base_ref,
                 head_ref: hint.head_ref,
                 head_oid: hint.head_oid,
@@ -94,7 +97,7 @@ pub fn apply(desktop: &DesktopState, command: Command, effects: &Effects<'_>) ->
                 title: String::new(),
                 author: String::new(),
             };
-            commands::prefetch_pr_open_impl(project_id, pr_number, hint, desktop)
+            route_helpers::prefetch_pr_open_impl(project_id, pr_number, hint, desktop)
                 .map(|()| Ack::default())
                 .map_err(refused)
         }
@@ -102,7 +105,7 @@ pub fn apply(desktop: &DesktopState, command: Command, effects: &Effects<'_>) ->
             owner,
             repo,
             number,
-        } => commands::prefetch_remote_pr_open_impl(owner, repo, number, desktop)
+        } => route_helpers::prefetch_remote_pr_open_impl(owner, repo, number, desktop)
             .map(|()| Ack::default())
             .map_err(refused),
         Command::UpdateTabBrowser {

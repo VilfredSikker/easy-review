@@ -37,7 +37,7 @@ and result channels and retires; nothing here persists across restarts.
 
 Three stores, one per audience (`docs/adr/0007-three-comment-stores.md`); replies are
 flat (`docs/adr/0008-flat-comment-threads.md`). The unified thread shape the desktop
-draws (`ThreadSnapshot`, `crates/er-desktop/src/snapshot.rs`) is a desktop type — an
+draws (`Thread`, `crates/er-protocol/src/annotations.rs`) is a wire type — an
 engine-side one would put a single front end's needs into the shared model. A new
 comment-like entity needs its storage file, staleness rule, sync behavior and export
 behavior decided before it is written.

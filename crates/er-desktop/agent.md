@@ -18,7 +18,7 @@ Transport decisions live in the ADRs. Read them instead of a summary here:
 - `docs/adr/0018-app-cmd-ingests-snapshots.md`, `docs/adr/0017-optimistic-frontend-writes.md`
   — how the frontend sends mutations and applies what comes back.
 
-`src/snapshot.rs` is the wire contract for `desktop-ui/src/lib/pageTypes.ts`. Both sides
+`src/page_view.rs` is the wire contract for `desktop-ui/src/lib/pageTypes.ts`. Both sides
 compile without the other, so a changed field is invisible until runtime.
 
 ## Traps
@@ -49,11 +49,6 @@ composited above the Svelte shell, so no modal can paint over it —
 `browser_suspend_for_overlay` destroys the child webviews when an overlay takes focus,
 because on macOS `hide()` leaves them stealing clicks. The `erp://` iframe fallback is
 a DOM element, and the shell layers over it normally.
-
-**Re-activating an already-open remote PR skips tab persistence.**
-`activate_or_open_remote_pr` returns from its fast path after setting `active_tab`,
-without calling `persist_app_tabs`, so the new active index is lost on restart.
-`crates/er-desktop/src/commands.rs`.
 
 **A stub tab's first refresh must never run inline under the lock.** `select_tab` and
 `close_tab` return the stub immediately with `loading.tab_diff` set, hand the real

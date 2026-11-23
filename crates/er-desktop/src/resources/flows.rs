@@ -11,7 +11,7 @@ use er_protocol::{
 
 use super::tabs::Routed;
 use crate::flow_service::{self, Control};
-use crate::snapshot::ReviewFlowSnapshot;
+use crate::page_view::ReviewFlowSnapshot;
 use crate::state::DesktopState;
 
 /// Every review flow the started actors publish, by bucket, each as the

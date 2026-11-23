@@ -38,13 +38,13 @@ pub fn apply(desktop: &DesktopState, command: Command) -> Routed {
             project_id,
             pr_number,
         } => {
-            let ctx = crate::commands::triage_ctx(desktop);
-            crate::commands::pr_triage(desktop, &ctx, &project_id, pr_number)
+            let ctx = crate::route_helpers::triage_ctx(desktop);
+            crate::route_helpers::pr_triage(desktop, &ctx, &project_id, pr_number)
                 .map_err(crate::tasks::refused)
         }
         Command::RunBranchTriage { project_id, branch } => {
-            let ctx = crate::commands::triage_ctx(desktop);
-            crate::commands::branch_triage(desktop, &ctx, &project_id, &branch)
+            let ctx = crate::route_helpers::triage_ctx(desktop);
+            crate::route_helpers::branch_triage(desktop, &ctx, &project_id, &branch)
                 .map_err(crate::tasks::refused)
         }
         Command::CancelQueuedTask { id } => crate::tasks::cancel_queued(desktop, &id),

@@ -93,7 +93,7 @@ pub fn review_json(
         return Ok((0, Resource::ReviewJson(ReviewJson::default())));
     };
     let scope = content.tab.identity().storage_branch_scope();
-    let json = crate::commands::review_projection(
+    let json = crate::route_helpers::review_projection(
         &content.context.er_dir,
         &content.context.branch_diff_hash,
         scope,
@@ -108,7 +108,7 @@ pub fn review_revisions(
 ) -> Result<(u64, Resource), ErError> {
     let revisions = loaded(desktop, wire)?.map_or_else(Vec::new, |content| {
         let context = &content.context;
-        crate::commands::review_revisions(
+        crate::route_helpers::review_revisions(
             &context.repo_root,
             &context.er_dir,
             &context.branch_diff_hash,
@@ -130,7 +130,7 @@ pub fn review_revisions(
 
 /// A saved screenshot by its path, which reads no bucket.
 pub fn screenshot(path: &str) -> Result<(u64, Resource), ErError> {
-    let data_url = crate::commands::read_annotation_screenshot(path.to_string())
+    let data_url = crate::route_helpers::read_annotation_screenshot(path.to_string())
         .map_err(|message| not_found(&message))?;
     Ok((
         0,
