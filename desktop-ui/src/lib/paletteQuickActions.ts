@@ -6,6 +6,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { copyToClipboard } from "$lib/clipboard";
 import { openExternalUrl } from "$lib/openExternalUrl";
 import { buildPrHint, remoteParts } from "$lib/prOpen";
+import { asErError } from "$lib/protocol/client";
 import { app } from "$lib/stores/app.svelte";
 import type { PrInfo, ProjectSnapshot } from "$lib/types";
 
@@ -31,7 +32,7 @@ export async function revealWorktree(path: string): Promise<void> {
     await invoke("reveal_path", { path });
     app.showToast("success", "Revealed in Finder");
   } catch (e) {
-    app.showToast("error", `Reveal failed: ${e}`);
+    app.showToast("error", `Reveal failed: ${asErError(e).message}`);
   }
 }
 

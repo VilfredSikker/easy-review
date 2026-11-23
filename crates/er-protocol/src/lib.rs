@@ -14,6 +14,7 @@ mod annotations;
 mod arena;
 mod command;
 mod diff;
+mod direct;
 mod error;
 mod hunks;
 mod jobs;
@@ -46,6 +47,7 @@ pub use diff::{
     BaseBehind, BranchDivergence, CommitRow, DiffLineStats, FileRow, FilterSuggestion, ScopeStat,
     TabDiff,
 };
+pub use direct::{BlameSpan, LineCommits, OpenSource, OpenSourceKind};
 pub use error::{ErError, ErErrorKind};
 pub use hunks::{FileHunks, Hunk, HunkLine};
 pub use jobs::{AiReplyJob, Jobs};

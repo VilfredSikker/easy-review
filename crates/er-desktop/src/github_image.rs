@@ -105,9 +105,11 @@ fn fetch(github: &dyn er_engine::github::GitHub, url: &str) -> Result<String, St
 pub async fn fetch_github_image(
     url: String,
     state: tauri::State<'_, DesktopState>,
-) -> Result<String, String> {
+) -> Result<String, er_protocol::ErError> {
     let github = Arc::clone(&state.ports.github);
-    run_blocking(move || fetch(&*github, &url)).await
+    run_blocking(move || fetch(&*github, &url))
+        .await
+        .map_err(crate::direct::failed)
 }
 
 #[cfg(test)]

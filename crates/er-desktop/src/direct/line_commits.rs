@@ -10,23 +10,13 @@
 use std::sync::Mutex;
 
 use er_engine::app::{DiffMode, TabState};
-use er_engine::git::{BlameEnd, BlameRequest, FileStatus, GitError, LineAttribution};
+use er_engine::git::{BlameEnd, BlameRequest, BlameSpan, FileStatus, GitError, LineAttribution};
+use er_protocol::{ErError, LineCommits};
 use tauri::State;
 
-use super::AppState;
+use crate::commands::AppState;
 use crate::line_commits_cache::CacheKey;
 pub use crate::line_commits_cache::{LineCommitsCache, LineCommitsLru};
-
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct LineCommits {
-    pub path: String,
-    /// Echoed so the frontend can drop a reply for hunks it no longer shows.
-    pub cache_key: String,
-    /// Why this view cannot be attributed; `None` when it was.
-    pub unavailable: Option<String>,
-    #[serde(flatten)]
-    pub attribution: LineAttribution,
-}
 
 /// Where the diff's lines come from, resolved from the tab under the lock so
 /// the git work after it never needs the lock.
@@ -211,8 +201,22 @@ fn line_commits_for(
         path,
         cache_key,
         unavailable,
-        attribution,
+        commits: attribution.commits,
+        added: wire_spans(attribution.added),
+        deleted: wire_spans(attribution.deleted),
+        deleted_attributed: attribution.deleted_attributed,
     })
+}
+
+fn wire_spans(spans: Vec<BlameSpan>) -> Vec<er_protocol::BlameSpan> {
+    spans
+        .into_iter()
+        .map(|span| er_protocol::BlameSpan {
+            start: span.start,
+            len: span.len,
+            commit: u32::try_from(span.commit).unwrap_or(u32::MAX),
+        })
+        .collect()
 }
 
 /// Which commit introduced (or removed) each changed line of `path` in the
@@ -222,9 +226,9 @@ pub async fn line_commits(
     path: String,
     cache_key: String,
     state: State<'_, AppState>,
-) -> Result<LineCommits, String> {
+) -> Result<LineCommits, ErError> {
     let state = state.inner().clone();
-    super::run_blocking(move || {
+    crate::state::run_blocking(move || {
         line_commits_for(
             &state.ports,
             &state.app,
@@ -234,6 +238,7 @@ pub async fn line_commits(
         )
     })
     .await
+    .map_err(super::failed)
 }
 
 #[cfg(test)]
@@ -370,12 +375,12 @@ mod tests {
 
         let first = line_commits_for(&ports, &app, &cache, "f".into(), "k1".into()).unwrap();
         assert_eq!(first.unavailable, None);
-        assert_eq!(first.attribution.commits, std::slice::from_ref(&head));
-        assert_eq!(first.attribution.added.len(), 1);
+        assert_eq!(first.commits, std::slice::from_ref(&head));
+        assert_eq!(first.added.len(), 1);
         assert_eq!(cache.lock().unwrap().entries.len(), 1);
 
         let again = line_commits_for(&ports, &app, &cache, "f".into(), "k1".into()).unwrap();
-        assert_eq!(again.attribution, first.attribution);
+        assert_eq!(again, first);
         assert_eq!(cache.lock().unwrap().entries.len(), 1);
 
         line_commits_for(&ports, &app, &cache, "f".into(), "k2".into()).unwrap();
@@ -396,6 +401,6 @@ mod tests {
         app.lock().unwrap().tabs[0].mode = DiffMode::Unstaged;
         let off = line_commits_for(&ports, &app, &cache, "f".into(), "k1".into()).unwrap();
         assert_eq!(off.unavailable.as_deref(), Some(UNCOMMITTED_REASON));
-        assert!(off.attribution.commits.is_empty());
+        assert!(off.commits.is_empty());
     }
 }

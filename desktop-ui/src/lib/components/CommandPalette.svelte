@@ -1,6 +1,7 @@
 <script lang="ts">
   import { untrack } from "svelte";
   import { app } from "$lib/stores/app.svelte";
+  import { exportReviewToFile } from "$lib/stores/quickExport";
   import { commandPalette } from "$lib/stores/commandPalette.svelte";
   import { sessionResource } from "$lib/stores/sessionResource.svelte";
   import { showDiagrams } from "$lib/components/overview/overviewNav";
@@ -195,7 +196,7 @@
         description: "Export current diff context to clipboard",
         group: "AI" as const,
         kbd: "c",
-        run: () => { void dismissAndRun(() => app.cmd("export_to_agent")); },
+        run: () => { void dismissAndRun(exportReviewToFile); },
       },
       {
         id: "ai-provider-model",

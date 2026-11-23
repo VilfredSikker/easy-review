@@ -3,8 +3,6 @@
 use tauri::webview::NewWindowResponse;
 use tauri::Url;
 
-use crate::commands;
-
 fn is_local_app_host(host: &str) -> bool {
     host == "localhost" || host == "127.0.0.1" || host == "[::1]" || host.ends_with(".localhost")
 }
@@ -36,7 +34,7 @@ pub fn handle_main_webview_navigation(url: &Url) -> bool {
     }
     if url.scheme() == "http" || url.scheme() == "https" {
         log_policy_event("main_webview_navigation_external", url);
-        let _ = commands::open_external_url(url.as_str());
+        let _ = crate::os_launch::open_external_url(url.as_str());
     } else {
         log_policy_event("main_webview_navigation_deny", url);
     }
@@ -47,7 +45,7 @@ pub fn handle_main_webview_navigation(url: &Url) -> bool {
 pub fn handle_main_webview_new_window<R: tauri::Runtime>(url: &Url) -> NewWindowResponse<R> {
     if url.scheme() == "http" || url.scheme() == "https" {
         log_policy_event("main_webview_new_window_external", url);
-        let _ = commands::open_external_url(url.as_str());
+        let _ = crate::os_launch::open_external_url(url.as_str());
     } else {
         log_policy_event("main_webview_new_window_deny", url);
     }

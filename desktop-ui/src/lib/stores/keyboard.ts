@@ -14,6 +14,8 @@ import { buildTree, flattenForNav } from "$lib/treeFromPaths";
 import { nextFile, prevFile } from "$lib/navigation";
 import { v1ServiceRequested } from "$lib/v1ServiceFlag";
 import type { AppSnapshot, FileSnapshot } from "$lib/types";
+import type { OpenSource } from "$lib/protocol/generated/OpenSource";
+import { asErError } from "$lib/protocol/client";
 import { fileTreeCollapse } from "$lib/stores/fileTreeCollapse.svelte";
 import { diffNav } from "$lib/stores/diffNav.svelte";
 import { rightRail } from "$lib/stores/rightRail.svelte";
@@ -23,11 +25,6 @@ import { arena } from "./arena.svelte";
 
 /** Bare digits pick the review page, in the order the shell lists them. */
 const REVIEW_PAGE_KEYS: Partial<Record<string, ReviewPage>> = { "1": "overview", "2": "tour", "3": "diff" };
-
-interface OpenSourceResult {
-  kind: string;
-  target: string;
-}
 
 function openExportReviewView(): void {
   app.setMainView("export-review");
@@ -175,13 +172,14 @@ function toggleReviewedHere() {
 
 async function openInVsCode() {
   try {
-    const result = await invoke<OpenSourceResult>("open_in_vscode");
+    const result = await invoke<OpenSource>("open_in_vscode");
     if (result.kind === "needs_checkout") {
       app.showToast("info", result.target);
     }
   } catch (e) {
-    app.pushLog("error", "open_in_vscode", String(e));
-    app.showToast("error", `VS Code: ${e}`);
+    const message = asErError(e).message;
+    app.pushLog("error", "open_in_vscode", message);
+    app.showToast("error", `VS Code: ${message}`);
   }
 }
 
