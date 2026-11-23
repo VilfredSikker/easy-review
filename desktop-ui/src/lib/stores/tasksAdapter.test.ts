@@ -6,7 +6,7 @@ import type { Resource } from "$lib/protocol/generated/Resource";
 import type { ResourceKey } from "$lib/protocol/generated/ResourceKey";
 import type { AppSnapshot, BackgroundTaskSnapshot } from "$lib/types";
 import { JOBS } from "./annotationsAdapter";
-import { TasksAdapter, type Every } from "./tasksAdapter";
+import { runCommand, TasksAdapter, type Every } from "./tasksAdapter";
 
 const TAB = 4;
 const TASK = {
@@ -28,8 +28,13 @@ const TASK = {
 const HELD: Resource = { kind: "jobs", ai_replies: [], arena_runs: [], review_flows: [], tasks: [TASK], triage: [] };
 const APP_TASK = { ...TASK, id: "triage:9", kind: "triage" } as BackgroundTaskSnapshot;
 
-function adapter(flagOn: boolean) {
+function adapter(
+  flagOn: boolean,
+  logs = new Map<string, { command_name: string; source: string; text: string }[]>(),
+  held: Resource = HELD,
+) {
   const sent: Command[] = [];
+  const toasts: string[] = [];
   const fetched: ResourceKey[] = [];
   const invoked: string[] = [];
   const awaited: string[] = [];
@@ -37,12 +42,16 @@ function adapter(flagOn: boolean) {
     invoked.push(command);
     return [{ command_name: "triage", source: "stdout", text: "app" }] as T;
   };
+  // A toast the adapter could reach, as the start toast it once showed did.
+  const shown = { toast: (message: string) => toasts.push(message) };
   const tasks = new TasksAdapter({
+    ...shown,
     flagOn,
     activeKey: () => TAB,
     invoke,
+    logs,
     store: {
-      get: (key: ResourceKey) => (key.kind === JOBS.kind ? { key, version: 2, value: HELD } : undefined) as never,
+      get: (key: ResourceKey) => (key.kind === JOBS.kind ? { key, version: 2, value: held } : undefined) as never,
       send: async (command: Command) => {
         sent.push(command);
         return { changed: [{ key: JOBS, version: 3 }], created: null } satisfies Ack;
@@ -59,7 +68,7 @@ function adapter(flagOn: boolean) {
       },
     },
   });
-  return { tasks, sent, fetched, invoked, awaited };
+  return { tasks, sent, fetched, invoked, awaited, logs, toasts };
 }
 
 describe("TasksAdapter", () => {
@@ -84,6 +93,70 @@ describe("TasksAdapter", () => {
     expect(fetched).toEqual([{ kind: "task_log", id: "review:1" }]);
     expect((await tasks.log("triage:9")).map((l) => l.text)).toEqual(["app"]);
     expect(invoked).toEqual(["get_background_task_log"]);
+  });
+
+  it("sends a run through er_send keyed to the active tab and waits for jobs", async () => {
+    const { tasks, sent, awaited } = adapter(true);
+    await tasks.route("run_ai_review", { scope: "branch" });
+    await tasks.route("run_ai_triage_review", { scope: "current" });
+    expect(sent).toEqual([
+      { kind: "run_review", tab: TAB, scope: "branch" },
+      { kind: "run_scoped_review", tab: TAB, scope: "current", paths: [], reviewers: ["triage"], focusPrompt: null },
+    ]);
+    expect(awaited).toEqual(["jobs@3", "jobs@3"]);
+    expect(adapter(false).tasks.route("run_ai_review", { scope: "branch" })).toBeNull();
+  });
+
+  it("maps every run command the page sends", () => {
+    const names = [
+      "run_ai_review",
+      "generate_tour",
+      "run_importance_agent",
+      "generate_diagram",
+      "run_ai_expert_review",
+      "run_ai_professor_review",
+      "run_ai_triage_review",
+      "run_ai_review_files",
+      "run_ai_scoped_review",
+    ];
+    for (const name of names) expect(runCommand(name, {}, TAB)).not.toBeNull();
+    expect(runCommand("refresh_diff", {}, TAB)).toBeNull();
+  });
+
+  it("shows the painted tab's host tasks in the agent output by target, in any bucket", async () => {
+    const tour = { ...TASK, id: "tour:2", kind: "tour", er_dir: "/tour-bucket" };
+    const held: Resource = { ...HELD, tasks: [TASK, tour] } as Resource;
+    const { tasks, logs } = adapter(true, undefined, held);
+    const active = { is_active: true, repo_root: "/repo", branch: null, pr_number: null, remote: null };
+    const raw = {
+      review_bucket_er_dir: "/unstaged",
+      branch: "feature",
+      tabs: [active],
+      agent_commands: [],
+      agent_log: [],
+    } as unknown as AppSnapshot;
+    await tasks.refreshLogs(raw);
+    expect([...logs.keys()].sort()).toEqual(["review:1", "tour:2"]);
+    const shown = tasks.overlay(raw);
+    expect(shown.agent_commands?.map((c) => c.name)).toEqual(["review", "tour"]);
+    expect(shown.agent_log?.map((l) => l.text)).toEqual(["host", "host"]);
+    const elsewhere = tasks.overlay({ ...raw, tabs: [{ ...active, branch: "other" }] } as unknown as AppSnapshot);
+    expect(elsewhere.agent_commands).toEqual([]);
+  });
+
+  it("drops the log of a task jobs no longer lists", async () => {
+    const logs = new Map([["gone:7", [{ command_name: "review", source: "stdout", text: "old" }]]]);
+    const { tasks } = adapter(true, logs);
+    await tasks.refreshLogs(null);
+    expect(logs.has("gone:7")).toBe(false);
+  });
+
+  it("shows no toast of its own for a routed run: the host's notice is its one message", async () => {
+    const { tasks, toasts } = adapter(true);
+    await tasks.route("run_ai_review", { scope: "branch" });
+    await tasks.route("run_ai_triage_review", { scope: "branch" });
+    await tasks.route("run_ai_expert_review", { scope: "branch", expertId: "security" });
+    expect(toasts).toEqual([]);
   });
 
   it("reads an App task's log no sooner than before, and a host task's once on open", async () => {
