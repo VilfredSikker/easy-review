@@ -538,6 +538,29 @@ fn retired_auto_triage_notice(projects_path: &std::path::Path) -> Option<String>
     ))
 }
 
+/// What `App::launch_agent_prompt` runs: a tab command's name and prompt,
+/// the tab's roots, the config and pick it runs with, and where its log
+/// lines go.
+pub struct AgentPromptRequest<'a> {
+    pub name: &'a str,
+    pub prompt: &'a str,
+    pub repo_root: String,
+    pub er_dir: String,
+    pub is_remote: bool,
+    pub remote_repo: Option<String>,
+    pub config: &'a crate::config::ErConfig,
+    pub selection: crate::config::AiSelection,
+    pub ports: &'a crate::ports::Ports,
+    pub log_tx: std::sync::mpsc::Sender<AgentLogEntry>,
+}
+
+/// A launched tab command: its stop handle and the receiver its outcome
+/// arrives on.
+pub struct AgentPromptRun {
+    pub run: std::sync::Arc<er_agent::agent_run::AgentRunHandle>,
+    pub result: std::sync::mpsc::Receiver<Result<()>>,
+}
+
 impl App {
     // ── Comment System ──
 
@@ -2665,11 +2688,7 @@ impl App {
             return Ok(());
         }
 
-        let repo_root = self.tab().repo_root.clone();
-        let er_dir_path = self.tab().er_dir();
-        let bucket_for_tab = er_dir_path.clone();
-        let is_remote = self.tab().is_remote();
-        let remote_repo = self.tab().remote_repo.clone();
+        let bucket_for_tab = self.tab().er_dir();
         let selection = if let Some(selection) = self.pending_ai_selection_override.clone() {
             selection
         } else {
@@ -2680,6 +2699,54 @@ impl App {
                 effort: self.current_ai_effort.clone(),
             }
         };
+        let launched = Self::launch_agent_prompt(AgentPromptRequest {
+            name,
+            prompt,
+            repo_root: self.tab().repo_root.clone(),
+            er_dir: bucket_for_tab.clone(),
+            is_remote: self.tab().is_remote(),
+            remote_repo: self.tab().remote_repo.clone(),
+            config: &self.config,
+            selection,
+            ports: &self.ports,
+            log_tx: self.tab().log_tx.clone(),
+        })?;
+
+        self.tab_mut()
+            .command_rx
+            .insert(name.to_string(), launched.result);
+        self.tab_mut()
+            .command_status
+            .insert(name.to_string(), CommandStatus::Running);
+        self.tab_mut()
+            .command_runs
+            .insert(name.to_string(), launched.run);
+        self.tab_mut()
+            .command_buckets
+            .insert(name.to_string(), bucket_for_tab);
+        self.notify(&format!("{} started...", name));
+        Ok(())
+    }
+
+    /// Launches the agent for the tab command `request.name` on its own
+    /// thread, with the argv, tool allow-list, effort and staging the tab
+    /// commands share, and commits its staged output when it succeeds.
+    /// Answers the run's stop handle and the receiver its outcome arrives on.
+    /// The App's `spawn_agent_prompt` calls it with its tab's inputs; a host
+    /// with no App calls it with a tab's published content.
+    pub fn launch_agent_prompt(request: AgentPromptRequest<'_>) -> Result<AgentPromptRun> {
+        let AgentPromptRequest {
+            name,
+            prompt,
+            repo_root,
+            er_dir: er_dir_path,
+            is_remote,
+            remote_repo,
+            config,
+            selection,
+            ports,
+            log_tx,
+        } = request;
 
         let (
             agent_cmd,
@@ -2690,20 +2757,17 @@ impl App {
             resolved_provider_id,
             resolved_model_id,
             family,
-        ) = if let Some(provider_id) = self
-            .config
+        ) = if let Some(provider_id) = config
             .ai_hub
             .resolve_provider_id(selection.provider_id.as_deref())
         {
-            let provider = self
-                .config
+            let provider = config
                 .ai_hub
                 .providers
                 .get(&provider_id)
                 .ok_or_else(|| anyhow::anyhow!("Unknown AI provider: {}", provider_id))?;
             let mut args = provider.args.clone();
-            let resolved_model_id = self
-                .config
+            let resolved_model_id = config
                 .ai_hub
                 .resolve_model_id(&provider_id, selection.model_id.as_deref());
             let family = provider.cli_family();
@@ -2725,25 +2789,25 @@ impl App {
                 family,
             )
         } else {
-            let cmd = self.config.agent.command.clone();
+            let cmd = config.agent.command.clone();
             let is_claude = crate::config::agent_command_is_claude(&cmd);
             let is_codex = crate::config::agent_command_is_codex(&cmd);
             let family = crate::config::CliFamily::detect(&cmd);
             (
                 cmd.clone(),
-                self.config.agent.args.clone(),
+                config.agent.args.clone(),
                 is_claude,
                 is_codex,
                 crate::config::agent_command_uses_stream_json(&cmd),
                 None,
-                (!self.config.agent.model.is_empty()).then(|| self.config.agent.model.clone()),
+                (!config.agent.model.is_empty()).then(|| config.agent.model.clone()),
                 family,
             )
         };
         let effort_override = if name == "triage" { Some("low") } else { None };
         let effort = crate::config::resolve_effort_for_model(
-            &self.config.ai_hub,
-            &self.config.agent,
+            &config.ai_hub,
+            &config.agent,
             resolved_provider_id.as_deref(),
             resolved_model_id.as_deref(),
             selection.effort.as_deref(),
@@ -2789,26 +2853,24 @@ impl App {
             Some(staging) => staging.repoint_prompt(prompt, &er_dir_path),
             None => prompt.to_string(),
         };
-        let push_to_pr = name == "summary" && self.config.summary.push_to_pr;
-        let git_handle = self.ports.git.clone();
-        let github_handle = self.ports.github.clone();
+        let push_to_pr = name == "summary" && config.summary.push_to_pr;
+        let git_handle = ports.git.clone();
+        let github_handle = ports.github.clone();
 
         // Send status log entry before spawning
-        let _ = self.tab().log_tx.send(AgentLogEntry {
+        let _ = log_tx.send(AgentLogEntry {
             timestamp: std::time::Instant::now(),
             command_name: std::sync::Arc::from(name),
             source: AgentLogSource::Status,
             text: format!("{} started", name),
         });
 
-        let log_tx = self.tab().log_tx.clone();
         let artifact_store = crate::store_registry::store();
-        let agent_timeout = self.config.ai_hub.effective_agent_timeout();
-        let slot_cap = self.config.ai_hub.effective_max_concurrent_reviews();
-        let ceiling = self.config.ai_hub.effective_max_concurrent_agents();
+        let agent_timeout = config.ai_hub.effective_agent_timeout();
+        let slot_cap = config.ai_hub.effective_max_concurrent_reviews();
+        let ceiling = config.ai_hub.effective_max_concurrent_agents();
         let run = er_agent::agent_run::AgentRunHandle::new();
         let run_for_tab = std::sync::Arc::clone(&run);
-        let run_name = name.to_string();
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let mut timer = er_agent::agent_timing::AgentRunTimer::start();
@@ -3063,16 +3125,10 @@ impl App {
             timer.emit("tab_command", &name_owned, ok);
         });
 
-        self.tab_mut().command_rx.insert(name.to_string(), rx);
-        self.tab_mut()
-            .command_status
-            .insert(name.to_string(), CommandStatus::Running);
-        self.tab_mut().command_runs.insert(run_name, run_for_tab);
-        self.tab_mut()
-            .command_buckets
-            .insert(name.to_string(), bucket_for_tab);
-        self.notify(&format!("{} started...", name));
-        Ok(())
+        Ok(AgentPromptRun {
+            run: run_for_tab,
+            result: rx,
+        })
     }
 
     /// Spawn an app-level background general review (`kind` = `review`).

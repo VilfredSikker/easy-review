@@ -8,13 +8,22 @@ use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
 
 use er_engine::ai::prompts;
-use er_engine::app::{App, BackgroundTaskTarget};
+use er_engine::task_target::BackgroundTaskTarget;
 
 pub type AutoTriageInFlight = Arc<Mutex<HashSet<String>>>;
 
+/// Queues a prepared triage task, with its target and prompt.
+pub type SpawnTriage =
+    Arc<dyn Fn(BackgroundTaskTarget, String) -> Result<(), String> + Send + Sync>;
+
+/// What a triage run reaches: the ports it reads the diff with, the host it
+/// queues its task on, and the request set whose moves `jobs` shows.
 #[derive(Clone)]
 pub struct AutoTriageContext {
-    pub app: Arc<Mutex<App>>,
+    pub ports: er_engine::ports::Ports,
+    pub spawn: SpawnTriage,
+    /// Tells the person once.
+    pub notify: Arc<dyn Fn(String) + Send + Sync>,
     pub in_flight: AutoTriageInFlight,
     /// Called after each insert into or removal from `in_flight`.
     pub queue_moved: Arc<dyn Fn() + Send + Sync>,
@@ -125,7 +134,7 @@ pub fn dispatch_auto_triage(ctx: &AutoTriageContext, requests: Vec<AutoTriageReq
 }
 
 fn run_auto_triage_once(ctx: &AutoTriageContext, req: &AutoTriageRequest) -> Result<(), String> {
-    let ports = ctx.app.lock().map_err(|e| e.to_string())?.ports.clone();
+    let ports = &ctx.ports;
     let mut raw_diff = fetch_pr_diff(&*ports.git, &req.repo_root, &req.remote, req.pr_number)?;
     if !req.review_ignore_globs.is_empty() {
         raw_diff =
@@ -171,7 +180,7 @@ fn run_auto_triage_once(ctx: &AutoTriageContext, req: &AutoTriageRequest) -> Res
             base_ref: format!("origin/{base_branch}"),
         }
     };
-    let review_md = er_engine::ai::review_md::collect(&ports, &review_md_source, &raw_diff);
+    let review_md = er_engine::ai::review_md::collect(ports, &review_md_source, &raw_diff);
     let diff_hash = er_engine::ai::prepared_diff::ensure_review_inputs_from_config(
         &er_dir,
         &raw_diff,
@@ -191,10 +200,8 @@ fn run_auto_triage_once(ctx: &AutoTriageContext, req: &AutoTriageRequest) -> Res
     };
 
     let prompt = prompts::build_triage_review_prompt_prepared_diff("branch", &er_dir, &diff_hash);
-    let mut app = ctx.app.lock().map_err(|e| e.to_string())?;
-    app.spawn_background_triage_review(target, prompt, true)
-        .map_err(|e| e.to_string())?;
-    app.notify(&format!(
+    (ctx.spawn)(target, prompt)?;
+    (ctx.notify)(format!(
         "Triage started for {}#{}",
         req.remote, req.pr_number
     ));
@@ -241,7 +248,7 @@ fn run_branch_triage_once(
     if repo_root.is_empty() {
         return Err("Branch triage requires a local clone".to_string());
     }
-    let ports = ctx.app.lock().map_err(|e| e.to_string())?.ports.clone();
+    let ports = &ctx.ports;
     let base_branch = ports
         .git
         .detect_base_branch(repo_root)
@@ -271,7 +278,7 @@ fn run_branch_triage_once(
     }
     std::fs::create_dir_all(&er_dir).map_err(|e| format!("mkdir {er_dir}: {e}"))?;
     let review_md = er_engine::ai::review_md::collect(
-        &ports,
+        ports,
         &er_engine::ai::review_md::ReviewMdSource::Git {
             repo_root: repo_root.to_string(),
             base_ref: base_branch.clone(),
@@ -297,10 +304,8 @@ fn run_branch_triage_once(
     };
 
     let prompt = prompts::build_triage_review_prompt_prepared_diff("branch", &er_dir, &diff_hash);
-    let mut app = ctx.app.lock().map_err(|e| e.to_string())?;
-    app.spawn_background_triage_review(target, prompt, true)
-        .map_err(|e| e.to_string())?;
-    app.notify(&format!("Triage started for branch {branch}"));
+    (ctx.spawn)(target, prompt)?;
+    (ctx.notify)(format!("Triage started for branch {branch}"));
     crate::profile_log::bump_desktop_revision(&ctx.desktop_revision, "manual_triage_started");
     Ok(())
 }

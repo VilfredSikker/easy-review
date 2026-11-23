@@ -13,9 +13,11 @@
 //! Only compiled with `v1-service`.
 
 use std::collections::VecDeque;
+use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use er_engine::ai::ScopedRunStamp;
+use er_engine::app::{AgentLogEntry, AgentLogSource, AgentPromptRun};
 use er_engine::config::{AiSelection, ErConfig};
 use er_engine::job_staging::JobStaging;
 use er_engine::jobs::{AgentRunHandle, JobProgress};
@@ -49,6 +51,9 @@ struct Task {
     /// Set while it waits for a slot.
     queued: Option<Queued>,
     target: BackgroundTaskTarget,
+    /// A tab command the agent launcher started (validate, a note sent to
+    /// the agent), which tells its own outcome and stays out of the inbox.
+    agent: bool,
 }
 
 struct Queued {
@@ -217,6 +222,7 @@ pub fn enqueue(desktop: &DesktopState, launch: Launch) -> Result<String, String>
             run: None,
             queued: Some(Queued { launch, staging }),
             target: target.clone(),
+            agent: false,
         });
     }
     host.clock.bump();
@@ -245,6 +251,78 @@ pub fn enqueue(desktop: &DesktopState, launch: Launch) -> Result<String, String>
             false,
         );
     }
+    Ok(id)
+}
+
+/// Lists a tab command that `launch` starts through the agent launcher
+/// (`App::launch_agent_prompt`), and records its lines and its outcome. It
+/// takes no queue slot: the runner waits for an agent slot itself, as the
+/// App's tab commands do. The same command on the same bucket is refused
+/// while one runs. Answers the task's id.
+pub fn hold_agent(
+    desktop: &DesktopState,
+    target: BackgroundTaskTarget,
+    name: &str,
+    launch: impl FnOnce(Sender<AgentLogEntry>) -> anyhow::Result<AgentPromptRun>,
+) -> Result<String, String> {
+    let host = &desktop.tasks;
+    // One lock over the busy check, the launch and the push, so two sends at
+    // once start one agent. The launch only spawns: the runner waits for its
+    // slot on its own thread.
+    let mut tasks = host.lock();
+    let busy = tasks.iter().any(|task| {
+        task.row.kind == name && task.target.er_dir == target.er_dir && task.run.is_some()
+    });
+    if busy {
+        return Err(format!(
+            "{name} already running for {}",
+            target.display_label()
+        ));
+    }
+    let (lines_tx, lines) = std::sync::mpsc::channel();
+    let started = launch(lines_tx).map_err(|e| e.to_string())?;
+    let id = task_id(name, &target);
+    let row = TaskJob {
+        id: id.clone(),
+        label: er_engine::app::kind_label(name),
+        kind: name.to_string(),
+        target_label: target.display_label(),
+        scope: target.scope.clone(),
+        repo_root: target.repo_root.clone(),
+        branch_label: target.branch_label.clone(),
+        pr_number: target.pr_number,
+        remote_repo: target.remote_repo.clone(),
+        er_dir: target.er_dir.clone(),
+        status: "running".to_string(),
+        error: None,
+        started_at_ms: now_ms(),
+        finished_at_ms: None,
+    };
+    tasks.push(Task {
+        row,
+        log: VecDeque::new(),
+        run: Some(started.run),
+        queued: None,
+        target,
+        agent: true,
+    });
+    drop(tasks);
+    host.clock.bump();
+    let (desktop, task) = (desktop.clone(), id.clone());
+    // Unnamed, like every thread that reaches the storage root. The lines
+    // end when the launcher's worker drops its sender, after it answered.
+    std::thread::Builder::new()
+        .spawn(move || {
+            for entry in lines {
+                append(&desktop.tasks, &task, agent_line(entry));
+            }
+            let result = started
+                .result
+                .recv()
+                .unwrap_or_else(|_| Err(anyhow::anyhow!("the agent thread crashed")));
+            finish(&desktop, &task, result.map_err(|e| e.to_string()));
+        })
+        .map_err(|e| format!("start the task worker: {e}"))?;
     Ok(id)
 }
 
@@ -371,23 +449,28 @@ fn finish(desktop: &DesktopState, id: &str, result: Result<(), String>) {
             return;
         };
         let label = task.row.target_label.clone();
+        let what = if task.agent {
+            task.row.kind.clone()
+        } else {
+            "review".to_string()
+        };
         let (status, error, message) = match result {
-            Ok(()) => ("done", None, format!("review completed ({label})")),
+            Ok(()) => ("done", None, format!("{what} completed ({label})")),
             Err(error) => (
                 "failed",
                 Some(error.clone()),
-                format!("review failed ({label}): {error}"),
+                format!("{what} failed ({label}): {error}"),
             ),
         };
         task.row.status = status.to_string();
         task.row.error = error;
         task.row.finished_at_ms = Some(now_ms());
         task.run = None;
-        push_line(&mut task.log, status_line("review", message.clone()));
-        (task.row.clone(), message)
+        push_line(&mut task.log, status_line(&what, message.clone()));
+        (task.row.clone(), message, task.agent)
     };
     desktop.tasks.clock.bump();
-    let (row, message) = finished;
+    let (row, message, agent) = finished;
     if row.kind == er_engine::ai::prompts::IMPORTANCE_TASK_KIND && row.status == "done" {
         crate::resources::notice::tell(
             desktop,
@@ -396,7 +479,9 @@ fn finish(desktop: &DesktopState, id: &str, result: Result<(), String>) {
         );
     }
     crate::resources::notice::tell(desktop, message, true);
-    crate::commands::file_tasks_in_inbox(desktop, &[row]);
+    if !agent {
+        crate::commands::file_tasks_in_inbox(desktop, &[row]);
+    }
 }
 
 /// Drops the tasks finished longer ago than the window and starts what the
@@ -453,6 +538,20 @@ fn log_line(name: &str, event: JobProgress, is_stream_json: bool) -> Option<Task
         source: source.to_string(),
         text,
     })
+}
+
+/// A launcher log entry as a task's line.
+fn agent_line(entry: AgentLogEntry) -> TaskLogLine {
+    let source = match entry.source {
+        AgentLogSource::Stdout => "stdout",
+        AgentLogSource::Stderr => "stderr",
+        AgentLogSource::Status => "status",
+    };
+    TaskLogLine {
+        command_name: entry.command_name.to_string(),
+        source: source.to_string(),
+        text: entry.text,
+    }
 }
 
 fn task_id(kind: &str, target: &BackgroundTaskTarget) -> String {

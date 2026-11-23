@@ -32,7 +32,6 @@ pub(super) fn send(state: &AppState, name: &'static str, command: Command) -> Re
     while_the_app_is_locked(state, name, move |state| {
         let effects = Effects {
             notify: &|_, _| {},
-            follow_selection: &|_| {},
             check_update: || panic!("no update check in this test"),
             webviews: &crate::browser_webview::NoWebviews,
             pick_folder: &|| None,

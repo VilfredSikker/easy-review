@@ -42,8 +42,15 @@ function scoped(tab: TabKey, a: Args, paths: string[], reviewers: string[]): Com
   };
 }
 
-/** The wire command for a run on `tab`; null for any other command. */
-export function runCommand(command: string, a: Args, tab: TabKey): Command | null {
+/** The wire command for a run on `tab`, or for a sidebar triage, which names no tab; null for any other command. */
+export function runCommand(command: string, a: Args, tab: TabKey | null): Command | null {
+  if (command === "run_pr_triage") {
+    return { kind: "run_pr_triage", projectId: text(a.projectId), prNumber: Number(a.prNumber) };
+  }
+  if (command === "run_branch_triage") {
+    return { kind: "run_branch_triage", projectId: text(a.projectId), branch: text(a.branch) };
+  }
+  if (tab === null) return null;
   switch (command) {
     case "run_ai_review":
       return { kind: "run_review", tab, scope: text(a.scope) };
@@ -61,6 +68,10 @@ export function runCommand(command: string, a: Args, tab: TabKey): Command | nul
       return scoped(tab, a, [], ["triage"]);
     case "run_ai_review_files":
       return scoped(tab, a, list(a.paths), ["general"]);
+    case "run_ai_validate":
+      return { kind: "run_validate", tab, scope: text(a.scope) };
+    case "send_note_to_agent":
+      return { kind: "send_note_to_agent", tab, noteId: text(a.noteId) };
     case "run_ai_scoped_review":
       return scoped(tab, a, list(a.paths), list(a.reviewerKinds));
     default:
@@ -198,8 +209,7 @@ export class TasksAdapter {
    */
   route(command: string, args: Args = {}): Promise<void> | null {
     if (!this.deps.flagOn) return null;
-    const tab = this.deps.activeKey();
-    const run = tab === null ? null : runCommand(command, args, tab);
+    const run = runCommand(command, args, this.deps.activeKey());
     // The host's started or queued notice is the run's one message.
     if (run !== null) return this.send(run);
     const wire = taskCommand(command, args);

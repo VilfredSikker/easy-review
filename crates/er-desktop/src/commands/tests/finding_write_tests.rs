@@ -398,7 +398,6 @@ fn two_checklist_toggles_sent_together_flip_the_item_twice() {
         let send_now = |command: Command| {
             let effects = Effects {
                 notify: &|_, _| {},
-                follow_selection: &|_| {},
                 check_update: || panic!("no update check in this test"),
                 webviews: &crate::browser_webview::NoWebviews,
                 pick_folder: &|| None,

@@ -263,6 +263,8 @@ pub fn settings_command(command: wire::Command) -> Result<SettingsCommand, Box<w
         | wire::Command::GenerateDiagram { .. }
         | wire::Command::RunExpertReview { .. }
         | wire::Command::RunScopedReview { .. }
+        | wire::Command::RunValidate { .. }
+        | wire::Command::SendNoteToAgent { .. }
         | wire::Command::RunPrTriage { .. }
         | wire::Command::RunBranchTriage { .. }
         | wire::Command::CancelQueuedTask { .. }

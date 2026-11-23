@@ -118,9 +118,23 @@ describe("TasksAdapter", () => {
       "run_ai_triage_review",
       "run_ai_review_files",
       "run_ai_scoped_review",
+      "run_ai_validate",
+      "send_note_to_agent",
     ];
     for (const name of names) expect(runCommand(name, {}, TAB)).not.toBeNull();
     expect(runCommand("refresh_diff", {}, TAB)).toBeNull();
+  });
+
+  it("sends a sidebar triage through er_send with no tab", async () => {
+    const { tasks, sent } = adapter(true);
+    await tasks.route("run_pr_triage", { projectId: "p", prNumber: 7 });
+    await tasks.route("run_branch_triage", { projectId: "p", branch: "feature" });
+    expect(sent).toEqual([
+      { kind: "run_pr_triage", projectId: "p", prNumber: 7 },
+      { kind: "run_branch_triage", projectId: "p", branch: "feature" },
+    ]);
+    expect(runCommand("run_pr_triage", { projectId: "p", prNumber: 7 }, null)).not.toBeNull();
+    expect(runCommand("run_ai_review", {}, null)).toBeNull();
   });
 
   it("shows the painted tab's host tasks in the agent output by target, in any bucket", async () => {

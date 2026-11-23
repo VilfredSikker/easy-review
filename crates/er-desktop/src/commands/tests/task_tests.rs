@@ -104,12 +104,20 @@ fn release(state: &AppState, agent: &Agent) {
 
 /// A state whose tasks run the gated agent, under `cap` running reviews.
 fn tasking(dir: &ReviewFlowTestDir, cap: usize) -> (AppState, Agent) {
+    tasking_on(dir, cap, local_ports())
+}
+
+/// `tasking` on the git `ports` give.
+fn tasking_on(
+    dir: &ReviewFlowTestDir,
+    cap: usize,
+    ports: er_engine::ports::Ports,
+) -> (AppState, Agent) {
     let agent = Agent::in_dir(dir.path());
     let path = agent.settings.join("config.toml");
     std::fs::create_dir_all(&agent.settings).unwrap_or_else(|e| panic!("{e}"));
     std::fs::write(&path, agent.config(cap)).unwrap_or_else(|e| panic!("config: {e}"));
     let mut state = review_flow_test_state(dir);
-    let ports = local_ports();
     state.desktop.ports = ports.clone();
     let deps = WorkspaceDeps::new(ports);
     state.service = Arc::new(ServiceState::with_deps(deps, |_| {}).with_config_path(path));
@@ -419,7 +427,6 @@ fn a_scoped_run_sends_one_notice() {
         let told = super::while_the_app_is_locked(&state, "the scoped run", move |state| {
             let effects = crate::resources::send::Effects {
                 notify: &|_, _| {},
-                follow_selection: &|_| {},
                 check_update: || panic!("no update check in this test"),
                 webviews: &crate::browser_webview::NoWebviews,
                 pick_folder: &|| None,
@@ -534,7 +541,7 @@ fn a_triage_request_shows_in_jobs() {
     with_storage(|dir| {
         let (state, _agent) = tasking(dir, 50);
         let before = version(&state);
-        let ctx = crate::commands::auto_triage_ctx(&state);
+        let ctx = crate::commands::triage_ctx(&state.desktop);
         // No clone, so the request ends at once.
         crate::auto_triage::dispatch_branch_triage(&ctx, "p", "o/r", "", "feature", &[]);
         wait_until("the request to move jobs twice", || {
@@ -546,6 +553,251 @@ fn a_triage_request_shows_in_jobs() {
             queue.insert(held.clone());
         }
         assert_eq!(jobs(&state).triage, vec![held]);
+    });
+}
+
+/// A sidebar branch triage queues its run on the task host with the App
+/// held: `jobs` lists a triage task for the branch.
+#[test]
+fn a_sidebar_triage_queues_on_the_host_with_the_app_locked() {
+    with_storage(|dir| {
+        let (mut state, agent) = tasking(dir, 50);
+        let git: Arc<dyn er_git::Git> = Arc::new(
+            er_git::FakeGit::default()
+                .with_detect_base_branch(Ok("main".to_string()))
+                .with_diff_raw_range(Ok(raw_diff())),
+        );
+        state.desktop.ports = er_engine::ports::Ports::with_git(git);
+        let root = dir.path().join("a");
+        std::fs::create_dir_all(&root).unwrap_or_else(|e| panic!("{e}"));
+        let root = root.to_string_lossy().into_owned();
+        let queued_root = root.clone();
+        super::while_the_app_is_locked(&state, "the sidebar triage", move |state| {
+            let ctx = crate::commands::triage_ctx(&state.desktop);
+            crate::auto_triage::dispatch_branch_triage(&ctx, "p", "o/r", &root, "feature", &[]);
+            wait_until("a triage task in jobs", || {
+                tasks(state).iter().any(|row| row.kind == "triage")
+            });
+        });
+        let row = tasks(&state)
+            .into_iter()
+            .find(|row| row.kind == "triage")
+            .unwrap_or_else(|| panic!("no triage row"));
+        assert_eq!(
+            (row.repo_root.as_str(), row.branch_label.as_str()),
+            (queued_root.as_str(), "feature")
+        );
+        release(&state, &agent);
+    });
+}
+
+/// A sidebar triage tells the person once, with the sidebar's own message;
+/// its task sends no started notice of its own.
+#[test]
+fn a_sidebar_triage_sends_one_notice() {
+    with_storage(|dir| {
+        let (mut state, agent) = tasking(dir, 50);
+        let git: Arc<dyn er_git::Git> = Arc::new(
+            er_git::FakeGit::default()
+                .with_detect_base_branch(Ok("main".to_string()))
+                .with_diff_raw_range(Ok(raw_diff())),
+        );
+        state.desktop.ports = er_engine::ports::Ports::with_git(git);
+        let root = dir.path().join("a");
+        std::fs::create_dir_all(&root).unwrap_or_else(|e| panic!("{e}"));
+        let root = root.to_string_lossy().into_owned();
+        let _ = crate::resources::notice::told(&state.desktop);
+        let ctx = crate::commands::triage_ctx(&state.desktop);
+        crate::auto_triage::dispatch_branch_triage(&ctx, "p", "o/r", &root, "feature", &[]);
+        let mut told = Vec::new();
+        wait_until("the sidebar's notice", || {
+            told.extend(crate::resources::notice::told(&state.desktop));
+            told.iter()
+                .any(|m| m.starts_with("Triage started for branch"))
+        });
+        assert_eq!(told, vec!["Triage started for branch feature".to_string()]);
+        release(&state, &agent);
+    });
+}
+
+/// The task log is read from the task host: the flag path of
+/// `get_background_task_log` names the host, and its App read sits in the
+/// flag-off arm alone. Sidebar triage and the tick's task duties name no App.
+#[test]
+fn the_task_log_and_triage_are_off_the_app() {
+    let source = include_str!("../../commands.rs");
+    let body = source
+        .split("pub fn get_background_task_log(")
+        .nth(1)
+        .and_then(|rest| rest.split("\n}\n").next())
+        .unwrap_or_else(|| panic!("no get_background_task_log"));
+    assert!(body.contains(".log(&task_id)"), "{body}");
+    let app_read = body
+        .find("background_task_log_tail")
+        .unwrap_or_else(|| panic!("no flag-off arm"));
+    let flag_off = body
+        .find("#[cfg(not(feature = \"v1-service\"))]")
+        .unwrap_or_else(|| panic!("the App read is not behind the flag-off arm"));
+    assert!(flag_off < app_read, "{body}");
+
+    let triage = include_str!("../../auto_triage.rs");
+    for word in ["er_engine::app", "App>", "app.lock"] {
+        assert!(!triage.contains(word), "auto_triage.rs names {word}");
+    }
+    let tick = include_str!("../../resources/tick.rs");
+    for word in ["poll_background_tasks", "process_ai_task_inbox"] {
+        assert!(!tick.contains(word), "the tick runs {word}");
+    }
+}
+
+/// A note on the tab's first file, written through its actor; answers its id
+/// once the content holds it.
+fn note(state: &AppState, (key, tab): &(TabKey, er_engine::tabs_record::TabDescriptor)) -> String {
+    let content = state
+        .service
+        .content(*key, tab)
+        .unwrap_or_else(|| panic!("no content"));
+    let written = state.service.send(
+        &crate::service::actor_key(tab),
+        er_service::Command::AddNote {
+            context: content.context.clone(),
+            target: er_service::AnnotationTarget {
+                file: "src/f0.rs".into(),
+                hunk_idx: 0,
+                line_num: Some(1),
+                line_num_end: None,
+            },
+            body: "Rename this".into(),
+            side: None,
+            client_id: None,
+            reply_to: None,
+            finding_ref: None,
+        },
+    );
+    match written {
+        Ok(er_service::Reply::AnnotationWritten { id }) => {
+            wait_until("the note in the content", || {
+                state.service.content(*key, tab).is_some_and(|c| {
+                    c.ai.state
+                        .notes
+                        .as_ref()
+                        .is_some_and(|n| n.notes.iter().any(|n| n.id == id))
+                })
+            });
+            id
+        }
+        other => panic!("no note: {other:?}"),
+    }
+}
+
+/// With the App locked (`send` holds it), a note sent to the agent through
+/// `er_send` is read from the tab's AI section and runs on the task host,
+/// which lists it and reads its output lines.
+#[test]
+fn a_note_goes_to_the_agent_from_the_ai_section_with_the_app_locked() {
+    with_storage(|dir| {
+        let (state, agent) = tasking(dir, 50);
+        let tab = open(&state, dir.path(), "a");
+        let bucket = bucket(&state, &tab);
+        let id = note(&state, &tab);
+        let command = Command::SendNoteToAgent {
+            tab: er_service::wire_tab_key(tab.0),
+            note_id: id,
+        };
+        let sent = send(&state, "send_note_to_agent", command);
+        assert!(sent.is_ok(), "{sent:?}");
+        let row = tasks(&state)
+            .into_iter()
+            .find(|row| row.kind == crate::commands::SEND_NOTE_COMMAND)
+            .unwrap_or_else(|| panic!("no note task: {:?}", tasks(&state)));
+        assert_eq!(
+            (row.er_dir.as_str(), row.status.as_str()),
+            (bucket.as_str(), "running")
+        );
+        wait_until("the agent's first line in the task log", || {
+            log(&state, &row.id).iter().any(|line| line == "line-a")
+        });
+        open_gate(&agent.first);
+        open_gate(&agent.second);
+        wait_until("the note task to finish", || {
+            tasks(&state)
+                .iter()
+                .any(|r| r.id == row.id && r.status == "done")
+        });
+    });
+}
+
+/// A plain local tab on a detached HEAD reads no branch, so its branch
+/// resolves no checkout; it is still the main checkout, and a note goes to
+/// the agent there as it does with the flag off.
+#[test]
+fn a_note_goes_to_the_agent_on_a_detached_head() {
+    with_storage(|dir| {
+        let git: Arc<dyn er_git::Git> = Arc::new(
+            er_git::FakeGit::default()
+                .with_current_branch(Ok(String::new()))
+                .with_detect_base_branch(Ok("main".to_string()))
+                .with_diff_raw(Ok(raw_diff()))
+                .with_diff_shortstat((3, 3, 3))
+                .with_rev_parse_verify(Ok(Some("b".repeat(40))))
+                .with_is_merge_in_progress(false),
+        );
+        let (state, agent) = tasking_on(dir, 50, er_engine::ports::Ports::with_git(git));
+        let tab = open(&state, dir.path(), "a");
+        let id = note(&state, &tab);
+        let content = state
+            .service
+            .content(tab.0, &tab.1)
+            .unwrap_or_else(|| panic!("no content"));
+        assert_eq!(
+            content.tab.checkout_root, None,
+            "the fixture's detached HEAD"
+        );
+        let command = Command::SendNoteToAgent {
+            tab: er_service::wire_tab_key(tab.0),
+            note_id: id,
+        };
+        let sent = send(&state, "send_note_to_agent", command);
+        assert!(sent.is_ok(), "{sent:?}");
+        assert!(
+            tasks(&state)
+                .iter()
+                .any(|row| row.kind == crate::commands::SEND_NOTE_COMMAND),
+            "{:?}",
+            tasks(&state)
+        );
+        release(&state, &agent);
+    });
+}
+
+/// With the App locked, a validation through `er_send` starts its agent on
+/// the task host when the bucket holds a review.
+#[test]
+fn a_validation_starts_on_the_host_with_the_app_locked() {
+    with_storage(|dir| {
+        let (state, agent) = tasking(dir, 50);
+        let tab = open(&state, dir.path(), "a");
+        let bucket = bucket(&state, &tab);
+        let review = serde_json::json!({
+            "version": 1,
+            "diff_hash": "h",
+            "created_at": "2026-11-23T00:00:00Z",
+            "base_branch": "main",
+            "head_branch": "feature",
+            "files": {}
+        });
+        std::fs::create_dir_all(&bucket).unwrap_or_else(|e| panic!("{e}"));
+        std::fs::write(Path::new(&bucket).join("review.json"), review.to_string())
+            .unwrap_or_else(|e| panic!("{e}"));
+        let command = Command::RunValidate {
+            tab: er_service::wire_tab_key(tab.0),
+            scope: "branch".into(),
+        };
+        let sent = send(&state, "run_validate", command);
+        assert!(sent.is_ok(), "{sent:?}");
+        let kinds: Vec<String> = tasks(&state).into_iter().map(|row| row.kind).collect();
+        assert!(kinds.contains(&"validate".to_string()), "{kinds:?}");
+        release(&state, &agent);
     });
 }
 
@@ -579,4 +831,96 @@ fn two_clicks_at_once_queue_one_task() {
         }
         release(&state, &agent);
     });
+}
+
+/// Agent launches a test counts, each held running by its kept result
+/// sender.
+#[derive(Default)]
+struct Launches {
+    count: std::sync::atomic::AtomicUsize,
+    results: std::sync::Mutex<Vec<std::sync::mpsc::Sender<anyhow::Result<()>>>>,
+}
+
+impl Launches {
+    fn count(&self) -> usize {
+        self.count.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// A launch that takes a moment and leaves its task running.
+    fn launch(&self) -> anyhow::Result<er_engine::app::AgentPromptRun> {
+        self.count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        std::thread::sleep(Duration::from_millis(2));
+        let (tx, result) = std::sync::mpsc::channel();
+        self.results
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(tx);
+        Ok(er_engine::app::AgentPromptRun {
+            run: er_engine::jobs::AgentRunHandle::new(),
+            result,
+        })
+    }
+}
+
+/// Sends `validate` on `target` once the gate opens; answers whether the
+/// host took it.
+fn send_at_gate(
+    state: &AppState,
+    gate: &std::sync::Barrier,
+    target: BackgroundTaskTarget,
+    launches: &Launches,
+) -> bool {
+    gate.wait();
+    crate::tasks::hold_agent(&state.desktop, target, "validate", |_| launches.launch()).is_ok()
+}
+
+/// Two sends of the same tab command on one bucket at once start one
+/// agent: the busy check, the launch and the record are one step.
+#[test]
+fn two_sends_at_once_start_one_agent() {
+    with_storage(|dir| {
+        let (state, _agent) = tasking(dir, 50);
+        let launches = Launches::default();
+        for round in 0..60 {
+            let mut target = launch(&state, dir.path(), "validate", "feature").target;
+            let bucket = dir.path().join(format!("bucket-{round}"));
+            target.er_dir = bucket.to_string_lossy().into_owned();
+            let before = launches.count();
+            let gate = std::sync::Barrier::new(2);
+            let accepted = std::thread::scope(|scope| {
+                let sends: Vec<_> = (0..2)
+                    .map(|_| {
+                        let (state, gate, launches) = (&state, &gate, &launches);
+                        let target = target.clone();
+                        scope.spawn(move || send_at_gate(state, gate, target, launches))
+                    })
+                    .collect();
+                sends
+                    .into_iter()
+                    .map(|send| send.join().unwrap_or(false))
+                    .filter(|accepted| *accepted)
+                    .count()
+            });
+            let started = launches.count() - before;
+            assert_eq!(
+                (accepted, started),
+                (1, 1),
+                "round {round} accepted {accepted} sends and started {started} agents"
+            );
+        }
+    });
+}
+
+/// The tick names the App only for its sidecar check and the App's
+/// notification, and the AI picker's saves name no App.
+#[test]
+fn the_tick_and_the_pick_leave_the_app() {
+    let tick = include_str!("../../resources/tick.rs");
+    for word in ["drain_agent_log", "check_commands", "poll_background_tasks"] {
+        assert!(!tick.contains(word), "the tick runs {word}");
+    }
+    let pick = include_str!("../../ai_selection_service.rs");
+    for word in ["AppState", "er_engine::app", "current_ai_", "app.lock"] {
+        assert!(!pick.contains(word), "ai_selection_service.rs names {word}");
+    }
 }

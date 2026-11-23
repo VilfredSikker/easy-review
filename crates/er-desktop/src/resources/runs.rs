@@ -30,6 +30,23 @@ pub fn apply(desktop: &DesktopState, command: Command) -> Routed {
             reviewers,
             focus_prompt,
         } => crate::runs::scoped(desktop, Some(tab), scope, paths, reviewers, focus_prompt),
+        Command::RunValidate { tab, scope } => crate::runs::validate(desktop, Some(tab), scope),
+        Command::SendNoteToAgent { tab, note_id } => {
+            crate::runs::send_note(desktop, Some(tab), note_id)
+        }
+        Command::RunPrTriage {
+            project_id,
+            pr_number,
+        } => {
+            let ctx = crate::commands::triage_ctx(desktop);
+            crate::commands::pr_triage(desktop, &ctx, &project_id, pr_number)
+                .map_err(crate::tasks::refused)
+        }
+        Command::RunBranchTriage { project_id, branch } => {
+            let ctx = crate::commands::triage_ctx(desktop);
+            crate::commands::branch_triage(desktop, &ctx, &project_id, &branch)
+                .map_err(crate::tasks::refused)
+        }
         Command::CancelQueuedTask { id } => crate::tasks::cancel_queued(desktop, &id),
         Command::CancelRunningTask { id } => crate::tasks::cancel_running(desktop, &id),
         other => return Routed::Other(other),
