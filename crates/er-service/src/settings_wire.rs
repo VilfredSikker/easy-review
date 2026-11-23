@@ -240,7 +240,13 @@ pub fn settings_command(command: wire::Command) -> Result<SettingsCommand, Box<w
         | wire::Command::DeleteFindingResponse { .. }
         | wire::Command::ToggleChecklistItem { .. }
         | wire::Command::DeleteReviewArtifact { .. }
-        | wire::Command::DeleteDiagram { .. }) => return Err(Box::new(other)),
+        | wire::Command::DeleteDiagram { .. }
+        | wire::Command::AddUiAnnotation { .. }
+        | wire::Command::SaveAnnotationScreenshot { .. }
+        | wire::Command::DeleteUiAnnotation { .. }
+        | wire::Command::ClearUiAnnotationsForPage { .. }
+        | wire::Command::ClearUiAnnotations { .. }
+        | wire::Command::UpdateUiAnnotationAnchors { .. }) => return Err(Box::new(other)),
     })
 }
 

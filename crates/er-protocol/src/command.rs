@@ -482,6 +482,71 @@ pub enum Command {
         view: PaintedView,
         id: String,
     },
+    /// Adds a browser annotation to the view bucket. `client_id` is the row's
+    /// id, which starts `ui-`; the `Ack`'s `created` is the id it took.
+    AddUiAnnotation {
+        tab: TabKey,
+        view: PaintedView,
+        annotation: Box<NewUiAnnotation>,
+    },
+    /// Saves a PNG data URL as an annotation's screenshot. The `Ack`'s
+    /// `created` is the file's path.
+    SaveAnnotationScreenshot {
+        tab: TabKey,
+        view: PaintedView,
+        id: String,
+        data_url: String,
+    },
+    DeleteUiAnnotation {
+        tab: TabKey,
+        view: PaintedView,
+        id: String,
+    },
+    /// Removes the browser annotations on one page, with their screenshots.
+    ClearUiAnnotationsForPage {
+        tab: TabKey,
+        view: PaintedView,
+        page_url: String,
+    },
+    /// Removes every browser annotation in the view bucket.
+    ClearUiAnnotations {
+        tab: TabKey,
+        view: PaintedView,
+    },
+    /// Marks annotations whose element moved or went, and moves their boxes.
+    UpdateUiAnnotationAnchors {
+        tab: TabKey,
+        view: PaintedView,
+        updates: Vec<AnchorUpdate>,
+    },
+}
+
+/// A browser annotation as the page submits it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct NewUiAnnotation {
+    pub url: String,
+    pub selector: Option<String>,
+    /// x, y, width and height in page pixels.
+    pub bbox: [f64; 4],
+    /// Width and height of the pane the box was drawn in.
+    pub viewport: [u32; 2],
+    pub text: String,
+    pub screenshot_data_url: Option<String>,
+    pub element_context: Option<String>,
+    /// The DOM context as JSON text, as `UiAnnotation` carries it.
+    pub dom_context_json: Option<String>,
+    pub client_id: Option<String>,
+}
+
+/// One annotation's anchor after the page looked for its element again.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct AnchorUpdate {
+    pub id: String,
+    /// Whether the element is still where the annotation points.
+    pub fresh: bool,
+    pub new_box: Option<[f64; 4]>,
 }
 
 /// The diff line a thread anchors to, as the page painted it.

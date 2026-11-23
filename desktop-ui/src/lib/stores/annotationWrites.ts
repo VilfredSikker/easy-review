@@ -75,6 +75,11 @@ const ROUTED: ReadonlySet<string> = new Set([
   "toggle_checklist_item",
   "delete_review_artifact",
   "delete_diagram",
+  "add_ui_annotation",
+  "delete_ui_annotation",
+  "clear_ui_annotations_for_page",
+  "clear_ui_annotations",
+  "update_ui_annotation_anchors",
 ]);
 
 function text(value: unknown): string | null {
@@ -272,6 +277,49 @@ function findingWrite(command: string, a: Args, tab: TabKey, view: PaintedView):
       return { command: { kind: "delete_review_artifact", tab, view, artifact: text(a.kind) ?? "" } };
     case "delete_diagram":
       return { command: { kind: "delete_diagram", tab, view, id: text(a.id) ?? "" } };
+    default:
+      return uiWrite(command, a, tab, view);
+  }
+}
+
+function box(value: unknown): [number, number, number, number] | null {
+  return Array.isArray(value) && value.length === 4 ? (value as [number, number, number, number]) : null;
+}
+
+/** A browser annotation write. The `ui_annotations(tab)` push shows each; none paints. */
+function uiWrite(command: string, a: Args, tab: TabKey, view: PaintedView): Write | null {
+  switch (command) {
+    case "add_ui_annotation": {
+      const bbox = box(a.bbox);
+      const viewport = Array.isArray(a.viewport) && a.viewport.length === 2 ? (a.viewport as [number, number]) : null;
+      if (!bbox || !viewport) return null;
+      const annotation = {
+        url: text(a.url) ?? "",
+        selector: text(a.selector),
+        bbox,
+        viewport,
+        text: text(a.text) ?? "",
+        screenshotDataUrl: text(pick(a, "screenshotDataUrl", "screenshot_data_url")),
+        elementContext: text(pick(a, "elementContext", "element_context")),
+        domContextJson: a.domContext == null ? null : JSON.stringify(a.domContext),
+        clientId: text(a.id) ?? nextOptimisticId({ prefix: "ui" }),
+      };
+      return { command: { kind: "add_ui_annotation", tab, view, annotation } };
+    }
+    case "delete_ui_annotation":
+      return { command: { kind: "delete_ui_annotation", tab, view, id: text(a.id) ?? "" } };
+    case "clear_ui_annotations_for_page":
+      return { command: { kind: "clear_ui_annotations_for_page", tab, view, pageUrl: text(pick(a, "pageUrl", "page_url")) ?? "" } };
+    case "clear_ui_annotations":
+      return { command: { kind: "clear_ui_annotations", tab, view } };
+    case "update_ui_annotation_anchors": {
+      const updates = (Array.isArray(a.updates) ? a.updates : []).map((u: Args) => ({
+        id: text(u.id) ?? "",
+        fresh: u.fresh === true,
+        newBox: box(pick(u, "newBox", "new_box")),
+      }));
+      return { command: { kind: "update_ui_annotation_anchors", tab, view, updates } };
+    }
     default:
       return null;
   }

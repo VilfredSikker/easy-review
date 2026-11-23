@@ -47,7 +47,7 @@ fn content(state: &AppState, (key, tab): &(TabKey, TabDescriptor)) -> Arc<TabCon
 
 /// A local PR tab shown in its branch view and loaded. Its view bucket is
 /// the branch's and its GitHub-comment bucket the PR's.
-fn branch_view_of_a_pr(dir: &ReviewFlowTestDir) -> (AppState, (TabKey, TabDescriptor)) {
+pub(super) fn branch_view_of_a_pr(dir: &ReviewFlowTestDir) -> (AppState, (TabKey, TabDescriptor)) {
     let state = state_over(dir, ports());
     let root = dir.path().join("repo");
     std::fs::create_dir_all(&root).unwrap_or_else(|e| panic!("repo dir: {e}"));

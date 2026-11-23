@@ -83,6 +83,8 @@ const SNAPSHOT_PATH_ONLY: ReadonlySet<string> = new Set([
   "remove_finding_thread",
   "delete_finding_response",
   "update_finding_response",
+  "add_ui_annotation",
+  "delete_ui_annotation",
   "save_pr",
   "unsave_pr",
   "dismiss_remote_pr",

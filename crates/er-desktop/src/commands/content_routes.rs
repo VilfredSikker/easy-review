@@ -608,13 +608,24 @@ pub(crate) fn write_on_key(
     view: Option<&er_protocol::PaintedView>,
     build: impl FnOnce(&TabContent) -> Result<Command, String>,
 ) -> Result<(Reply, TabDescriptor), String> {
+    let (content, tab) = keyed_content(state, key, view)?;
+    let reply = send(state, &tab, build(&content)?)?;
+    Ok((reply, tab))
+}
+
+/// `key`'s content, loaded on its first use, when it still shows `view`; and
+/// the tab it belongs to.
+pub(crate) fn keyed_content(
+    state: &DesktopState,
+    key: TabKey,
+    view: Option<&er_protocol::PaintedView>,
+) -> Result<(Arc<TabContent>, TabDescriptor), String> {
     let entry = listed(state, key)?;
     let content = content_of(state, &entry)?;
     if view.is_some_and(|view| !er_service::painted_view_matches(&content, view)) {
         return Err(MOVED.to_string());
     }
-    let reply = send(state, &entry.tab, build(&content)?)?;
-    Ok((reply, entry.tab))
+    Ok((content, entry.tab))
 }
 
 /// Sends an annotation command built from the active tab's published
