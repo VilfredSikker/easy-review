@@ -199,7 +199,7 @@ fn an_arena_start_runs_on_the_tab_it_names_with_the_app_locked() {
 }
 
 /// With the App locked, the saved selection's effort is what a start with no
-/// effort of its own runs at: the settings actor's view, which `SetAiSelection`
+/// effort of its own runs at: the settings actor's view, which `SetAiEffort`
 /// just wrote, never a copy the App holds.
 #[test]
 fn an_arena_start_runs_at_the_saved_effort_with_the_app_locked() {
@@ -207,18 +207,77 @@ fn an_arena_start_runs_at_the_saved_effort_with_the_app_locked() {
         let sink = Arc::new(HoldingSink::default());
         let state = arena_state(dir, local_ports(), Arc::clone(&sink));
         let tab = open(&state, dir.path(), "a");
-        let pick = Command::SetAiSelection {
-            provider_id: "fake".into(),
-            model_id: Some("fake-1".into()),
+        let pick = Command::SetAiEffort {
             effort: Some("high".into()),
         };
-        let saved = send(&state, "set_ai_selection", pick);
+        let saved = send(&state, "set_ai_effort", pick);
         assert!(saved.is_ok(), "{saved:?}");
 
         let run_id = started(&state, tab.0);
 
         let run = record(&bucket(&state, &tab), &run_id).unwrap_or_else(|| panic!("no run"));
         assert_eq!(run.config.effort.as_deref(), Some("high"));
+        sink.release();
+    });
+}
+
+/// A branch tab viewing a branch other than the checkout's, with a review in
+/// its AI section: the context built with the App locked files under the
+/// viewed branch and carries the review's hash.
+#[test]
+fn an_arena_context_takes_the_viewed_branch_and_the_review_hash_with_the_app_locked() {
+    with_storage(|dir| {
+        let sink = Arc::new(HoldingSink::default());
+        let state = arena_state(dir, super::tab_key_tests::ports(), Arc::clone(&sink));
+        let root = dir.path().join("repo");
+        std::fs::create_dir_all(&root).unwrap_or_else(|e| panic!("repo: {e}"));
+        let mut tab = content_routes::working_tab(root.to_string_lossy().into_owned());
+        tab.kind = er_engine::tabs_record::TabKind::LocalBranch;
+        tab.branch = Some("topic".to_string());
+        let opened = content_routes::open(&state, tab.clone(), false);
+        assert!(opened.is_ok(), "{opened:?}");
+        let key = state.service.app_registry().tabs_view().active;
+        let entry = (key.unwrap_or_else(|| panic!("no active tab")), tab);
+        let er_dir = bucket(&state, &entry);
+        let content = state.service.content(entry.0, &entry.1);
+        let content = content.unwrap_or_else(|| panic!("no content"));
+        assert_eq!(
+            content.tab.local_branch_view.as_deref(),
+            Some("topic"),
+            "the fixture views no branch"
+        );
+        assert_ne!(
+            content.tab.current_branch, "topic",
+            "the fixture's two branches are one"
+        );
+        er_engine::test_support::write_sidecar_json::<er_engine::ai::ErReview>(
+            Path::new(&er_dir),
+            serde_json::json!({ "version": 1, "diff_hash": "reviewed-hash", "files": {} }),
+        );
+        let reload = er_service::Command::ReloadSidecars { key: entry.0 };
+        let reloaded = state.service.send(&actor_key(&entry.1), reload);
+        assert!(reloaded.is_ok(), "{reloaded:?}");
+        wait_until("the review in the AI section", || {
+            state
+                .service
+                .content(entry.0, &entry.1)
+                .is_some_and(|content| content.ai.state.review.is_some())
+        });
+
+        let wire = er_service::wire_tab_key(entry.0);
+        let arena = super::while_the_app_is_locked(&state, "arena context", move |state| {
+            let tab = crate::arena_service::tab(&state.desktop, Some(wire))?;
+            let config = crate::arena_service::config(&state.desktop);
+            Ok::<_, er_protocol::ErError>(crate::arena_service::context(
+                &state.desktop,
+                &tab,
+                config,
+            ))
+        })
+        .unwrap_or_else(|e| panic!("{e:?}"));
+
+        assert_eq!(arena.branch_ref, "topic");
+        assert_eq!(arena.review_hash, "reviewed-hash");
         sink.release();
     });
 }

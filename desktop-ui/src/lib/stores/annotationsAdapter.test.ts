@@ -6,8 +6,10 @@ import type { AiAnnotations } from "$lib/protocol/generated/AiAnnotations";
 import type { Resource } from "$lib/protocol/generated/Resource";
 import type { ResourceKey } from "$lib/protocol/generated/ResourceKey";
 import type { Versioned } from "$lib/protocol/generated/Versioned";
-import type { AiSnapshot, AppSnapshot, ThreadMessage } from "$lib/types";
+import type { AiSnapshot, AppSnapshot, ThreadMessage, ThreadSnapshot } from "$lib/types";
+import type { PendingPaint } from "./annotationWrites";
 import { AnnotationsAdapter, JOBS, annotationsKey, uiAnnotationsKey } from "./annotationsAdapter";
+import { diffKey } from "./diffAdapter";
 import { resourceKeyId } from "./resourceStore";
 
 const TAB = 3;
@@ -71,6 +73,9 @@ const inFlight: Resource = {
 };
 const annotations: Resource = { kind: "annotations", ai: ai(), tour: { available: false, fresh: false, scope: "branch", title: "", overviewMarkdown: "", pillars: [], createdAt: "", diffHash: "" }, other_bucket: null, view: { repo_root: "/repo", pr_number: null, branch: "", mode: "branch" } };
 
+/** `diff(tab)` showing `mode`; the adapter reads nothing else of it. */
+const diffIn = (mode: string): Resource => ({ kind: "diff", mode }) as unknown as Resource;
+
 function adapter(flagOn: boolean, values: [ResourceKey, Resource][]): AnnotationsAdapter {
   return new AnnotationsAdapter({ flagOn, store: holding(values), activeKey: () => TAB });
 }
@@ -103,13 +108,59 @@ describe("the annotations adapter", () => {
     expect(thinking(answered.overlay(appSnapshot()))).toEqual([0, 0]);
   });
 
-  it("reads History, Conflicts and Hidden from annotations(tab) too, since the workspace loads them", () => {
-    const held = adapter(true, [[JOBS, inFlight], [annotationsKey(TAB), annotations]]);
-    for (const mode of ["history", "conflicts", "hidden"]) {
-      const shown = held.overlay(appSnapshot(mode));
-      expect(shown.ai.threads[0].replies.at(-1)?.ai_action, mode).toBe("ask");
-      expect(held.threads()?.[0].id, mode).toBe("q-1");
+  // With the flag on a switch to a view the workspace loads never reaches the
+  // App, so its mode can say History while diff(tab) shows Branch.
+  it("reads annotations(tab) while diff(tab) shows a view the workspace loads, whatever the App's mode", () => {
+    const held = adapter(true, [[JOBS, inFlight], [annotationsKey(TAB), annotations], [diffKey(TAB), diffIn("branch")]]);
+    const raw = appSnapshot("history");
+    const shown = held.overlay(raw);
+    expect(shown).not.toBe(raw);
+    expect(shown.ai.threads[0].replies.at(-1)?.ai_action).toBe("ask");
+    expect(held.threads()?.[0].replies.map((r) => r.body_markdown)).toEqual([THINKING]);
+    expect(held.fetchedTab()).toBe(TAB);
+  });
+
+  // The workspace loads every view, History included, so a visit to History
+  // and back reads annotations(tab) throughout. The App's mode stays at
+  // History, as a switch with the flag on never reaches it.
+  it("reads the AI cards, tour and threads from annotations(tab) in History, then Branch", () => {
+    const values = new Map<string, Versioned<Resource>>();
+    const put = (key: ResourceKey, value: Resource) => values.set(resourceKeyId(key), { key, version: 1, value });
+    const shown = new AnnotationsAdapter({ flagOn: true, store: { get: (key) => values.get(resourceKeyId(key)) }, activeKey: () => TAB });
+    const fetched = ai();
+    fetched.summary_markdown = "fetched";
+    const tour = (annotations as { tour: unknown }).tour;
+    put(JOBS, inFlight);
+    put(annotationsKey(TAB), { ...annotations, ai: fetched } as Resource);
+    for (const view of ["history", "branch"]) {
+      put(diffKey(TAB), diffIn(view));
+      const card = shown.overlay(appSnapshot("history"));
+      expect(card.ai.summary_markdown, view).toBe("fetched");
+      expect(card.tour, view).toEqual(tour as never);
+      expect(shown.threads()?.[0].replies.map((r) => r.body_markdown), view).toEqual([THINKING]);
+      expect(shown.fetchedTab(), view).toBe(TAB);
     }
+  });
+
+  it("draws the pending writes on threads() and the overlay, a row the server holds once", () => {
+    const held = ai().threads[0] as unknown as ThreadSnapshot;
+    const painted = (id: string, body: string): ThreadSnapshot => ({ ...held, id, root: { ...held.root, id, body_markdown: body } });
+    const paint: PendingPaint = {
+      threads: [painted("q-1", "painted again"), painted("q-2", "pending question")],
+      replies: [{ parentId: "q-1", reply: message("q-3", "pending reply") }],
+      hidden: [],
+    };
+    const shown = new AnnotationsAdapter({
+      flagOn: true,
+      store: holding([[annotationsKey(TAB), annotations]]),
+      activeKey: () => TAB,
+      paints: () => [paint],
+    });
+    const drawn = (threads: readonly ThreadSnapshot[] | null | undefined) =>
+      threads?.map((t) => [t.id, t.root.body_markdown, ...t.replies.map((r) => r.body_markdown)]);
+    const expected = [["q-1", "why?", "pending reply"], ["q-2", "pending question"]];
+    expect(drawn(shown.threads())).toEqual(expected);
+    expect(drawn(shown.overlay(appSnapshot()).ai.threads)).toEqual(expected);
   });
 
   it("reads the browser annotations with their DOM context parsed back", () => {
