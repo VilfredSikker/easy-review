@@ -1,6 +1,7 @@
-import { invoke } from "@tauri-apps/api/core";
 import { copyToClipboard } from "$lib/clipboard";
 import { asErError } from "$lib/protocol/client";
+import type { ExportOptions } from "$lib/protocol/generated/ExportOptions";
+import { exportReview, exportToAgent } from "$lib/tabCommands";
 import { app } from "./app.svelte";
 
 /**
@@ -8,14 +9,14 @@ import { app } from "./app.svelte";
  * serde defaults (every category on, checklist off), so the default here only
  * turns the checklist on to match what the Export page starts with.
  */
-export type QuickExportOpts = Record<string, unknown>;
+export type QuickExportOpts = ExportOptions;
 
 const EXPORT_PAGE_DEFAULTS: QuickExportOpts = { includeChecklist: true };
 
 /** Copy the review export to the clipboard without opening the Export page. */
 export async function copyReviewExport(opts: QuickExportOpts = EXPORT_PAGE_DEFAULTS): Promise<void> {
   try {
-    const body = await invoke<string>("export_review", { opts });
+    const body = await exportReview(opts);
     if (!body.trim()) {
       app.showToast("info", "Nothing to export yet");
       return;
@@ -33,7 +34,7 @@ export async function copyReviewExport(opts: QuickExportOpts = EXPORT_PAGE_DEFAU
 /** Write the review export, every option at its default, to the tab's `export.md`. */
 export async function exportReviewToFile(): Promise<void> {
   try {
-    const path = await invoke<string>("export_to_agent");
+    const path = await exportToAgent();
     app.showToast("success", `Export written to ${path}`);
   } catch (e) {
     const message = asErError(e).message;

@@ -3,9 +3,8 @@
   import { diffFileCollapse } from "$lib/stores/diffFileCollapse.svelte";
   import { diffNav } from "$lib/stores/diffNav.svelte";
   import { app } from "$lib/stores/app.svelte";
-  import { invoke } from "@tauri-apps/api/core";
   import { asErError } from "$lib/protocol/client";
-  import type { OpenSource } from "$lib/protocol/generated/OpenSource";
+  import { openSource as openFile, selectedSource } from "$lib/tabCommands";
   import type { CrossFileFlatRow } from "$lib/diffRenderModel";
   import { documentPreviewKind } from "$lib/documentPreview";
   import type { DocumentViewMode } from "$lib/documentPreviewCache";
@@ -104,7 +103,7 @@
   async function openSource(e: MouseEvent) {
     e.stopPropagation();
     try {
-      const res = await invoke<OpenSource>("open_source");
+      const res = await openFile("open_source", selectedSource(app.snapshot));
       if (res.kind === "needs_checkout") {
         app.showToast("info", "Create editable worktree to open locally");
       }

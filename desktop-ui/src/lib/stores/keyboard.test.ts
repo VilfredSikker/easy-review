@@ -38,8 +38,8 @@ const baseSnapshot = {
   tabs: [{}, {}],
   selected_file: 0,
   files: [
-    { path: "a.ts", source_index: 0, reviewed: false },
-    { path: "b.ts", source_index: 1, reviewed: true },
+    { path: "a.ts", source_index: 0, reviewed: false, hunks: [] },
+    { path: "b.ts", source_index: 1, reviewed: true, hunks: [] },
   ],
 };
 // a.ts, b.ts and c.ts at the root, lib/x.ts under a folder the tests collapse.
