@@ -149,6 +149,7 @@ fn add_private(
     reply_to: Option<String>,
     finding_ref: Option<String>,
     document_anchor: Option<LineAnchor>,
+    attribution: ReplyAttribution,
 ) -> Written<String> {
     if body.trim().is_empty() {
         return Err(WorkspaceError::Failed(
@@ -172,7 +173,7 @@ fn add_private(
         reply_to,
         finding_ref,
         client_id,
-        attribution: ReplyAttribution::default(),
+        attribution,
         branch_diff_hash: &hash,
         diff_hash: &ctx.diff_hash,
         file_data,
@@ -215,6 +216,7 @@ pub(crate) fn add_question(
         reply_to,
         finding_ref,
         None,
+        ReplyAttribution::default(),
     )
 }
 
@@ -243,6 +245,7 @@ pub(crate) fn add_note(
         reply_to,
         finding_ref,
         None,
+        ReplyAttribution::default(),
     )
 }
 
@@ -279,6 +282,7 @@ pub(crate) fn add_document_thread(
         None,
         None,
         Some(anchor),
+        ReplyAttribution::default(),
     )
 }
 
@@ -361,6 +365,7 @@ pub(crate) fn reply_to_thread(
         Some(parent_id.to_string()),
         None,
         None,
+        ReplyAttribution::default(),
     )
 }
 
@@ -686,12 +691,7 @@ pub(crate) fn reply_to_finding(
     ai_assist: bool,
     client_id: Option<String>,
 ) -> Written<(String, String)> {
-    if ai_assist {
-        return Err(WorkspaceError::Failed(
-            "AI-assisted finding replies stay on the flag-off path".into(),
-        ));
-    }
-    let state = ai::load_ai_state(&ctx.er_dir, &ctx.diff_hash, None);
+    let state = finding_thread_state(ctx);
     let mut placement: Option<(String, usize, Option<usize>)> = None;
     if let Some(review) = state.review.as_ref() {
         'outer: for (path, file) in review.files.iter() {
@@ -715,6 +715,9 @@ pub(crate) fn reply_to_finding(
         line_num: line_start,
         line_num_end: None,
     };
+    if ai_assist {
+        return ai_follow_up_thread(deps, ctx, &state, &target, finding_id, client_id);
+    }
     if let Some(root_id) = ai::find_finding_thread_root(&state, finding_id) {
         let (reply_id, patch) = add_private(
             deps,
@@ -727,6 +730,7 @@ pub(crate) fn reply_to_finding(
             Some(root_id.clone()),
             None,
             None,
+            ReplyAttribution::default(),
         )?;
         return Ok(((root_id, reply_id), patch));
     }
@@ -741,6 +745,7 @@ pub(crate) fn reply_to_finding(
         None,
         Some(finding_id.to_string()),
         None,
+        ReplyAttribution::default(),
     )?;
     let (reply_id, reply_patch) = add_private(
         deps,
@@ -753,11 +758,89 @@ pub(crate) fn reply_to_finding(
         Some(root_id.clone()),
         None,
         None,
+        ReplyAttribution::default(),
     )?;
     Ok((
         (root_id, reply_id),
         ContentPatch::Several(vec![root_patch, reply_patch]),
     ))
+}
+
+/// The tab's AI state with the GitHub comments read from `comments_dir`,
+/// where [`add_private`] writes a finding's thread root. A tab whose PR
+/// bucket differs from its private one (a local PR tab in Branch view) would
+/// otherwise miss the root and write another one on every reply.
+fn finding_thread_state(ctx: &TabContext) -> ai::AiState {
+    let mut state = ai::load_ai_state(&ctx.er_dir, &ctx.diff_hash, None);
+    if ctx.comments_dir != ctx.er_dir {
+        state.github_comments = Scope::dir(&ctx.comments_dir).ok().and_then(|scope| {
+            match ai::annotation_store::load_github_comments(&store_registry::store(), &scope) {
+                Ok(Loaded::Found(stored)) => Some(stored.value),
+                _ => None,
+            }
+        });
+    }
+    state
+}
+
+/// The thread an AI-assisted finding reply asks in: the finding's own, or a
+/// new one whose root says a follow-up was asked for. It writes no reply: the
+/// answer is the ask's, which lands later through [`submit_ai_reply`].
+fn ai_follow_up_thread(
+    deps: &WorkspaceDeps,
+    ctx: &TabContext,
+    state: &ai::AiState,
+    target: &AnnotationTarget,
+    finding_id: &str,
+    client_id: Option<String>,
+) -> Written<(String, String)> {
+    if let Some(root_id) = ai::find_finding_thread_root(state, finding_id) {
+        return Ok(((root_id, String::new()), ContentPatch::Several(Vec::new())));
+    }
+    let (root_id, patch) = add_private(
+        deps,
+        ctx,
+        CommentType::GitHubComment,
+        target,
+        "AI follow-up requested for this finding.",
+        None,
+        client_id,
+        None,
+        Some(finding_id.to_string()),
+        None,
+        ReplyAttribution::default(),
+    )?;
+    Ok(((root_id, String::new()), patch))
+}
+
+/// Writes an ask's answer into the thread it asked about, in the buckets of
+/// `ctx`, the context the ask captured when it started, signed by the AI as
+/// the App signs it.
+pub(crate) fn submit_ai_reply(
+    deps: &WorkspaceDeps,
+    ctx: &TabContext,
+    target: &AnnotationTarget,
+    body: &str,
+    kind: CommentType,
+    reply_to: String,
+    ai_action: Option<String>,
+) -> Written<String> {
+    add_private(
+        deps,
+        ctx,
+        kind,
+        target,
+        body,
+        None,
+        None,
+        Some(reply_to),
+        None,
+        None,
+        ReplyAttribution {
+            author: Some("ai".to_string()),
+            ai_action,
+        },
+    )
 }
 
 fn reviewed_paths(diff_paths: &HashSet<String>, pillar_paths: Vec<String>) -> Vec<String> {

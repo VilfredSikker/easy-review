@@ -71,6 +71,17 @@ pub(crate) fn update_finding_response(
         .map_err(|error| failed("Failed to update the response", error))
 }
 
+/// Appends an ask's answer to a finding's responses.
+pub(crate) fn append_finding_response(
+    ctx: &TabContext,
+    finding_id: &str,
+    body: &str,
+) -> Result<(), WorkspaceError> {
+    ai::append_finding_response(&ctx.er_dir, finding_id, body)
+        .map(drop)
+        .map_err(|error| failed("Failed to save finding validation", error))
+}
+
 pub(crate) fn delete_finding_response(
     ctx: &TabContext,
     finding_id: &str,

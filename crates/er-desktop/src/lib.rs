@@ -4,6 +4,7 @@ pub mod app_owner;
 pub mod arena_commands;
 #[cfg(feature = "v1-service")]
 pub mod arena_service;
+pub mod ask_context;
 pub mod auto_triage;
 pub mod browser_proxy;
 pub mod browser_webview;
