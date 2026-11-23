@@ -19,8 +19,7 @@ use crate::inbox::{
 use crate::projects::{self, normalize_remote_slug};
 use crate::snapshot::{
     build_chrome_snapshot, AgentLogSnapshot, AppSnapshot, CheckSummary, FileSnapshot,
-    GhCommentSummary, GhReviewSummary, GhStatusCache, GhUser, GithubStatusSnapshot, LoadingState,
-    PrInfo,
+    GhCommentSummary, GhReviewSummary, GhUser, GithubStatusSnapshot, PrInfo,
 };
 pub use crate::state::{run_blocking, DesktopState, PrOpenPrefetchClaim, PrOpenPrefetchMap};
 #[cfg(not(feature = "v1-service"))]
@@ -3505,7 +3504,7 @@ pub fn refresh_github_status(state: State<AppState>) -> Result<AppSnapshot, Stri
         active_github_key(&app, &state)
     };
     if let Some((owner, repo, number)) = key {
-        kick_github_status_refresh(state, owner, repo, number);
+        kick_github_status_refresh(&state, owner, repo, number);
     }
     snap!(state)
 }
@@ -3737,7 +3736,7 @@ pub fn submit_github_pr_decision(
         .map_err(anyhow::Error::from)
         .map_err(gh_review_submit_err)?;
 
-    kick_github_status_refresh(state, owner, repo, number);
+    kick_github_status_refresh(&state, owner, repo, number);
 
     let app = state.app.lock().map_err(|e| e.to_string())?;
     Ok(snap_from(&app, &state))
