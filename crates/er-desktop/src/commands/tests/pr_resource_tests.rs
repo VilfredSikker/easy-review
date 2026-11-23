@@ -359,7 +359,7 @@ fn every_refresh_and_status_fetch_goes_through_its_guard() {
             let code = line.split("//").next().unwrap_or_default();
             for flag in [".pr_list", ".gh_status"] {
                 for (at, _) in code.match_indices(flag) {
-                    let rest = code[at + flag.len()..].trim_start();
+                    let rest = code.get(at + flag.len()..).unwrap_or_default().trim_start();
                     let assigns = rest.starts_with('=') && !rest.starts_with("==");
                     assert!(!assigns, "{path}:{} sets {flag} itself", i + 1);
                 }
@@ -391,8 +391,8 @@ fn every_refresh_and_status_fetch_goes_through_its_guard() {
             .iter()
             .find(|(_, text)| text.contains(&pattern))
             .unwrap_or_else(|| panic!("no fn {name}"));
-        let rest = &text[text.find(&pattern).unwrap_or_default()..];
-        rest[..rest.find("\n}\n").unwrap_or(rest.len())].to_string()
+        let rest = text.split_once(&pattern).map_or("", |(_, rest)| rest);
+        rest.split("\n}\n").next().unwrap_or_default().to_string()
     };
     for (name, begin) in [
         ("kick_pr_list_refresh", "begin_pr_list_refresh()"),
