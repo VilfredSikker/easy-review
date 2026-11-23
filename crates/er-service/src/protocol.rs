@@ -118,7 +118,8 @@ pub enum Command {
         id: String,
         body: Option<String>,
     },
-    /// Reply to a finding; the AI-assist variant stays on the flag-off path.
+    /// Reply to a finding. With `ai_assist` it only finds or creates the
+    /// finding's thread, which an ask then answers in.
     ReplyToFinding {
         context: TabContext,
         finding_id: String,
@@ -167,6 +168,30 @@ pub enum Command {
     },
     /// Delete one diagram from the bucket.
     DeleteDiagram { context: TabContext, id: String },
+
+    // ── Ask-AI answers ──
+    /// Write an ask's answer into the thread it asked about. `context` is
+    /// the one the ask captured when it started on tab `key`, and the write
+    /// goes to its buckets whatever the tab or the workspace shows when the
+    /// answer lands, so an answer never moves to another view's bucket. A
+    /// closed tab's answer still lands, for when it opens again.
+    SubmitAiReply {
+        key: TabKey,
+        context: TabContext,
+        target: AnnotationTarget,
+        body: String,
+        kind: er_engine::ai::CommentType,
+        reply_to: String,
+        ai_action: Option<String>,
+    },
+    /// Append an ask's answer to a finding's responses in the captured
+    /// bucket, as `SubmitAiReply` does for a thread.
+    AppendFindingResponse {
+        key: TabKey,
+        context: TabContext,
+        finding_id: String,
+        body: String,
+    },
 
     // ── Job and arena commands ──
     /// Run one agent job on an effect thread. The actor keeps its stop handle

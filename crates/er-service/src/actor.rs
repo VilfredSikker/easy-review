@@ -387,6 +387,19 @@ fn spawn_ai_write(
     if !context_matches(state, &context) {
         return refuse_stale(reply);
     }
+    spawn_bucket_write(deps, state, tx, reply, context, write);
+}
+
+/// [`spawn_ai_write`] for any view of the workspace: the write lands in
+/// `context`'s buckets whatever target the actor shows.
+fn spawn_bucket_write(
+    deps: &WorkspaceDeps,
+    state: &WorkspaceState,
+    tx: &Sender<ActorMsg>,
+    reply: ReplySender,
+    context: TabContext,
+    write: impl FnOnce(&TabContext) -> Result<(), WorkspaceError> + Send + 'static,
+) {
     let deps = deps.clone();
     let readers: Vec<Arc<TabContent>> = state
         .view()
@@ -625,6 +638,33 @@ fn handle_command(
                 })
             });
         }
+        // No `context_matches` for an ask's answer: it belongs to the view
+        // the ask captured, which the workspace may have left since.
+        Command::SubmitAiReply {
+            key: _,
+            context,
+            target,
+            body,
+            kind,
+            reply_to,
+            ai_action,
+        } => {
+            let deps = deps.clone();
+            spawn_effect(tx, reply, move || {
+                crate::annotations::submit_ai_reply(
+                    &deps, &context, &target, &body, kind, reply_to, ai_action,
+                )
+                .map(|(id, patch)| Effected::patched(Reply::AnnotationWritten { id }, patch))
+            });
+        }
+        Command::AppendFindingResponse {
+            key: _,
+            context,
+            finding_id,
+            body,
+        } => spawn_bucket_write(deps, state, tx, reply, context, move |context| {
+            crate::finding_writes::append_finding_response(context, &finding_id, &body)
+        }),
         Command::DismissFinding {
             context,
             finding_id,
