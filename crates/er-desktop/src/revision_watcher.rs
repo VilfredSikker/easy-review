@@ -1,10 +1,10 @@
-//! The revision watcher: follows `desktop_revision` and hands each value it
-//! settles on to the app, which emits it as `er://revision`. The frontend
-//! calls `poll` on that event instead of on a timer, so it reacts within
-//! about 50 ms of a real change and an idle app takes no backend locks.
+//! The revision watcher: follows `desktop_revision` and wakes the backend
+//! tick on each value it settles on, so the tick runs within about 50 ms of
+//! a real change. With no change the tick still runs every 2 s, the floor
+//! `resources::tick::INTERVAL` sets.
 //!
-//! It lives in the lib, apart from the Tauri emit the app passes in, so the
-//! tick it wakes with the flag on is tested on the same loop the app runs.
+//! It lives in the lib, so the tick it wakes is tested on the same loop the
+//! app runs.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;

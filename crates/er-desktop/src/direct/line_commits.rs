@@ -1,31 +1,23 @@
 //! Per-line commit attribution ("Mark lines") for the active view's diff.
 //!
-//! This is a lazy command rather than snapshot data: blame is a git shell-out
-//! per file, so it runs only for files the user asks about, off the App lock
-//! (ADR 0015/0032), and is kept out of the snapshot payload and its content
-//! revision. Results are cached per file `cache_key` (ADR 0013) plus the
+//! This is a lazy command rather than resource data: blame is a git shell-out
+//! per file, so it runs only for files the user asks about, on the blocking
+//! pool (ADR 0015), and is kept out of the diff resource and its version. Results are cached per file `cache_key` (ADR 0013) plus the
 //! resolved range oids, so a rebase that keeps a file's hunks byte-identical
 //! still re-attributes it.
 
-#[cfg(any(test, not(feature = "v1-service")))]
-use std::sync::Mutex;
-
-use er_engine::app::DiffMode;
-#[cfg(any(test, not(feature = "v1-service")))]
-use er_engine::app::TabState;
 use er_engine::git::{
     BlameEnd, BlameRequest, BlameSpan, DiffFile, FileStatus, GitError, LineAttribution,
 };
+use er_engine::tab_identity::DiffMode;
 use er_protocol::{ErError, LineCommits};
 use tauri::State;
 
-#[cfg(not(feature = "v1-service"))]
-use crate::commands::AppState;
 use crate::line_commits_cache::CacheKey;
-pub use crate::line_commits_cache::{LineCommitsCache, LineCommitsLru};
+pub use crate::line_commits_cache::LineCommitsCache;
 
-/// Where the diff's lines come from, resolved from the tab under the lock so
-/// the git work after it never needs the lock.
+/// Where the diff's lines come from, resolved from the tab's content before
+/// any git work.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Source {
     /// `git diff <base>...<head>`.
@@ -50,7 +42,7 @@ const REMOTE_REASON: &str = "Remote PR tabs have no local commits to attribute l
 const UNCOMMITTED_REASON: &str =
     "Unstaged and staged changes are not committed yet. Switch to the branch view.";
 
-/// What blame reads of a tab: the App's tab, or a tab's published content.
+/// What blame reads of a tab's published content.
 struct ShownTab<'a> {
     remote: bool,
     repo_root: &'a str,
@@ -76,33 +68,8 @@ fn rename_source<'a>(files: impl IntoIterator<Item = &'a DiffFile>, path: &str) 
         })
 }
 
-/// The App's active tab, as blame reads it.
-#[cfg(any(test, not(feature = "v1-service")))]
-fn resolve(tab: &TabState, path: &str) -> Result<Target, String> {
-    let history = tab.history.as_ref();
-    let files = match tab.mode {
-        DiffMode::History => history.map_or(&[][..], |h| &h.commit_files[..]),
-        _ => &tab.files[..],
-    };
-    resolve_view(ShownTab {
-        remote: tab.is_remote(),
-        repo_root: &tab.repo_root,
-        mode: tab.mode,
-        history_sha: history
-            .and_then(|h| h.commits.get(h.selected_commit))
-            .map(|c| c.hash.as_str()),
-        base_branch: &tab.base_branch,
-        local_branch_view: tab.local_branch_view.as_deref(),
-        checkout_root: tab.local_branch_checkout_root.as_deref(),
-        pr_number: tab.pr_number,
-        pr_head_ref: tab.pr_head_ref.as_deref(),
-        old_path: rename_source(files, path),
-    })
-}
-
 /// A tab's published content, as blame reads it. In History its diff section
 /// holds the selected commit's diff.
-#[cfg(feature = "v1-service")]
 fn resolve_content(content: &er_service::TabContent, path: &str) -> Result<Target, String> {
     let tab = &content.tab;
     resolve_view(ShownTab {
@@ -242,24 +209,8 @@ fn attribute(
     Ok(attribution)
 }
 
-#[cfg(any(test, not(feature = "v1-service")))]
-fn line_commits_for(
-    ports: &er_engine::ports::Ports,
-    app: &Mutex<er_engine::app::App>,
-    cache: &LineCommitsCache,
-    path: String,
-    cache_key: String,
-) -> Result<LineCommits, String> {
-    let target = {
-        let app = app.lock().map_err(|e| e.to_string())?;
-        resolve(app.tab(), &path)
-    };
-    Ok(answer(&*ports.git, cache, target, path, cache_key))
-}
-
 /// The attribution of `path` in the tab `wire` names, resolved from its
 /// published content.
-#[cfg(feature = "v1-service")]
 pub(crate) fn keyed_line_commits(
     desktop: &crate::state::DesktopState,
     wire: er_protocol::TabKey,
@@ -309,7 +260,6 @@ fn wire_spans(spans: Vec<BlameSpan>) -> Vec<er_protocol::BlameSpan> {
 
 /// Which commit introduced (or removed) each changed line of `path` in the
 /// view the tab `tab` shows. `cache_key` is the file row's `cache_key`.
-#[cfg(feature = "v1-service")]
 #[tauri::command]
 pub async fn line_commits(
     tab: er_protocol::TabKey,
@@ -321,29 +271,6 @@ pub async fn line_commits(
     crate::state::run_blocking(move || Ok(keyed_line_commits(&desktop, tab, path, cache_key)))
         .await
         .map_err(super::failed)?
-}
-
-/// Which commit introduced (or removed) each changed line of `path` in the
-/// active view. `cache_key` is the file's `FileSnapshot.cache_key`.
-#[cfg(not(feature = "v1-service"))]
-#[tauri::command]
-pub async fn line_commits(
-    path: String,
-    cache_key: String,
-    state: State<'_, AppState>,
-) -> Result<LineCommits, ErError> {
-    let state = state.inner().clone();
-    crate::state::run_blocking(move || {
-        line_commits_for(
-            &state.ports,
-            &state.app,
-            &state.line_commits_cache,
-            path,
-            cache_key,
-        )
-    })
-    .await
-    .map_err(super::failed)
 }
 
 #[cfg(test)]
@@ -366,11 +293,60 @@ mod tests {
         String::from_utf8_lossy(&out.stdout).trim().to_owned()
     }
 
-    fn tab() -> TabState {
-        let mut tab = TabState::new_for_test(vec![]);
-        tab.repo_root = "/repo".into();
-        tab.base_branch = "main".into();
-        tab
+    /// The fields of a tab that blame reads.
+    struct Tab {
+        remote: bool,
+        repo_root: String,
+        mode: DiffMode,
+        history_sha: Option<String>,
+        base_branch: String,
+        local_branch_view: Option<String>,
+        checkout_root: Option<String>,
+        pr_number: Option<u64>,
+        pr_head_ref: Option<String>,
+        files: Vec<DiffFile>,
+    }
+
+    fn tab() -> Tab {
+        Tab {
+            remote: false,
+            repo_root: "/repo".into(),
+            mode: DiffMode::Branch,
+            history_sha: None,
+            base_branch: "main".into(),
+            local_branch_view: None,
+            checkout_root: None,
+            pr_number: None,
+            pr_head_ref: None,
+            files: vec![],
+        }
+    }
+
+    fn resolve(tab: &Tab, path: &str) -> Result<Target, String> {
+        resolve_view(ShownTab {
+            remote: tab.remote,
+            repo_root: &tab.repo_root,
+            mode: tab.mode,
+            history_sha: tab.history_sha.as_deref(),
+            base_branch: &tab.base_branch,
+            local_branch_view: tab.local_branch_view.as_deref(),
+            checkout_root: tab.checkout_root.as_deref(),
+            pr_number: tab.pr_number,
+            pr_head_ref: tab.pr_head_ref.as_deref(),
+            old_path: rename_source(&tab.files, path),
+        })
+    }
+
+    /// `keyed_line_commits` after its content lookup.
+    fn line_commits_for(
+        git: &dyn er_engine::git::Git,
+        tab: &Tab,
+        cache: &LineCommitsCache,
+        path: &str,
+        cache_key: &str,
+    ) -> LineCommits {
+        let target = resolve(tab, path);
+        answer(git, cache, target, path.into(), cache_key.into())
     }
 
     fn renamed(path: &str, old: &str) -> DiffFile {
@@ -389,7 +365,7 @@ mod tests {
     #[test]
     fn remote_and_uncommitted_views_are_unavailable_with_a_reason() {
         let mut remote = tab();
-        remote.remote_repo = Some("o/r".into());
+        remote.remote = true;
         assert_eq!(resolve(&remote, "f").unwrap_err(), REMOTE_REASON);
         for mode in [DiffMode::Unstaged, DiffMode::Staged] {
             let mut t = tab();
@@ -419,7 +395,7 @@ mod tests {
     fn pr_tabs_use_the_head_ref_in_pr_diff_and_the_checkout_in_branch() {
         let mut t = tab();
         t.local_branch_view = Some("feat".into());
-        t.local_branch_checkout_root = Some("/wt".into());
+        t.checkout_root = Some("/wt".into());
         t.pr_number = Some(7);
         t.pr_head_ref = Some("refs/er/pr/7/head".into());
         t.mode = DiffMode::PrDiff;
@@ -439,7 +415,7 @@ mod tests {
                 base: "main".into()
             }
         );
-        t.local_branch_checkout_root = None;
+        t.checkout_root = None;
         t.pr_head_ref = None;
         assert!(resolve(&t, "f")
             .unwrap_err()
@@ -468,27 +444,22 @@ mod tests {
         git(root, &["commit", "-q", "-am", "add b"]);
         let head = git(root, &["rev-parse", "HEAD"]);
 
-        let mut app = er_engine::app::App::new_for_test(vec![]);
         let ports = er_engine::ports::Ports::cli();
-        app.ports = ports.clone();
-        app.tabs[0].ports = ports.clone();
-        app.tabs[0].repo_root = root.to_str().unwrap().into();
-        app.tabs[0].base_branch = "main".into();
-        app.tabs[0].mode = DiffMode::Branch;
-        let app = Mutex::new(app);
+        let mut t = tab();
+        t.repo_root = root.to_str().unwrap().into();
         let cache = LineCommitsCache::default();
 
-        let first = line_commits_for(&ports, &app, &cache, "f".into(), "k1".into()).unwrap();
+        let first = line_commits_for(&*ports.git, &t, &cache, "f", "k1");
         assert_eq!(first.unavailable, None);
         assert_eq!(first.commits, std::slice::from_ref(&head));
         assert_eq!(first.added.len(), 1);
         assert_eq!(cache.lock().unwrap().entries.len(), 1);
 
-        let again = line_commits_for(&ports, &app, &cache, "f".into(), "k1".into()).unwrap();
+        let again = line_commits_for(&*ports.git, &t, &cache, "f", "k1");
         assert_eq!(again, first);
         assert_eq!(cache.lock().unwrap().entries.len(), 1);
 
-        line_commits_for(&ports, &app, &cache, "f".into(), "k2".into()).unwrap();
+        line_commits_for(&*ports.git, &t, &cache, "f", "k2");
         assert_eq!(cache.lock().unwrap().entries.len(), 2);
 
         let commit = Target {
@@ -503,8 +474,8 @@ mod tests {
         assert_eq!(single.added.len(), 1);
         assert_eq!(single.added[0].start, 2);
 
-        app.lock().unwrap().tabs[0].mode = DiffMode::Unstaged;
-        let off = line_commits_for(&ports, &app, &cache, "f".into(), "k1".into()).unwrap();
+        t.mode = DiffMode::Unstaged;
+        let off = line_commits_for(&*ports.git, &t, &cache, "f", "k1");
         assert_eq!(off.unavailable.as_deref(), Some(UNCOMMITTED_REASON));
         assert!(off.commits.is_empty());
     }

@@ -1,17 +1,14 @@
-//! Tauri command behind the GitHub card's branch actions (merge, update
-//! branch, close/reopen, ready/draft, delete/restore branch). The `gh` calls
-//! live in `er_engine::gh_pr_actions`; this module resolves the active tab's
-//! PR, runs the action, and refreshes the cached status before returning so
-//! the card shows the result rather than the state before the click.
+//! The GitHub card's branch actions (merge, update branch, close/reopen,
+//! ready/draft, delete/restore branch). The `gh` calls live in
+//! `er_engine::gh_pr_actions`; this module resolves the tab's PR, runs the
+//! action, and refreshes the cached status before returning so the card shows
+//! the result rather than the state before the click.
 
-use crate::commands::{
-    active_github_key, fetch_and_store_github_status, run_blocking, snap_from, AppState,
-};
-use crate::snapshot::{AppSnapshot, GithubStatusSnapshot};
+use crate::page_view::GithubStatusSnapshot;
+use crate::route_helpers::fetch_and_store_github_status;
 use crate::state::DesktopState;
 use er_engine::gh_pr_actions::{self as actions, MergeMethod, PrAction};
 use serde::Deserialize;
-use tauri::State;
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -61,44 +58,10 @@ impl PrTarget {
     }
 }
 
-#[tauri::command]
-pub async fn run_github_pr_action(
-    pr: PrTarget,
-    action: PrActionRequest,
-    state: State<'_, AppState>,
-) -> Result<AppSnapshot, String> {
-    let state = state.inner().clone();
-    run_blocking(move || run_github_pr_action_blocking(&pr, action, &state)).await
-}
-
-fn run_github_pr_action_blocking(
-    pr: &PrTarget,
-    action: PrActionRequest,
-    state: &AppState,
-) -> Result<AppSnapshot, String> {
-    let (owner, repo, number) = {
-        let app = state.app.lock().map_err(|e| e.to_string())?;
-        active_github_key(&app, state)
-            .ok_or_else(|| "No GitHub PR detected for the active tab".to_string())?
-    };
-    still_shown(pr, &owner, &repo, number)?;
-    let cached = cached(state, &owner, &repo, number);
-
-    let result = perform(&action, &owner, &repo, number, cached.as_ref());
-    // Refresh even on failure: a merge that succeeded before its branch
-    // delete failed has still changed the PR.
-    refresh_status_now(state, &owner, &repo, number);
-    result?;
-
-    let app = state.app.lock().map_err(|e| e.to_string())?;
-    Ok(snap_from(&app, state))
-}
-
-/// `action` on the PR `wire`'s card shows, with the flag on. The tab comes
+/// `action` on the PR `wire`'s card shows. The tab comes
 /// from the registry and its PR from the tab's content and the PR cache, so
 /// a confirm left open across a tab switch never lands on another PR. The
 /// `Ack` names `pr_status` after the refresh the action runs.
-#[cfg(feature = "v1-service")]
 pub fn run_on_tab(
     desktop: &DesktopState,
     wire: er_protocol::TabKey,
@@ -282,6 +245,9 @@ fn same_repo_status(
 /// before the action until the next 30s poll. The ticket keeps that in-flight
 /// fetch from overwriting this one when it finishes later.
 fn refresh_status_now(state: &DesktopState, owner: &str, repo: &str, number: u64) {
+    // A fetch already running ends on its own guard; this one shows only
+    // when it began the fetch.
+    let _fetch = state.begin_status_fetch(&(owner.to_string(), repo.to_string(), number));
     if fetch_and_store_github_status(
         &state.gh_status_cache,
         &state.desktop_revision,

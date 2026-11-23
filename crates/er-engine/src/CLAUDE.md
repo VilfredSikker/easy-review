@@ -14,10 +14,10 @@ because one surface draws or keys it belongs there.
 When a front end needs something the shared state model does not express, add an
 explicit field or translate in that front end (the desktop's translation is the
 resources `er-service` publishes, over wire types in `er-protocol`; ADR 0072).
-Never widen or repurpose an existing field
-so it carries a second meaning: it compiles for both front ends, so nothing flags
-it, and it breaks at runtime in whichever one the change was not written for. The
-reasoning and consequences are in `docs/adr/0006-engine-state-is-the-ui-contract.md`.
+Never widen or repurpose an existing field so it carries a second meaning: it
+compiles for both front ends, so nothing flags it, and it breaks at runtime in
+whichever one the change was not written for. The reasoning and consequences are
+in `docs/adr/0006-engine-state-is-the-ui-contract.md`.
 
 ## Feature gating
 

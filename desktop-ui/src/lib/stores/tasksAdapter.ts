@@ -2,7 +2,7 @@ import type { Command } from "$lib/protocol/generated/Command";
 import type { Resource } from "$lib/protocol/generated/Resource";
 import type { TabKey } from "$lib/protocol/generated/TabKey";
 import type { TaskJob } from "$lib/protocol/generated/TaskJob";
-import type { Invoke, ResourceClient } from "$lib/protocol/client";
+import type { ResourceClient } from "$lib/protocol/client";
 import type { AgentCommandStatus, AgentLogEntry, AppSnapshot, BackgroundTaskSnapshot } from "$lib/pageTypes";
 import { viewTaskTarget } from "$lib/viewIdentity";
 import { JOBS } from "./annotationsAdapter";
@@ -116,18 +116,16 @@ interface TasksAdapterDeps {
   client: Pick<ResourceClient, "fetch">;
   /** The registry's active tab, the one the page shows. */
   activeKey: () => TabKey | null;
-  invoke: Invoke;
   /** Each host task's output lines as last read, by task id. */
   logs: Map<string, AgentLogEntry[]>;
 }
 
-/** The most lines the active tab's agent log shows, as the App's snapshot caps it. */
+/** The most lines the active tab's agent log shows. */
 const LOG_LINES = 200;
 
 /**
- * The background tasks. `jobs` lists the task host's tasks beside the App's,
- * and a host task is stopped through `er_send` and its output read through
- * `task_log`.
+ * The background tasks. `jobs` lists the task host's tasks, a task is
+ * stopped through `er_send`, and its output is read through `task_log`.
  */
 export class TasksAdapter {
   /** The status each host task had when its log was last read. */
@@ -147,25 +145,23 @@ export class TasksAdapter {
   }
 
   /**
-   * `raw` with the host's tasks from `jobs` after the App's, and the tasks
-   * on the painted bucket among the tab's agent commands and in its agent
-   * log, as the App's snapshot merges its own.
+   * `raw` with the tasks from `jobs`, and the tasks on the painted bucket as
+   * the tab's agent commands and in its agent log, one command per kind.
    */
   overlay(raw: AppSnapshot): AppSnapshot {
     const rows = this.rows();
     if (rows === null) return raw;
-    const tasks = rows.map(asSnapshot);
     const painted = rows.filter((task) => onPaintedTab(task, raw));
-    const commands: AgentCommandStatus[] = [...(raw.agent_commands ?? [])];
+    const commands: AgentCommandStatus[] = [];
     for (const task of painted) {
       if (!commands.some((c) => c.name === task.kind)) {
         commands.push({ name: task.kind, status: task.status, error: task.error ?? null });
       }
     }
-    const log = [...(raw.agent_log ?? []), ...painted.flatMap((task) => this.deps.logs.get(task.id) ?? [])];
+    const log = painted.flatMap((task) => this.deps.logs.get(task.id) ?? []);
     return {
       ...raw,
-      background_tasks: [...(raw.background_tasks ?? []), ...tasks],
+      background_tasks: rows.map(asSnapshot),
       agent_commands: commands,
       agent_log: log.slice(-LOG_LINES),
     };
@@ -194,41 +190,37 @@ export class TasksAdapter {
     );
   }
 
-  /** Whether `jobs` lists `id` as one of the host's tasks. */
-  private onHost(id: string): boolean {
-    return (this.tasks() ?? []).some((task) => task.id === id);
-  }
-
   /**
-   * A run goes through `er_send` keyed to the active tab, and so does a stop
-   * of a host task; null for anything else.
+   * A run goes through `er_send` keyed to the active tab, and so does a
+   * stop; null for anything else. A run on a tab with no tab open is
+   * refused, since no backend command runs it.
    */
   route(command: string, args: Args = {}): Promise<void> | null {
-    const run = runCommand(command, args, this.deps.activeKey());
+    const tab = this.deps.activeKey();
+    const run = runCommand(command, args, tab);
     // The host's started or queued notice is the run's one message.
     if (run !== null) return this.send(run);
+    // Any key answers whether the command is a run on a tab.
+    if (tab === null && runCommand(command, args, 0) !== null) {
+      return Promise.reject(new Error(`${command}: no tab is open`));
+    }
     const wire = taskCommand(command, args);
-    if (wire === null || !this.onHost(text(args.id))) return null;
-    return this.send(wire);
+    return wire === null ? null : this.send(wire);
   }
 
   /** A task's output lines, oldest first. */
   async log(id: string): Promise<AgentLogEntry[]> {
-    if (!this.onHost(id)) return this.deps.invoke<AgentLogEntry[]>("get_background_task_log", { taskId: id });
     const [entry] = await this.deps.client.fetch([{ kind: "task_log", id }]);
     const value: Resource | undefined = entry?.value;
     return value?.kind === "task_log" ? value.lines : [];
   }
 
   /**
-   * Keeps a task panel's log current: every second while the task runs, and
-   * once on open for a host task, whose `jobs` row carries no tail. An App
-   * task is first read a second in, and a finished one never, as before the
-   * host existed. Returns the stop.
+   * Keeps a task panel's log current: once on open, since a `jobs` row
+   * carries no tail, then every second while the task runs. Returns the
+   * stop.
    */
   follow(id: string, live: boolean, show: (lines: AgentLogEntry[]) => void, tick: Every = every): () => void {
-    const onOpen = this.onHost(id);
-    if (!live && !onOpen) return () => {};
     let cancelled = false;
     const read = async () => {
       try {
@@ -238,7 +230,7 @@ export class TasksAdapter {
         // A pruned task stops answering; the snapshot tail stays on screen.
       }
     };
-    if (onOpen) void read();
+    void read();
     const stop = live ? tick(() => void read(), 1000) : () => {};
     return () => {
       cancelled = true;

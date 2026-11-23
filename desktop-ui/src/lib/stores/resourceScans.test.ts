@@ -16,10 +16,11 @@ describe("resource source scans", () => {
     expect(strip).toContain("tabsResource.tabs");
   });
 
-  it("the page starts the resource store and the App's snapshot reader beside it", () => {
+  it("the page starts the resource store and no reader of the App's snapshot", () => {
     const root = read(APP_ROOT);
-    expect(root).toMatch(/void resources\.start\(\);\s*legacySnapshot\.start\(\);/);
-    expect(root).toMatch(/resources\.stop\(\);\s*legacySnapshot\.stop\(\);/);
+    expect(root).toMatch(/void resources\.start\(\);/);
+    expect(root).toMatch(/resources\.stop\(\);/);
+    expect(root).not.toMatch(/legacySnapshot/);
   });
 
   // Tab keys count from 1 in every backend process, so a stored key can name
@@ -84,14 +85,13 @@ describe("resource source scans", () => {
     expect(sources().filter((f) => old.test(stripped(f)))).toEqual([]);
   });
 
-  // The page runs on the resources alone. The one reader of the App's
-  // snapshot serves only the fields no resource carries yet, and nothing
-  // reads the store's old snapshot or the build flag the old page branched on.
-  it("no module reads app.snapshot, and only the App's snapshot reader asks the App for one", () => {
-    const LEGACY = join("lib", "stores", "legacySnapshot.svelte.ts");
+  // The page runs on the resources alone: nothing reads the store's old
+  // snapshot, asks the App for one, or reads the build flag the old page
+  // branched on.
+  it("no module reads app.snapshot or asks the App for its snapshot", () => {
     expect(sources().filter((f) => /\bapp\.(snapshot|appSnapshot)\b|\.overlaySnapshot\(/.test(stripped(f)))).toEqual([]);
     const asksTheApp = /["'](get_snapshot|poll)["']|["']er:\/\/revision["']/;
-    expect(sources().filter((f) => asksTheApp.test(stripped(f)))).toEqual([LEGACY]);
+    expect(sources().filter((f) => asksTheApp.test(stripped(f)))).toEqual([]);
     expect(sources().filter((f) => /v1ServiceFlag|VITE_ER_V1_SERVICE|\bflagOn\b/.test(stripped(f)))).toEqual([]);
   });
 
@@ -131,8 +131,6 @@ describe("resource source scans", () => {
       join("lib", "stores", "tabsAdapter.ts"),
       join("lib", "stores", "browserView.ts"),
       APP_STORE,
-      join("lib", "snapshotChrome.ts"),
-      join("lib", "tabSnapshotCache.ts"),
       join("lib", "contextIdentity.ts"),
       join("lib", "stores", "reviewPageModel.ts"),
       join("lib", "prUrl.ts"),
@@ -161,7 +159,8 @@ describe("resource source scans", () => {
     const store = stripped(APP_STORE);
     const start = store.indexOf("  async cmd(");
     const body = store.slice(start, store.indexOf("\n  }\n", start));
-    expect(body).toMatch(/await \(this\.routed\(command, args\) \?\? invoke\(command, args\)\);/);
+    expect(body).toMatch(/if \(routed === null\) throw new Error\(/);
+    expect(body).not.toMatch(/invoke/);
     const wiring = stripped(join("lib", "stores", "tabsResource.svelte.ts"));
     expect(wiring).toMatch(/app\.routeCmds\(\(command, args\) => tabsResource\.route\(command, args\)\);\s*routePrefetches\(/);
   });
@@ -214,10 +213,10 @@ describe("resource source scans", () => {
     expect(read(APP_ROOT)).not.toContain("er://revision");
   });
 
-  it("the review and screenshot reads go through the annotation reads, which fetch them with the flag on", () => {
+  it("the review and screenshot reads go through the annotation reads, which fetch them", () => {
     const old = /invoke(?:<[^>]*>)?\(\s*"(read_review_json|list_review_revisions|read_annotation_screenshot)"/;
     const callers = sources().filter((f) => old.test(stripped(f)));
-    expect(callers).toEqual([join("lib", "stores", "annotationReads.ts")]);
+    expect(callers).toEqual([]);
     const reads = stripped(join("lib", "stores", "annotationReads.ts"));
     for (const kind of ["review_json", "review_revisions", "annotation_screenshot"]) {
       expect(reads).toContain(`kind: "${kind}"`);

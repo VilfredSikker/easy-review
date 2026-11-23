@@ -4,8 +4,6 @@
 //! and the settings view, and queues its agent on the desktop's task host,
 //! so no run waits on the App. The bucket a review flow owns is refused, as
 //! on the App (`check_bucket_admission`).
-//!
-//! Only compiled with `v1-service`.
 
 use er_engine::ai::{prompts, ReviewerKind, ScopedRunStamp};
 use er_engine::task_target::BackgroundTaskTarget;
@@ -240,15 +238,15 @@ pub fn scoped(
     }
     let id = content.tab.identity();
     let (scoped_files, scope_paths, diff_body) =
-        crate::commands::scoped_diff(&er_dir, raw, paths, id.repo_root, id.remote_repo)
+        crate::route_helpers::scoped_diff(&er_dir, raw, paths, id.repo_root, id.remote_repo)
             .map_err(refused)?;
     let diff_hash = review_inputs(desktop, content, &er_dir, &diff_body)?;
     let stamps = if scoped_files {
-        crate::commands::scope_stamps(&er_dir, &scope_paths, &reviewers)
+        crate::route_helpers::scope_stamps(&er_dir, &scope_paths, &reviewers)
     } else {
         Default::default()
     };
-    let (started, skipped) = crate::commands::spawn_scoped_reviewers(
+    let (started, skipped) = crate::route_helpers::spawn_scoped_reviewers(
         &mut |reviewer, target, prompt, stamp| {
             // The run's own message below is its one notice, as on the App.
             spawn_reviewer(desktop, reviewer, target, prompt, stamp, true)
@@ -266,7 +264,7 @@ pub fn scoped(
             skipped.join(", ")
         )));
     }
-    let message = crate::commands::scoped_message(
+    let message = crate::route_helpers::scoped_message(
         &started,
         &skipped,
         scoped_files.then_some(scope_paths.len()),
@@ -294,7 +292,7 @@ pub fn validate(
     let er_dir = content.context.er_dir.clone();
     admit(&er_dir)?;
     let has_review = er_engine::ai::review_file_exists(&er_dir);
-    let comment_count = crate::commands::github_comment_count(
+    let comment_count = crate::route_helpers::github_comment_count(
         content.ai.state.github_comments.as_ref(),
         &content.context.comments_dir,
     );
@@ -353,9 +351,13 @@ pub fn send_note(
     } else {
         Some(resolved.repo_root.as_str())
     };
-    crate::commands::send_note_blocked(content.context.is_remote, checked_out, &resolved.repo_root)
-        .map_err(refused)?;
-    let name = crate::commands::SEND_NOTE_COMMAND;
+    crate::route_helpers::send_note_blocked(
+        content.context.is_remote,
+        checked_out,
+        &resolved.repo_root,
+    )
+    .map_err(refused)?;
+    let name = crate::route_helpers::SEND_NOTE_COMMAND;
     let er_dir = content.context.er_dir.clone();
     let running = desktop
         .tasks
@@ -367,7 +369,7 @@ pub fn send_note(
             "An agent is already working on a note in this tab. Wait for it to finish.",
         ));
     }
-    let (prompt, toast) = crate::commands::note_prompt(
+    let (prompt, toast) = crate::route_helpers::note_prompt(
         content.ai.state.notes.as_ref(),
         &note_id,
         &resolved.repo_root,
@@ -515,7 +517,7 @@ fn target(content: &TabContent, er_dir: String, scope: String) -> BackgroundTask
 }
 
 fn review_scope(content: &TabContent, scope: &str) -> Result<String, ErError> {
-    crate::commands::resolve_review_scope_in(scope, content.tab.mode).map_err(refused)
+    crate::route_helpers::resolve_review_scope_in(scope, content.tab.mode).map_err(refused)
 }
 
 fn admit(er_dir: &str) -> Result<(), ErError> {

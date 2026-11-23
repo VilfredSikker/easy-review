@@ -101,9 +101,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: ./scripts/protocol-check.sh
 
-  # The flag-on path: the declaring packages' tests compiled with the feature.
-  # The default-build flag assertion lives in the er-desktop bin target, so the
-  # lib target is what runs here with the feature on.
+  # The flag-on path: er-tui, the one package that declares the flag, tested
+  # with the feature on.
   test-v1:
     name: Test (v1-service)
     needs: changes
@@ -115,7 +114,6 @@ jobs:
         timeout-minutes: 5
       - uses: dtolnay/rust-toolchain@1.98.0
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test -p er-desktop --lib --features v1-service
       - run: cargo test -p er-tui --features v1-service
 
   desktop-ui-lint:
@@ -205,6 +203,31 @@ jobs:
       - run: cargo build -p er-engine --no-default-features
       - run: cargo build -p er-engine --no-default-features --features highlight
       - run: cargo check -p er-service --all-targets
+
+  # er-desktop in its own graph, tests included. A workspace build unifies
+  # er-engine's features with er-tui's, which turns `ui` on, so only this job
+  # fails when the desktop names the App (ADR 0072).
+  check-desktop:
+    name: Desktop (own graph)
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/tauri-linux-deps
+        timeout-minutes: 5
+      - uses: dtolnay/rust-toolchain@1.98.0
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check -p er-desktop --all-targets
+
+  # The docs' citations and the ADR supersession marks. A code rename breaks a
+  # citation as surely as a doc edit does, so this runs on every PR.
+  docs:
+    name: Docs check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: ./scripts/docs-check.sh
 
   # Runs only on the release PR into main (from release/* or staging). The report is not a gate, and it
   # repeats the engine and TUI tests under instrumentation, so once per release

@@ -15,7 +15,6 @@ use er_protocol::{
 };
 
 use super::tabs::Routed;
-use crate::arena_commands::{parse_scope, parse_verdict};
 use crate::arena_service::{self, ArenaTab, Plan};
 use crate::state::DesktopState;
 
@@ -249,5 +248,25 @@ fn row(summary: &ArenaRunSummary) -> ArenaRunRow {
         completed_at: summary.completed_at.clone(),
         reviewer_count: u32::try_from(summary.reviewer_count).unwrap_or(u32::MAX),
         finding_count: u32::try_from(summary.finding_count).unwrap_or(u32::MAX),
+    }
+}
+
+fn parse_scope(s: &str) -> er_engine::arena::ArenaScope {
+    match s {
+        "unstaged" => er_engine::arena::ArenaScope::Unstaged,
+        "staged" => er_engine::arena::ArenaScope::Staged,
+        _ => er_engine::arena::ArenaScope::Branch,
+    }
+}
+
+fn parse_verdict(s: &str) -> er_engine::arena::Verdict {
+    match s.to_ascii_lowercase().as_str() {
+        "kept" => er_engine::arena::Verdict::Kept,
+        "escalated" => er_engine::arena::Verdict::Escalated,
+        "dropped" => er_engine::arena::Verdict::Dropped,
+        "merged" => er_engine::arena::Verdict::Merged {
+            into: String::new(),
+        },
+        _ => er_engine::arena::Verdict::Pending,
     }
 }

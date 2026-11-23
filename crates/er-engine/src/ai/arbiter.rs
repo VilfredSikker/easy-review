@@ -168,8 +168,8 @@ mod tests {
 
     #[test]
     fn a_regrade_is_tagged_as_the_arbiters_own() {
-        // The desktop tags a finding's response trail off this prefix
-        // (`crates/er-desktop/src/snapshot.rs`), so the format is a contract
+        // The annotations resource tags a finding's response trail off this
+        // prefix (`crates/er-service/src/annotations_resource.rs`), so the format is a contract
         // between the crates rather than a private detail of the regrade.
         let response = regrade_response(
             &finding(Confidence::Tentative),

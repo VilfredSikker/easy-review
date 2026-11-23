@@ -11,11 +11,12 @@ name = "er-desktop"
 path = "src/main.rs"
 
 [dependencies]
-er-engine = { path = "../er-engine" }
+# No `ui`: the desktop names nothing of the App (ADR 0072). `watch` is the
+# file watcher.
+er-engine = { path = "../er-engine", default-features = false, features = ["watch"] }
 er-store = { path = "../er-store" }
-er-service = { path = "../er-service", optional = true }
-# The wire to desktop-ui. Not optional: the resource commands exist in both
-# builds, and the default build answers them as unsupported.
+er-service = { path = "../er-service" }
+# The wire to desktop-ui.
 er-protocol = { path = "../er-protocol" }
 tauri = { version = "2", features = ["devtools", "unstable", "macos-private-api"] }
 tauri-plugin-clipboard-manager = "2"
@@ -36,13 +37,6 @@ portable-pty = "0.9"
 ureq = { version = "3", default-features = false, features = ["rustls"] }
 base64 = "0.23"
 
-[features]
-default = ["v1-service"]
-# Compiles the v1 service path beside the App path. On by default: desktop-ui
-# runs only on the service's resources, and its boot check refuses a backend
-# built without this feature.
-v1-service = ["dep:er-service"]
-
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
 objc2-foundation = { version = "0.3", features = ["NSString", "NSBundle", "NSError"] }
@@ -59,7 +53,7 @@ objc2-user-notifications = { version = "0.3", features = [
 block2 = "0.6"
 
 [dev-dependencies]
-er-engine = { path = "../er-engine", features = ["test-support"] }
+er-engine = { path = "../er-engine", default-features = false, features = ["test-support"] }
 er-git = { path = "../er-git" }
 # `Command::Hold`, which the held-actor tests send to a workspace actor.
 er-service = { path = "../er-service", features = ["test-support"] }

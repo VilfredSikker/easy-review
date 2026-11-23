@@ -1,4 +1,4 @@
-//! The background agent tasks with the flag on: review lenses, tours,
+//! The background agent tasks: review lenses, tours,
 //! diagrams, importance ranking and sidebar triage, queued and run here with
 //! no App. `jobs` lists each task's row, and `task_log` reads its output
 //! lines, so a line moves no version.
@@ -9,8 +9,6 @@
 //! every agent shares, as the App's and the service's flows do. Its outputs
 //! reach the tabs' content through the tick's `ReloadSidecars`, since the
 //! agent's writes move the sidecars' stamps.
-//!
-//! Only compiled with `v1-service`.
 
 use std::collections::VecDeque;
 use std::sync::mpsc::Sender;
@@ -26,7 +24,7 @@ use er_engine::stage_job::{staging_for, HostWriteDiagram, StageJob, StageJobRequ
 use er_engine::task_target::BackgroundTaskTarget;
 use er_protocol::{ErError, ErErrorKind, TaskJob, TaskLogLine};
 
-use crate::commands::now_ms;
+use crate::route_helpers::now_ms;
 use crate::state::{DesktopState, WriteClock};
 
 /// How long a finished task stays listed, so its pill can show the outcome.
@@ -482,7 +480,7 @@ pub(crate) fn finish(desktop: &DesktopState, id: &str, result: Result<(), String
     }
     crate::resources::notice::tell(desktop, message, true);
     if !agent {
-        crate::commands::file_tasks_in_inbox(desktop, &[row]);
+        crate::route_helpers::file_tasks_in_inbox(desktop, &[row]);
     }
 }
 

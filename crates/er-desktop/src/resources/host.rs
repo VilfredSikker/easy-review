@@ -26,7 +26,7 @@ pub fn fetch(desktop: &DesktopState, key: ResourceKey) -> Result<Versioned<Resou
             (version, Resource::Branches(branches))
         }
         ResourceKey::AvailableBranches { project } => {
-            let branches = crate::commands::project_available_branches(desktop, project)
+            let branches = crate::route_helpers::project_available_branches(desktop, project)
                 .map_err(|message| failed(project, message))?;
             (
                 0,
@@ -48,7 +48,7 @@ pub fn fetch(desktop: &DesktopState, key: ResourceKey) -> Result<Versioned<Resou
             (version, Resource::Inbox(inbox))
         }
         ResourceKey::AvailablePrs { project } => {
-            let prs = crate::commands::project_available_prs(desktop, project)
+            let prs = crate::route_helpers::project_available_prs(desktop, project)
                 .map_err(|message| failed(project, message))?;
             let prs = prs
                 .iter()
@@ -171,7 +171,9 @@ pub fn version(desktop: &DesktopState, key: ResourceKey) -> Result<ResourceVersi
         ResourceKey::Pr { tab } => {
             super::pr::published_version(desktop, &super::diff::listed(desktop, *tab)?)
         }
-        ResourceKey::PrStatus { remote, number } => sidebar(desktop).pr_status(remote, *number).0,
+        ResourceKey::PrStatus { remote, number } => {
+            super::pr::status_version(desktop, sidebar(desktop).pr_status(remote, *number).0)
+        }
     };
     Ok(ResourceVersion(version))
 }
@@ -191,16 +193,16 @@ pub fn send(desktop: &DesktopState, command: Command) -> Result<Ack, ErError> {
             crate::projects::reorder_projects(&ordered).map_err(|e| failed("", e.to_string()))?;
         }
         Command::DeleteProject { project } => {
-            crate::commands::delete_project_and_its_prs(desktop, &project)
+            crate::route_helpers::delete_project_and_its_prs(desktop, &project)
                 .map_err(|message| failed(&project, message))?;
         }
         Command::AddTrackedBranch { project, name } => {
-            crate::commands::track_branch(desktop, &project, &name)
+            crate::route_helpers::track_branch(desktop, &project, &name)
                 .map_err(|message| failed(&project, message))?;
             desktop.app_owner.refresh_project_meta(git, &project);
         }
         Command::RemoveTrackedBranch { project, name } => {
-            crate::commands::untrack_branch(desktop, &project, &name)
+            crate::route_helpers::untrack_branch(desktop, &project, &name)
                 .map_err(|message| failed(&project, message))?;
             desktop.app_owner.refresh_project_meta(git, &project);
         }
@@ -245,9 +247,10 @@ pub fn send(desktop: &DesktopState, command: Command) -> Result<Ack, ErError> {
             number,
             title,
         } => {
-            let title =
-                crate::commands::resolve_pr_title_for_project(&project, number, title, desktop)
-                    .map_err(|message| failed(&project, message))?;
+            let title = crate::route_helpers::resolve_pr_title_for_project(
+                &project, number, title, desktop,
+            )
+            .map_err(|message| failed(&project, message))?;
             crate::projects::save_pr(&project, number, &title)
                 .map_err(|e| failed(&project, e.to_string()))?;
         }
@@ -275,17 +278,18 @@ pub fn send(desktop: &DesktopState, command: Command) -> Result<Ack, ErError> {
         }
         Command::RefreshNotifications => refresh_prs(desktop, None)?,
         Command::TestNativeNotification => {
-            crate::commands::show_test_notification(desktop).map_err(|message| ErError {
+            crate::route_helpers::show_test_notification(desktop).map_err(|message| ErError {
                 kind: ErErrorKind::Refused,
                 message,
             })?;
         }
         Command::OpenInboxItem { id, replace } => {
-            crate::commands::service_open_inbox_item(desktop, &id, replace).map_err(refused)?;
+            crate::route_helpers::service_open_inbox_item(desktop, &id, replace)
+                .map_err(refused)?;
             opened = Some(super::tabs::opened(desktop));
         }
         Command::PrefetchInboxItem { id } => {
-            crate::commands::prefetch_inbox_target(&id, desktop).map_err(refused)?;
+            crate::route_helpers::prefetch_inbox_target(&id, desktop).map_err(refused)?;
         }
         // Other owners apply these; `send::apply` routes them there.
         other @ (Command::ReloadSettings
@@ -442,7 +446,7 @@ fn write_inbox(desktop: &DesktopState, write: impl FnOnce(&mut InboxState)) -> R
 fn refresh_prs(desktop: &DesktopState, remote: Option<String>) -> Result<(), ErError> {
     let service = desktop.service.clone();
     let prefs = move || service.settings().view().config.inbox.clone();
-    crate::commands::kick_pr_list_refresh(desktop, remote, prefs).map_err(|message| ErError {
+    crate::route_helpers::kick_pr_list_refresh(desktop, remote, prefs).map_err(|message| ErError {
         kind: ErErrorKind::Internal,
         message,
     })
@@ -628,11 +632,19 @@ pub fn watched(desktop: &DesktopState) -> BTreeMap<Watched, u64> {
         (Watched::Jobs, super::jobs::version(desktop)),
     ]);
     let sidebar = sidebar(desktop).versions();
-    versions.extend(
-        sidebar
-            .into_iter()
-            .map(|(key, v)| (Watched::Sidebar(key), v)),
-    );
+    versions.extend(sidebar.into_iter().map(|(key, v)| {
+        let v = match key {
+            ResourceKey::PrStatus { .. } => super::pr::status_version(desktop, v),
+            _ => v,
+        };
+        (Watched::Sidebar(key), v)
+    }));
+    // A status whose fetches stored nothing has no stored version, and stays
+    // watched after the fetch ends so its `fetching: false` is pushed.
+    for key in super::pr::fetched_keys(desktop) {
+        let fetching = super::pr::status_version(desktop, 0);
+        versions.entry(Watched::Sidebar(key)).or_insert(fetching);
+    }
     if let Ok(view) = desktop.view.lock() {
         versions.extend(
             view.browser_revisions()

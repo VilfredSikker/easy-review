@@ -1,7 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { app } from "$lib/stores/app.svelte";
-  import { legacySnapshot } from "$lib/stores/legacySnapshot.svelte";
   import { pageView } from "$lib/stores/pageView.svelte";
   import { resources } from "$lib/stores/resourceStore";
   import { tabsResource } from "$lib/stores/tabsResource.svelte";
@@ -299,7 +298,6 @@
     }
     void import("$lib/dev/log").then(({ initDevLog }) => initDevLog());
     void resources.start();
-    legacySnapshot.start();
     startNotices();
     const cleanupKeyboard = initKeyboard();
     const cleanupLinkGuard = installExternalLinkGuard();
@@ -309,7 +307,6 @@
       cleanupKeyboard();
       cleanupLinkGuard();
       resources.stop();
-      legacySnapshot.stop();
       stopNotices();
       unlistenArena();
     };

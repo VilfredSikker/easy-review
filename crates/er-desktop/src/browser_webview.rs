@@ -578,35 +578,23 @@ pub fn browser_send_to_page(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use er_engine::app::App;
 
     #[test]
     fn browser_webview_uses_the_view_state() {
-        let storage = tempfile::tempdir().unwrap();
-        er_engine::storage::with_test_storage_root(storage.path(), check_tab_browser);
-    }
-
-    fn check_tab_browser() {
-        use er_engine::app::TabState;
-        let mut app = App::new_remote(
-            TabState::new_for_test(vec![]),
-            None,
-            er_engine::ports::Ports::for_test(),
-        );
-        app.tabs.push(TabState::new_for_test(vec![]));
+        let (first, second) = (TabKey::next(), TabKey::next());
         let view = ViewStateHandle::default();
         {
             let mut v = view.lock().unwrap();
-            let browser = v.browser_mut(app.tabs[1].key());
+            let browser = v.browser_mut(second);
             browser.url = "http://localhost:5173/".to_string();
             browser.layout = BrowserLayout::Split;
         }
 
-        let selected = tab_browser(&view, app.tabs[1].key()).unwrap();
+        let selected = tab_browser(&view, second).unwrap();
         assert_eq!(selected.url, "http://localhost:5173/");
         assert_eq!(selected.layout, BrowserLayout::Split);
         assert_eq!(
-            tab_browser(&view, app.tabs[0].key()).unwrap(),
+            tab_browser(&view, first).unwrap(),
             TabBrowserState::default()
         );
     }

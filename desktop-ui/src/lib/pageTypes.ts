@@ -844,8 +844,6 @@ export interface AppSnapshot {
    * viewed branch isn't a local checkout (see {@link StackSnapshot}).
    */
   stack?: StackSnapshot | null;
-  /** Which background fetches are currently in-flight. */
-  bg_loading: LoadingFlags;
   /** Running/done/failed background AI commands for the active tab. */
   agent_commands?: AgentCommandStatus[];
   /** Recent agent log output for the active tab. */
@@ -931,14 +929,6 @@ export interface WatchStatusSnapshot {
   root_path: string | null;
 }
 
-export interface LoadingFlags {
-  pr_list: boolean;
-  gh_status: boolean;
-  gh_comments: boolean;
-  /** First diff load of a freshly-selected stub tab (background refresh running). */
-  tab_diff?: boolean;
-}
-
 export interface AgentCommandStatus {
   name: string;
   /** "running" | "done" | "failed" */
@@ -990,16 +980,6 @@ export interface ReviewModelGroups {
   fast: ReviewModelRef[];
   standard: ReviewModelRef[];
   advanced: ReviewModelRef[];
-}
-
-export interface PollResponse {
-  revision: number;
-  content_revision: number;
-  chrome_revision: number;
-  /** Merge sidebar/chrome only; keep existing file hunks and highlight spans. */
-  chrome_only: boolean;
-  /** Full snapshot; `null` when both revisions are unchanged since last poll. */
-  snapshot: AppSnapshot | null;
 }
 
 export interface BrowserSnapshot {

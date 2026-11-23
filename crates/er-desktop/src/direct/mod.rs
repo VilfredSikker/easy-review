@@ -1,8 +1,7 @@
 //! The commands that stay direct `#[tauri::command]` functions: each acts on
 //! the window, a PTY, the OS shell or git for one file, and has no resource
-//! to serve. They take `DesktopState`; the few that still read the App on the
-//! flag-off path take it as their own argument, so deleting that path deletes
-//! only those twins.
+//! to serve. They take `DesktopState`, and those that read a tab name it by
+//! its key.
 
 pub mod dev_log;
 pub mod export;
@@ -15,13 +14,12 @@ use er_protocol::{ErError, ErErrorKind};
 
 /// The published content of the tab `wire` names, loaded on its first use. A
 /// key the registry does not list answers `NotFound`.
-#[cfg(feature = "v1-service")]
 pub(crate) fn content_of(
     desktop: &crate::state::DesktopState,
     wire: er_protocol::TabKey,
 ) -> Result<std::sync::Arc<er_service::TabContent>, ErError> {
     let key = er_service::resolve_tab_key(&desktop.service.app_registry().tabs_view(), wire)?;
-    crate::commands::content_routes::keyed_content(desktop, key, None)
+    crate::resources::content_routes::keyed_content(desktop, key, None)
         .map(|(content, _)| content)
         .map_err(failed)
 }

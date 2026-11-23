@@ -1,21 +1,16 @@
 //! The review export: the tab's annotations as markdown, returned to the page
-//! or written to disk for an agent. With the service, each command renders the
-//! tab its key names from that tab's published content; without it, the App's
-//! active tab.
+//! or written to disk for an agent. Each command renders the tab its key names
+//! from that tab's published content.
 
 use er_protocol::{ErError, ExportOptions};
 use tauri::State;
 
 use super::failed;
-#[cfg(not(feature = "v1-service"))]
-use crate::commands::AppState;
 use crate::state::run_blocking;
-#[cfg(feature = "v1-service")]
 use crate::state::DesktopState;
 
 /// Render the tab's annotations as markdown and return the body to the UI
 /// for clipboard copy / preview.
-#[cfg(feature = "v1-service")]
 #[tauri::command]
 pub async fn export_review(
     tab: er_protocol::TabKey,
@@ -28,25 +23,9 @@ pub async fn export_review(
         .map_err(failed)?
 }
 
-#[cfg(not(feature = "v1-service"))]
-#[tauri::command]
-pub async fn export_review(
-    opts: ExportOptions,
-    state: State<'_, AppState>,
-) -> Result<String, ErError> {
-    let state = state.inner().clone();
-    run_blocking(move || {
-        let app = state.app.lock().map_err(|e| e.to_string())?;
-        Ok(crate::export::render_markdown(app.tab(), &opts))
-    })
-    .await
-    .map_err(failed)
-}
-
 /// Render and write to disk. Empty `path` writes `export.md` in the tab's
 /// view bucket. Returns the resolved absolute path so the UI can show it in a
 /// toast.
-#[cfg(feature = "v1-service")]
 #[tauri::command]
 pub async fn export_review_to_file(
     tab: er_protocol::TabKey,
@@ -60,27 +39,8 @@ pub async fn export_review_to_file(
         .map_err(failed)?
 }
 
-#[cfg(not(feature = "v1-service"))]
-#[tauri::command]
-pub async fn export_review_to_file(
-    opts: ExportOptions,
-    path: String,
-    state: State<'_, AppState>,
-) -> Result<String, ErError> {
-    let state = state.inner().clone();
-    run_blocking(move || {
-        let app = state.app.lock().map_err(|e| e.to_string())?;
-        let tab = app.tab();
-        let body = crate::export::render_markdown(tab, &opts);
-        write_export(&body, &path, &tab.er_dir())
-    })
-    .await
-    .map_err(failed)
-}
-
 /// The palette's export: every default, written to `export.md` in the tab's
 /// view bucket. Answers the path it wrote.
-#[cfg(feature = "v1-service")]
 #[tauri::command]
 pub async fn export_to_agent(
     tab: er_protocol::TabKey,
@@ -92,22 +52,7 @@ pub async fn export_to_agent(
         .map_err(failed)?
 }
 
-#[cfg(not(feature = "v1-service"))]
-#[tauri::command]
-pub async fn export_to_agent(state: State<'_, AppState>) -> Result<String, ErError> {
-    let state = state.inner().clone();
-    run_blocking(move || {
-        let app = state.app.lock().map_err(|e| e.to_string())?;
-        let tab = app.tab();
-        let body = crate::export::render_markdown(tab, &ExportOptions::default());
-        write_export(&body, "", &tab.er_dir())
-    })
-    .await
-    .map_err(failed)
-}
-
 /// The export of the tab `wire` names, rendered from its published content.
-#[cfg(feature = "v1-service")]
 pub(crate) fn render_tab(
     desktop: &DesktopState,
     wire: er_protocol::TabKey,
@@ -119,7 +64,6 @@ pub(crate) fn render_tab(
 
 /// Writes the export of the tab `wire` names to `path`, or to `export.md` in
 /// its view bucket when `path` is empty. Answers the path written.
-#[cfg(feature = "v1-service")]
 pub(crate) fn write_tab(
     desktop: &DesktopState,
     wire: er_protocol::TabKey,
@@ -157,11 +101,7 @@ mod tests {
                 .split("\n#[")
                 .filter(|item| item.contains(&sig))
                 .collect();
-            assert_eq!(
-                bodies.len(),
-                2,
-                "{name} must be `pub async fn` in both builds"
-            );
+            assert_eq!(bodies.len(), 1, "{name} must be `pub async fn`");
             for body in bodies {
                 assert!(
                     body.contains("run_blocking("),

@@ -3,16 +3,13 @@
 //! unsupported.
 
 use er_protocol::{Ack, Command, ErError, Resource, ResourceKey, ResourceVersion, Versioned};
-#[cfg(feature = "v1-service")]
 use tauri::State;
 
-#[cfg(feature = "v1-service")]
 use crate::state::DesktopState;
 
 /// Applies one command and names the versions it moved. Off the main thread:
 /// a settings write waits on the actor and its save, and a sidebar command
 /// may call git.
-#[cfg(feature = "v1-service")]
 #[tauri::command]
 pub async fn er_send(
     command: Command,
@@ -27,7 +24,7 @@ pub async fn er_send(
         };
         let effects = super::send::Effects {
             notify: &notify,
-            check_update: || super::session::app_update(crate::commands::app_update_cached()),
+            check_update: || super::session::app_update(crate::route_helpers::app_update_cached()),
             webviews: &emitter,
             pick_folder: &pick_folder,
         };
@@ -35,7 +32,7 @@ pub async fn er_send(
     })
     .await?;
     match applied.uninstalled {
-        Some(result) => crate::config_commands::finish_uninstall(&app, result)
+        Some(result) => finish_uninstall(&app, result)
             .map(|_| applied.ack)
             .map_err(|message| ErError {
                 kind: er_protocol::ErErrorKind::Refused,
@@ -48,7 +45,6 @@ pub async fn er_send(
 /// Each key's content at its published version, in the order asked. Off the
 /// main thread: the first `settings` read starts the settings actor, which
 /// loads the config.
-#[cfg(feature = "v1-service")]
 #[tauri::command]
 pub async fn er_fetch(
     keys: Vec<ResourceKey>,
@@ -60,7 +56,6 @@ pub async fn er_fetch(
 
 /// Each key's published version, so a listener that attached late learns
 /// what it missed without fetching the content.
-#[cfg(feature = "v1-service")]
 #[tauri::command]
 pub async fn er_versions(
     keys: Vec<ResourceKey>,
@@ -75,7 +70,6 @@ pub async fn er_versions(
     .await
 }
 
-#[cfg(feature = "v1-service")]
 fn pick_folder() -> Option<String> {
     rfd::FileDialog::new()
         .set_title("Select a git repository")
@@ -83,7 +77,6 @@ fn pick_folder() -> Option<String> {
         .map(|path| path.to_string_lossy().into_owned())
 }
 
-#[cfg(feature = "v1-service")]
 async fn blocking<T, F>(f: F) -> Result<T, ErError>
 where
     T: Send + 'static,
@@ -97,64 +90,33 @@ where
         })?
 }
 
-#[cfg(not(feature = "v1-service"))]
-#[tauri::command]
-pub fn er_send(command: Command) -> Result<Ack, ErError> {
-    Err(unsupported(&format!("{command:?}")))
-}
-
-#[cfg(not(feature = "v1-service"))]
-#[tauri::command]
-pub fn er_fetch(keys: Vec<ResourceKey>) -> Result<Vec<Versioned<Resource>>, ErError> {
-    Err(unsupported(&format!("{keys:?}")))
-}
-
-#[cfg(not(feature = "v1-service"))]
-#[tauri::command]
-pub fn er_versions(keys: Vec<ResourceKey>) -> Result<Vec<ResourceVersion>, ErError> {
-    Err(unsupported(&format!("{keys:?}")))
-}
-
-/// The default build serves no resource and applies no wire command.
-#[cfg(not(feature = "v1-service"))]
-fn unsupported(asked: &str) -> ErError {
-    ErError {
-        kind: er_protocol::ErErrorKind::Unsupported,
-        message: format!("this build serves no resources (asked for {asked})"),
+/// Quits after an uninstall that asked for it, and reports what failed.
+fn finish_uninstall(
+    app_handle: &tauri::AppHandle,
+    result: er_engine::uninstall::UninstallResult,
+) -> Result<er_engine::uninstall::UninstallResult, String> {
+    if !result.failed.is_empty() && !result.should_quit {
+        let msg = format!("Uninstall failed:\n{}", result.failed.join("\n"));
+        log::error!("run_uninstall: {msg}");
+        return Err(msg);
     }
-}
 
-#[cfg(all(test, not(feature = "v1-service")))]
-mod tests {
-    use er_protocol::{Command, ErErrorKind, ResourceKey};
-
-    /// The default build answers a fetch, a version check and a command as
-    /// unsupported, so a frontend built for the other path fails loudly.
-    #[test]
-    fn the_default_build_serves_no_resource() {
-        let fetched = super::er_fetch(vec![ResourceKey::Tabs]);
-        assert_eq!(fetched.map_err(|e| e.kind), Err(ErErrorKind::Unsupported));
-        let versions = super::er_versions(vec![ResourceKey::Tabs]);
-        assert_eq!(versions.map_err(|e| e.kind), Err(ErErrorKind::Unsupported));
-        let sent = super::er_send(Command::DeleteProject {
-            project: "p".into(),
+    if result.should_quit {
+        let handle = app_handle.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(400));
+            handle.exit(0);
         });
-        assert_eq!(sent.map_err(|e| e.kind), Err(ErErrorKind::Unsupported));
-        let sent = super::er_send(Command::ReloadSettings);
-        assert_eq!(sent.map_err(|e| e.kind), Err(ErErrorKind::Unsupported));
-        let sent = super::er_send(Command::SavePr {
-            project: "p".into(),
-            number: 1,
-            title: None,
-        });
-        assert_eq!(sent.map_err(|e| e.kind), Err(ErErrorKind::Unsupported));
-        let fetched = super::er_fetch(vec![ResourceKey::Prs {
-            remote: "acme/p".into(),
-        }]);
-        assert_eq!(fetched.map_err(|e| e.kind), Err(ErErrorKind::Unsupported));
-        let sent = super::er_send(Command::MarkInboxItemRead { id: "i".into() });
-        assert_eq!(sent.map_err(|e| e.kind), Err(ErErrorKind::Unsupported));
-        let fetched = super::er_fetch(vec![ResourceKey::Inbox]);
-        assert_eq!(fetched.map_err(|e| e.kind), Err(ErErrorKind::Unsupported));
     }
+
+    if !result.failed.is_empty() {
+        let msg = format!(
+            "Uninstall partially failed (quitting so in-use paths can be removed):\n{}",
+            result.failed.join("\n")
+        );
+        log::error!("run_uninstall: {msg}");
+        return Err(msg);
+    }
+
+    Ok(result)
 }

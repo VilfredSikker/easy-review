@@ -11,9 +11,6 @@ use er_protocol::{ErError, OpenSource, OpenSourceKind};
 use tauri::State;
 
 use super::failed;
-#[cfg(not(feature = "v1-service"))]
-use crate::commands::AppState;
-#[cfg(feature = "v1-service")]
 use crate::state::DesktopState;
 
 /// What the open commands read of a tab: where a local edit can open, and
@@ -46,7 +43,6 @@ pub(crate) enum Target {
 
 const NO_FILE: &str = "No selected file";
 
-#[cfg(feature = "v1-service")]
 #[tauri::command]
 pub fn open_in_editor(
     tab: er_protocol::TabKey,
@@ -57,19 +53,8 @@ pub fn open_in_editor(
     open_source(tab, path, line, desktop)
 }
 
-#[cfg(not(feature = "v1-service"))]
-#[tauri::command]
-pub fn open_in_editor(
-    path: Option<String>,
-    line: Option<usize>,
-    state: State<AppState>,
-) -> Result<OpenSource, ErError> {
-    open_source(path, line, state)
-}
-
 /// Open the file in VS Code (`code -g path:line`) when a local checkout exists.
 /// No GitHub/browser fallback — desktop `e` key uses this exclusively.
-#[cfg(feature = "v1-service")]
 #[tauri::command]
 pub fn open_in_vscode(
     tab: er_protocol::TabKey,
@@ -78,20 +63,6 @@ pub fn open_in_vscode(
     desktop: State<DesktopState>,
 ) -> Result<OpenSource, ErError> {
     let source = content_source(&desktop, tab)?;
-    launch(
-        target(&source, path.as_deref(), line, Editor::VsCode),
-        Editor::VsCode,
-    )
-}
-
-#[cfg(not(feature = "v1-service"))]
-#[tauri::command]
-pub fn open_in_vscode(
-    path: Option<String>,
-    line: Option<usize>,
-    state: State<AppState>,
-) -> Result<OpenSource, ErError> {
-    let source = app_source(&state)?;
     launch(
         target(&source, path.as_deref(), line, Editor::VsCode),
         Editor::VsCode,
@@ -99,7 +70,6 @@ pub fn open_in_vscode(
 }
 
 /// Open the file in the editor when a local checkout holds it, else on GitHub.
-#[cfg(feature = "v1-service")]
 #[tauri::command]
 pub fn open_source(
     tab: er_protocol::TabKey,
@@ -114,39 +84,15 @@ pub fn open_source(
     )
 }
 
-#[cfg(not(feature = "v1-service"))]
-#[tauri::command]
-pub fn open_source(
-    path: Option<String>,
-    line: Option<usize>,
-    state: State<AppState>,
-) -> Result<OpenSource, ErError> {
-    let source = app_source(&state)?;
-    launch(
-        target(&source, path.as_deref(), line, Editor::Default),
-        Editor::Default,
-    )
-}
-
 /// The tab `wire` names, as its published content shows it.
-#[cfg(feature = "v1-service")]
 pub(crate) fn content_source(
     desktop: &DesktopState,
     wire: er_protocol::TabKey,
 ) -> Result<SourceTab, ErError> {
     let content = super::content_of(desktop, wire)?;
     let tab = &content.tab;
-    // A local edit runs in the checkout of the branch the tab shows: its repo,
-    // or a branch view's checkout when one exists.
-    let local_root = if tab.identity().is_remote() {
-        None
-    } else if tab.local_branch_view.is_some() {
-        tab.checkout_root.clone()
-    } else {
-        Some(tab.repo_root.clone())
-    };
     Ok(SourceTab {
-        local_root,
+        local_root: local_root(tab),
         pr_head: content
             .pr
             .overview
@@ -161,21 +107,16 @@ pub(crate) fn content_source(
     })
 }
 
-/// The App's active tab, read under its lock and released before any launch.
-#[cfg(not(feature = "v1-service"))]
-fn app_source(state: &AppState) -> Result<SourceTab, ErError> {
-    let app = state.app.lock().map_err(failed)?;
-    let tab = app.tab();
-    Ok(SourceTab {
-        local_root: tab.local_checkout_root().map(str::to_owned),
-        pr_head: tab.pr_data.as_ref().map(|pr| pr.head_branch.clone()),
-        pr_number: tab.pr_number,
-        local_branch_view: tab.local_branch_view.clone(),
-        current_branch: tab.current_branch.clone(),
-        remote_repo: tab.remote_repo.clone(),
-        repo_root: tab.repo_root.clone(),
-        git: Arc::clone(&tab.ports.git),
-    })
+/// A local edit runs in the checkout of the branch the tab shows: its repo,
+/// or a branch view's checkout when one exists.
+fn local_root(tab: &er_engine::tab_identity::ResolvedTab) -> Option<String> {
+    if tab.identity().is_remote() {
+        None
+    } else if tab.local_branch_view.is_some() {
+        tab.checkout_root.clone()
+    } else {
+        Some(tab.repo_root.clone())
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -295,7 +236,6 @@ pub fn open_url_in_browser(url: String) -> Result<(), ErError> {
     crate::os_launch::open_external_url(&url).map_err(failed)
 }
 
-#[cfg(feature = "v1-service")]
 #[tauri::command]
 pub fn reveal_er_folder(
     tab: er_protocol::TabKey,
@@ -304,18 +244,7 @@ pub fn reveal_er_folder(
     reveal_folder(&view_bucket(&desktop, tab)?)
 }
 
-#[cfg(not(feature = "v1-service"))]
-#[tauri::command]
-pub fn reveal_er_folder(state: State<AppState>) -> Result<(), ErError> {
-    let er_dir = {
-        let app = state.app.lock().map_err(failed)?;
-        app.tab().er_dir()
-    };
-    reveal_folder(&er_dir)
-}
-
 /// The view bucket of the tab `wire` names: its content's `context.er_dir`.
-#[cfg(feature = "v1-service")]
 pub(crate) fn view_bucket(
     desktop: &DesktopState,
     wire: er_protocol::TabKey,
@@ -355,20 +284,28 @@ mod tests {
 
     #[test]
     fn open_source_policy_allows_only_checked_out_local_contexts() {
-        // The policy itself lives on `TabState::local_checkout_root` (see the
-        // engine's tests); this pins the two roots it resolves to.
-        let mut working = er_engine::app::TabState::new_for_test(vec![]);
-        working.repo_root = "/repo".into();
-        assert_eq!(working.local_checkout_root(), Some("/repo"));
+        let working = er_engine::tab_identity::ResolvedTab {
+            repo_root: "/repo".into(),
+            current_branch: "main".into(),
+            base_branch: "main".into(),
+            mode: er_engine::tab_identity::DiffMode::Branch,
+            tour_is_pr: false,
+            remote_repo: None,
+            pr_number: None,
+            local_branch_view: None,
+            pr_head_ref: None,
+            checkout_root: None,
+        };
+        assert_eq!(local_root(&working).as_deref(), Some("/repo"));
 
-        let mut pr = er_engine::app::TabState::new_for_test(vec![]);
-        pr.repo_root = "/repo".into();
+        let mut pr = working.clone();
         pr.remote_repo = Some("o/r".into());
+        assert_eq!(local_root(&pr), None, "a remote PR has no checkout");
         pr.local_branch_view = Some("feat/pr-head".into());
         pr.current_branch = "feat/pr-head".into();
-        assert_eq!(pr.local_checkout_root(), None);
-        pr.local_branch_checkout_root = Some("/wt".into());
-        assert_eq!(pr.local_checkout_root(), Some("/wt"));
+        assert_eq!(local_root(&pr), None);
+        pr.checkout_root = Some("/wt".into());
+        assert_eq!(local_root(&pr).as_deref(), Some("/wt"));
     }
 
     /// The page names the file and the line; a checkout that holds the file

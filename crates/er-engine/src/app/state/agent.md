@@ -37,7 +37,7 @@ the log and result channels and retires; nothing here persists across restarts.
 
 Three stores, one per audience (`docs/adr/0007-three-comment-stores.md`); replies are
 flat (`docs/adr/0008-flat-comment-threads.md`). The unified thread shape the desktop
-draws (the `annotations` resource's thread, defined in `er-protocol`) is a wire type — an
+draws (`Thread` in the `annotations` resource, `crates/er-protocol/src/annotations.rs`) is a wire type — an
 engine-side one would put a single front end's needs into the shared model. A new
 comment-like entity needs its storage file, staleness rule, sync behavior and export
 behavior decided before it is written.

@@ -2,6 +2,7 @@
   import type { PrSnapshot, GithubStatusSnapshot } from "$lib/pageTypes";
   import { app } from "$lib/stores/app.svelte";
   import { pageView } from "$lib/stores/pageView.svelte";
+  import { prResource } from "$lib/stores/prResource.svelte";
   import { tabsResource } from "$lib/stores/tabsResource.svelte";
   import { projectsResource } from "$lib/stores/projectsResource.svelte";
   import { sessionResource } from "$lib/stores/sessionResource.svelte";
@@ -94,7 +95,9 @@
       : "Watching",
   );
   let manualRefreshing = $state(false);
-  const refreshing = $derived(manualRefreshing || (pageView.current?.bg_loading?.gh_status ?? false));
+  const refreshing = $derived(
+    manualRefreshing || prResource.statusFetching(pageView.current?.local_branch ?? pageView.current?.branch),
+  );
 
   const checkStats = $derived(countChecks(github?.checks ?? []));
 
@@ -130,7 +133,7 @@
   }
 
   async function onOpenPr() {
-    if (effectiveGithubUrl) await app.cmd("open_url_in_browser", { url: effectiveGithubUrl });
+    if (effectiveGithubUrl) await openExternalUrl(effectiveGithubUrl);
   }
 
   const activeProject = $derived(projectsResource.projects.find((p) => p.is_active) ?? null);
@@ -572,7 +575,7 @@
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="text-success"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
           <span class="text-fg-2 text-[12px]">Checks successful</span>
           {#if github_url}
-            <button type="button" class="ml-auto text-muted hover:text-fg-2" onclick={() => app.cmd("open_url_in_browser", { url: github_url })} aria-label="View checks on GitHub">
+            <button type="button" class="ml-auto text-muted hover:text-fg-2" onclick={() => openExternalUrl(github_url)} aria-label="View checks on GitHub">
               <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
             </button>
           {/if}
@@ -582,7 +585,7 @@
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="text-warning"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
           <span class="text-fg-2 text-[12px]">Checks pending</span>
           {#if github_url}
-            <button type="button" class="ml-auto text-muted hover:text-fg-2" onclick={() => app.cmd("open_url_in_browser", { url: github_url })} aria-label="View checks on GitHub">
+            <button type="button" class="ml-auto text-muted hover:text-fg-2" onclick={() => openExternalUrl(github_url)} aria-label="View checks on GitHub">
               <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
             </button>
           {/if}
@@ -592,7 +595,7 @@
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="text-error"><circle cx="12" cy="12" r="10"/><path d="M15 9l-6 6M9 9l6 6"/></svg>
           <span class="text-fg-2 text-[12px]">Checks failing</span>
           {#if github_url}
-            <button type="button" class="ml-auto text-muted hover:text-fg-2" onclick={() => app.cmd("open_url_in_browser", { url: github_url })} aria-label="View checks on GitHub">
+            <button type="button" class="ml-auto text-muted hover:text-fg-2" onclick={() => openExternalUrl(github_url)} aria-label="View checks on GitHub">
               <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
             </button>
           {/if}

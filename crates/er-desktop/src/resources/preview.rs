@@ -53,12 +53,6 @@ pub fn diff_paths(
     Ok((0, Resource::DiffPaths(DiffPaths { paths })))
 }
 
-/// The registry's active tab, for the old preview commands' flag-on bodies.
-pub fn active(desktop: &DesktopState) -> Option<TabEntry> {
-    let tabs = desktop.service.app_registry().tabs_view();
-    tabs.active_entry().cloned()
-}
-
 pub fn document(
     desktop: &DesktopState,
     entry: &TabEntry,
@@ -116,8 +110,8 @@ pub fn image(
     unmoved(desktop, entry, keys, IMAGE_MOVED)?;
     Ok(ImagePreview {
         path: path.to_string(),
-        before: before.map(|b| crate::commands::image_data_url(mime, &b)),
-        after: after.map(|b| crate::commands::image_data_url(mime, &b)),
+        before: before.map(|b| crate::route_helpers::image_data_url(mime, &b)),
+        after: after.map(|b| crate::route_helpers::image_data_url(mime, &b)),
         preview_context_key: keys.preview_context_key.clone(),
         preview_key: keys.preview_key.clone(),
     })

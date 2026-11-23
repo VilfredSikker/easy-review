@@ -14,10 +14,11 @@ use er_protocol::{
 };
 use er_service::{pr_resource, pr_version, resolve_tab_key, TabEntry};
 
+use super::content_routes;
 use super::diff::{listed, published, Published};
 use super::tabs::Routed;
 use crate::app_owner::SidebarOwner;
-use crate::commands::{self, content_routes};
+use crate::route_helpers;
 use crate::service::actor_key;
 use crate::state::DesktopState;
 
@@ -49,13 +50,47 @@ pub fn published_version(desktop: &DesktopState, entry: &TabEntry) -> u64 {
 /// status for answers none at version 0 and starts one fetch in the
 /// background, which the push then brings.
 pub fn pr_status(desktop: &DesktopState, remote: &str, number: u64) -> (u64, Resource) {
-    let (version, status) = desktop.app_owner.pr_status(remote, number);
+    let (version, mut status) = desktop.app_owner.pr_status(remote, number);
     if status.status.is_none() {
         if let Some((owner, repo)) = remote.split_once('/') {
             kick_status(desktop, owner.to_string(), repo.to_string(), number);
         }
     }
+    let version = status_version(desktop, version);
+    status.fetching = fetching(desktop, remote, number);
     (version, Resource::PrStatus(Box::new(status)))
+}
+
+/// `pr_status`'s version: the owner's for the stored status, plus each start
+/// and end of a status fetch, which `fetching` follows.
+pub fn status_version(desktop: &DesktopState, stored: u64) -> u64 {
+    stored + desktop.status_fetch_clock.revision()
+}
+
+/// Whether a status fetch of `remote`'s PR `number` is running.
+fn fetching(desktop: &DesktopState, remote: &str, number: u64) -> bool {
+    let Some((owner, repo)) = remote.split_once('/') else {
+        return false;
+    };
+    let key = (owner.to_string(), repo.to_string(), number);
+    desktop
+        .gh_status_in_flight
+        .lock()
+        .is_ok_and(|in_flight| in_flight.contains(&key))
+}
+
+/// Every status a fetch has started for, as `pr_status` keys.
+pub fn fetched_keys(desktop: &DesktopState) -> Vec<ResourceKey> {
+    let Ok(fetched) = desktop.gh_status_fetched.lock() else {
+        return Vec::new();
+    };
+    fetched
+        .iter()
+        .map(|(owner, repo, number)| ResourceKey::PrStatus {
+            remote: format!("{owner}/{repo}"),
+            number: *number,
+        })
+        .collect()
 }
 
 /// The `(owner, repo, number)` whose status `key`'s card shows: the tab's own
@@ -66,7 +101,7 @@ pub fn status_key(desktop: &DesktopState, key: TabKey) -> Option<(String, String
     let entry = tabs.tabs.iter().find(|entry| entry.key == key)?;
     let content = desktop.service.content(entry.key, &entry.descriptor)?;
     let cache = desktop.pr_cache.lock().ok()?;
-    crate::snapshot::resolve_github_status_key_for(&content.tab.identity(), &cache)
+    crate::page_view::resolve_github_status_key_for(&content.tab.identity(), &cache)
 }
 
 /// [`status_key`] of the registry's active tab.
@@ -76,15 +111,7 @@ pub fn active_status_key(desktop: &DesktopState) -> Option<(String, String, u64)
 }
 
 fn kick_status(desktop: &DesktopState, owner: String, repo: String, number: u64) {
-    commands::kick_github_status_refresh(
-        desktop.gh_status_cache.clone(),
-        std::sync::Arc::clone(&desktop.gh_status_in_flight),
-        std::sync::Arc::clone(&desktop.desktop_revision),
-        Some(std::sync::Arc::clone(&desktop.loading)),
-        owner,
-        repo,
-        number,
-    );
+    route_helpers::kick_github_status_refresh(desktop, owner, repo, number);
 }
 
 /// Applies `command` when it is a PR card command.

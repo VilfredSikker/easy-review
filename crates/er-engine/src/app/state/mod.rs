@@ -2306,10 +2306,8 @@ impl TabState {
 
     /// Same as `enter_pr_diff`, but for a caller that has *just* populated
     /// `self.files`/`self.raw_diff`/`self.diff_hash` from the exact `gh pr diff`
-    /// output this entry would otherwise re-fetch — today only the desktop
-    /// cold-open path (`open_pr_review_impl` in `er-desktop/src/commands.rs`),
-    /// which builds the tab via `new_local_pr_from_github_diff` from a diff
-    /// fetched moments earlier in `load_pr_open_inputs`. Mirrors the trust
+    /// output this entry would otherwise re-fetch. The desktop's cold open was
+    /// the one caller, and it went with the desktop's App. Mirrors the trust
     /// `enter_pr_diff_preloaded` already places in a cache-hit diff — this is
     /// strictly weaker (it still does the first-entry ref fetch), so skipping
     /// just the trailing `refresh_diff()` is no less safe.

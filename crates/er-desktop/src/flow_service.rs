@@ -4,8 +4,6 @@
 //! the workspace actor that runs the flow. A run read takes the published view
 //! and the store and never waits on the actor (ADR 0067). The App is out of
 //! reach here: every function takes `DesktopState`.
-//!
-//! Only compiled with `v1-service`.
 
 use std::sync::atomic::Ordering;
 
@@ -147,7 +145,7 @@ pub fn run(
 ) -> Result<(), ErError> {
     let command = match control {
         Control::Start(scope) => {
-            let scope = crate::commands::resolve_review_scope_in(&scope, tab.content.tab.mode)
+            let scope = crate::route_helpers::resolve_review_scope_in(&scope, tab.content.tab.mode)
                 .map_err(failed)?;
             FlowCommand::Start {
                 context: context(desktop, tab, Some(&scope)),

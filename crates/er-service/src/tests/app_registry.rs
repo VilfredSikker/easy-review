@@ -301,7 +301,6 @@ fn the_tabs_record_has_one_writer() -> anyhow::Result<()> {
                     path,
                     &[
                         "er-engine/src/pr_open_cache.rs",
-                        "er-desktop/src/commands.rs",
                         "er-desktop/src/main.rs",
                         "er-service/src/app_registry.rs",
                     ]

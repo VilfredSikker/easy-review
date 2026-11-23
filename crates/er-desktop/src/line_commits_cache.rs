@@ -91,8 +91,8 @@ mod tests {
         ];
         for (name, source) in scanned {
             assert!(
-                !source.contains("crate::commands"),
-                "{name} imports crate::commands"
+                !source.contains("crate::route_helpers"),
+                "{name} imports crate::route_helpers"
             );
         }
         let cache = scanned[2].1;

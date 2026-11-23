@@ -8,8 +8,6 @@
 //! the context the ask captured: a tab that moved to another view, lost the
 //! focus or closed meanwhile still gets the answer in the bucket it asked
 //! from. Every function takes `DesktopState`, so no ask waits on the App.
-//!
-//! Only compiled with `v1-service`.
 
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -24,11 +22,12 @@ use er_service::{AnnotationTarget, Command, Reply, TabContent, TabContext};
 
 use crate::arena_service::ArenaTab;
 use crate::ask_context::{self, AnswerTarget, AskContext, AskTab};
-use crate::commands::{
-    card_action_prompt, card_model, card_progress, content_routes, now_ms, DEFAULT_ASK_AI_PROMPT,
+use crate::page_view::PendingAiReply;
+use crate::resources::content_routes;
+use crate::route_helpers::{
+    card_action_prompt, card_model, card_progress, now_ms, DEFAULT_ASK_AI_PROMPT,
     VALIDATE_CARD_AI_PROMPT,
 };
-use crate::snapshot::PendingAiReply;
 use crate::state::DesktopState;
 
 /// Asks about a thread with `prompt`, or with the thread kind's own prompt

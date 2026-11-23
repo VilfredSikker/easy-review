@@ -65,6 +65,8 @@ pub struct StackLayer {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct PrStatus {
     pub status: Option<GithubStatus>,
+    /// A fetch of this status is running.
+    pub fetching: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]

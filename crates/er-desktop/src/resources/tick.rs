@@ -7,9 +7,8 @@
 //! tab's worktrees for the sidebar's owner and has the owner publish, which is
 //! how writes the owner does not make reach its resources.
 //!
-//! It wakes on each desktop revision the watcher emits, as the duties did when
-//! every `er://revision` made the frontend poll, and on an interval as the
-//! floor; `follow_revisions` joins the two for the app.
+//! It wakes on each desktop revision the watcher settles on, and on an
+//! interval as the floor; `follow_revisions` joins the two for the app.
 
 use std::collections::BTreeSet;
 use std::sync::atomic::AtomicBool;
@@ -94,7 +93,7 @@ fn warm_target(desktop: &DesktopState) -> Option<(String, String)> {
 /// cache the snapshot reads, as the warm it replaces did.
 fn hold_worktrees(desktop: &DesktopState, root: &str, base: &str) {
     let (github, git) = (&*desktop.ports.github, &*desktop.ports.git);
-    let rows = crate::snapshot::build_worktrees(github, git, root, base, root);
+    let rows = crate::page_view::build_worktrees(github, git, root, base, root);
     let open: BTreeSet<String> = desktop
         .service
         .app_registry()

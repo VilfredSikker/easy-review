@@ -2,13 +2,21 @@ import type { PrRow } from "$lib/protocol/generated/PrRow";
 import type { Prs } from "$lib/protocol/generated/Prs";
 import type { ResourceKey } from "$lib/protocol/generated/ResourceKey";
 import type { PrInfo, ProjectSnapshot, TabSummary } from "$lib/pageTypes";
+import { JOBS } from "./annotationsAdapter";
+import type { ResourceStore } from "./resourceStore";
 
 /** Keyed by the exact `Project.remote` string the PR cache keys on, never normalised. */
 export function prsKey(remote: string): ResourceKey {
   return { kind: "prs", remote };
 }
 
-/** After this long the sidebar marks a remote's PR list stale (`snapshot.rs`, 10 min). */
+/** Whether a refresh of the sidebar's PR lists runs, as `jobs` holds it. */
+export function prListRefreshing(store: Pick<ResourceStore, "get">): boolean {
+  const held = store.get(JOBS)?.value;
+  return held?.kind === "jobs" && held.pr_list_refresh;
+}
+
+/** After this long the sidebar marks a remote's PR list stale (10 min). */
 export const PR_CACHE_TTL_MS = 10 * 60 * 1000;
 
 export function prInfo(row: PrRow): PrInfo {

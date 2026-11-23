@@ -1,4 +1,3 @@
-import { invoke } from "@tauri-apps/api/core";
 import { routePrefetches } from "$lib/prOpen";
 import { nameShownTab } from "$lib/tabCommands";
 import { app } from "./app.svelte";
@@ -18,7 +17,7 @@ export const tabsResource = new TabsAdapter({
 // other command keeps its path.
 nameShownTab(() => tabsResource.activeKey);
 app.routeCmds((command, args) => tabsResource.route(command, args));
-routePrefetches((command, args) => tabsResource.route(command, args) ?? invoke(command, args));
+routePrefetches((command, args) => tabsResource.route(command, args) ?? Promise.resolve());
 
 // The page's view starts from the tab strip, once it has arrived.
 pageView.readTabs(() => (tabsResource.loaded ? { tabs: tabsResource.tabs, active_tab: tabsResource.active } : null));

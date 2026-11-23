@@ -13,9 +13,9 @@ use er_protocol::{
 };
 use er_service::{resolve_tab_key, reviewed_resource, reviewed_version, wire_tab_key, TabEntry};
 
+use super::content_routes;
 use super::diff::{listed, published, Published};
 use super::tabs::Routed;
-use crate::commands::content_routes;
 use crate::state::DesktopState;
 
 /// `wire`'s marks at the version their sections were published at.

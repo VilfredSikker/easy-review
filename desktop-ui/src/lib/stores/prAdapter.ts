@@ -27,14 +27,14 @@ export interface HeldPrs {
   prs: Prs;
 }
 
-/** Trunk names a stack is based on, as `snapshot.rs`'s `TRUNK_BRANCHES`. */
+/** Trunk names a stack is based on, as the engine's `gh_stack.rs` lists them. */
 const TRUNK_BRANCHES = new Set(["main", "master", "develop", "dev"]);
 
 const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 
 /**
- * The PR whose status the tab's card shows, as `snapshot.rs`'s
- * `resolve_github_status_key` picks it: a remote PR names it; a local PR
+ * The PR whose status the tab's card shows, as `page_view.rs`'s
+ * `resolve_github_status_key_for` picks it: a remote PR names it; a local PR
  * keeps its own number and finds its remote in the lists; a branch tab takes
  * the PR whose head is the viewed branch, an open one first. `repoRemote`
  * limits the search to the tab's own repo when it is known.
@@ -68,8 +68,7 @@ export function statusTarget(
 }
 
 /**
- * Whether the open PRs put `branch` in a stack, as `snapshot.rs`'s
- * `branch_in_pr_stack` reads the PR cache: its PR is based on another open
+ * Whether the open PRs put `branch` in a stack, read from the PR cache: its PR is based on another open
  * PR's branch, or another open PR is based on it.
  */
 export function branchInPrStack(branch: string, restrict: string | null, held: readonly HeldPrs[]): boolean {
@@ -145,6 +144,13 @@ export class PrAdapter {
     const status = this.deps.store.get(prStatusKey(target))?.value;
     if (status?.kind === "pr_status") next.github = status.status as GithubStatusSnapshot | null;
     return next;
+  }
+
+  /** Whether the status the card shows for `branch` is being fetched. */
+  statusFetching(branch: string | null | undefined): boolean {
+    const target = this.target(branch);
+    const status = target === null ? undefined : this.deps.store.get(prStatusKey(target))?.value;
+    return status?.kind === "pr_status" && status.fetching;
   }
 
   route(command: string): Promise<void> | null {

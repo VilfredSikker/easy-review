@@ -1,6 +1,9 @@
 <script lang="ts">
   import { app } from "$lib/stores/app.svelte";
   import { pageView } from "$lib/stores/pageView.svelte";
+  import { JOBS } from "$lib/stores/annotationsAdapter";
+  import { prListRefreshing } from "$lib/stores/prsAdapter";
+  import { resources } from "$lib/stores/resourceStore";
   import { tabsResource } from "$lib/stores/tabsResource.svelte";
   import { commandPalette } from "$lib/stores/commandPalette.svelte";
   import { projectsResource, worktreesResource } from "$lib/stores/projectsResource.svelte";
@@ -48,7 +51,8 @@
   const theme = $derived(themeByName(sessionResource.theme));
   const worktrees = $derived(worktreesResource.worktrees);
   const projects = $derived<ProjectSnapshot[]>(projectsResource.projects);
-  const loadingPrList = $derived(snapshot?.bg_loading?.pr_list ?? false);
+  const loadingPrList = $derived(prListRefreshing(resources));
+  $effect(() => resources.show(JOBS));
   const activeTab = $derived(tabsResource.activeTab);
   // Counted per PR like the Inbox rows (and InboxPanel's badge), so the
   // collapsed rail's badge matches what a click lands on.

@@ -1,4 +1,3 @@
-import { invoke } from "@tauri-apps/api/core";
 import { error as logError, warn as logWarn, info as logInfo } from "@tauri-apps/plugin-log";
 import { untrack } from "svelte";
 import { diffPreview } from "./diffPreview.svelte";
@@ -110,7 +109,7 @@ function loadCommentVisibility(): CommentVisibility {
 
 /**
  * Sends a command through `er_send` or another store's path, or answers null
- * to leave it to `cmd`. The stores that route hand their routes in; this
+ * when it does not take the command. The stores that route hand their routes in; this
  * module does not import them.
  */
 export type CmdRoute = (command: string, args: Record<string, unknown> | undefined) => Promise<void> | null;
@@ -367,8 +366,9 @@ class AppStore {
   }
 
   /**
-   * Sends a command through the first route that takes it, or else invokes
-   * it. What the command changed reaches the page through the resources.
+   * Sends a command through the first route that takes it; a command no
+   * route takes is an error. What the command changed reaches the page
+   * through the resources.
    */
   async cmd(
     command: string,
@@ -376,7 +376,9 @@ class AppStore {
     options: { throwOnError?: boolean } = {},
   ): Promise<void> {
     try {
-      await (this.routed(command, args) ?? invoke(command, args));
+      const routed = this.routed(command, args);
+      if (routed === null) throw new Error(`no route for ${command}`);
+      await routed;
     } catch (e) {
       this.reportCmdError(command, e);
       this.throwCmdErrorIfRequested(e, options);

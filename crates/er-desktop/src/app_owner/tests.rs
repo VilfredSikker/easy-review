@@ -4,8 +4,8 @@ use std::sync::{Arc, Mutex};
 use er_protocol::{ResourceChanged, ResourceKey, ResourceVersion};
 
 use super::{AppOwner, SidebarOwner};
+use crate::page_view::PrInfo;
 use crate::projects::{self, ProjectRecord, ProjectsFile};
-use crate::snapshot::PrInfo;
 
 fn project(id: &str, root: &str, remote: Option<&str>) -> ProjectRecord {
     ProjectRecord {
@@ -255,7 +255,7 @@ fn the_projects_record_and_the_metadata_cache_each_have_one_writer() {
                 );
             }
         }
-        if path != "src/app_owner.rs" && path != "src/snapshot.rs" {
+        if path != "src/app_owner.rs" && path != "src/page_view.rs" {
             assert!(
                 !text.contains("refresh_meta_cache"),
                 "{path} writes the metadata cache"
@@ -347,7 +347,7 @@ fn the_owner_keeps_the_worktrees_of_open_roots_only() {
     in_storage(|| {
         let owner = owner();
         let list = |path: &str| {
-            super::worktree_rows(vec![crate::snapshot::WorktreeSnapshot {
+            super::worktree_rows(vec![crate::page_view::WorktreeSnapshot {
                 path: path.into(),
                 branch: "main".into(),
                 is_current: true,
@@ -431,22 +431,18 @@ fn the_owner_never_names_the_app() {
         "AppState",
         "er_engine::app",
         "Mutex<App>",
-        "crate::commands",
+        "crate::route_helpers",
     ] {
         assert!(!text.contains(name), "app_owner.rs names {name}");
     }
 }
 
-/// On the flag the App holds only its startup tab, so the registry's tabs register projects.
+/// The registry's tabs register projects at startup.
 #[test]
-fn main_registers_projects_from_the_registry_on_the_flag_path() {
+fn main_registers_projects_from_the_registry() {
     let main = production_source("src/main.rs");
-    let gate = "(not(feature = \"v1-service\"))]\n    {\n        projects::";
-    let (_, block) = main.split_once(gate).expect("sync gated off the flag");
-    let block = block.split("\n    }\n").next().unwrap();
     for call in ["sync_projects_from_tabs", "auto_register("] {
-        let once = main.matches(call).count() == 1;
-        assert!(once && block.contains(call), "{call}");
+        assert!(!main.contains(call), "{call}");
     }
     assert!(main.contains("startup::register_open_projects(&state)"));
     assert!(main.contains("startup::meta_refresh_interval(&meta_state)"));

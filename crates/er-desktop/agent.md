@@ -20,8 +20,9 @@ Transport decisions live in the ADRs. Read them instead of a summary here:
 
 The wire types live in `er-protocol`, and `ts-rs` writes their TypeScript;
 `just protocol-check` fails when the generated files drift. A type er-desktop sends
-over IPC outside `er-protocol` has no such check, so a changed field is invisible
-until runtime.
+over IPC outside `er-protocol`, such as those in `src/page_view.rs` that
+`desktop-ui/src/lib/pageTypes.ts` mirrors by hand, has no such check, so a changed
+field is invisible until runtime.
 
 ## Traps
 

@@ -51,7 +51,6 @@ function minimalSnapshot(overrides: Partial<AppSnapshot>): AppSnapshot {
     notification: null,
     tabs: [],
     active_tab: 0,
-    bg_loading: { pr_list: false, gh_status: false, gh_comments: false },
     ...overrides,
   };
 }

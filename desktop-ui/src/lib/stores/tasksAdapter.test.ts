@@ -1,10 +1,9 @@
 import { describe, expect, it } from "bun:test";
-import type { Invoke } from "$lib/protocol/client";
 import type { Ack } from "$lib/protocol/generated/Ack";
 import type { Command } from "$lib/protocol/generated/Command";
 import type { Resource } from "$lib/protocol/generated/Resource";
 import type { ResourceKey } from "$lib/protocol/generated/ResourceKey";
-import type { AppSnapshot, BackgroundTaskSnapshot } from "$lib/pageTypes";
+import type { AppSnapshot } from "$lib/pageTypes";
 import { JOBS } from "./annotationsAdapter";
 import { runCommand, TasksAdapter, type Every } from "./tasksAdapter";
 
@@ -25,28 +24,22 @@ const TASK = {
   started_at_ms: 1,
   finished_at_ms: null,
 };
-const HELD: Resource = { kind: "jobs", ai_replies: [], arena_runs: [], review_flows: [], tasks: [TASK], triage: [] };
-const APP_TASK = { ...TASK, id: "triage:9", kind: "triage" } as BackgroundTaskSnapshot;
+const HELD: Resource = { kind: "jobs", ai_replies: [], arena_runs: [], review_flows: [], tasks: [TASK], triage: [], pr_list_refresh: false };
 
 function adapter(
   logs = new Map<string, { command_name: string; source: string; text: string }[]>(),
   held: Resource = HELD,
+  activeKey: number | null = TAB,
 ) {
   const sent: Command[] = [];
   const toasts: string[] = [];
   const fetched: ResourceKey[] = [];
-  const invoked: string[] = [];
   const awaited: string[] = [];
-  const invoke: Invoke = async <T,>(command: string) => {
-    invoked.push(command);
-    return [{ command_name: "triage", source: "stdout", text: "app" }] as T;
-  };
   // A toast the adapter could reach, as the start toast it once showed did.
   const shown = { toast: (message: string) => toasts.push(message) };
   const tasks = new TasksAdapter({
     ...shown,
-    activeKey: () => TAB,
-    invoke,
+    activeKey: () => activeKey,
     logs,
     store: {
       get: (key: ResourceKey) => (key.kind === JOBS.kind ? { key, version: 2, value: held } : undefined) as never,
@@ -66,29 +59,40 @@ function adapter(
       },
     },
   });
-  return { tasks, sent, fetched, invoked, awaited, logs, toasts };
+  return { tasks, sent, fetched, awaited, logs, toasts };
 }
 
 describe("TasksAdapter", () => {
-  it("lists the host's tasks from jobs after the App's", () => {
-    const raw = { background_tasks: [APP_TASK] } as unknown as AppSnapshot;
-    expect(adapter().tasks.overlay(raw).background_tasks?.map((t) => t.id)).toEqual(["triage:9", "review:1"]);
+  it("lists the tasks jobs holds and nothing the view carried", () => {
+    const raw = { background_tasks: [{ ...TASK, id: "triage:9" }] } as unknown as AppSnapshot;
+    expect(adapter().tasks.overlay(raw).background_tasks?.map((t) => t.id)).toEqual(["review:1"]);
   });
 
-  it("stops a host task through er_send and leaves the App's to its command", async () => {
+  it("stops any task through er_send, listed in jobs or not", async () => {
     const { tasks, sent, awaited } = adapter();
     await tasks.route("cancel_running_review", { id: "review:1" });
-    expect(sent).toEqual([{ kind: "cancel_running_task", id: "review:1" }]);
-    expect(awaited).toEqual(["jobs@3"]);
-    expect(tasks.route("cancel_queued_review", { id: "triage:9" })).toBeNull();
+    await tasks.route("cancel_queued_review", { id: "triage:9" });
+    expect(sent).toEqual([
+      { kind: "cancel_running_task", id: "review:1" },
+      { kind: "cancel_queued_task", id: "triage:9" },
+    ]);
+    expect(awaited).toEqual(["jobs@3", "jobs@3"]);
   });
 
-  it("reads a host task's log through task_log and an App task's through its command", async () => {
-    const { tasks, fetched, invoked } = adapter();
-    expect((await tasks.log("review:1")).map((l) => l.text)).toEqual(["host"]);
-    expect(fetched).toEqual([{ kind: "task_log", id: "review:1" }]);
-    expect((await tasks.log("triage:9")).map((l) => l.text)).toEqual(["app"]);
-    expect(invoked).toEqual(["get_background_task_log"]);
+  it("reads any task's log through task_log", async () => {
+    const { tasks, fetched } = adapter();
+    expect((await tasks.log("triage:9")).map((l) => l.text)).toEqual(["host"]);
+    expect(fetched).toEqual([{ kind: "task_log", id: "triage:9" }]);
+  });
+
+  it("refuses a run on a tab while no tab is open, and still sends a sidebar triage", async () => {
+    const { tasks, sent } = adapter(undefined, HELD, null);
+    await expect(tasks.route("run_ai_review", { scope: "branch" }) ?? Promise.resolve()).rejects.toThrow(
+      "no tab is open",
+    );
+    await tasks.route("run_pr_triage", { projectId: "p", prNumber: 7 });
+    expect(sent).toEqual([{ kind: "run_pr_triage", projectId: "p", prNumber: 7 }]);
+    expect(tasks.route("refresh_diff", {})).toBeNull();
   });
 
   it("sends a run through er_send keyed to the active tab and waits for jobs", async () => {
@@ -168,21 +172,20 @@ describe("TasksAdapter", () => {
     expect(toasts).toEqual([]);
   });
 
-  it("reads an App task's log no sooner than before, and a host task's once on open", async () => {
+  it("reads a task's log once on open, and every second while it runs", async () => {
     const ticks: (() => void)[] = [];
     const tick: Every = (fn) => {
       ticks.push(fn);
       return () => {};
     };
     const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
-    const appTask = adapter();
-    appTask.tasks.follow("triage:9", false, () => {}, tick)();
-    appTask.tasks.follow("triage:9", true, () => {}, tick);
+    const live = adapter();
+    live.tasks.follow("review:1", true, () => {}, tick);
     await settle();
-    expect(appTask.invoked).toEqual([]);
+    expect(live.fetched).toHaveLength(1);
     ticks[0]();
     await settle();
-    expect(appTask.invoked).toEqual(["get_background_task_log"]);
+    expect(live.fetched).toHaveLength(2);
 
     const hostTask = adapter();
     const shown: string[] = [];

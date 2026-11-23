@@ -12,8 +12,9 @@ use er_protocol::{
 };
 use er_service::{resolve_tab_key, Reply, ReviewEvent, WorkspaceError};
 
+use super::content_routes;
 use super::tabs::Routed;
-use crate::commands::{self, content_routes};
+use crate::route_helpers;
 use crate::service::actor_key;
 use crate::state::DesktopState;
 
@@ -180,7 +181,7 @@ fn post_line_comment(
     target: ReviewLine,
     body: &str,
 ) -> Result<Ack, ErError> {
-    let body = commands::review_comment_body(body).map_err(refused)?;
+    let body = route_helpers::review_comment_body(body).map_err(refused)?;
     let target = line(target);
     let (reply, _) = send(desktop, wire, |context| {
         er_service::Command::PostGithubLineComment {
@@ -215,7 +216,7 @@ fn submit_decision(
             summary,
         }
     })
-    .map_err(|sent| worded(sent, commands::review_write_message))?;
+    .map_err(|sent| worded(sent, route_helpers::review_write_message))?;
     posted(desktop, reply)
 }
 
@@ -225,7 +226,7 @@ fn add_pending(
     target: ReviewLine,
     body: &str,
 ) -> Result<Ack, ErError> {
-    let body = commands::review_comment_body(body).map_err(refused)?;
+    let body = route_helpers::review_comment_body(body).map_err(refused)?;
     let target = line(target);
     let (reply, _) = send(desktop, wire, |context| {
         er_service::Command::AddPendingReviewComment {
@@ -234,10 +235,10 @@ fn add_pending(
             body,
         }
     })
-    .map_err(|sent| worded(sent, commands::review_write_message))?;
+    .map_err(|sent| worded(sent, route_helpers::review_write_message))?;
     match reply {
         Reply::PendingReview { pr, .. } => {
-            commands::after_github_write(desktop, pr.owner, pr.repo, pr.number);
+            route_helpers::after_github_write(desktop, pr.owner, pr.repo, pr.number);
             Ok(Ack::default())
         }
         other => Err(unexpected(&other)),
@@ -258,7 +259,7 @@ fn submit_pending(
             summary,
         }
     })
-    .map_err(|sent| worded(sent, commands::review_write_message))?;
+    .map_err(|sent| worded(sent, route_helpers::review_write_message))?;
     posted(desktop, reply)
 }
 
@@ -267,7 +268,7 @@ fn submit_pending(
 fn posted(desktop: &DesktopState, reply: Reply) -> Result<Ack, ErError> {
     match reply {
         Reply::CommentPosted { pr } | Reply::ReviewSubmitted { pr } => {
-            commands::after_github_write(desktop, pr.owner, pr.repo, pr.number);
+            route_helpers::after_github_write(desktop, pr.owner, pr.repo, pr.number);
             Ok(Ack::default())
         }
         other => Err(unexpected(&other)),
