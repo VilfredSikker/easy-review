@@ -252,7 +252,8 @@ pub fn settings_command(command: wire::Command) -> Result<SettingsCommand, Box<w
         | wire::Command::ArenaAcceptFindings { .. }
         | wire::Command::ArenaDelete { .. }
         | wire::Command::ArenaCancel { .. }
-        | wire::Command::ArenaOverride { .. }) => return Err(Box::new(other)),
+        | wire::Command::ArenaOverride { .. }
+        | wire::Command::ReviewFlow { .. }) => return Err(Box::new(other)),
     })
 }
 

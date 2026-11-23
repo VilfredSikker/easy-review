@@ -113,6 +113,13 @@ pub enum ResourceKey {
     /// One run, looked up from a tab's buckets, read on each fetch and never
     /// pushed.
     ArenaRun { tab: TabKey, run_id: String },
+    /// A review flow's run, read from the bucket the flow captured on the
+    /// actor that runs it, on each fetch and never pushed.
+    ReviewFlowRun {
+        tab: TabKey,
+        er_dir: String,
+        run_id: String,
+    },
 }
 
 /// One resource's content, tagged with the kind of key it answers.
@@ -147,6 +154,7 @@ pub enum Resource {
     ArenaEstimate(ArenaEstimate),
     ArenaRuns(ArenaRuns),
     ArenaRun(ArenaRun),
+    ReviewFlowRun(ArenaRun),
 }
 
 /// The open tabs in strip order, and the active one.

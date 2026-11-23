@@ -87,6 +87,11 @@ pub fn fetch(desktop: &DesktopState, key: ResourceKey) -> Result<Versioned<Resou
         ResourceKey::ArenaEstimate { tab, plan } => super::arena::estimate(desktop, *tab, plan)?,
         ResourceKey::ArenaRuns { tab } => super::arena::runs(desktop, *tab)?,
         ResourceKey::ArenaRun { tab, run_id } => super::arena::run(desktop, *tab, run_id)?,
+        ResourceKey::ReviewFlowRun {
+            tab,
+            er_dir,
+            run_id,
+        } => super::flows::run(desktop, *tab, er_dir, run_id)?,
     };
     Ok(Versioned {
         key,
@@ -124,7 +129,8 @@ pub fn version(desktop: &DesktopState, key: ResourceKey) -> Result<ResourceVersi
         | ResourceKey::AnnotationScreenshot { .. }
         | ResourceKey::ArenaEstimate { .. }
         | ResourceKey::ArenaRuns { .. }
-        | ResourceKey::ArenaRun { .. } => 0,
+        | ResourceKey::ArenaRun { .. }
+        | ResourceKey::ReviewFlowRun { .. } => 0,
         ResourceKey::Prs { remote } => sidebar(desktop).prs(remote).0,
         ResourceKey::Worktrees { root } => sidebar(desktop).worktrees(root).0,
         ResourceKey::Inbox => sidebar(desktop).inbox().0,
@@ -340,7 +346,8 @@ pub fn send(desktop: &DesktopState, command: Command) -> Result<Ack, ErError> {
         | Command::ArenaAcceptFindings { .. }
         | Command::ArenaDelete { .. }
         | Command::ArenaCancel { .. }
-        | Command::ArenaOverride { .. }) => {
+        | Command::ArenaOverride { .. }
+        | Command::ReviewFlow { .. }) => {
             return Err(ErError {
                 kind: ErErrorKind::Internal,
                 message: format!("not a sidebar command: {other:?}"),

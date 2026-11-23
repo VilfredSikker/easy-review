@@ -11,6 +11,7 @@ import type { Panel } from "./Panel";
 import type { PrOpenHint } from "./PrOpenHint";
 import type { ProjectReviewSettingsPatch } from "./ProjectReviewSettingsPatch";
 import type { ProviderUpsert } from "./ProviderUpsert";
+import type { ReviewFlowAction } from "./ReviewFlowAction";
 import type { ReviewModelGroups } from "./ReviewModelGroups";
 import type { TabKey } from "./TabKey";
 import type { UninstallOptions } from "./UninstallOptions";
@@ -22,4 +23,4 @@ export type Command = { "kind": "reload_settings" } | { "kind": "apply_config_pa
 /**
  * None runs at the saved selection's effort.
  */
-effort: string | null, } | { "kind": "arena_validate_findings", tab: TabKey, } | { "kind": "arena_accept_findings", tab: TabKey, runId: string, findingIds: Array<string> | null, } | { "kind": "arena_delete", tab: TabKey, runId: string, } | { "kind": "arena_cancel", tab: TabKey, runId: string, } | { "kind": "arena_override", tab: TabKey, runId: string, findingId: string, verdict: string, note: string, };
+effort: string | null, } | { "kind": "arena_validate_findings", tab: TabKey, } | { "kind": "arena_accept_findings", tab: TabKey, runId: string, findingIds: Array<string> | null, } | { "kind": "arena_delete", tab: TabKey, runId: string, } | { "kind": "arena_cancel", tab: TabKey, runId: string, } | { "kind": "arena_override", tab: TabKey, runId: string, findingId: string, verdict: string, note: string, } | { "kind": "review_flow", tab: TabKey, erDir: string, action: ReviewFlowAction, };
