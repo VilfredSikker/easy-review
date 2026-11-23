@@ -1,4 +1,4 @@
-import type { AiSnapshot, Confidence, FlatFinding, ThreadSnapshot } from "$lib/types";
+import type { AiSnapshot, Confidence, FlatFinding, ThreadSnapshot } from "$lib/pageTypes";
 import { findingAgentLabels } from "$lib/aiReviewAgents";
 import { mergeFindingReplies } from "$lib/findingReplies";
 import { findingsPanelView, type FindingsPanelView } from "$lib/components/rpanel/findingsPanel";

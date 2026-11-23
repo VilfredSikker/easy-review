@@ -5,7 +5,7 @@
   import { arena } from "$lib/stores/arena.svelte";
   import { activeJobCount, aggregateJobs, jobsForTab } from "$lib/runningJobs";
   import { arenaRunsAcrossTabs, tabRowModel } from "$lib/tabStripModel";
-  import type { TabSummary } from "$lib/types";
+  import type { TabSummary } from "$lib/pageTypes";
   import { destIndexAfterRemove, dropSlot } from "$lib/listReorder";
   import { startWindowDrag } from "$lib/windowDrag";
   import { layoutPanels } from "$lib/stores/layoutPanels.svelte";

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { GhCommentSummary, GhReviewSummary, GhReviewerSummary, ThreadSnapshot } from "$lib/types";
+  import type { GhCommentSummary, GhReviewSummary, GhReviewerSummary, ThreadSnapshot } from "$lib/pageTypes";
   import { app } from "$lib/stores/app.svelte";
   import { navigateToThread } from "$lib/dom";
   import { rightRail } from "$lib/stores/rightRail.svelte";

@@ -3,7 +3,7 @@ import type {
   AgentCommandStatus,
   BackgroundTaskSnapshot,
   TabSummary,
-} from "./types";
+} from "./pageTypes";
 
 /** How long a finished job stays listed so the pill can show "done" before it
  *  disappears; matches the prototype. */

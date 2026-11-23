@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { arenaRunsAcrossTabs, tabRowModel } from "./tabStripModel";
-import type { TabSummary } from "./types";
+import type { TabSummary } from "./pageTypes";
 import type { ArenaRunSummary } from "./types/arena";
 
 const tab = (p: Partial<TabSummary>): TabSummary => ({

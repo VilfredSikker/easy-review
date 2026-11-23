@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { readFileSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { AiProviderInfo, ConfigHubField, ProjectSnapshot } from "$lib/types";
+import type { AiProviderInfo, ConfigHubField, ProjectSnapshot } from "$lib/pageTypes";
 import type { RiskRuleRow } from "./riskRules";
 import { AI_ROWS, GENERAL_ROWS, PROJECT_ROWS, buildSearchIndex, tabMatchCounts, type SearchInputs } from "./settingsSearch";
 

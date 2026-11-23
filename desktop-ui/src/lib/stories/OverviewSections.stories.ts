@@ -3,7 +3,7 @@ import OverviewFindings from "$lib/components/overview/OverviewFindings.svelte";
 import OverviewTour from "$lib/components/overview/OverviewTour.svelte";
 import OverviewActivity from "$lib/components/overview/OverviewActivity.svelte";
 import EmptyBucket from "$lib/components/overview/EmptyBucket.svelte";
-import type { AiSnapshot, TourSnapshot } from "$lib/types";
+import type { AiSnapshot, TourSnapshot } from "$lib/pageTypes";
 import {
   aiEmpty,
   aiWithFindings,

@@ -3,7 +3,7 @@ import type { CrossFileModel } from "./diffRenderModel";
 import { documentBlocks, type DocumentBlock } from "./documentPreview";
 import { sideBlockSpans, type SideBlockSpan } from "./documentSideLayout";
 import { diffPreview } from "./stores/diffPreview.svelte";
-import type { AppSnapshot, FileSnapshot } from "./types";
+import type { AppSnapshot, FileSnapshot } from "./pageTypes";
 
 interface SideViewSource {
   snapshot: AppSnapshot | null;

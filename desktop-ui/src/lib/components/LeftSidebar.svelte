@@ -6,7 +6,7 @@
   import { inboxResource } from "$lib/stores/inboxResource.svelte";
   import AppMark from "$lib/components/AppMark.svelte";
   import InboxPanel from "$lib/components/InboxPanel.svelte";
-  import type { BackgroundTaskSnapshot, ProjectSnapshot, PrInfo } from "$lib/types";
+  import type { BackgroundTaskSnapshot, ProjectSnapshot, PrInfo } from "$lib/pageTypes";
   import { invoke } from "@tauri-apps/api/core";
   import {
     buildPrHint,

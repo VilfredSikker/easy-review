@@ -11,7 +11,7 @@
   import { openAiReviewFilesModal } from "$lib/components/AiReviewFilesModal.svelte";
   import { openProfessorFocusModal } from "$lib/components/ProfessorFocusModal.svelte";
   import ReviewerPickerList from "$lib/components/ReviewerPickerList.svelte";
-  import type { AiModelInfo, AiProviderInfo, AppSnapshot } from "$lib/types";
+  import type { AiModelInfo, AiProviderInfo, AppSnapshot } from "$lib/pageTypes";
   import type { ReviewScope } from "$lib/reviewScope";
   import {
     effortChoicesForModel,

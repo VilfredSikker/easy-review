@@ -1,6 +1,6 @@
 import { splitRows } from "$lib/splitRows";
 import { lineTotalCols, wrappedLineCount } from "$lib/lineWrap";
-import type { FileKind, FileSnapshot, FlatFinding, HunkSnapshot, LineSnapshot, ThreadSnapshot } from "$lib/types";
+import type { FileKind, FileSnapshot, FlatFinding, HunkSnapshot, LineSnapshot, ThreadSnapshot } from "$lib/pageTypes";
 import { imagePreviewKey, isImagePreview } from "$lib/imagePreview";
 import type { PillarHeaderSpec } from "$lib/tourModel";
 import type { SplitRow } from "$lib/splitRows";

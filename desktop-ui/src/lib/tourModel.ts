@@ -3,7 +3,7 @@
 
 import { parseMarkdown, renderInline } from "./markdown";
 import { filesByPillar } from "./pillarFiles";
-import type { FileSnapshot, PillarSnapshot } from "./types";
+import type { FileSnapshot, PillarSnapshot } from "./pageTypes";
 
 /** What the render model needs to place one pillar-header row. */
 export interface PillarHeaderSpec {

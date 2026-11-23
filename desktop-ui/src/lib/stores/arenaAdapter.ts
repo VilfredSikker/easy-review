@@ -7,7 +7,7 @@ import type { Resource } from "$lib/protocol/generated/Resource";
 import type { ResourceKey } from "$lib/protocol/generated/ResourceKey";
 import type { TabKey } from "$lib/protocol/generated/TabKey";
 import type { Invoke, ResourceClient } from "$lib/protocol/client";
-import type { AppSnapshot } from "$lib/types";
+import type { AppSnapshot } from "$lib/pageTypes";
 import type {
   ArenaEstimate,
   ArenaProgressState,

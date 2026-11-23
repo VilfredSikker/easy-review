@@ -1,5 +1,5 @@
 import { detectedPrNumber, sidebarProjects } from "./sidebarReads";
-import type { AppSnapshot, PrInfo, ProjectSnapshot } from "./types";
+import type { AppSnapshot, PrInfo, ProjectSnapshot } from "./pageTypes";
 
 function firstNonEmpty(...vals: Array<string | null | undefined>): string {
   for (const v of vals) {

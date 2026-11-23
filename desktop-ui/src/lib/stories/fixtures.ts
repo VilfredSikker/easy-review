@@ -19,7 +19,7 @@ import type {
   TriageSnapshot,
   WorktreeSnapshot,
   ReviewFlowSnapshot,
-} from "$lib/types";
+} from "$lib/pageTypes";
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 

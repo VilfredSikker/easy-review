@@ -3,7 +3,7 @@
    *  edge doubles as a file map for a long diff. */
   import RulerBase from "./RulerBase.svelte";
   import { fileMapGroups, type RulerFilter } from "$lib/rulerGeometry";
-  import type { FileSnapshot } from "$lib/types";
+  import type { FileSnapshot } from "$lib/pageTypes";
 
   interface Props {
     files: readonly FileSnapshot[];

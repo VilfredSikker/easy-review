@@ -1,4 +1,4 @@
-import type { AppSnapshot } from "./types";
+import type { AppSnapshot } from "./pageTypes";
 
 /**
  * Stable key for the once-per-PR GitHub comment auto-pull.

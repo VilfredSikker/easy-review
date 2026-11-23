@@ -4,7 +4,7 @@ import { app } from "$lib/stores/app.svelte";
 import { diffNav } from "$lib/stores/diffNav.svelte";
 import { reviewPage } from "$lib/stores/reviewPage.svelte";
 import { openSource as openFile } from "$lib/tabCommands";
-import type { FileSnapshot } from "$lib/types";
+import type { FileSnapshot } from "$lib/pageTypes";
 
 /** ⌘-click (Ctrl-click off macOS) asks for the source rather than the diff,
  *  as the branch bar's links did before the top bar replaced it. */

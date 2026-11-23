@@ -40,7 +40,7 @@ import {
   tabSnapshotCacheKey,
   tabSnapshotCacheKeyFromTab,
 } from "../tabSnapshotCache";
-import type { AppSnapshot, NotificationSnapshot, PollResponse, SettingsTab } from "../types";
+import type { AppSnapshot, NotificationSnapshot, PollResponse, SettingsTab } from "../pageTypes";
 import { resolveSettingsTarget, type SettingsSectionId, type SettingsTarget } from "../settingsLink";
 import { syncToastMessage, type SyncReply } from "../syncToast";
 import { aiReviewFilter } from "./aiReviewFilter.svelte";

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { AiSnapshot, DiagramSnapshot } from "$lib/types";
+  import type { AiSnapshot, DiagramSnapshot } from "$lib/pageTypes";
   import { app } from "$lib/stores/app.svelte";
   import { copyToClipboard } from "$lib/clipboard";
   import Card from "./ui/Card.svelte";

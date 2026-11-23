@@ -1,6 +1,6 @@
 import type { Meta, StoryObj } from "@storybook/svelte";
 import ReviewModelGroupsEditor from "$lib/components/settings/ReviewModelGroupsEditor.svelte";
-import type { AiProviderInfo, ReviewModelGroups } from "$lib/types";
+import type { AiProviderInfo, ReviewModelGroups } from "$lib/pageTypes";
 
 const model = (id: string, label: string) => ({
   id, label, is_selected: false, effort_levels: [],

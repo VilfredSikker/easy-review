@@ -31,7 +31,7 @@ describe("inbox source scans", () => {
   // be counted anywhere either. It stays a text scan: a count spread over
   // several statements could still pass.
   const READ_STATE = [
-    join("lib", "types.ts"), // declares the snapshot field
+    join("lib", "pageTypes.ts"), // declares the snapshot field
     ADAPTER, // maps the wire's readAtMs to it
     OPTIMISTIC, // the flag-off paint
     join("lib", "inboxThreads.ts"), // a thread's unread ids

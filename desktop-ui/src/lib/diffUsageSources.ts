@@ -1,6 +1,6 @@
 import type { CrossFileModel } from "./diffRenderModel";
 import type { UsageSource } from "./referenceUsages";
-import type { FileSnapshot, LineSnapshot } from "./types";
+import type { FileSnapshot, LineSnapshot } from "./pageTypes";
 
 function sourceKey(path: string, hunkIdx: number, line: LineSnapshot): string {
   return JSON.stringify([path, hunkIdx, line.kind, line.old_num, line.new_num]);

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { AI_ADVANCED_GROUP, AI_GROUP_ORDER, AI_MENU_ACTION_ORDER, REVIEW_FLOW_ACTION_ID, canRunAdvancedFollowUp, reviewFlowControls, reviewFlowEstimate, reviewFlowProgressView, reviewFlowStage } from "./reviewFlow";
-import type { ReviewFlowSnapshot, ReviewFlowTaskProgress } from "./types";
+import type { ReviewFlowSnapshot, ReviewFlowTaskProgress } from "./pageTypes";
 
 const flow = (state: ReviewFlowSnapshot["state"], extra: Partial<ReviewFlowSnapshot> = {}): ReviewFlowSnapshot => ({
   state,

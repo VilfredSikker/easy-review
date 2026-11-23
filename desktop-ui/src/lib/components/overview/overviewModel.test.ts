@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import type { AppSnapshot, BackgroundTaskSnapshot, CheckSummary, ThreadSnapshot, TourSnapshot } from "$lib/types";
+import type { AppSnapshot, BackgroundTaskSnapshot, CheckSummary, ThreadSnapshot, TourSnapshot } from "$lib/pageTypes";
 import { githubStatusOpen, richSnapshot, tabsWorkingActive } from "$lib/stories/fixtures";
 import {
   asideFileGroups,

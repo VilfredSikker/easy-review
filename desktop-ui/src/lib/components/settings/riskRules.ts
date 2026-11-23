@@ -3,7 +3,7 @@
  * (ADR 0048). The rows are the shared `get_risk_rules`/`get_risk_files` types.
  */
 
-import type { RiskFileSnapshot, RiskRuleSnapshot, RiskRuleSource, RiskTier } from "$lib/types";
+import type { RiskFileSnapshot, RiskRuleSnapshot, RiskRuleSource, RiskTier } from "$lib/pageTypes";
 
 export type { RiskRuleSource, RiskTier };
 export type RiskRuleRow = RiskRuleSnapshot;

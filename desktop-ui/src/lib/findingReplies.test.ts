@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { mergeFindingReplies } from "./findingReplies";
-import type { FindingResponseSnapshot, FlatFinding, ThreadMessage, ThreadSnapshot } from "./types";
+import type { FindingResponseSnapshot, FlatFinding, ThreadMessage, ThreadSnapshot } from "./pageTypes";
 
 function response(over: Partial<FindingResponseSnapshot>): FindingResponseSnapshot {
   return {

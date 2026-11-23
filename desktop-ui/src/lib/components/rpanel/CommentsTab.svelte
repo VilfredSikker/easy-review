@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { AiSnapshot } from "$lib/types";
+  import type { AiSnapshot } from "$lib/pageTypes";
   import { app } from "$lib/stores/app.svelte";
   import { commentThreadsFromDiff, hiddenGithubHint } from "$lib/commentVisibility";
   import { navigateToThread } from "$lib/dom";

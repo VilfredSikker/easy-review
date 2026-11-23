@@ -1,5 +1,5 @@
 import { detectedPrNumber, sidebarProjects, sidebarWorktrees } from "./sidebarReads";
-import type { AppSnapshot, GithubStatusSnapshot, TabSummary } from "./types";
+import type { AppSnapshot, GithubStatusSnapshot, TabSummary } from "./pageTypes";
 
 /** Parse `owner/repo` from a GitHub git remote URL (HTTPS or SSH). */
 export function parseGithubSlug(remote: string): string | null {

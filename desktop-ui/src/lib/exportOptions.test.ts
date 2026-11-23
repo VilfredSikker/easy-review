@@ -12,7 +12,7 @@ import {
   visibleItems,
   type ExportPrefs,
 } from "./exportOptions";
-import type { AiSnapshot, AppSnapshot, FlatFinding, ThreadSnapshot } from "./types";
+import type { AiSnapshot, AppSnapshot, FlatFinding, ThreadSnapshot } from "./pageTypes";
 
 function thread(id: string, kind: ThreadSnapshot["kind"], resolved = false): ThreadSnapshot {
   return {

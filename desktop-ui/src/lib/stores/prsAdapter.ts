@@ -1,7 +1,7 @@
 import type { PrRow } from "$lib/protocol/generated/PrRow";
 import type { Prs } from "$lib/protocol/generated/Prs";
 import type { ResourceKey } from "$lib/protocol/generated/ResourceKey";
-import type { PrInfo, ProjectSnapshot, TabSummary } from "$lib/types";
+import type { PrInfo, ProjectSnapshot, TabSummary } from "$lib/pageTypes";
 
 /** Keyed by the exact `Project.remote` string the PR cache keys on, never normalised. */
 export function prsKey(remote: string): ResourceKey {

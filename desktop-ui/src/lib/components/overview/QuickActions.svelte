@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { AppSnapshot } from "$lib/types";
+  import type { AppSnapshot } from "$lib/pageTypes";
   import { app } from "$lib/stores/app.svelte";
   import { tabsResource } from "$lib/stores/tabsResource.svelte";
   import { sessionResource } from "$lib/stores/sessionResource.svelte";

@@ -1,4 +1,4 @@
-import type { Confidence } from "$lib/types";
+import type { Confidence } from "$lib/pageTypes";
 
 // View state for findings the reader has filtered out of the diff.
 //

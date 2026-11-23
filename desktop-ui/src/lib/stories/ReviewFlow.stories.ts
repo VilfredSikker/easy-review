@@ -1,7 +1,7 @@
 import type { Meta, StoryObj } from "@storybook/svelte";
 import ReviewFlowHarness from "./ReviewFlowHarness.svelte";
 import { reviewFlowFixture } from "./fixtures";
-import type { ReviewFlowTaskProgress } from "$lib/types";
+import type { ReviewFlowTaskProgress } from "$lib/pageTypes";
 
 const task = (
   id: string,

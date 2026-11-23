@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { ChecklistSnapshot } from "$lib/types";
+  import type { ChecklistSnapshot } from "$lib/pageTypes";
   import { app } from "$lib/stores/app.svelte";
   import { tabsResource } from "$lib/stores/tabsResource.svelte";
   import { reviewPage } from "$lib/stores/reviewPage.svelte";

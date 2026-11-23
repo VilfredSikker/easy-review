@@ -1,4 +1,4 @@
-import type { ReviewFlowSnapshot, ReviewFlowTaskProgress } from "$lib/types";
+import type { ReviewFlowSnapshot, ReviewFlowTaskProgress } from "$lib/pageTypes";
 
 export const REVIEW_FLOW_ACTION_ID = "ai-review-flow";
 export const AI_ADVANCED_GROUP = "AI · Advanced" as const;

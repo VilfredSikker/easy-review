@@ -1,4 +1,4 @@
-import type { GhCommentSummary, GhReviewSummary, GhReviewerSummary, ThreadSnapshot } from "./types";
+import type { GhCommentSummary, GhReviewSummary, GhReviewerSummary, ThreadSnapshot } from "./pageTypes";
 
 /** One thing a reviewer said on the PR, as the reviewer popover lists it. */
 export interface ReviewerEntry {

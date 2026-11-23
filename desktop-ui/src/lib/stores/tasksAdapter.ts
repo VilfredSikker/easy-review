@@ -3,7 +3,7 @@ import type { Resource } from "$lib/protocol/generated/Resource";
 import type { TabKey } from "$lib/protocol/generated/TabKey";
 import type { TaskJob } from "$lib/protocol/generated/TaskJob";
 import type { Invoke, ResourceClient } from "$lib/protocol/client";
-import type { AgentCommandStatus, AgentLogEntry, AppSnapshot, BackgroundTaskSnapshot } from "$lib/types";
+import type { AgentCommandStatus, AgentLogEntry, AppSnapshot, BackgroundTaskSnapshot } from "$lib/pageTypes";
 import { snapshotTaskTarget } from "$lib/snapshotChrome";
 import { JOBS } from "./annotationsAdapter";
 import type { ResourceStore } from "./resourceStore";

@@ -1,7 +1,7 @@
 import { annotationCounts, type AnnotationCounts } from "./annotationCounts";
 import { commentThreadsFromDiff } from "./commentVisibility";
 import { themeByName } from "./themes";
-import type { AppSnapshot, GithubStatusSnapshot } from "./types";
+import type { AppSnapshot, GithubStatusSnapshot } from "./pageTypes";
 
 /**
  * Each palette's counterpart on the other side of light/dark. Eight themes

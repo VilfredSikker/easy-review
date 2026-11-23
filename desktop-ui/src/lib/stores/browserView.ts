@@ -1,6 +1,6 @@
 import type { ResourceKey } from "$lib/protocol/generated/ResourceKey";
 import type { TabKey } from "$lib/protocol/generated/TabKey";
-import type { AppSnapshot, BrowserSnapshot } from "$lib/types";
+import type { AppSnapshot, BrowserSnapshot } from "$lib/pageTypes";
 import type { ResourceStore } from "./resourceStore";
 
 /** What the browser pane shows before a tab's browser state was ever written. */

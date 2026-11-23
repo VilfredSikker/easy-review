@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { resourceClient, type Invoke } from "$lib/protocol/client";
 import type { Command } from "$lib/protocol/generated/Command";
 import type { Settings } from "$lib/protocol/generated/Settings";
-import type { GetConfigHubResponse } from "$lib/types";
+import type { GetConfigHubResponse } from "$lib/pageTypes";
 import { ResourceStore } from "./resourceStore";
 import { SettingsAdapter, type NoticeLevel } from "./settingsAdapter";
 

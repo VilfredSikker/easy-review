@@ -1,4 +1,4 @@
-import type { AiSnapshot } from "$lib/types";
+import type { AiSnapshot } from "$lib/pageTypes";
 import { aiReviewFilter } from "$lib/stores/aiReviewFilter.svelte";
 
 /**

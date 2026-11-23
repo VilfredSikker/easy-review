@@ -1,4 +1,4 @@
-import type { CheckSummary } from "$lib/types";
+import type { CheckSummary } from "$lib/pageTypes";
 
 export interface CheckCounts {
   pass: number;

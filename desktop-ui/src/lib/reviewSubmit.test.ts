@@ -17,7 +17,7 @@ import {
   type PendingReview,
   type PendingReviewComment,
 } from "./reviewSubmit";
-import type { GithubStatusSnapshot } from "./types";
+import type { GithubStatusSnapshot } from "./pageTypes";
 
 const gh = (over: Partial<GithubStatusSnapshot> = {}) =>
   ({ owner: "o", repo: "r", number: 7, state: "OPEN", is_authored_by_me: false, ...over }) as GithubStatusSnapshot;

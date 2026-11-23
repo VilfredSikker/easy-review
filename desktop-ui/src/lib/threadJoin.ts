@@ -1,5 +1,5 @@
 import type { Hunk } from "$lib/protocol/generated/Hunk";
-import type { HunkSnapshot, ThreadSnapshot } from "$lib/types";
+import type { HunkSnapshot, ThreadSnapshot } from "$lib/pageTypes";
 
 const HEADER = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/;
 

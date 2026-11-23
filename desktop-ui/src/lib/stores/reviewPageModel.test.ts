@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import type { AppSnapshot, TabSummary } from "../types";
+import type { AppSnapshot, TabSummary } from "../pageTypes";
 import {
   ReviewPageMemory,
   currentReviewPage,

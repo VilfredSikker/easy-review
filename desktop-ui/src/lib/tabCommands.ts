@@ -8,7 +8,7 @@ import type { ExportOptions } from "$lib/protocol/generated/ExportOptions";
 import type { LineCommits } from "$lib/protocol/generated/LineCommits";
 import type { OpenSource } from "$lib/protocol/generated/OpenSource";
 import type { TabKey } from "$lib/protocol/generated/TabKey";
-import type { AppSnapshot } from "$lib/types";
+import type { AppSnapshot } from "$lib/pageTypes";
 
 let activeTab: () => TabKey | null = () => null;
 

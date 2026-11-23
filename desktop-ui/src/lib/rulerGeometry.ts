@@ -1,5 +1,5 @@
 import { filesByPillar } from "./pillarFiles";
-import type { FileSnapshot, PillarSnapshot } from "./types";
+import type { FileSnapshot, PillarSnapshot } from "./pageTypes";
 
 /** One file as a ruler sees it: a tick on the edge and a row in the popover. */
 export interface RulerItem {

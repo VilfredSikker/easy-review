@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import type { FlatFinding } from "$lib/types";
+import type { FlatFinding } from "$lib/pageTypes";
 import {
   ALL_REVIEWERS,
   agentScopedSummaryLine,

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { changedPaths, riskTarget } from "./riskRequests";
-import type { AppSnapshot, FileSnapshot, TabSummary } from "./types";
+import type { AppSnapshot, FileSnapshot, TabSummary } from "./pageTypes";
 
 const tab = (over: Partial<TabSummary>): TabSummary =>
   ({

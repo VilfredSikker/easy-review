@@ -1,6 +1,6 @@
 import type { Meta, StoryObj } from "@storybook/svelte";
 import InboxHarness from "$lib/stories/InboxHarness.svelte";
-import type { InboxItemSnapshot, ProjectSnapshot } from "$lib/types";
+import type { InboxItemSnapshot, ProjectSnapshot } from "$lib/pageTypes";
 
 const now = Date.now();
 

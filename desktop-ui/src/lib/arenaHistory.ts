@@ -1,5 +1,5 @@
 import type { FlowAcceptanceOrigin } from "$lib/arenaFlowAcceptance";
-import type { AppSnapshot } from "$lib/types";
+import type { AppSnapshot } from "$lib/pageTypes";
 import type { ArenaRunSnapshot } from "$lib/types/arena";
 
 /** Quick and Standard expose seeded verification, which retains its own

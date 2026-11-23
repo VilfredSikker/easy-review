@@ -1,6 +1,6 @@
 import type { ResourceKey } from "$lib/protocol/generated/ResourceKey";
 import type { Worktrees } from "$lib/protocol/generated/Worktrees";
-import type { AppSnapshot, TabSummary, WorktreeSnapshot } from "$lib/types";
+import type { AppSnapshot, TabSummary, WorktreeSnapshot } from "$lib/pageTypes";
 import type { ResourceStore } from "./resourceStore";
 
 export function worktreesKey(root: string): ResourceKey {

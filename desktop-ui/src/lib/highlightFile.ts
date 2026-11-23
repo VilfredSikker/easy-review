@@ -7,7 +7,7 @@ import {
   spansToHunksFromSides,
 } from "./highlightPlan";
 import type { SyntaxTheme } from "./syntaxThemes";
-import type { FileSnapshot, SpanSnapshot } from "./types";
+import type { FileSnapshot, SpanSnapshot } from "./pageTypes";
 
 export { fileNeedsSyntaxSpans, lineNeedsSyntaxSpans } from "./highlightPlan";
 

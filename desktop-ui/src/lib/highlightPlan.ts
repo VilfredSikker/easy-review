@@ -1,5 +1,5 @@
 import type { HunkHighlight } from "./highlightCache";
-import type { FileSnapshot, LineSnapshot, SpanSnapshot } from "./types";
+import type { FileSnapshot, LineSnapshot, SpanSnapshot } from "./pageTypes";
 
 interface LineRef {
   hunkIdx: number;

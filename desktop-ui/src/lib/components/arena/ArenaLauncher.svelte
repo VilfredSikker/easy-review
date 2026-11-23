@@ -6,7 +6,7 @@
   import { app } from "$lib/stores/app.svelte";
   import { sessionResource } from "$lib/stores/sessionResource.svelte";
   import { triageRecommendedPaths } from "$lib/triageSuggestions";
-  import type { AiProviderInfo, ReviewerInfo } from "$lib/types";
+  import type { AiProviderInfo, ReviewerInfo } from "$lib/pageTypes";
   import type { ArenaEstimate, ArenaLauncherScope, ArenaScope, ReviewerRef } from "$lib/types/arena";
   import { modelLabel, pickMostExpensiveModel } from "$lib/arena/estimate";
   import { effortLabel, effortLevelsForModel, modelSupportsEffort } from "$lib/arena/effort";

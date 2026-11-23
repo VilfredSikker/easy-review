@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { triageRecommendedPaths } from "./triageSuggestions";
-import type { TriageSnapshot } from "./types";
+import type { TriageSnapshot } from "./pageTypes";
 
 function makeTriage(overrides: Partial<TriageSnapshot> = {}): TriageSnapshot {
   return {

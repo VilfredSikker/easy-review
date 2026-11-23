@@ -6,7 +6,7 @@ import type { AiAnnotations } from "$lib/protocol/generated/AiAnnotations";
 import type { Resource } from "$lib/protocol/generated/Resource";
 import type { ResourceKey } from "$lib/protocol/generated/ResourceKey";
 import type { Versioned } from "$lib/protocol/generated/Versioned";
-import type { AiSnapshot, AppSnapshot, ThreadMessage, ThreadSnapshot } from "$lib/types";
+import type { AiSnapshot, AppSnapshot, ThreadMessage, ThreadSnapshot } from "$lib/pageTypes";
 import type { PendingPaint } from "./annotationWrites";
 import { AnnotationsAdapter, JOBS, annotationsKey, uiAnnotationsKey } from "./annotationsAdapter";
 import { diffKey } from "./diffAdapter";

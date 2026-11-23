@@ -1,4 +1,4 @@
-import type { Confidence, FlatFinding } from "$lib/types";
+import type { Confidence, FlatFinding } from "$lib/pageTypes";
 import { findingPassesTrust, TRUST_RANK } from "$lib/diffAnnotations";
 import { ALL_REVIEWERS, filterByAgent, uniqueAgentLabels, type AgentFilter } from "$lib/aiReviewAgents";
 

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { annotationCounts } from "./annotationCounts";
-import type { FlatFinding, ThreadSnapshot } from "./types";
+import type { FlatFinding, ThreadSnapshot } from "./pageTypes";
 
 const t = (kind: ThreadSnapshot["kind"]) => ({ kind }) as ThreadSnapshot;
 const f = (resolved: boolean) => ({ resolved }) as FlatFinding;

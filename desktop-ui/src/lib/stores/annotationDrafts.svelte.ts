@@ -1,6 +1,6 @@
 import { untrack } from "svelte";
 import { AnnotationDraftCache } from "$lib/annotationDraftCache";
-import type { AppSnapshot } from "$lib/types";
+import type { AppSnapshot } from "$lib/pageTypes";
 
 const cache = new AnnotationDraftCache();
 function createDraft() {

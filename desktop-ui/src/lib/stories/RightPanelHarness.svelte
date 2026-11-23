@@ -3,7 +3,7 @@
   import { rightPanelTab, type RightPanelTab } from "$lib/stores/rightPanelTab.svelte";
   import RightPanel from "$lib/components/RightPanel.svelte";
   import CollapsedRightRail from "$lib/components/CollapsedRightRail.svelte";
-  import type { AppSnapshot } from "$lib/types";
+  import type { AppSnapshot } from "$lib/pageTypes";
 
   interface Props {
     snapshot: AppSnapshot;

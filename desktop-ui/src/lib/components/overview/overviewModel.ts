@@ -1,4 +1,4 @@
-import type { AppSnapshot, CheckSummary, GithubStatusSnapshot } from "$lib/types";
+import type { AppSnapshot, CheckSummary, GithubStatusSnapshot } from "$lib/pageTypes";
 import { resolveContextIdentity, resolveContextTitle } from "$lib/contextIdentity";
 import { githubStatusForActiveTab } from "$lib/prUrl";
 import { mergeBoxModel, type MergeBoxTone } from "$lib/prMergeBox";

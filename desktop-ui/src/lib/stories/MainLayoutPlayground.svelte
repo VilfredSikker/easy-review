@@ -20,8 +20,8 @@
     richSnapshot,
     staleSnapshot,
   } from "$lib/stories/fixtures";
-  import type { AppSnapshot } from "$lib/types";
-  import type { InboxItemSnapshot } from "$lib/types";
+  import type { AppSnapshot } from "$lib/pageTypes";
+  import type { InboxItemSnapshot } from "$lib/pageTypes";
 
   /**
    * Tauri-invoke safety: Terminal.svelte calls invoke("terminal_spawn") on mount

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { extChip, hiddenFindingCounts, toggledPath, toggledPaths } from "./fileTreeModel";
-import type { AiSnapshot, Confidence, FlatFinding } from "./types";
+import type { AiSnapshot, Confidence, FlatFinding } from "./pageTypes";
 
 describe("extChip", () => {
   test.each([

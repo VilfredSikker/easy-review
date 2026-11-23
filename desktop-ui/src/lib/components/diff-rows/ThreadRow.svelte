@@ -2,7 +2,7 @@
   import InlineThread from "$lib/components/InlineThread.svelte";
   import { threadReviewSide } from "$lib/diffAnnotations";
   import type { CrossFileFlatRow } from "$lib/diffRenderModel";
-  import type { ThreadSnapshot } from "$lib/types";
+  import type { ThreadSnapshot } from "$lib/pageTypes";
   import AnnotationSplitRow from "./AnnotationSplitRow.svelte";
 
   interface Props {

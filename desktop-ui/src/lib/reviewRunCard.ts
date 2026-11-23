@@ -1,6 +1,6 @@
 import { commitColorVar } from "./commitColors";
 import { reviewFlowControls, reviewFlowEstimate, reviewFlowProgressView } from "./reviewFlow";
-import type { ReviewFlowSnapshot, ReviewFlowTaskProgress } from "./types";
+import type { ReviewFlowSnapshot, ReviewFlowTaskProgress } from "./pageTypes";
 
 export type RunStage = ReviewFlowTaskProgress["stage"];
 export type StepState = "waiting" | "active" | "done" | "failed" | "skipped";

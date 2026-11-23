@@ -227,14 +227,15 @@ docs-check:
 comments-check:
     ./scripts/comments-check.sh
 
-# Write the TypeScript for the wire types (er-protocol) into desktop-ui. Run it
-# after changing a wire type, and on a merge conflict in the generated files.
+# Write the TypeScript for the wire types (er-protocol) into desktop-ui, with
+# the `lib/types.ts` barrel that re-exports them. Run it after changing a wire
+# type, and on a merge conflict in the generated files or the barrel.
 [group('lint')]
 protocol-gen:
-    cargo run -q -p er-protocol --bin protocol-gen -- desktop-ui/src/lib/protocol/generated
+    cargo run -q -p er-protocol --bin protocol-gen -- desktop-ui/src/lib/protocol/generated desktop-ui/src/lib/types.ts
 
-# Fail when the committed TypeScript differs from a fresh export of the wire
-# types: a hand edit, or a wire change without `just protocol-gen`.
+# Fail when the committed TypeScript or its barrel differs from a fresh export
+# of the wire types: a hand edit, or a wire change without `just protocol-gen`.
 [group('lint')]
 protocol-check:
     ./scripts/protocol-check.sh

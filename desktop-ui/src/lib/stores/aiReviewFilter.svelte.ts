@@ -4,7 +4,7 @@ import {
   uniqueAgentLabels,
   type AgentFilter,
 } from "$lib/aiReviewAgents";
-import type { FlatFinding } from "$lib/types";
+import type { FlatFinding } from "$lib/pageTypes";
 
 class AiReviewFilterStore {
   filter = $state<AgentFilter>(ALL_REVIEWERS);

@@ -3,7 +3,7 @@ import { collectDiffUsageSources } from "./diffUsageSources";
 import type { CrossFileModel } from "./diffRenderModel";
 import { splitRows } from "./splitRows";
 import { fileMediaCombobox } from "./stories/fixtures";
-import type { FileSnapshot, LineSnapshot } from "./types";
+import type { FileSnapshot, LineSnapshot } from "./pageTypes";
 
 test("split search retains rows after highlighting replaces source line objects", () => {
   const before: LineSnapshot[] = [

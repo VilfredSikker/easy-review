@@ -1,6 +1,6 @@
 <script lang="ts">
   import { documentBlocks, documentMarkdownSegments, documentPreviewKind, documentTextBlocks, type DocumentPreviewState } from "$lib/documentPreview";
-  import type { FileSnapshot } from "$lib/types";
+  import type { FileSnapshot } from "$lib/pageTypes";
   import DocumentMarkdown from "./DocumentMarkdown.svelte";
   import DocumentPreviewBlocks from "./DocumentPreviewBlocks.svelte";
 

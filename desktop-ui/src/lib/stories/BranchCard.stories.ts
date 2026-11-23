@@ -1,6 +1,6 @@
 import type { Meta, StoryObj } from "@storybook/svelte";
 import BranchCard from "$lib/components/BranchCard.svelte";
-import type { GithubStatusSnapshot } from "$lib/types";
+import type { GithubStatusSnapshot } from "$lib/pageTypes";
 import { prDraft } from "./fixtures";
 
 const meta = {

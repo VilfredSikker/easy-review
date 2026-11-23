@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { githubCommentsAutoPullKey } from "./commentAutoPull";
-import type { AppSnapshot, TabSummary } from "./types";
+import type { AppSnapshot, TabSummary } from "./pageTypes";
 
 function tab(partial: Partial<TabSummary> = {}): TabSummary {
   return {

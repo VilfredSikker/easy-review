@@ -1,7 +1,7 @@
 <script lang="ts">
   import { untrack } from "svelte";
   import { settingsResource } from "$lib/stores/settingsResource.svelte";
-  import type { AiProviderInfo, ReviewModelGroups, ReviewModelRef } from "$lib/types";
+  import type { AiProviderInfo, ReviewModelGroups, ReviewModelRef } from "$lib/pageTypes";
   import SettingsButton from "./SettingsButton.svelte";
   import {
     cloneReviewModelGroups,

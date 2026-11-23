@@ -3,7 +3,7 @@ import { resourceClient, type Invoke } from "$lib/protocol/client";
 import type { Command } from "$lib/protocol/generated/Command";
 import type { InboxItem } from "$lib/protocol/generated/InboxItem";
 import type { ErError } from "$lib/protocol/generated/ErError";
-import type { InboxItemSnapshot } from "$lib/types";
+import type { InboxItemSnapshot } from "$lib/pageTypes";
 import { INBOX_KEY, InboxAdapter, inboxItemFromWire } from "./inboxAdapter";
 import { ResourceStore } from "./resourceStore";
 

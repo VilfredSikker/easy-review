@@ -2,7 +2,7 @@
   import { tick, untrack } from "svelte";
   import { riskTarget } from "$lib/riskRequests";
   import { riskResource } from "$lib/stores/settingsResource.svelte";
-  import type { AiSnapshot } from "$lib/types";
+  import type { AiSnapshot } from "$lib/pageTypes";
   import { app } from "$lib/stores/app.svelte";
   import { diffNav } from "$lib/stores/diffNav.svelte";
   import { baseName, shortFileName } from "$lib/shortFileName";

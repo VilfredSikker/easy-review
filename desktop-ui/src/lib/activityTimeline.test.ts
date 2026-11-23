@@ -6,7 +6,7 @@ import {
   initials,
   openedText,
 } from "./activityTimeline";
-import type { AiSnapshot, FlatFinding, GithubStatusSnapshot } from "./types";
+import type { AiSnapshot, FlatFinding, GithubStatusSnapshot } from "./pageTypes";
 
 function gh(over: Partial<GithubStatusSnapshot> = {}): GithubStatusSnapshot {
   return {

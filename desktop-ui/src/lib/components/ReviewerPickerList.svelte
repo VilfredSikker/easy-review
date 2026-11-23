@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { sessionResource } from "$lib/stores/sessionResource.svelte";
-  import type { ReviewerInfo } from "$lib/types";
+  import type { ReviewerInfo } from "$lib/pageTypes";
   import { toggled } from "$lib/immutableSet";
 
   interface Props {

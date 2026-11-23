@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { approveGate, displayMenuCounts, themeToggleTarget } from "./viewBarModel";
-import type { AppSnapshot, FlatFinding, GithubStatusSnapshot, ThreadSnapshot } from "./types";
+import type { AppSnapshot, FlatFinding, GithubStatusSnapshot, ThreadSnapshot } from "./pageTypes";
 
 describe("themeToggleTarget", () => {
   test("switches each dark theme to a light one and back", () => {

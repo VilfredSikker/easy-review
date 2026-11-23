@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { PrSnapshot, GithubStatusSnapshot } from "$lib/types";
+  import type { PrSnapshot, GithubStatusSnapshot } from "$lib/pageTypes";
   import { app } from "$lib/stores/app.svelte";
   import { tabsResource } from "$lib/stores/tabsResource.svelte";
   import { projectsResource } from "$lib/stores/projectsResource.svelte";

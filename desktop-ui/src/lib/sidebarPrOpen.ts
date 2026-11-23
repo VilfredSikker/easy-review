@@ -1,6 +1,6 @@
 import { remoteParts, type TabOpenRequest } from "./prOpen";
 import { longAge } from "./relativeTime";
-import type { PrInfo, ProjectSnapshot, TabSummary } from "./types";
+import type { PrInfo, ProjectSnapshot, TabSummary } from "./pageTypes";
 
 /** The pull-request glyph the sidebar rows draw, as one path for the modal. */
 const PR_ICON_PATH = "M6 3v12M18 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM6 21a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM18 9a9 9 0 0 1-9 9";

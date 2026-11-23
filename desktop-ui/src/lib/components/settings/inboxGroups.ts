@@ -1,4 +1,4 @@
-import type { ConfigFieldValue, ConfigHubField } from "$lib/types";
+import type { ConfigFieldValue, ConfigHubField } from "$lib/pageTypes";
 
 type BoolField = Extract<ConfigHubField, { kind: "bool" }>;
 

@@ -10,7 +10,7 @@
  *   modify alignment). Extras on either side fall through as unpaired rows.
  * - `fold` lines pass through on both sides.
  */
-import type { LineSnapshot } from "./types";
+import type { LineSnapshot } from "./pageTypes";
 
 export interface SplitRow {
   left: LineSnapshot | null;

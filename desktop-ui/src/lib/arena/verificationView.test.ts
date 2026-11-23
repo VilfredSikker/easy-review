@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import type { ArenaFinding, Verdict } from "$lib/types/arena";
-import type { HunkSnapshot } from "$lib/types";
+import type { HunkSnapshot } from "$lib/pageTypes";
 import { ARBITER_ROUND } from "./arenaView";
 import { MOCK_ARENA_SNAPSHOT } from "./mockRun";
 import {

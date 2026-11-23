@@ -10,7 +10,7 @@ import {
   toggleKindShown,
   visibleCommentThreads,
 } from "./commentVisibility";
-import type { ThreadSnapshot } from "./types";
+import type { ThreadSnapshot } from "./pageTypes";
 
 function thread(
   partial: Partial<ThreadSnapshot> & Pick<ThreadSnapshot, "id" | "kind">,

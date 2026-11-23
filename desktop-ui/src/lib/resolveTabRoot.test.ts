@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { resolveTabRoot } from "./resolveTabRoot";
-import type { AppSnapshot, TabSummary } from "./types";
+import type { AppSnapshot, TabSummary } from "./pageTypes";
 
 const tab = (overrides: Partial<TabSummary> = {}): TabSummary => ({
   idx: 0,

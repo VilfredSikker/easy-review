@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { ratedRows, riskCounts, riskQueueRows, riskWhy } from "./fileRiskQueue";
-import type { FileRiskSnapshot, FileSnapshot } from "./types";
+import type { FileRiskSnapshot, FileSnapshot } from "./pageTypes";
 
 function risk(path: string, level: FileRiskSnapshot["risk"]): FileRiskSnapshot {
   return { path, risk: level, risk_reason: `${level} because`, summary: "" };

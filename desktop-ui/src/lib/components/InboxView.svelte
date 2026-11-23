@@ -34,7 +34,7 @@
   } from "$lib/inboxThreads";
   import { loadAlwaysOpenHere, resolvePrOpen, saveAlwaysOpenHere, sendPrefetch, type TabOpenRequest } from "$lib/prOpen";
   import { longAge, shortAge } from "$lib/relativeTime";
-  import type { InboxItemSnapshot, ProjectSnapshot, TabSummary } from "$lib/types";
+  import type { InboxItemSnapshot, ProjectSnapshot, TabSummary } from "$lib/pageTypes";
 
   const projects = $derived<ProjectSnapshot[]>(projectsResource.projects);
   const tabs = $derived<TabSummary[]>(tabsResource.tabs);

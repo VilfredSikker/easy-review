@@ -4,7 +4,7 @@ import { diffFileCollapse } from "$lib/stores/diffFileCollapse.svelte";
 import { diffNav } from "$lib/stores/diffNav.svelte";
 import { diffPreview } from "$lib/stores/diffPreview.svelte";
 import { loadHashedHunks } from "$lib/stores/diffResource.svelte";
-import type { FileSnapshot, FlatFinding, ThreadSnapshot } from "$lib/types";
+import type { FileSnapshot, FlatFinding, ThreadSnapshot } from "$lib/pageTypes";
 
 /**
  * Scroll an element into view and pulse its outline.

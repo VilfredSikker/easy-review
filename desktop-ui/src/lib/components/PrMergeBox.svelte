@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { GithubStatusSnapshot } from "$lib/types";
+  import type { GithubStatusSnapshot } from "$lib/pageTypes";
   import { app } from "$lib/stores/app.svelte";
   import { anchoredMenuPosition } from "$lib/anchoredMenu";
   import AnchoredMenu from "$lib/components/ui/AnchoredMenu.svelte";

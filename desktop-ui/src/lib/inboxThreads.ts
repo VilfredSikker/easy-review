@@ -1,4 +1,4 @@
-import type { InboxItemSnapshot, PrInfo, ProjectSnapshot, TabSummary } from "$lib/types";
+import type { InboxItemSnapshot, PrInfo, ProjectSnapshot, TabSummary } from "$lib/pageTypes";
 import {
   INBOX_CATEGORY_LABELS,
   INBOX_CATEGORY_ORDER,

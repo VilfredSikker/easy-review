@@ -2,7 +2,7 @@ import { SvelteMap } from "svelte/reactivity";
 import type { Invoke } from "$lib/protocol/client";
 import type { ResourceKey } from "$lib/protocol/generated/ResourceKey";
 import type { RiskTarget } from "$lib/riskRequests";
-import type { RiskFileSnapshot, RiskFilesView, RiskRuleSnapshot, RiskRulesView, RiskTier } from "$lib/types";
+import type { RiskFileSnapshot, RiskFilesView, RiskRuleSnapshot, RiskRulesView, RiskTier } from "$lib/pageTypes";
 import type { ResourceStore } from "./resourceStore";
 import { errorText } from "./settingsAdapter";
 

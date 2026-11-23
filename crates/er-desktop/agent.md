@@ -18,7 +18,7 @@ Transport decisions live in the ADRs. Read them instead of a summary here:
 - `docs/adr/0018-app-cmd-ingests-snapshots.md`, `docs/adr/0017-optimistic-frontend-writes.md`
   — how the frontend sends mutations and applies what comes back.
 
-`src/snapshot.rs` is the wire contract for `desktop-ui/src/lib/types.ts`. Both sides
+`src/snapshot.rs` is the wire contract for `desktop-ui/src/lib/pageTypes.ts`. Both sides
 compile without the other, so a changed field is invisible until runtime.
 
 ## Traps

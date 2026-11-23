@@ -1,7 +1,7 @@
 <script lang="ts">
   import { app } from "$lib/stores/app.svelte";
   import DiffView from "$lib/components/DiffView.svelte";
-  import type { AppSnapshot } from "$lib/types";
+  import type { AppSnapshot } from "$lib/pageTypes";
   import type { DiffViewMode } from "$lib/stores/app.svelte";
 
   interface Props {

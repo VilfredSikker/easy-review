@@ -1,4 +1,4 @@
-import type { FileRiskSnapshot, MatchedRiskRule, RiskRuleSnapshot, RiskRuleSource, RiskTier } from "$lib/types";
+import type { FileRiskSnapshot, MatchedRiskRule, RiskRuleSnapshot, RiskRuleSource, RiskTier } from "$lib/pageTypes";
 
 export type { RiskRuleSource, RiskTier };
 

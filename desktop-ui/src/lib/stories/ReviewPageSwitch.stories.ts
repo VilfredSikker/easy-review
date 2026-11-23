@@ -1,7 +1,7 @@
 import type { Meta, StoryObj } from "@storybook/svelte";
 import ReviewPageSwitchHarness from "./ReviewPageSwitchHarness.svelte";
 import { richSnapshot } from "./fixtures";
-import type { AppSnapshot, FileSnapshot, HunkSnapshot, LineSnapshot } from "$lib/types";
+import type { AppSnapshot, FileSnapshot, HunkSnapshot, LineSnapshot } from "$lib/pageTypes";
 
 /**
  * Overview → Diff with the diff kept mounted under the Overview, against the

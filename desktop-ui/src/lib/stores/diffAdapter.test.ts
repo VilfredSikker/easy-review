@@ -8,7 +8,7 @@ import type { Resource } from "$lib/protocol/generated/Resource";
 import type { ResourceKey } from "$lib/protocol/generated/ResourceKey";
 import type { TabDiff } from "$lib/protocol/generated/TabDiff";
 import type { Hunk } from "$lib/protocol/generated/Hunk";
-import type { AppSnapshot, FileSnapshot, ThreadSnapshot } from "$lib/types";
+import type { AppSnapshot, FileSnapshot, ThreadSnapshot } from "$lib/pageTypes";
 import { DiffAdapter, diffKey, prStale, tabIsStale, wireDiffCommand, type DiffSlice, type HunkSource } from "./diffAdapter";
 import { ResourceStore } from "./resourceStore";
 

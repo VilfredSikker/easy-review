@@ -1,4 +1,4 @@
-import type { ChecklistItemSnapshot } from "./types";
+import type { ChecklistItemSnapshot } from "./pageTypes";
 
 /**
  * The categories the general-review prompt asks for, in the order an

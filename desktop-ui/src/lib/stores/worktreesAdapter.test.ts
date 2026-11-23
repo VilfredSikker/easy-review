@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { resourceClient, type Invoke } from "$lib/protocol/client";
-import type { TabSummary, WorktreeSnapshot } from "$lib/types";
+import type { TabSummary, WorktreeSnapshot } from "$lib/pageTypes";
 import { ResourceStore } from "./resourceStore";
 import { WorktreesAdapter, worktreesFromResource } from "./worktreesAdapter";
 

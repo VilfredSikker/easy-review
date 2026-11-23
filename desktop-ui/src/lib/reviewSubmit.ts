@@ -1,4 +1,4 @@
-import type { GithubStatusSnapshot } from "./types";
+import type { GithubStatusSnapshot } from "./pageTypes";
 
 /**
  * The reviewer's GitHub pending review, as `get_pending_review` returns it.

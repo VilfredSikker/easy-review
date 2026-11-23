@@ -1,5 +1,5 @@
 import type { DocumentBlock } from "./documentPreview";
-import type { FileSnapshot, ThreadSnapshot } from "./types";
+import type { FileSnapshot, ThreadSnapshot } from "./pageTypes";
 
 /** Inclusive 1-based source line range. */
 export interface LineRange {

@@ -1,6 +1,6 @@
 <script lang="ts">
   import { tick } from "svelte";
-  import type { PillarSnapshot, TourSnapshot } from "$lib/types";
+  import type { PillarSnapshot, TourSnapshot } from "$lib/pageTypes";
   import { app } from "$lib/stores/app.svelte";
   import { reviewPage } from "$lib/stores/reviewPage.svelte";
   import { diffNav } from "$lib/stores/diffNav.svelte";

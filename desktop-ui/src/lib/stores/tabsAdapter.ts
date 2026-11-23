@@ -5,7 +5,7 @@ import type { TabKey } from "$lib/protocol/generated/TabKey";
 import type { TabKind } from "$lib/protocol/generated/TabKind";
 import type { TabRow } from "$lib/protocol/generated/TabRow";
 import type { Tabs } from "$lib/protocol/generated/Tabs";
-import type { AppSnapshot, TabSummary } from "$lib/types";
+import type { AppSnapshot, TabSummary } from "$lib/pageTypes";
 import type { ResourceStore } from "./resourceStore";
 
 export const TABS_KEY: ResourceKey = { kind: "tabs" };

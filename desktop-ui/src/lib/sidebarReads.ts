@@ -1,4 +1,4 @@
-import type { AppSnapshot, ProjectSnapshot, TabSummary, WorktreeSnapshot } from "./types";
+import type { AppSnapshot, ProjectSnapshot, TabSummary, WorktreeSnapshot } from "./pageTypes";
 
 /** What `detectedPrNumber` derives the active branch's PR from with the flag on. */
 export type DetectSnapshot = Pick<AppSnapshot, "tabs" | "active_tab" | "branch" | "detected_pr_number">;

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { shouldShowNotification } from "./snapshotNotification";
-import type { NotificationSnapshot } from "./types";
+import type { NotificationSnapshot } from "./pageTypes";
 
 function note(
   message: string,

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { lensLabel, reviewRunCard, reviewRunVisible } from "./reviewRunCard";
-import type { ReviewFlowSnapshot, ReviewFlowTaskProgress } from "./types";
+import type { ReviewFlowSnapshot, ReviewFlowTaskProgress } from "./pageTypes";
 
 const flow = (state: ReviewFlowSnapshot["state"], extra: Partial<ReviewFlowSnapshot> = {}): ReviewFlowSnapshot => ({
   state,

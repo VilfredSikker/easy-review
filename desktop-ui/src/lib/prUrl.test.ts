@@ -6,7 +6,7 @@ import {
   resolveActivePrNumber,
   resolveActivePrUrl,
 } from "./prUrl";
-import type { AppSnapshot, GithubStatusSnapshot, TabSummary } from "./types";
+import type { AppSnapshot, GithubStatusSnapshot, TabSummary } from "./pageTypes";
 
 function minimalSnapshot(overrides: Partial<AppSnapshot>): AppSnapshot {
   return {

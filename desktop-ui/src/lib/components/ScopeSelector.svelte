@@ -2,7 +2,7 @@
   import { app } from "$lib/stores/app.svelte";
   import { railView } from "$lib/stores/railView.svelte";
   import { footerScopeLabel } from "$lib/scopeRail";
-  import type { CommitSummary } from "$lib/types";
+  import type { CommitSummary } from "$lib/pageTypes";
   import ScopeSegment from "./ScopeSegment.svelte";
   import CommitsSection from "./CommitsSection.svelte";
 

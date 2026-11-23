@@ -7,7 +7,7 @@ import {
   tickState,
   tourGroups,
 } from "./rulerGeometry";
-import type { FileSnapshot, PillarSnapshot } from "./types";
+import type { FileSnapshot, PillarSnapshot } from "./pageTypes";
 
 function file(path: string, over: Partial<FileSnapshot> = {}): FileSnapshot {
   return {

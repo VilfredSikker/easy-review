@@ -1,7 +1,7 @@
 import type { Meta, StoryObj } from "@storybook/svelte";
 import BrowserView from "$lib/components/BrowserView.svelte";
 import { app } from "$lib/stores/app.svelte";
-import type { UiAnnotation } from "$lib/types";
+import type { UiAnnotation } from "$lib/pageTypes";
 import { diagramPresetsFixture } from "./fixtures";
 
 // Minimal HTML loaded into the iframe so the stories render something visible

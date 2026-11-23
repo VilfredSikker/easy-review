@@ -1,4 +1,4 @@
-import type { ThreadSnapshot } from "./types";
+import type { ThreadSnapshot } from "./pageTypes";
 
 /** Buttons shown on the card itself; everything else lives in the overflow menu. */
 export type PrimaryAction = "askAi" | "elaborate" | "reply" | "sendToAgent" | "resolve" | "promote" | "delete";

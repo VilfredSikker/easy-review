@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import type { ThreadMessage, ThreadSnapshot } from "./types";
+import type { ThreadMessage, ThreadSnapshot } from "./pageTypes";
 import { entryWhere, reviewerEntries, reviewerStateLabel, reviewerStateTone, sameAuthor } from "./reviewerComments";
 
 function msg(id: string, author: string, kind: ThreadMessage["kind"] = "human", body = `${id} body`): ThreadMessage {

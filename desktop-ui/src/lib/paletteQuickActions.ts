@@ -8,7 +8,7 @@ import { openExternalUrl } from "$lib/openExternalUrl";
 import { buildPrHint, remoteParts } from "$lib/prOpen";
 import { asErError } from "$lib/protocol/client";
 import { app } from "$lib/stores/app.svelte";
-import type { PrInfo, ProjectSnapshot } from "$lib/types";
+import type { PrInfo, ProjectSnapshot } from "$lib/pageTypes";
 
 async function copyWithToast(text: string, message: string): Promise<void> {
   try {

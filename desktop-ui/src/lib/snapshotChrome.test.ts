@@ -8,7 +8,7 @@ import {
   snapshotViewIdentity,
   snapshotViewParts,
 } from "./snapshotChrome";
-import type { AiSnapshot, AppSnapshot, TabSummary, UiAnnotation } from "./types";
+import type { AiSnapshot, AppSnapshot, TabSummary, UiAnnotation } from "./pageTypes";
 
 function emptyAi(overrides: Partial<AiSnapshot> = {}): AiSnapshot {
   return {

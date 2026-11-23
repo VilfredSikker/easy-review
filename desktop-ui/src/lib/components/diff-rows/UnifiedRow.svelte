@@ -9,7 +9,7 @@
   import { hangingIndentStyle } from "$lib/lineWrap";
   import type { CrossFileFlatRow } from "$lib/diffRenderModel";
   import DiffLineContent from "./DiffLineContent.svelte";
-  import type { LineSnapshot } from "$lib/types";
+  import type { LineSnapshot } from "$lib/pageTypes";
 
   interface Props {
     row: Extract<CrossFileFlatRow, { type: "content-unified" }>;

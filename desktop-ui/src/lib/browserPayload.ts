@@ -1,7 +1,7 @@
 // Parsers for messages the review browser's page script posts back. The
 // payloads cross a process boundary untyped, so every field is checked here.
 
-import type { UiDomContext } from "./types";
+import type { UiDomContext } from "./pageTypes";
 
 export type PageRect = { left: number; top: number; width: number; height: number };
 

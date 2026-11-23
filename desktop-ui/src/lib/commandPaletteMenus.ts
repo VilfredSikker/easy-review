@@ -30,7 +30,7 @@ import {
   openPrLink,
   revealWorktree,
 } from "$lib/paletteQuickActions";
-import type { AppSnapshot, TabSummary } from "$lib/types";
+import type { AppSnapshot, TabSummary } from "$lib/pageTypes";
 
 export interface CommandItem {
   id: string;

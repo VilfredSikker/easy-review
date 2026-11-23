@@ -36,7 +36,7 @@ import type {
   HunkSnapshot,
   LineSnapshot,
   ThreadSnapshot,
-} from "./types";
+} from "./pageTypes";
 
 // ---------------- Fixture builders ----------------
 
@@ -804,7 +804,7 @@ describe("getFileBlock — caching", () => {
 // ---------------- cross-file model tests ----------------
 
 import { buildAnnotationIndex as _build } from "./diffAnnotations";
-import type { AiSnapshot, FileSnapshot as _FS } from "./types";
+import type { AiSnapshot, FileSnapshot as _FS } from "./pageTypes";
 
 function mkCross(
   files: FileSnapshot[],

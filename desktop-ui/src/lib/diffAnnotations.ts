@@ -18,7 +18,7 @@ import type {
   FlatFinding,
   LineSnapshot,
   ThreadSnapshot,
-} from "$lib/types";
+} from "$lib/pageTypes";
 import {
   ALL_VISIBLE,
   type CommentVisibility,

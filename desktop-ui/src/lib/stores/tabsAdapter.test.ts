@@ -8,7 +8,7 @@ import type { Command } from "$lib/protocol/generated/Command";
 import type { ResourceChanged } from "$lib/protocol/generated/ResourceChanged";
 import type { ResourceKey } from "$lib/protocol/generated/ResourceKey";
 import type { TabRow } from "$lib/protocol/generated/TabRow";
-import type { TabSummary } from "$lib/types";
+import type { TabSummary } from "$lib/pageTypes";
 import { ResourceStore } from "./resourceStore";
 import { TabsAdapter, tabsFromResource } from "./tabsAdapter";
 

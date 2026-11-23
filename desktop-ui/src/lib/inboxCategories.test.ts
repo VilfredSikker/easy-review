@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import type { InboxItemSnapshot, ProjectSnapshot } from "$lib/types";
+import type { InboxItemSnapshot, ProjectSnapshot } from "$lib/pageTypes";
 import { formatInboxAge, inboxItemCategory, inboxItemProjectId, inboxKindMeta } from "./inboxCategories";
 
 function item(

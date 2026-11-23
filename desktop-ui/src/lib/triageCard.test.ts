@@ -16,7 +16,7 @@ import {
   triageFreshness,
   verdictLabel,
 } from "./triageCard";
-import type { TriageReviewUpdate, TriageSnapshot } from "./types";
+import type { TriageReviewUpdate, TriageSnapshot } from "./pageTypes";
 
 function makeTriage(overrides: Partial<TriageSnapshot> = {}): TriageSnapshot {
   return {

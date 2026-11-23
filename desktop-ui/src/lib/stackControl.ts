@@ -1,4 +1,4 @@
-import type { StackSnapshot } from "./types";
+import type { StackSnapshot } from "./pageTypes";
 
 /**
  * Pure view-model for the BranchCard stack control.

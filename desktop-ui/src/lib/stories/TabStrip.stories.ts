@@ -1,6 +1,6 @@
 import type { Meta, StoryObj } from "@storybook/svelte";
 import TabStrip from "$lib/components/TabStrip.svelte";
-import type { TabSummary } from "$lib/types";
+import type { TabSummary } from "$lib/pageTypes";
 import { tabSeen } from "$lib/stores/tabSeen.svelte";
 
 function tab(overrides: Partial<TabSummary> & { idx: number; label: string }): TabSummary {

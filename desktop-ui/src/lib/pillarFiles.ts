@@ -1,4 +1,4 @@
-import type { FileSnapshot, PillarSnapshot } from "./types";
+import type { FileSnapshot, PillarSnapshot } from "./pageTypes";
 
 export const OTHER_FILES_TITLE = "Other files";
 

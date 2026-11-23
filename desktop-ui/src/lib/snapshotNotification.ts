@@ -1,4 +1,4 @@
-import type { NotificationSnapshot } from "./types";
+import type { NotificationSnapshot } from "./pageTypes";
 
 /**
  * Whether a snapshot's notification should raise a toast, given the one last

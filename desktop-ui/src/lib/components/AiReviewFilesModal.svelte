@@ -29,7 +29,7 @@
   import { filesByPathMap } from "$lib/treeFromPaths";
   import { reviewScopeFromMode } from "$lib/reviewScope";
   import { triageRecommendedPaths } from "$lib/triageSuggestions";
-  import type { FileSnapshot } from "$lib/types";
+  import type { FileSnapshot } from "$lib/pageTypes";
 
   type SubView = "files" | "reviewers";
   type PickerMode = "review" | "pick-only";

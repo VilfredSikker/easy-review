@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import type { Hunk } from "$lib/protocol/generated/Hunk";
-import type { ThreadSnapshot } from "$lib/types";
+import type { ThreadSnapshot } from "$lib/pageTypes";
 import { joinThreads, threadOnHunk } from "./threadJoin";
 
 /** A hunk with `header`'s ranges and no lines: the join reads the header's span. */

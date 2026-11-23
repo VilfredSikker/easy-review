@@ -7,7 +7,7 @@ import {
   resolveTreeFile,
   visibleTree,
 } from "./treeFromPaths";
-import type { FileSnapshot } from "./types";
+import type { FileSnapshot } from "./pageTypes";
 
 function file(path: string, overrides: Partial<FileSnapshot> = {}): FileSnapshot {
   return {

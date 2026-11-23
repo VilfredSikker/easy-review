@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import type { ConfigHubField } from "$lib/types";
+import type { ConfigHubField } from "$lib/pageTypes";
 import {
   fieldMap,
   isNumericCycle,

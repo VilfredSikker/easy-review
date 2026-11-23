@@ -1,4 +1,4 @@
-import type { AppSnapshot, FileSnapshot, PillarSnapshot, RelatedFileRef, TourFileRef } from "$lib/types";
+import type { AppSnapshot, FileSnapshot, PillarSnapshot, RelatedFileRef, TourFileRef } from "$lib/pageTypes";
 import {
   fileExperimentTemplate,
   fileMediaCombobox,

@@ -1,4 +1,4 @@
-import type { FileSnapshot } from "$lib/types";
+import type { FileSnapshot } from "$lib/pageTypes";
 
 export type FileStatusIconKind = "pencil" | "plus-circle" | "minus-circle" | "alert";
 

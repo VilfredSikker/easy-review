@@ -7,7 +7,7 @@ import type {
   FileSnapshot,
   HunkSnapshot,
   LineSnapshot,
-} from "$lib/types";
+} from "$lib/pageTypes";
 
 const meta = {
   title: "Diff/DiffView",

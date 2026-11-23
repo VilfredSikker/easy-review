@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { OTHER_FILES_TITLE, filesByPillar } from "./pillarFiles";
-import type { FileSnapshot, PillarSnapshot } from "./types";
+import type { FileSnapshot, PillarSnapshot } from "./pageTypes";
 
 const file = (path: string) => ({ path }) as FileSnapshot;
 const pillar = (id: string, paths: string[]) =>

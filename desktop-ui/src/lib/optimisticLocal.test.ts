@@ -22,7 +22,7 @@ import type {
   TabSummary,
   ThreadSnapshot,
   ChecklistItemSnapshot,
-} from "./types";
+} from "./pageTypes";
 
 function emptyAi(overrides: Partial<AiSnapshot> = {}): AiSnapshot {
   return {

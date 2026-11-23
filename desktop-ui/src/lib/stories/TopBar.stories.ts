@@ -1,7 +1,7 @@
 import type { Meta, StoryObj } from "@storybook/svelte";
 import TopBarHarness from "./TopBarHarness.svelte";
 import { reviewFlowFixture, richSnapshot } from "./fixtures";
-import type { AppSnapshot, BackgroundTaskSnapshot, ReviewFlowTaskProgress } from "$lib/types";
+import type { AppSnapshot, BackgroundTaskSnapshot, ReviewFlowTaskProgress } from "$lib/pageTypes";
 
 const meta = {
   title: "Shell/TopBar",

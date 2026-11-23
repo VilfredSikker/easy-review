@@ -1,4 +1,4 @@
-import type { FlatFinding, ThreadSnapshot } from "$lib/types";
+import type { FlatFinding, ThreadSnapshot } from "$lib/pageTypes";
 
 export type MergedReply = {
   /** Dedupe key, unique within one merge; also the `{#each}` key. */

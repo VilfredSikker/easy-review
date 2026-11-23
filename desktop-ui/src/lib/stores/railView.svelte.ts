@@ -2,7 +2,7 @@ import { app } from "./app.svelte";
 import { tabsResource } from "./tabsResource.svelte";
 import { sessionResource } from "./sessionResource.svelte";
 import { localScopes, viewIsPr, type LocalScope } from "$lib/scopeRail";
-import type { TabSummary } from "$lib/types";
+import type { TabSummary } from "$lib/pageTypes";
 
 /**
  * Per tab, whether the last view seen outside History was the PR diff view.

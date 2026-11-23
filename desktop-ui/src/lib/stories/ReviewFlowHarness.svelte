@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { ReviewFlowSnapshot } from "$lib/types";
+  import type { ReviewFlowSnapshot } from "$lib/pageTypes";
   import { app } from "$lib/stores/app.svelte";
   import AiReviewCard from "$lib/components/AiReviewCard.svelte";
   import TriageCard from "$lib/components/TriageCard.svelte";

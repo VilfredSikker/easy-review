@@ -3,7 +3,7 @@ import type { Prs } from "$lib/protocol/generated/Prs";
 import type { ResourceKey } from "$lib/protocol/generated/ResourceKey";
 import type { TabKey } from "$lib/protocol/generated/TabKey";
 import type { TabPr } from "$lib/protocol/generated/TabPr";
-import type { AppSnapshot, GithubStatusSnapshot, PrSnapshot, StackSnapshot, TabSummary } from "$lib/types";
+import type { AppSnapshot, GithubStatusSnapshot, PrSnapshot, StackSnapshot, TabSummary } from "$lib/pageTypes";
 import type { ResourceStore } from "./resourceStore";
 
 export function prKey(tab: TabKey): ResourceKey {

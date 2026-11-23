@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { AppSnapshot, TabSummary } from "./types";
+import type { AppSnapshot, TabSummary } from "./pageTypes";
 import {
   TAB_SNAPSHOT_CACHE_CAP,
   TabSnapshotCache,

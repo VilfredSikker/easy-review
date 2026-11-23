@@ -6,7 +6,7 @@ import type { TabDiff } from "$lib/protocol/generated/TabDiff";
 import type { TabKey } from "$lib/protocol/generated/TabKey";
 import type { BaseBehind } from "$lib/protocol/generated/BaseBehind";
 import type { Hunk } from "$lib/protocol/generated/Hunk";
-import type { AppSnapshot, DiffStaleSnapshot, FileSnapshot, ThreadSnapshot } from "$lib/types";
+import type { AppSnapshot, DiffStaleSnapshot, FileSnapshot, ThreadSnapshot } from "$lib/pageTypes";
 import { joinedHunks, threadsOn } from "$lib/threadJoin";
 import type { ResourceStore } from "./resourceStore";
 

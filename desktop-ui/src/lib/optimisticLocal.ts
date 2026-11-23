@@ -20,7 +20,7 @@ import type {
   ThreadMessage,
   ThreadSnapshot,
   UiAnnotation,
-} from "./types";
+} from "./pageTypes";
 
 export const OPTIMISTIC_COMMANDS = [
   "add_question",

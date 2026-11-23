@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { CommitSummary } from "$lib/types";
+  import type { CommitSummary } from "$lib/pageTypes";
   import { commitColorVar } from "$lib/commitColors";
   import { commitDiffstat } from "$lib/scopeRail";
   import { timeAgo } from "$lib/time";

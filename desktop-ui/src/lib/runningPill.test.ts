@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { otherJobs, ownAgentCommands, reviewRing, runningPillView } from "./runningPill";
 import { aggregateJobs, type RunningJob } from "./runningJobs";
-import type { BackgroundTaskSnapshot, ReviewFlowSnapshot } from "./types";
+import type { BackgroundTaskSnapshot, ReviewFlowSnapshot } from "./pageTypes";
 
 const job = (id: string, status: RunningJob["status"]): RunningJob => ({
   id,

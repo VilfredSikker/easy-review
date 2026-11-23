@@ -1,4 +1,4 @@
-import type { AppSnapshot, FileSnapshot } from "$lib/types";
+import type { AppSnapshot, FileSnapshot } from "$lib/pageTypes";
 
 export interface ResolveOmittedStats {
   /** Files whose hunks were spliced in from the previous snapshot. */

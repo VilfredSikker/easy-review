@@ -9,7 +9,7 @@ import {
   palettePlaceholder,
   recentPrs,
 } from "./commandPaletteView";
-import type { PrInfo, ProjectSnapshot } from "./types";
+import type { PrInfo, ProjectSnapshot } from "./pageTypes";
 
 const key = (k: string, mods: Partial<{ metaKey: boolean; ctrlKey: boolean; altKey: boolean }> = {}) => ({
   key: k,

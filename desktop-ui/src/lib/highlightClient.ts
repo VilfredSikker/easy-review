@@ -1,6 +1,6 @@
 import HighlightWorker from "./highlightWorker?worker";
 import type { SyntaxTheme } from "./syntaxThemes";
-import type { SpanSnapshot } from "./types";
+import type { SpanSnapshot } from "./pageTypes";
 import type {
   HighlightWorkerRequest,
   HighlightWorkerResponse,

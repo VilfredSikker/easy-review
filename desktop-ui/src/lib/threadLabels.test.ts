@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { threadLineRefSuffix } from "./threadLabels";
-import type { ThreadSnapshot } from "./types";
+import type { ThreadSnapshot } from "./pageTypes";
 
 function thread(line: number, line_end?: number | null): Pick<ThreadSnapshot, "file" | "line" | "line_end"> {
   return { file: "src/a.ts", line, line_end };

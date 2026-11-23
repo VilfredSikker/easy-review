@@ -1,4 +1,4 @@
-import type { AppSnapshot, CommitSummary } from "./types";
+import type { AppSnapshot, CommitSummary } from "./pageTypes";
 
 export type DiffModeName = AppSnapshot["mode"];
 export type LocalScope = "branch" | "unstaged" | "staged";

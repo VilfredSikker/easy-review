@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { hunkForLines, quotedBody, quoteSourceLines, threadsByBlock } from "./documentAnchors";
 import { documentTextBlocks, type DocumentBlock } from "./documentPreview";
-import type { FileSnapshot, LineSnapshot, ThreadSnapshot } from "./types";
+import type { FileSnapshot, LineSnapshot, ThreadSnapshot } from "./pageTypes";
 
 const SOURCE = [
   "# Design", //                                   1

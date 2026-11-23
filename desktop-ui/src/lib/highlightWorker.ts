@@ -1,7 +1,7 @@
 import { createBundledHighlighter } from "shiki/core";
 import { createJavaScriptRegexEngine } from "shiki/engine/javascript";
 import type { HighlighterGeneric, ThemeInput } from "shiki";
-import type { SpanSnapshot } from "./types";
+import type { SpanSnapshot } from "./pageTypes";
 
 const DEFAULT_THEME = "one-dark-pro";
 

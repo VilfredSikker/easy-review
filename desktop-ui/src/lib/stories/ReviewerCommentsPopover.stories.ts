@@ -1,6 +1,6 @@
 import type { Meta, StoryObj } from "@storybook/svelte";
 import ReviewerCommentsPopover from "$lib/components/overview/ReviewerCommentsPopover.svelte";
-import type { ThreadSnapshot } from "$lib/types";
+import type { ThreadSnapshot } from "$lib/pageTypes";
 
 const at = "2026-10-30T10:00:00Z";
 

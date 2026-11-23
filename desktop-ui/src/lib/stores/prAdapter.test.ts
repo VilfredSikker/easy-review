@@ -4,7 +4,7 @@ import type { Ack } from "$lib/protocol/generated/Ack";
 import type { Prs } from "$lib/protocol/generated/Prs";
 import type { PrRow } from "$lib/protocol/generated/PrRow";
 import type { ResourceKey } from "$lib/protocol/generated/ResourceKey";
-import type { AppSnapshot, TabSummary } from "$lib/types";
+import type { AppSnapshot, TabSummary } from "$lib/pageTypes";
 import { branchInPrStack, PrAdapter, prKey, prStatusKey, statusTarget, type HeldPrs } from "./prAdapter";
 import { ResourceStore } from "./resourceStore";
 

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { tourEmptyCopy } from "./tourEmpty";
-import type { OtherBucketSnapshot } from "./types";
+import type { OtherBucketSnapshot } from "./pageTypes";
 
 const other = (over: Partial<OtherBucketSnapshot>): OtherBucketSnapshot => ({
   view: "pr",
