@@ -248,21 +248,178 @@ fn a_status_fetch_shows_on_its_pr_status_while_it_runs() {
                 .0
         };
         let before = version();
-        assert!(state.begin_status_fetch(&key));
-        assert!(!state.begin_status_fetch(&key), "a second fetch began");
+        let fetch = state.begin_status_fetch(&key);
+        assert!(fetch.is_some());
+        assert!(
+            state.begin_status_fetch(&key).is_none(),
+            "a second fetch began"
+        );
         let (started, status) = status_of(&state, "acme/widgets", 9);
         assert!(status.fetching, "{status:?}");
         assert!(started > before, "{started} after {before}");
         let watched = crate::resources::watched(&state.desktop);
         let watched = watched.get(&crate::resources::Watched::Sidebar(wire.clone()));
         assert_eq!(watched, Some(&started));
-        state.end_status_fetch(&key);
+        drop(fetch);
         // A read of a status none stored starts a fetch, so the end is read
         // from its version and the in-flight set.
         let ended = version();
         assert!(ended > started, "{ended} after {started}");
-        assert!(crate::resources::pr::fetched_keys(&state.desktop).is_empty());
+        assert!(state.gh_status_in_flight.lock().unwrap().is_empty());
     });
+}
+
+/// A first status fetch that stores nothing (no network, a 404) still
+/// pushes its end, so the branch card's spinner stops.
+#[test]
+fn the_end_of_a_first_fetch_that_stored_nothing_is_pushed() {
+    with_storage(|dir| {
+        let state = state_over(dir, er_engine::ports::Ports::for_test());
+        let key = ("acme".to_string(), "widgets".to_string(), 9);
+        let wire = crate::resources::Watched::Sidebar(ResourceKey::PrStatus {
+            remote: "acme/widgets".into(),
+            number: 9,
+        });
+        let mut last = crate::resources::watched(&state.desktop);
+        let fetch = state.begin_status_fetch(&key);
+        assert!(fetch.is_some());
+        let began =
+            crate::resources::relay::moved(&mut last, crate::resources::watched(&state.desktop));
+        assert!(
+            began.iter().any(|(k, _)| *k == wire),
+            "begin not pushed: {began:?}"
+        );
+        drop(fetch);
+        let ended =
+            crate::resources::relay::moved(&mut last, crate::resources::watched(&state.desktop));
+        let pushed = ended.iter().find(|(k, _)| *k == wire);
+        assert!(pushed.is_some(), "end not pushed: {ended:?}");
+        // What the page fetches for the pushed version says the fetch ended.
+        let fetching = state.gh_status_in_flight.lock().unwrap().contains(&key);
+        assert!(!fetching);
+    });
+}
+
+/// A refresh or fetch that panics still ends: the guard's drop clears the
+/// flag, so the next refresh is not refused forever.
+#[test]
+fn a_guard_dropped_in_a_panic_ends_its_refresh_and_fetch() {
+    with_storage(|dir| {
+        let state = state_over(dir, er_engine::ports::Ports::for_test());
+        let key = ("acme".to_string(), "widgets".to_string(), 9);
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _refresh = state.begin_pr_list_refresh();
+            let _fetch = state.begin_status_fetch(&key);
+            panic!("the fetch failed");
+        }));
+        assert!(panicked.is_err());
+        assert!(!jobs_of(&state).1.pr_list_refresh);
+        assert!(!state.loading.lock().unwrap().pr_list);
+        assert!(state.begin_pr_list_refresh().is_some());
+        assert!(state.begin_status_fetch(&key).is_some());
+    });
+}
+
+/// Every source file under `src`, outside the tests, with its path.
+fn sources() -> Vec<(String, String)> {
+    fn walk(dir: &std::path::Path, out: &mut Vec<(String, String)>) {
+        let entries = std::fs::read_dir(dir).unwrap_or_else(|e| panic!("{dir:?}: {e}"));
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if path.file_name().is_some_and(|name| name != "tests") {
+                    walk(&path, out);
+                }
+            } else if path.extension().is_some_and(|ext| ext == "rs") {
+                let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{e}"));
+                out.push((path.to_string_lossy().into_owned(), text));
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+        &mut out,
+    );
+    out
+}
+
+/// Every PR-list refresh and status fetch starts through its begin helper,
+/// whose guard ends it: nothing outside `state.rs` writes the flags or the
+/// in-flight set, and each kick, loop and fetch site names the helper.
+/// Reads the source, so no `gh` runs.
+#[test]
+fn every_refresh_and_status_fetch_goes_through_its_guard() {
+    let sources = sources();
+    for (path, text) in sources
+        .iter()
+        .filter(|(path, _)| !path.ends_with("/state.rs"))
+    {
+        for (i, line) in text.lines().enumerate() {
+            let code = line.split("//").next().unwrap_or_default();
+            for flag in [".pr_list", ".gh_status"] {
+                for (at, _) in code.match_indices(flag) {
+                    let rest = code[at + flag.len()..].trim_start();
+                    let assigns = rest.starts_with('=') && !rest.starts_with("==");
+                    assert!(!assigns, "{path}:{} sets {flag} itself", i + 1);
+                }
+                let swaps = code.contains(&format!("&mut flags{flag}"));
+                assert!(!swaps, "{path}:{} sets {flag} itself", i + 1);
+            }
+            // The set may be named only where a state is built.
+            let named = code.contains("gh_status_in_flight");
+            let builds =
+                code.contains("gh_status_in_flight:") || code.contains("let gh_status_in_flight");
+            let reads = path.ends_with("/resources/pr.rs");
+            assert!(
+                !named || builds || reads,
+                "{path}:{} reaches the in-flight set",
+                i + 1
+            );
+        }
+        if path.ends_with("/resources/pr.rs") {
+            assert!(
+                !text.contains(".insert(") && !text.contains(".remove("),
+                "{path} writes a set"
+            );
+        }
+    }
+    // The body of `fn name` in `text`, up to the next item at column 0.
+    let body = |name: &str| -> String {
+        let pattern = format!("fn {name}(");
+        let (_, text) = sources
+            .iter()
+            .find(|(_, text)| text.contains(&pattern))
+            .unwrap_or_else(|| panic!("no fn {name}"));
+        let rest = &text[text.find(&pattern).unwrap_or_default()..];
+        rest[..rest.find("\n}\n").unwrap_or(rest.len())].to_string()
+    };
+    for (name, begin) in [
+        ("kick_pr_list_refresh", "begin_pr_list_refresh()"),
+        ("kick_github_status_refresh", "begin_status_fetch("),
+        ("refresh_status_now", "begin_status_fetch("),
+    ] {
+        assert!(body(name).contains(begin), "{name} skips {begin}");
+    }
+    // Each fetch call outside its definition sits under a begin whose guard
+    // is kept.
+    for (path, text) in &sources {
+        let lines: Vec<&str> = text.lines().collect();
+        for (i, line) in lines.iter().enumerate() {
+            let begin = if line.contains(".refresh_prs(") || line.contains(".refresh_remote_prs(") {
+                "begin_pr_list_refresh()"
+            } else if line.contains("fetch_and_store_github_status(") && !line.contains("fn ") {
+                "begin_status_fetch("
+            } else {
+                continue;
+            };
+            let above = &lines[i.saturating_sub(30)..i];
+            let kept = above
+                .iter()
+                .any(|l| l.contains(begin) && !l.contains("let _ =") && !l.contains("if "));
+            assert!(kept, "{path}:{} fetches without {begin}", i + 1);
+        }
+    }
 }
 
 fn jobs_of(state: &AppState) -> (u64, er_protocol::Jobs) {
@@ -283,12 +440,16 @@ fn a_pr_list_refresh_shows_in_jobs_while_it_runs() {
         let state = state_over(dir, er_engine::ports::Ports::for_test());
         let (before, idle) = jobs_of(&state);
         assert!(!idle.pr_list_refresh);
-        assert!(state.begin_pr_list_refresh());
-        assert!(!state.begin_pr_list_refresh(), "a second refresh began");
+        let refresh = state.begin_pr_list_refresh();
+        assert!(refresh.is_some());
+        assert!(
+            state.begin_pr_list_refresh().is_none(),
+            "a second refresh began"
+        );
         let (started, running) = jobs_of(&state);
         assert!(running.pr_list_refresh);
         assert!(started > before, "{started} after {before}");
-        state.end_pr_list_refresh();
+        drop(refresh);
         let (ended, done) = jobs_of(&state);
         assert!(!done.pr_list_refresh);
         assert!(ended > started, "{ended} after {started}");

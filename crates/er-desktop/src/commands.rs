@@ -555,17 +555,17 @@ pub fn kick_github_status_refresh(
     number: u64,
 ) {
     let key = (owner.clone(), repo.clone(), number);
-    if !desktop.begin_status_fetch(&key) {
+    let Some(fetch) = desktop.begin_status_fetch(&key) else {
         return; // already fetching
-    }
+    };
     let desktop = desktop.clone();
     std::thread::spawn(move || {
+        let _fetch = fetch;
         let cache = &desktop.gh_status_cache;
         if fetch_and_store_github_status(cache, &desktop.desktop_revision, &owner, &repo, number) {
             // Persist after the lock is released (the save helper re-locks).
             crate::gh_status_cache::save_persisted_gh_status_cache(cache);
         }
-        desktop.end_status_fetch(&key);
     });
 }
 
@@ -8821,9 +8821,9 @@ pub(crate) fn kick_pr_list_refresh(
     remote: Option<String>,
     prefs: impl FnOnce() -> InboxConfig + Send + 'static,
 ) -> Result<(), String> {
-    if !desktop.begin_pr_list_refresh() {
+    let Some(refresh) = desktop.begin_pr_list_refresh() else {
         return Ok(());
-    }
+    };
     let desktop = desktop.clone();
     std::thread::spawn(move || {
         #[expect(
@@ -8863,7 +8863,7 @@ pub(crate) fn kick_pr_list_refresh(
             process_inbox_after_pr_refresh(handles, &prefs, Some(remote));
         }
         process_inbox_after_pr_refresh(handles, &prefs, None);
-        desktop.end_pr_list_refresh();
+        drop(refresh);
         crate::profile_log::bump_desktop_revision(&desktop.desktop_revision, reason);
     });
     Ok(())
@@ -12653,6 +12653,7 @@ mod tests {
             gh_status_cache,
             loading,
             gh_status_in_flight: Arc::new(Mutex::new(HashSet::new())),
+            gh_status_fetched: Arc::default(),
             pr_open_prefetch_in_flight: Arc::new(Mutex::new(HashMap::new())),
             branch_preload_in_flight: Arc::new(Mutex::new(HashSet::new())),
             pr_ref_fetch_in_flight: Arc::new(Mutex::new(HashSet::new())),

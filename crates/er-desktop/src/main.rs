@@ -1163,6 +1163,7 @@ fn main() {
         pr_list_clock: session.clock(),
         status_fetch_clock: session.clock(),
         gh_status_in_flight: Arc::clone(&gh_status_in_flight),
+        gh_status_fetched: Arc::default(),
         pr_open_prefetch_in_flight: Arc::new(Mutex::new(std::collections::HashMap::new())),
         branch_preload_in_flight: Arc::new(Mutex::new(std::collections::HashSet::new())),
         pr_ref_fetch_in_flight: Arc::new(Mutex::new(std::collections::HashSet::new())),
@@ -1481,9 +1482,9 @@ fn main() {
             let Some(key) = key else {
                 continue;
             };
-            if !fetches.begin_status_fetch(&key) {
+            let Some(_fetch) = fetches.begin_status_fetch(&key) else {
                 continue;
-            }
+            };
             let (owner, repo, number) = &key;
             commands::fetch_and_store_github_status(
                 &gh_status_bg,
@@ -1492,7 +1493,6 @@ fn main() {
                 repo,
                 *number,
             );
-            fetches.end_status_fetch(&key);
         });
     }
 
@@ -1670,7 +1670,7 @@ fn main() {
             .build()
             .expect("failed to build tokio runtime");
         let run_refresh = || {
-            let _ = bg_state.begin_pr_list_refresh();
+            let refresh = bg_state.begin_pr_list_refresh();
             let failed = rt.block_on(bg_owner.refresh_prs(Arc::clone(&bg_github)));
             let prefs = er_desktop::app_owner::startup::inbox_prefs(&bg_state);
             let handles = commands::InboxRefreshHandles {
@@ -1684,14 +1684,14 @@ fn main() {
                 commands::process_inbox_after_pr_refresh(handles, &prefs, Some(remote));
             }
             commands::process_inbox_after_pr_refresh(handles, &prefs, None);
-            bg_state.end_pr_list_refresh();
+            drop(refresh);
             profile_log::bump_desktop_revision(&bg_desktop_rev, "pr_cache_refresh");
         };
 
         // Startup: fetch the active project's remote first so its sidebar PR
         // list lights up quickly. The full multi-remote sweep follows.
         if let Some(active_remote) = pr_cache::active_project_remote() {
-            let _ = bg_state.begin_pr_list_refresh();
+            let refresh = bg_state.begin_pr_list_refresh();
             let success =
                 rt.block_on(bg_owner.refresh_remote_prs(Arc::clone(&bg_github), &active_remote));
             let prefs = er_desktop::app_owner::startup::inbox_prefs(&bg_state);
@@ -1707,7 +1707,7 @@ fn main() {
                 &prefs,
                 if success { None } else { Some(active_remote) },
             );
-            bg_state.end_pr_list_refresh();
+            drop(refresh);
             profile_log::bump_desktop_revision(&bg_desktop_rev, "pr_cache_active_remote");
         }
 

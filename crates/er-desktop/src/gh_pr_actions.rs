@@ -282,6 +282,9 @@ fn same_repo_status(
 /// before the action until the next 30s poll. The ticket keeps that in-flight
 /// fetch from overwriting this one when it finishes later.
 fn refresh_status_now(state: &DesktopState, owner: &str, repo: &str, number: u64) {
+    // A fetch already running ends on its own guard; this one shows only
+    // when it began the fetch.
+    let _fetch = state.begin_status_fetch(&(owner.to_string(), repo.to_string(), number));
     if fetch_and_store_github_status(
         &state.gh_status_cache,
         &state.desktop_revision,

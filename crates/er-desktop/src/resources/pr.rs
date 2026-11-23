@@ -78,12 +78,12 @@ fn fetching(desktop: &DesktopState, remote: &str, number: u64) -> bool {
         .is_ok_and(|in_flight| in_flight.contains(&key))
 }
 
-/// The statuses being fetched, as `pr_status` keys.
+/// Every status a fetch has started for, as `pr_status` keys.
 pub fn fetched_keys(desktop: &DesktopState) -> Vec<ResourceKey> {
-    let Ok(in_flight) = desktop.gh_status_in_flight.lock() else {
+    let Ok(fetched) = desktop.gh_status_fetched.lock() else {
         return Vec::new();
     };
-    in_flight
+    fetched
         .iter()
         .map(|(owner, repo, number)| ResourceKey::PrStatus {
             remote: format!("{owner}/{repo}"),

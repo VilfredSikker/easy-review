@@ -637,7 +637,8 @@ pub fn watched(desktop: &DesktopState) -> BTreeMap<Watched, u64> {
         };
         (Watched::Sidebar(key), v)
     }));
-    // A status fetched for the first time has no stored version yet.
+    // A status whose fetches stored nothing has no stored version, and stays
+    // watched after the fetch ends so its `fetching: false` is pushed.
     for key in super::pr::fetched_keys(desktop) {
         let fetching = super::pr::status_version(desktop, 0);
         versions.entry(Watched::Sidebar(key)).or_insert(fetching);
