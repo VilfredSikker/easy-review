@@ -127,6 +127,7 @@ fn control(
 
 /// The flow command a control names. Acceptance carries more and goes
 /// through [`accept`].
+#[derive(Debug, PartialEq, Eq)]
 pub enum Control {
     /// `scope` as the page names it: `current`, `pr` or a git scope.
     Start(String),

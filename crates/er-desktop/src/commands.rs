@@ -12316,6 +12316,8 @@ mod tests {
     #[cfg(feature = "v1-service")]
     mod flow_resource_tests;
     #[cfg(feature = "v1-service")]
+    mod flow_wire_tests;
+    #[cfg(feature = "v1-service")]
     mod github_sender_tests;
     #[cfg(feature = "v1-service")]
     mod hunks_tests;

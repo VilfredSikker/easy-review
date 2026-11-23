@@ -125,6 +125,13 @@ pub enum ResourceKey {
     /// The viewer's pending review on one open tab's PR, read from GitHub on
     /// each fetch and never pushed.
     PendingReview { tab: TabKey },
+    /// A review flow's run, read from the bucket the flow captured on the
+    /// actor that runs it, on each fetch and never pushed.
+    ReviewFlowRun {
+        tab: TabKey,
+        er_dir: String,
+        run_id: String,
+    },
 }
 
 /// One resource's content, tagged with the kind of key it answers.
@@ -162,6 +169,7 @@ pub enum Resource {
     Pr(Box<TabPr>),
     PrStatus(Box<PrStatus>),
     PendingReview(Box<PendingReview>),
+    ReviewFlowRun(ArenaRun),
 }
 
 /// The open tabs in strip order, and the active one.

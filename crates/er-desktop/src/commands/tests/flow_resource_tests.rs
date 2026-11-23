@@ -46,14 +46,25 @@ pub(super) fn flow_state(
     ports: er_engine::ports::Ports,
     sink: Arc<HoldingSink>,
 ) -> AppState {
-    let config = dir.path().join("settings").join("config.toml");
-    std::fs::create_dir_all(config.parent().unwrap_or_else(|| Path::new("/")))
+    let deps = WorkspaceDeps::new(ports.clone()).with_jobs(sink);
+    state_with(dir, ports, deps, FLOW_CONFIG)
+}
+
+/// A state whose actors run on `deps` and whose settings actor reads
+/// `config`.
+pub(super) fn state_with(
+    dir: &ReviewFlowTestDir,
+    ports: er_engine::ports::Ports,
+    deps: WorkspaceDeps,
+    config: &str,
+) -> AppState {
+    let path = dir.path().join("settings").join("config.toml");
+    std::fs::create_dir_all(path.parent().unwrap_or_else(|| Path::new("/")))
         .unwrap_or_else(|e| panic!("settings dir: {e}"));
-    std::fs::write(&config, FLOW_CONFIG).unwrap_or_else(|e| panic!("config: {e}"));
+    std::fs::write(&path, config).unwrap_or_else(|e| panic!("config: {e}"));
     let mut state = review_flow_test_state(dir);
-    state.desktop.ports = ports.clone();
-    let deps = WorkspaceDeps::new(ports).with_jobs(sink);
-    state.service = Arc::new(ServiceState::with_deps(deps, |_| {}).with_config_path(config));
+    state.desktop.ports = ports;
+    state.service = Arc::new(ServiceState::with_deps(deps, |_| {}).with_config_path(path));
     state
 }
 

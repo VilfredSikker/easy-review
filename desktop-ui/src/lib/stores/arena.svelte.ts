@@ -1,4 +1,3 @@
-import { invoke } from "@tauri-apps/api/core";
 import { arenaError, arenaLog, arenaWarn } from "$lib/arena/log";
 import { normalizeArenaSnapshot } from "$lib/arena/normalize";
 import {
@@ -17,6 +16,7 @@ import { refreshOverlayIfCurrent } from "$lib/arenaOverlayRefresh";
 import { importableFindings, runDigest } from "$lib/arena/arenaView";
 import { diffNav } from "$lib/stores/diffNav.svelte";
 import { arenaAdapter } from "$lib/stores/arenaResource.svelte";
+import { reviewFlowAdapter } from "$lib/stores/reviewFlowResource.svelte";
 import type {
   ArenaProgressState,
   ArenaRunDigest,
@@ -292,7 +292,7 @@ class ArenaStore {
             flowCommandCompleted = true;
           },
           async (flowOrigin) => normalizeArenaSnapshot(
-            await invoke<ArenaRunSnapshot>("flow_get_run", { erDir: flowOrigin.erDir, runId: flowOrigin.runId }),
+            await reviewFlowAdapter.getRun(flowOrigin.erDir, flowOrigin.runId),
           ),
         );
       } else {
@@ -611,7 +611,7 @@ class ArenaStore {
       const opened = await openArenaHistory(id, currentFlow, {
         loadArena: async (historyRunId) => normalizeArenaSnapshot(await arenaAdapter.get(historyRunId)),
         loadFlow: async (origin) => normalizeArenaSnapshot(
-          await invoke<ArenaRunSnapshot>("flow_get_run", { erDir: origin.erDir, runId: origin.runId }),
+          await reviewFlowAdapter.getRun(origin.erDir, origin.runId),
         ),
       });
       if (seq !== this.overlaySeq) return;
@@ -706,7 +706,7 @@ class ArenaStore {
     if (!erDir || !runId) return;
     try {
       const snap = normalizeArenaSnapshot(
-        await invoke<ArenaRunSnapshot>("flow_get_run", { erDir, runId }),
+        await reviewFlowAdapter.getRun(erDir, runId),
       );
       if (snap.run.id !== runId || !isArenaRunFromSnapshot(snap)) {
         throw new Error("The captured flow run is not an arena result");
@@ -750,7 +750,7 @@ class ArenaStore {
         () => this.overlayIdentity(),
         async () => {
           const snap = requested.flowOrigin
-            ? await invoke<ArenaRunSnapshot>("flow_get_run", { erDir: requested.flowOrigin.erDir, runId: id })
+            ? await reviewFlowAdapter.getRun(requested.flowOrigin.erDir, id)
             : await arenaAdapter.get(id);
           const normalized = normalizeArenaSnapshot(snap);
           if (normalized.run.id !== id) throw new Error("Arena refresh returned a different run");

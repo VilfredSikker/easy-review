@@ -97,20 +97,30 @@ pub struct DesktopState {
     pub live_jobs: LiveJobs,
 }
 
-/// A count of the changes seen in the live runs `jobs` lists. The actors
-/// publish them in their views, which move for every diff or annotation
-/// write too, so the count moves only when the runs themselves differ from
-/// the last ones seen.
+/// A count of the changes seen in the live runs and review flows `jobs`
+/// lists. The actors publish them in their views, which move for every diff
+/// or annotation write too, so the count moves only when the runs or flows
+/// themselves differ from the last ones seen.
 #[derive(Clone, Default)]
 pub struct LiveJobs {
     seen: Arc<Mutex<Vec<er_protocol::ArenaRunJob>>>,
+    flows: Arc<Mutex<Vec<er_protocol::ReviewFlowJob>>>,
     revision: Arc<AtomicU64>,
 }
 
 impl LiveJobs {
     /// The count after comparing `now` with the runs seen last.
     pub fn observe(&self, now: &[er_protocol::ArenaRunJob]) -> u64 {
-        let mut seen = match self.seen.lock() {
+        self.compare(&self.seen, now)
+    }
+
+    /// The count after comparing `now` with the flows seen last.
+    pub fn observe_flows(&self, now: &[er_protocol::ReviewFlowJob]) -> u64 {
+        self.compare(&self.flows, now)
+    }
+
+    fn compare<T: Clone + PartialEq>(&self, seen: &Mutex<Vec<T>>, now: &[T]) -> u64 {
+        let mut seen = match seen.lock() {
             Ok(seen) => seen,
             Err(poisoned) => poisoned.into_inner(),
         };

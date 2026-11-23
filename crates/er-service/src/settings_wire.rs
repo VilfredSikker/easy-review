@@ -263,7 +263,8 @@ pub fn settings_command(command: wire::Command) -> Result<SettingsCommand, Box<w
         | wire::Command::AddPendingReviewComment { .. }
         | wire::Command::RemovePendingReviewComment { .. }
         | wire::Command::SubmitPendingReview { .. }
-        | wire::Command::RunGithubPrAction { .. }) => return Err(Box::new(other)),
+        | wire::Command::RunGithubPrAction { .. }
+        | wire::Command::ReviewFlow { .. }) => return Err(Box::new(other)),
     })
 }
 
