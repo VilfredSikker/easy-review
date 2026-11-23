@@ -16,7 +16,30 @@ pub type AutoTriageInFlight = Arc<Mutex<HashSet<String>>>;
 pub struct AutoTriageContext {
     pub app: Arc<Mutex<App>>,
     pub in_flight: AutoTriageInFlight,
+    /// Called after each insert into or removal from `in_flight`.
+    pub queue_moved: Arc<dyn Fn() + Send + Sync>,
     pub desktop_revision: Arc<AtomicU64>,
+}
+
+impl AutoTriageContext {
+    /// Claims `key` in the request set; false when it is already there.
+    fn claim(&self, key: &str) -> bool {
+        let claimed = self
+            .in_flight
+            .lock()
+            .is_ok_and(|mut guard| guard.insert(key.to_string()));
+        if claimed {
+            (self.queue_moved)();
+        }
+        claimed
+    }
+
+    fn release(&self, key: &str) {
+        if let Ok(mut guard) = self.in_flight.lock() {
+            guard.remove(key);
+        }
+        (self.queue_moved)();
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -81,21 +104,11 @@ fn resolve_er_dir(
 pub fn dispatch_auto_triage(ctx: &AutoTriageContext, requests: Vec<AutoTriageRequest>) {
     for req in requests {
         let key = flight_key(&req);
-        {
-            let mut guard = match ctx.in_flight.lock() {
-                Ok(g) => g,
-                Err(_) => continue,
-            };
-            if !guard.insert(key.clone()) {
-                continue;
-            }
+        if !ctx.claim(&key) {
+            continue;
         }
 
-        let ctx = AutoTriageContext {
-            app: Arc::clone(&ctx.app),
-            in_flight: Arc::clone(&ctx.in_flight),
-            desktop_revision: Arc::clone(&ctx.desktop_revision),
-        };
+        let ctx = ctx.clone();
 
         std::thread::spawn(move || {
             let result = run_auto_triage_once(&ctx, &req);
@@ -106,9 +119,7 @@ pub fn dispatch_auto_triage(ctx: &AutoTriageContext, requests: Vec<AutoTriageReq
                     req.pr_number
                 );
             }
-            if let Ok(mut guard) = ctx.in_flight.lock() {
-                guard.remove(&key);
-            }
+            ctx.release(&key);
         });
     }
 }
@@ -201,21 +212,11 @@ pub fn dispatch_branch_triage(
     review_ignore_globs: &[String],
 ) {
     let key = format!("branch:{remote}:{branch}");
-    {
-        let mut guard = match ctx.in_flight.lock() {
-            Ok(g) => g,
-            Err(_) => return,
-        };
-        if !guard.insert(key.clone()) {
-            return;
-        }
+    if !ctx.claim(&key) {
+        return;
     }
 
-    let ctx = AutoTriageContext {
-        app: Arc::clone(&ctx.app),
-        in_flight: Arc::clone(&ctx.in_flight),
-        desktop_revision: Arc::clone(&ctx.desktop_revision),
-    };
+    let ctx = ctx.clone();
     let remote = remote.to_string();
     let repo_root = repo_root.to_string();
     let branch = branch.to_string();
@@ -226,9 +227,7 @@ pub fn dispatch_branch_triage(
         if let Err(e) = &result {
             log::warn!("branch_triage failed branch={branch}: {e}");
         }
-        if let Ok(mut guard) = ctx.in_flight.lock() {
-            guard.remove(&key);
-        }
+        ctx.release(&key);
     });
 }
 

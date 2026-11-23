@@ -46,6 +46,8 @@ pub mod state;
 pub mod status_loop;
 pub mod store_registry;
 pub mod tabs;
+#[cfg(feature = "v1-service")]
+pub mod tasks;
 pub mod terminal;
 pub mod triage_update;
 pub mod view_state;

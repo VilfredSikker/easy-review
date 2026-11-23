@@ -2,7 +2,8 @@
 //! snapshot, driven by the backend so each duty has one driver.
 //!
 //! A tick asks every loaded tab's actor to read its sidecars again, so an
-//! outside write reaches the content with no frontend call, then runs the
+//! outside write reaches the content with no frontend call, has the task
+//! host retire finished tasks and start queued ones, then runs the
 //! App's duties: agent logs and commands, background tasks, the AI task inbox
 //! and the active tab's sidecar check (the only path that brings an outside
 //! write into the App's AI state, which the export and the ask runs still
@@ -79,6 +80,7 @@ pub fn follow_revisions(
 /// so the tick never wakes itself.
 pub fn run(desktop: &DesktopState, app: &Mutex<App>) {
     reload_loaded_tabs(desktop);
+    crate::tasks::poll(desktop);
     let moved = {
         let mut app = app.lock().unwrap_or_else(PoisonError::into_inner);
         let before = AppStamp::of(&app);

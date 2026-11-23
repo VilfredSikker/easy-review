@@ -19,6 +19,20 @@ pub fn notice(level: NoticeLevel, message: String) -> Notice {
     }
 }
 
+/// Shows `message` once, worded and levelled as an engine notification;
+/// logged when no window is up.
+pub fn tell(desktop: &crate::state::DesktopState, message: String, long: bool) {
+    let handle = desktop
+        .tauri_app_handle
+        .lock()
+        .ok()
+        .and_then(|handle| handle.clone());
+    match handle {
+        Some(handle) => emit(&handle, &engine_notice(message, long)),
+        None => log::info!("{message}"),
+    }
+}
+
 /// An engine notification as a notice, with the level the page gave it when
 /// it read the snapshot: an error by its wording, otherwise a success, and
 /// a long dwell only for a success.

@@ -3,6 +3,8 @@
   import { SvelteMap } from "svelte/reactivity";
   import { app } from "$lib/stores/app.svelte";
   import { tabsResource } from "$lib/stores/tabsResource.svelte";
+  // With the flag on, the tasks below come from `jobs`.
+  import "$lib/stores/tasksResource.svelte";
   import { aggregateJobs } from "$lib/runningJobs";
   import { otherJobs, ownAgentCommands, runningPillView } from "$lib/runningPill";
   import JobsPopover from "./JobsPopover.svelte";

@@ -1,8 +1,9 @@
 <script lang="ts">
+  import { untrack } from "svelte";
   import type { BackgroundTaskSnapshot, AgentLogEntry } from "$lib/types";
   import { sourceColor } from "$lib/utils/agentLog";
   import { copyToClipboard } from "$lib/clipboard";
-  import { invoke } from "@tauri-apps/api/core";
+  import { tasksAdapter } from "$lib/stores/tasksResource.svelte";
 
   /** Live log tail of one background task, expanded inside a jobs-popover row. */
   interface Props {
@@ -21,21 +22,9 @@
   const running = $derived(task?.status === "running");
 
   $effect(() => {
-    if (!running) return;
     const id = taskId;
-    let cancelled = false;
-    const handle = setInterval(async () => {
-      try {
-        const result = await invoke<AgentLogEntry[]>("get_background_task_log", { taskId: id });
-        if (!cancelled) logLines = result;
-      } catch {
-        // A pruned task stops answering; the snapshot tail stays on screen.
-      }
-    }, 1000);
-    return () => {
-      cancelled = true;
-      clearInterval(handle);
-    };
+    const live = running;
+    return untrack(() => tasksAdapter.follow(id, live, (lines) => (logLines = lines)));
   });
 
   function handleScroll() {

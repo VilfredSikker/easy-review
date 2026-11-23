@@ -609,59 +609,123 @@ fn is_one_pending_review_error(raw: &str) -> bool {
     raw.to_lowercase().contains("one pending review")
 }
 
-/// Files the finished and failed background tasks in the inbox. The backend
-/// tick runs it with the flag on; the poll runs it with the flag off.
+/// Files the App's finished and failed background tasks in the inbox. The
+/// backend tick runs it with the flag on; the poll runs it with the flag off.
+/// The task host files each of its own tasks as it finishes
+/// (`file_tasks_in_inbox`).
 pub(crate) fn process_ai_task_inbox(app: &App, state: &DesktopState) {
-    let now = now_ms();
     let tasks = app.background_task_snapshots();
     let tab = app.tab();
-    let repo_root = tab.repo_root.clone();
-    let remote = tab.remote_repo.clone();
-    let pr_number = tab.pr_number;
-    let branch = tab
-        .local_branch_view
-        .clone()
-        .unwrap_or_else(|| tab.current_branch.clone());
+    let target = InboxTarget {
+        project_id: projects::resolve_project_id_for_inbox(
+            None,
+            Some(tab.repo_root.as_str()),
+            tab.remote_repo.as_deref(),
+        ),
+        repo_root: Some(tab.repo_root.clone()),
+        remote: tab.remote_repo.clone(),
+        pr_number: tab.pr_number,
+        branch: Some(
+            tab.local_branch_view
+                .clone()
+                .unwrap_or_else(|| tab.current_branch.clone()),
+        ),
+        url: None,
+    };
+    let rows = tasks.iter().map(|task| {
+        let row = InboxTask {
+            id: &task.id,
+            kind: &task.kind,
+            status: &task.status,
+            target_label: &task.target_label,
+            label: &task.label,
+            error: task.error.as_deref(),
+        };
+        (row, target.clone())
+    });
+    file_in_inbox(state, &app.config.inbox, rows);
+}
 
-    let project_id =
-        projects::resolve_project_id_for_inbox(None, Some(repo_root.as_str()), remote.as_deref());
+/// Files finished background tasks of the flag path in the inbox, each
+/// under its own target's project.
+#[cfg(feature = "v1-service")]
+pub(crate) fn file_tasks_in_inbox(state: &DesktopState, tasks: &[er_protocol::TaskJob]) {
+    let config = crate::arena_service::config(state);
+    let rows = tasks.iter().map(|task| {
+        let row = InboxTask {
+            id: &task.id,
+            kind: &task.kind,
+            status: &task.status,
+            target_label: &task.target_label,
+            label: &task.label,
+            error: task.error.as_deref(),
+        };
+        let target = InboxTarget {
+            project_id: projects::resolve_project_id_for_inbox(
+                None,
+                Some(task.repo_root.as_str()),
+                task.remote_repo.as_deref(),
+            ),
+            repo_root: Some(task.repo_root.clone()),
+            remote: task.remote_repo.clone(),
+            pr_number: task.pr_number,
+            branch: Some(task.branch_label.clone()),
+            url: None,
+        };
+        (row, target)
+    });
+    file_in_inbox(state, &config.inbox, rows);
+}
 
+/// One background task as the inbox files it.
+pub(crate) struct InboxTask<'a> {
+    id: &'a str,
+    kind: &'a str,
+    status: &'a str,
+    target_label: &'a str,
+    label: &'a str,
+    error: Option<&'a str>,
+}
+
+fn file_in_inbox<'a>(
+    state: &DesktopState,
+    config: &er_engine::config::InboxConfig,
+    tasks: impl Iterator<Item = (InboxTask<'a>, InboxTarget)>,
+) {
+    let now = now_ms();
     let mut emitted_any = false;
     let mut just_added: Vec<InboxItem> = Vec::new();
     if let Ok(mut inbox) = state.inbox.lock() {
-        for task in tasks {
-            let (kind, severity, title, body) = match task.status.as_str() {
+        for (task, target) in tasks {
+            let failure = |fallback: &str| task.error.unwrap_or(fallback).to_string();
+            let (kind, severity, title, body) = match task.status {
                 "done" if task.kind == "triage" => (
                     "ai_triage_done".to_string(),
                     "success".to_string(),
                     format!("Triage completed ({})", task.target_label),
-                    task.label.clone(),
+                    task.label.to_string(),
                 ),
                 "done" => (
                     "ai_review_done".to_string(),
                     "success".to_string(),
                     format!("AI review completed ({})", task.target_label),
-                    task.label.clone(),
+                    task.label.to_string(),
                 ),
                 "failed" if task.kind == "triage" => (
                     "ai_triage_failed".to_string(),
                     "error".to_string(),
                     format!("Triage failed ({})", task.target_label),
-                    task.error
-                        .clone()
-                        .unwrap_or_else(|| "Triage failed".to_string()),
+                    failure("Triage failed"),
                 ),
                 "failed" => (
                     "ai_review_failed".to_string(),
                     "error".to_string(),
                     format!("AI review failed ({})", task.target_label),
-                    task.error
-                        .clone()
-                        .unwrap_or_else(|| "Review failed".to_string()),
+                    failure("Review failed"),
                 ),
                 _ => continue,
             };
-            if !app.config.inbox.stores(&kind) {
+            if !config.stores(&kind) {
                 continue;
             }
             let item = InboxItem {
@@ -671,14 +735,7 @@ pub(crate) fn process_ai_task_inbox(app: &App, state: &DesktopState) {
                 title,
                 body,
                 source: "ai".to_string(),
-                target: InboxTarget {
-                    project_id: project_id.clone(),
-                    repo_root: Some(repo_root.clone()),
-                    remote: remote.clone(),
-                    pr_number,
-                    branch: Some(branch.clone()),
-                    url: None,
-                },
+                target,
                 created_at_ms: now,
                 read_at_ms: None,
                 dedupe_key: format!("ai:{}:{}", task.id, task.status),
@@ -690,12 +747,7 @@ pub(crate) fn process_ai_task_inbox(app: &App, state: &DesktopState) {
         }
     }
     for item in &just_added {
-        maybe_send_native_notification(
-            &state.inbox,
-            &state.tauri_app_handle,
-            &app.config.inbox,
-            item,
-        );
+        maybe_send_native_notification(&state.inbox, &state.tauri_app_handle, config, item);
     }
     if emitted_any {
         crate::inbox::save_inbox_state(&state.inbox);
@@ -2104,10 +2156,20 @@ fn ingest_github_notifications(
     }
 }
 
-fn auto_triage_ctx(state: &AppState) -> crate::auto_triage::AutoTriageContext {
+/// The sidebar triage context. On the flag path a move of the request set
+/// moves `jobs`, which lists it.
+pub(crate) fn auto_triage_ctx(state: &AppState) -> crate::auto_triage::AutoTriageContext {
+    #[cfg(feature = "v1-service")]
+    let queue_moved: Arc<dyn Fn() + Send + Sync> = {
+        let clock = state.desktop.tasks.clock.clone();
+        Arc::new(move || clock.bump())
+    };
+    #[cfg(not(feature = "v1-service"))]
+    let queue_moved: Arc<dyn Fn() + Send + Sync> = Arc::new(|| {});
     crate::auto_triage::AutoTriageContext {
         app: Arc::clone(&state.app),
         in_flight: Arc::clone(&state.auto_triage_in_flight),
+        queue_moved,
         desktop_revision: Arc::clone(&state.desktop_revision),
     }
 }
@@ -12078,6 +12140,8 @@ mod tests {
     #[cfg(feature = "v1-service")]
     mod tab_resource_tests;
     #[cfg(feature = "v1-service")]
+    mod task_tests;
+    #[cfg(feature = "v1-service")]
     mod ui_annotation_write_tests;
     #[cfg(feature = "v1-service")]
     mod watcher_tests;
@@ -12416,6 +12480,8 @@ mod tests {
             line_commits_cache: Arc::default(),
             session: Default::default(),
             live_jobs: Default::default(),
+            #[cfg(feature = "v1-service")]
+            tasks: Default::default(),
         };
         #[cfg(feature = "v1-service")]
         crate::app_owner::startup::read_inbox_prefs_from_settings(&desktop);

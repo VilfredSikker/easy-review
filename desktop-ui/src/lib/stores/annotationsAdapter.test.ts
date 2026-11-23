@@ -71,6 +71,8 @@ const inFlight: Resource = {
   ],
   arena_runs: [],
   review_flows: [],
+  tasks: [],
+  triage: [],
 };
 const annotations: Resource = { kind: "annotations", ai: ai(), tour: { available: false, fresh: false, scope: "branch", title: "", overviewMarkdown: "", pillars: [], createdAt: "", diffHash: "" }, other_bucket: null, view: { repo_root: "/repo", pr_number: null, branch: "", mode: "branch" } };
 
@@ -105,7 +107,7 @@ describe("the annotations adapter", () => {
     expect(shown.ai.threads[0].replies.at(-1)?.ai_action).toBe("ask");
     expect(running.threads()?.[0].replies.map((r) => r.body_markdown)).toEqual([THINKING]);
 
-    const answered = adapter(true, [[JOBS, { kind: "jobs", ai_replies: [], arena_runs: [], review_flows: [] }], [annotationsKey(TAB), annotations]]);
+    const answered = adapter(true, [[JOBS, { kind: "jobs", ai_replies: [], arena_runs: [], review_flows: [], tasks: [], triage: [] }], [annotationsKey(TAB), annotations]]);
     expect(thinking(answered.overlay(appSnapshot()))).toEqual([0, 0]);
   });
 
