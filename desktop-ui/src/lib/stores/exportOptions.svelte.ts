@@ -8,6 +8,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { copyToClipboard } from "$lib/clipboard";
+import { asErError } from "$lib/protocol/client";
 import {
   buildExportOpts,
   collectExportItems,
@@ -95,7 +96,7 @@ class ExportOptionsStore {
       const count = countExportedItems(body);
       app.showToast("success", `Export copied · ${count} items, ${markdownLineCount(body)} lines of markdown`);
     } catch (e) {
-      app.showToast("error", `Export failed: ${String(e)}`);
+      app.showToast("error", `Export failed: ${asErError(e).message}`);
     }
   }
 }
