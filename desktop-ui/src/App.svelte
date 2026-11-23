@@ -38,6 +38,7 @@
   import TourEmptyState from "$lib/components/TourEmptyState.svelte";
   import { isReviewMainView } from "$lib/stores/reviewPageModel";
   import { sidebarProjects } from "$lib/sidebarReads";
+  import { projectsResource } from "$lib/stores/projectsResource.svelte";
   import { reviewPage } from "$lib/stores/reviewPage.svelte";
   import { refHighlight } from "$lib/stores/referenceHighlight.svelte";
   import OverviewView from "$lib/components/overview/OverviewView.svelte";
@@ -73,14 +74,20 @@
     }
   });
 
-  /** True when a loaded snapshot confirms there is no repo/diff and no saved projects. */
+  const hasOpenTabs = $derived(tabsResource.tabs.length > 0);
+  /**
+   * True when the loaded resources confirm there is no repo/diff and no saved
+   * projects. They arrive in separate fetches, so an open tab or a project
+   * list not yet fetched is not taken for an empty app.
+   */
   const naturalEmpty = $derived(
     pageView.current !== null &&
+      !hasOpenTabs &&
+      projectsResource.loaded &&
       pageView.current.branch === "" &&
       pageView.current.files.length === 0 &&
       sidebarProjects(pageView.current).length === 0,
   );
-  const hasOpenTabs = $derived(tabsResource.tabs.length > 0);
   const explicitFullWelcome = $derived(app.showEmptyState && pageView.current !== null && !hasOpenTabs);
   const showFullWelcome = $derived(
     showFullWelcomeFor({

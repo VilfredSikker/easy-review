@@ -133,6 +133,11 @@ export class ProjectsAdapter {
     return projectsFromResource(held.projects, branches, (remote) => this.prs(remote), this.deps.activeTab(), now);
   }
 
+  /** Whether the `projects` resource has arrived. */
+  get loaded(): boolean {
+    return this.deps.store.get(PROJECTS_KEY)?.value?.kind === "projects";
+  }
+
   /** The ids the `projects` resource lists; empty until it arrives. */
   get projectIds(): string[] {
     const held = this.deps.store.get(PROJECTS_KEY)?.value;
