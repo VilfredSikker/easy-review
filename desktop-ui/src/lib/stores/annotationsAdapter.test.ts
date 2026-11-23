@@ -6,7 +6,8 @@ import type { AiAnnotations } from "$lib/protocol/generated/AiAnnotations";
 import type { Resource } from "$lib/protocol/generated/Resource";
 import type { ResourceKey } from "$lib/protocol/generated/ResourceKey";
 import type { Versioned } from "$lib/protocol/generated/Versioned";
-import type { AiSnapshot, AppSnapshot, ThreadMessage } from "$lib/types";
+import type { AiSnapshot, AppSnapshot, ThreadMessage, ThreadSnapshot } from "$lib/types";
+import type { PendingPaint } from "./annotationWrites";
 import { AnnotationsAdapter, JOBS, annotationsKey, uiAnnotationsKey } from "./annotationsAdapter";
 import { diffKey } from "./diffAdapter";
 import { resourceKeyId } from "./resourceStore";
@@ -138,6 +139,27 @@ describe("the annotations adapter", () => {
       expect(shown.threads()?.[0].replies.map((r) => r.body_markdown), view).toEqual([THINKING]);
       expect(shown.fetchedTab(), view).toBe(TAB);
     }
+  });
+
+  it("draws the pending writes on threads() and the overlay, a row the server holds once", () => {
+    const held = ai().threads[0] as unknown as ThreadSnapshot;
+    const painted = (id: string, body: string): ThreadSnapshot => ({ ...held, id, root: { ...held.root, id, body_markdown: body } });
+    const paint: PendingPaint = {
+      threads: [painted("q-1", "painted again"), painted("q-2", "pending question")],
+      replies: [{ parentId: "q-1", reply: message("q-3", "pending reply") }],
+      hidden: [],
+    };
+    const shown = new AnnotationsAdapter({
+      flagOn: true,
+      store: holding([[annotationsKey(TAB), annotations]]),
+      activeKey: () => TAB,
+      paints: () => [paint],
+    });
+    const drawn = (threads: readonly ThreadSnapshot[] | null | undefined) =>
+      threads?.map((t) => [t.id, t.root.body_markdown, ...t.replies.map((r) => r.body_markdown)]);
+    const expected = [["q-1", "why?", "pending reply"], ["q-2", "pending question"]];
+    expect(drawn(shown.threads())).toEqual(expected);
+    expect(drawn(shown.overlay(appSnapshot()).ai.threads)).toEqual(expected);
   });
 
   it("reads the browser annotations with their DOM context parsed back", () => {
