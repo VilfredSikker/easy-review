@@ -5,6 +5,10 @@ use std::sync::{Arc, Mutex};
 use tauri::menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem, Submenu};
 use tauri::Manager;
 
+#[cfg(not(feature = "v1-service"))]
+use er_desktop::comment_tick::cached_head_oid;
+#[cfg(any(test, not(feature = "v1-service")))]
+use er_desktop::comment_tick::comment_sync_recently_synced;
 use er_desktop::frame_script::FRAME_SCRIPT;
 use er_desktop::snapshot::{
     LoadingFlags, LoadingState, PrInfo, ProjectMeta, WatchStatusSnapshot, WatchStatusState,
@@ -594,51 +598,6 @@ fn window_state_restore_flags() -> tauri_plugin_window_state::StateFlags {
     StateFlags::SIZE | StateFlags::POSITION | StateFlags::FULLSCREEN | StateFlags::DECORATIONS
 }
 
-/// Look up the cached head commit OID for `(owner, repo, number)` in the
-/// shared PR cache. Returns `""` when the remote/PR isn't cached yet —
-/// callers must treat that as "unknown" (fail open, never skip on it), since
-/// an empty OID is also `PrInfo::head_oid`'s `#[serde(default)]` value, not a
-/// real "no head" signal.
-fn cached_head_oid(
-    pr_cache: &pr_cache::PrCacheMap,
-    owner: &str,
-    repo: &str,
-    number: u64,
-) -> String {
-    pr_cache
-        .lock()
-        .ok()
-        .and_then(|cache| {
-            cache
-                .get(&format!("{owner}/{repo}"))
-                .and_then(|prs| prs.iter().find(|p| p.number == number))
-                .map(|p| p.head_oid.clone())
-        })
-        .unwrap_or_default()
-}
-
-/// Whether the background comment-sync loop should SKIP this tick: this PR's
-/// head OID is unchanged since the last successful sync AND that sync was less
-/// than `ttl` ago. This is a poll THROTTLE, not change-detection — PR comments
-/// and reviews are posted independently of any push, so an unchanged head OID
-/// does NOT mean "nothing new". `ttl` therefore bounds how stale the comment
-/// panel can get on a push-idle PR; the OID check only ACCELERATES resync after
-/// a push (a new head OID drops through the throttle so freshly-pushed review
-/// threads appear promptly). An empty/unknown `head_oid` never skips (fail open —
-/// keep syncing every tick until the probe loop populates a real OID). Pure so
-/// the skip decision is unit-testable without the surrounding thread/loop.
-fn comment_sync_recently_synced(
-    last_entry: Option<&(String, std::time::Instant)>,
-    head_oid: &str,
-    now: std::time::Instant,
-    ttl: std::time::Duration,
-) -> bool {
-    !head_oid.is_empty()
-        && last_entry.is_some_and(|(last_oid, last_at)| {
-            last_oid == head_oid && now.saturating_duration_since(*last_at) < ttl
-        })
-}
-
 /// Whether the pr-head-probe loop should SKIP the `gh` subprocess this tick: it
 /// already probed this PR less than `ttl` ago (the throttle), regardless of
 /// whether the OID changed. Pure so the throttle is unit-testable.
@@ -653,6 +612,7 @@ fn probe_recently_done(
 /// The active tab's PR as `(owner, repo, number)`. A remote PR tab names it
 /// directly; a working-tree or local-branch tab is looked up in the PR cache by
 /// head ref, preferring an open PR.
+#[cfg(not(feature = "v1-service"))]
 fn active_pr_identity(
     tab: &er_engine::app::TabState,
     pr_cache: &pr_cache::PrCacheMap,
@@ -885,52 +845,6 @@ fn mirror_checkout_root(app: &Arc<Mutex<App>>, desired: Option<(String, String)>
     }
 }
 
-/// The flag path's 45s comment tick. The same head-OID throttle decides
-/// whether to sync; the sync itself is a command to the tab's workspace actor,
-/// which writes the sidecar and publishes the change for the relay to emit.
-#[cfg(feature = "v1-service")]
-fn spawn_service_comment_sync(
-    app: Arc<Mutex<App>>,
-    pr_cache: pr_cache::PrCacheMap,
-    service: Arc<er_desktop::service::ServiceState>,
-) {
-    use std::time::{Duration, Instant};
-    std::thread::spawn(move || {
-        let mut last_synced: HashMap<(String, String, u64), (String, Instant)> = HashMap::new();
-        loop {
-            std::thread::sleep(Duration::from_secs(45));
-            let (workspace, context, pr, head_oid) = {
-                let Ok(guard) = app.try_lock() else {
-                    continue;
-                };
-                let Some(pr) = active_pr_identity(guard.tab(), &pr_cache) else {
-                    continue;
-                };
-                let head_oid = cached_head_oid(&pr_cache, &pr.0, &pr.1, pr.2);
-                let (now, ttl) = (Instant::now(), Duration::from_secs(90));
-                if comment_sync_recently_synced(last_synced.get(&pr), &head_oid, now, ttl) {
-                    continue;
-                }
-                let (workspace, context) = er_desktop::commands::active_tab_command(&guard);
-                (workspace, context, pr, head_oid)
-            };
-            let synced = service.send(
-                &workspace,
-                er_service::Command::SyncGithubComments {
-                    context,
-                    source: er_service::SyncSource::Background,
-                },
-            );
-            match synced {
-                Ok(_) => {
-                    last_synced.insert(pr, (head_oid, Instant::now()));
-                }
-                Err(e) => log::error!("github comment sync failed: {e}"),
-            }
-        }
-    });
-}
-
 /// Whether this build compiled the v1 service path.
 ///
 /// desktop-ui compares it with its own build-time `VITE_ER_V1_SERVICE` and
@@ -1134,6 +1048,8 @@ fn main() {
         Arc::clone(&gh_user),
         Arc::clone(&inbox),
     ));
+    #[cfg(feature = "v1-service")]
+    app_owner.read_status_from(Arc::clone(&gh_status_cache));
     let loading: LoadingState = Arc::new(Mutex::new(LoadingFlags::default()));
     let watch_status: WatchStatusState = Arc::new(Mutex::new(WatchStatusSnapshot::default()));
     let tauri_app_handle: Arc<Mutex<Option<tauri::AppHandle>>> = Arc::new(Mutex::new(None));
@@ -1520,7 +1436,11 @@ fn main() {
     // duplicate concurrent fetches when a branch switch fires during this loop.
     {
         let gh_status_bg = Arc::clone(&gh_status_cache);
+        #[cfg(feature = "v1-service")]
+        let loop_state = state.clone();
+        #[cfg(not(feature = "v1-service"))]
         let app_bg = Arc::clone(&app_arc);
+        #[cfg(not(feature = "v1-service"))]
         let pr_cache_bg = Arc::clone(&pr_cache);
         let gh_status_loading = Arc::clone(&loading);
         let gh_status_in_flight_bg = Arc::clone(&gh_status_in_flight);
@@ -1530,7 +1450,11 @@ fn main() {
             // lets the loop fire immediately on launch.
             std::thread::sleep(std::time::Duration::from_secs(30));
 
+            // The flag path reads the registry's active tab, never the App.
+            #[cfg(feature = "v1-service")]
+            let key = er_desktop::status_loop::pick(&loop_state);
             // Snapshot identity in a short critical section.
+            #[cfg(not(feature = "v1-service"))]
             let key: Option<(String, String, u64)> = app_bg
                 .lock()
                 .ok()
@@ -1581,11 +1505,7 @@ fn main() {
     }
 
     #[cfg(feature = "v1-service")]
-    spawn_service_comment_sync(
-        Arc::clone(&app_arc),
-        Arc::clone(&pr_cache),
-        Arc::clone(&state.service),
-    );
+    er_desktop::comment_tick::spawn(state.clone());
 
     // Spawn background GitHub comment sync. Three-phase design so network I/O
     // never holds the app mutex:

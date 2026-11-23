@@ -8,6 +8,7 @@ use crate::commands::{
     active_github_key, fetch_and_store_github_status, run_blocking, snap_from, AppState,
 };
 use crate::snapshot::{AppSnapshot, GithubStatusSnapshot};
+use crate::state::DesktopState;
 use er_engine::gh_pr_actions::{self as actions, MergeMethod, PrAction};
 use serde::Deserialize;
 use tauri::State;
@@ -80,17 +81,8 @@ fn run_github_pr_action_blocking(
         active_github_key(&app, state)
             .ok_or_else(|| "No GitHub PR detected for the active tab".to_string())?
     };
-    if !pr.matches(&owner, &repo, number) {
-        return Err(format!(
-            "The active tab now shows {owner}/{repo}#{number}, not {}/{}#{}. Nothing was changed.",
-            pr.owner, pr.repo, pr.number
-        ));
-    }
-    let cached = state
-        .gh_status_cache
-        .lock()
-        .ok()
-        .and_then(|g| g.get(&(owner.clone(), repo.clone(), number)).cloned());
+    still_shown(pr, &owner, &repo, number)?;
+    let cached = cached(state, &owner, &repo, number);
 
     let result = perform(&action, &owner, &repo, number, cached.as_ref());
     // Refresh even on failure: a merge that succeeded before its branch
@@ -102,6 +94,72 @@ fn run_github_pr_action_blocking(
     Ok(snap_from(&app, state))
 }
 
+/// `action` on the PR `wire`'s card shows, with the flag on. The tab comes
+/// from the registry and its PR from the tab's content and the PR cache, so
+/// a confirm left open across a tab switch never lands on another PR. The
+/// `Ack` names `pr_status` after the refresh the action runs.
+#[cfg(feature = "v1-service")]
+pub fn run_on_tab(
+    desktop: &DesktopState,
+    wire: er_protocol::TabKey,
+    pr: &er_protocol::PrTarget,
+    action: &er_protocol::PrAction,
+) -> Result<er_protocol::Ack, er_protocol::ErError> {
+    let refused = |message: String| er_protocol::ErError {
+        kind: er_protocol::ErErrorKind::Refused,
+        message,
+    };
+    let key = er_service::resolve_tab_key(&desktop.service.app_registry().tabs_view(), wire)?;
+    let (owner, repo, number) = crate::resources::pr::status_key(desktop, key)
+        .ok_or_else(|| refused("No GitHub PR detected for this tab".into()))?;
+    let target = PrTarget {
+        owner: pr.owner.clone(),
+        repo: pr.repo.clone(),
+        number: pr.number,
+    };
+    still_shown(&target, &owner, &repo, number).map_err(refused)?;
+    // The wire action keeps the merge box's field names.
+    let action: PrActionRequest = serde_json::to_value(action)
+        .and_then(serde_json::from_value)
+        .map_err(|e| refused(e.to_string()))?;
+    let cached = cached(desktop, &owner, &repo, number);
+    let result = perform(&action, &owner, &repo, number, cached.as_ref());
+    refresh_status_now(desktop, &owner, &repo, number);
+    desktop.app_owner.publish();
+    result.map_err(refused)?;
+    let remote = format!("{owner}/{repo}");
+    let owner = &*desktop.app_owner;
+    let (version, _) = crate::app_owner::SidebarOwner::pr_status(owner, &remote, number);
+    Ok(er_protocol::Ack {
+        changed: vec![er_protocol::ResourceChanged {
+            key: er_protocol::ResourceKey::PrStatus { remote, number },
+            version: er_protocol::ResourceVersion(version),
+        }],
+        created: None,
+    })
+}
+
+/// Refuses an action built for another PR than the one the tab shows now.
+fn still_shown(pr: &PrTarget, owner: &str, repo: &str, number: u64) -> Result<(), String> {
+    if pr.matches(owner, repo, number) {
+        return Ok(());
+    }
+    Err(format!(
+        "The active tab now shows {owner}/{repo}#{number}, not {}/{}#{}. Nothing was changed.",
+        pr.owner, pr.repo, pr.number
+    ))
+}
+
+fn cached(
+    state: &DesktopState,
+    owner: &str,
+    repo: &str,
+    number: u64,
+) -> Option<GithubStatusSnapshot> {
+    let key = (owner.to_string(), repo.to_string(), number);
+    state.gh_status_cache.lock().ok()?.get(&key).cloned()
+}
+
 fn perform(
     action: &PrActionRequest,
     owner: &str,
@@ -111,6 +169,18 @@ fn perform(
 ) -> Result<(), String> {
     let run =
         |a: PrAction| actions::run_pr_action(owner, repo, number, &a).map_err(|e| e.to_string());
+    perform_with(action, owner, repo, number, cached, &run)
+}
+
+/// [`perform`] with the `gh` call that runs a `PrAction` handed in.
+fn perform_with(
+    action: &PrActionRequest,
+    owner: &str,
+    repo: &str,
+    number: u64,
+    cached: Option<&GithubStatusSnapshot>,
+    run: &dyn Fn(PrAction) -> Result<(), String>,
+) -> Result<(), String> {
     match action {
         PrActionRequest::Merge {
             method,
@@ -211,7 +281,7 @@ fn same_repo_status(
 /// is already in flight, which would leave the card showing the state from
 /// before the action until the next 30s poll. The ticket keeps that in-flight
 /// fetch from overwriting this one when it finishes later.
-fn refresh_status_now(state: &AppState, owner: &str, repo: &str, number: u64) {
+fn refresh_status_now(state: &DesktopState, owner: &str, repo: &str, number: u64) {
     if fetch_and_store_github_status(
         &state.gh_status_cache,
         &state.desktop_revision,
@@ -373,6 +443,37 @@ mod tests {
         let status = open_status();
         let err = perform(&PrActionRequest::DeleteBranch, "o", "r", 1, Some(&status)).unwrap_err();
         assert!(err.contains("before deleting"), "{err}");
+    }
+
+    /// The merge is pinned to the head of the diff the page showed (ADR
+    /// 0040), whatever head the status cache holds.
+    #[test]
+    fn a_merge_pins_the_head_the_page_showed() {
+        let mut status = open_status();
+        status.head_oid = "cached-head".into();
+        let merge = PrActionRequest::Merge {
+            method: MergeMethod::Squash,
+            auto: false,
+            admin: false,
+            expected_head: "page-head".into(),
+            delete_branch: false,
+        };
+        let sent = std::cell::RefCell::new(Vec::new());
+        let record = |action: PrAction| {
+            sent.borrow_mut().push(action);
+            Ok(())
+        };
+        assert_eq!(
+            perform_with(&merge, "o", "r", 1, Some(&status), &record),
+            Ok(())
+        );
+        let pinned = PrAction::Merge {
+            method: MergeMethod::Squash,
+            auto: false,
+            admin: false,
+            head_oid: "page-head".into(),
+        };
+        assert_eq!(sent.into_inner(), vec![pinned]);
     }
 
     #[test]
