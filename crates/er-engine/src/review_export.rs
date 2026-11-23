@@ -257,6 +257,18 @@ pub fn render(source: &ExportSource<'_>, opts: &ExportOpts) -> String {
     out
 }
 
+/// Render the App's tab: its branch, AI state and view bucket.
+#[cfg(feature = "ui")]
+pub fn render_markdown(tab: &crate::app::TabState, opts: &ExportOpts) -> String {
+    let er_dir = tab.er_dir();
+    let source = ExportSource {
+        branch: &tab.current_branch,
+        ai: &tab.ai,
+        er_dir: &er_dir,
+    };
+    render(&source, opts)
+}
+
 /// Render a `## Review checklist` section: the outcomes the review asked the
 /// reader to confirm, grouped by category.
 ///
