@@ -79,13 +79,13 @@ mod tests {
     fn the_export_commands_run_off_the_main_thread() {
         let src = include_str!("export.rs");
         for name in ["export_review", "export_review_to_file", "export_to_agent"] {
-            let start = src
-                .find(&format!("pub async fn {name}("))
+            let sig = format!("pub async fn {name}(");
+            let body = src
+                .split("\n#[")
+                .find(|item| item.contains(&sig))
                 .unwrap_or_else(|| panic!("{name} must be `pub async fn`"));
-            let rest = &src[start..];
-            let end = rest[1..].find("\n#[tauri::command]").map_or(rest.len(), |i| i + 1);
             assert!(
-                rest[..end].contains("run_blocking("),
+                body.contains("run_blocking("),
                 "{name} must run its body with run_blocking"
             );
         }
