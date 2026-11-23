@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { untrack } from "svelte";
 import { resourceClient } from "$lib/protocol/client";
 import type { ArenaRunSummary } from "$lib/types/arena";
@@ -60,11 +61,34 @@ if (flagOn) {
  * Calls `handler` each time `jobs` moves, which is how a live run's progress
  * reaches the arena page with the flag on. Answers the release.
  */
-export function onJobsMoved(handler: () => void): () => void {
+export function onJobsMoved(
+  handler: () => void,
+  adapter: Pick<ArenaAdapter, "jobsVersion"> = arenaAdapter,
+): () => void {
   return $effect.root(() => {
     $effect(() => {
-      if (arenaAdapter.jobsVersion() === null) return;
+      if (adapter.jobsVersion() === null) return;
       untrack(handler);
     });
   });
+}
+
+/** What carries a live run's progress to the arena page. */
+export interface RunProgressFeed {
+  flagOn: boolean;
+  adapter: Pick<ArenaAdapter, "jobsVersion">;
+  listen: (event: string, handler: () => void) => Promise<() => void>;
+}
+
+/**
+ * Calls `onRevision` each time a live run may have moved: when `jobs` moves
+ * with the flag on, and on the desktop revision without it. Answers the
+ * release.
+ */
+export function followRunProgress(
+  onRevision: () => void,
+  feed: RunProgressFeed = { flagOn, adapter: arenaAdapter, listen },
+): Promise<() => void> {
+  if (feed.flagOn) return Promise.resolve(onJobsMoved(onRevision, feed.adapter));
+  return feed.listen("er://revision", onRevision);
 }
