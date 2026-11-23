@@ -158,7 +158,7 @@ fn an_ask_shows_its_pending_reply_in_jobs_until_the_answer_lands() {
             ack.changed.iter().any(|c| c.key == ResourceKey::Jobs),
             "{ack:?}"
         );
-        assert_eq!(pending(&state), [asked.clone()]);
+        assert_eq!(pending(&state), std::slice::from_ref(&asked));
 
         release(&gate);
         let bucket = bucket(&state, &tab);
@@ -312,7 +312,7 @@ fn an_ai_assisted_finding_reply_creates_the_thread_with_the_app_locked() {
         });
         assert!(replied.is_ok(), "{:?}", replied.map(drop));
         let root = finding_thread(&bucket).unwrap_or_else(|| panic!("no finding thread"));
-        assert_eq!(pending(&state), [root.clone()]);
+        assert_eq!(pending(&state), std::slice::from_ref(&root));
 
         release(&gate);
         wait_until("the pending reply to clear", || pending(&state).is_empty());

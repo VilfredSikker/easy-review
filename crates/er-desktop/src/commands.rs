@@ -15780,11 +15780,11 @@ mod route_tests {
     #[test]
     fn both_finding_replies_take_the_service_route() {
         let source = include_str!("commands.rs");
-        let start = source
-            .find("fn reply_to_finding_on_service(")
+        let body = source
+            .split("fn reply_to_finding_on_service(")
+            .nth(1)
             .unwrap_or_else(|| panic!("no flag path for finding replies"));
-        let body = &source[start..];
-        let body = &body[..body.find("\n}\n").unwrap_or(body.len())];
+        let body = body.split("\n}\n").next().unwrap_or(body);
         assert!(body.contains("ai_ask::ask_on_finding("), "{body}");
         assert!(
             body.contains("er_service::Command::ReplyToFinding"),

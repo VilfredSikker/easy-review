@@ -33,7 +33,7 @@ pub fn apply(desktop: &DesktopState, command: Command) -> Routed {
             body,
             client_id,
         } => {
-            let finding = Finding {
+            let finding = FindingAsk {
                 view,
                 finding_id,
                 body,
@@ -49,7 +49,7 @@ pub fn apply(desktop: &DesktopState, command: Command) -> Routed {
     }))
 }
 
-struct Finding {
+struct FindingAsk {
     view: PaintedView,
     finding_id: String,
     body: String,
@@ -59,7 +59,7 @@ struct Finding {
 fn on_finding(
     desktop: &DesktopState,
     wire: er_protocol::TabKey,
-    finding: Finding,
+    finding: FindingAsk,
 ) -> Result<Ack, ErError> {
     let root = crate::ai_ask::ask_on_finding(
         desktop,
