@@ -4,6 +4,7 @@ import type { TabKey } from "$lib/protocol/generated/TabKey";
 import type { TaskJob } from "$lib/protocol/generated/TaskJob";
 import type { Invoke, ResourceClient } from "$lib/protocol/client";
 import type { AgentCommandStatus, AgentLogEntry, AppSnapshot, BackgroundTaskSnapshot } from "$lib/types";
+import { snapshotTaskTarget } from "$lib/snapshotChrome";
 import { JOBS } from "./annotationsAdapter";
 import type { ResourceStore } from "./resourceStore";
 
@@ -90,6 +91,37 @@ export function taskCommand(command: string, a: Args): Command | null {
   }
 }
 
+/** The toast a run shows once it starts, as the flag-off path shows it; null for the rest. */
+export function startToast(command: string): string | null {
+  switch (command) {
+    case "run_ai_review":
+      return "AI review started";
+    case "run_ai_expert_review":
+      return "Specialized review started";
+    case "run_ai_triage_review":
+    case "run_pr_triage":
+    case "run_branch_triage":
+      return "Triage scan started";
+    default:
+      return null;
+  }
+}
+
+/**
+ * Whether `task` targets the tab `snap` paints, by the App's rule
+ * (`matches_target`): repo, PR, remote and branch label, in any bucket.
+ */
+function onPaintedTab(task: TaskJob, snap: AppSnapshot): boolean {
+  const target = snapshotTaskTarget(snap);
+  return (
+    target !== null &&
+    task.repo_root === target.repo_root &&
+    task.pr_number === target.pr_number &&
+    task.remote_repo === target.remote_repo &&
+    task.branch_label === target.branch_label
+  );
+}
+
 /** A `jobs` task row as the page's task shape. */
 function asSnapshot(task: TaskJob): BackgroundTaskSnapshot {
   return { ...task, recent_log: [] };
@@ -105,6 +137,8 @@ interface TasksAdapterDeps {
   invoke: Invoke;
   /** Each host task's output lines as last read, by task id. */
   logs: Map<string, AgentLogEntry[]>;
+  /** Shows a success toast. */
+  toast: (message: string) => void;
 }
 
 /** The most lines the active tab's agent log shows, as the App's snapshot caps it. */
@@ -143,7 +177,7 @@ export class TasksAdapter {
     const rows = this.rows();
     if (rows === null) return raw;
     const tasks = rows.map(asSnapshot);
-    const painted = rows.filter((task) => task.er_dir === raw.review_bucket_er_dir);
+    const painted = rows.filter((task) => onPaintedTab(task, raw));
     const commands: AgentCommandStatus[] = [...(raw.agent_commands ?? [])];
     for (const task of painted) {
       if (!commands.some((c) => c.name === task.kind)) {
@@ -160,12 +194,18 @@ export class TasksAdapter {
   }
 
   /**
-   * Reads again the log of each host task on `bucket` that runs, or that
-   * finished since its log was last read, into `logs`.
+   * Reads again the log of each host task on the tab `snap` paints that
+   * runs, or that finished since its log was last read, into `logs`, and
+   * drops the logs of tasks `jobs` no longer lists.
    */
-  async refreshLogs(bucket: string | null | undefined): Promise<void> {
-    if (!bucket) return;
-    const painted = (this.rows() ?? []).filter((task) => task.er_dir === bucket);
+  async refreshLogs(snap: AppSnapshot | null): Promise<void> {
+    const rows = this.rows();
+    if (rows === null) return;
+    const listed = new Set(rows.map((task) => task.id));
+    for (const id of [...this.deps.logs.keys()]) if (!listed.has(id)) this.deps.logs.delete(id);
+    for (const id of [...this.readAt.keys()]) if (!listed.has(id)) this.readAt.delete(id);
+    if (!snap) return;
+    const painted = rows.filter((task) => onPaintedTab(task, snap));
     await Promise.all(
       painted
         .filter((task) => task.status === "running" || this.readAt.get(task.id) !== task.status)
@@ -188,10 +228,17 @@ export class TasksAdapter {
   route(command: string, args: Args = {}): Promise<void> | null {
     if (!this.deps.flagOn) return null;
     const run = runCommand(command, args, this.deps.activeKey());
-    if (run !== null) return this.send(run);
+    if (run !== null) return this.started(command, this.send(run));
     const wire = taskCommand(command, args);
     if (wire === null || !this.onHost(text(args.id))) return null;
     return this.send(wire);
+  }
+
+  /** `sent`, then the run's start toast. */
+  private async started(command: string, sent: Promise<void>): Promise<void> {
+    await sent;
+    const message = startToast(command);
+    if (message) this.deps.toast(message);
   }
 
   /** A task's output lines, oldest first. */
