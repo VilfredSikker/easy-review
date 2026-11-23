@@ -1,14 +1,35 @@
-//! The task commands on `er_send`. Each removes or stops a task, and its
-//! `Ack` names `jobs`, which lists the task until it finishes.
+//! The run and task commands on `er_send`. Each queues an agent task, or
+//! removes or stops one, and its `Ack` names `jobs`, which lists the task
+//! until it finishes.
 
 use er_protocol::{Ack, Command, ResourceChanged, ResourceKey, ResourceVersion};
 
 use super::tabs::Routed;
 use crate::state::DesktopState;
 
-/// Applies `command` when it is a task command.
+/// Applies `command` when it is a run or task command.
 pub fn apply(desktop: &DesktopState, command: Command) -> Routed {
     let ran = match command {
+        Command::RunReview { tab, scope } => crate::runs::review(desktop, Some(tab), scope),
+        Command::GenerateTour { tab } => crate::runs::tour(desktop, Some(tab)),
+        Command::RunImportanceAgent { tab } => crate::runs::importance(desktop, Some(tab)),
+        Command::GenerateDiagram {
+            tab,
+            diagram_kind,
+            custom_prompt,
+        } => crate::runs::diagram(desktop, Some(tab), diagram_kind, custom_prompt),
+        Command::RunExpertReview {
+            tab,
+            scope,
+            expert_id,
+        } => crate::runs::expert(desktop, Some(tab), scope, expert_id),
+        Command::RunScopedReview {
+            tab,
+            scope,
+            paths,
+            reviewers,
+            focus_prompt,
+        } => crate::runs::scoped(desktop, Some(tab), scope, paths, reviewers, focus_prompt),
         Command::CancelQueuedTask { id } => crate::tasks::cancel_queued(desktop, &id),
         Command::CancelRunningTask { id } => crate::tasks::cancel_running(desktop, &id),
         other => return Routed::Other(other),
