@@ -414,9 +414,8 @@ fn an_inbox_open_reads_the_item_and_opens_its_target_off_thread() {
 
 /// The mark-read median on the resource path: `er_send`
 /// `mark_inbox_item_read` to its `Ack`, then `er_fetch` of what it names
-/// and the serialisation. The inbox holds one item, as the flag-off row's
-/// does; an untimed reset marks it unread before each run, so the version
-/// moves every time. Compare with the flag-off row in `latency_tests.rs`.
+/// and the serialisation. The inbox holds one item; an untimed reset marks
+/// it unread before each run, so the version moves every time.
 #[test]
 #[ignore = "latency harness: run with --ignored --nocapture and paste the numbers in the PR; never a CI assertion"]
 fn the_mark_read_reports_its_median() {

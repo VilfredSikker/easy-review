@@ -511,8 +511,7 @@ fn a_close_prunes_the_closed_tabs_view() {
 }
 
 /// The open-target median on the resource path: `er_send` `new_tab` to its
-/// `Ack`, then `er_fetch` of `tabs` and its serialisation. Compare with the
-/// flag-off baseline in `latency_tests.rs`.
+/// `Ack`, then `er_fetch` of `tabs` and its serialisation.
 #[test]
 #[ignore = "latency harness: run with --ignored --nocapture and paste the numbers in the PR; never a CI assertion"]
 fn the_open_target_reports_its_median() {

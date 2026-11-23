@@ -504,9 +504,8 @@ fn a_wake_runs_the_tick_before_the_interval() {
     });
 }
 
-/// A desktop revision bump runs the tick through the watcher the app runs,
-/// the one that emits `er://revision`: an outside write reaches the content
-/// long before the interval.
+/// A desktop revision bump runs the tick through the watcher the app runs:
+/// an outside write reaches the content long before the interval.
 #[test]
 fn a_revision_bump_runs_the_tick_through_the_watcher() {
     with_storage(|dir| {

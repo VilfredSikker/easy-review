@@ -213,7 +213,7 @@ fn the_51st_save_drops_the_oldest() {
 /// The save-PR median on the resource path: `er_send` `save_pr` to its
 /// `Ack`, then `er_fetch` of what it names and the serialisation. Each run
 /// saves a PR the list does not hold, so the version moves; an untimed unsave
-/// follows. Compare with the flag-off row in `latency_tests.rs`.
+/// follows.
 #[test]
 #[ignore = "latency harness: run with --ignored --nocapture and paste the numbers in the PR; never a CI assertion"]
 fn the_save_pr_reports_its_median() {
