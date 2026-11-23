@@ -587,8 +587,7 @@ fn a_sidebar_triage_queues_on_the_host_with_the_app_locked() {
             (row.repo_root.as_str(), row.branch_label.as_str()),
             (queued_root.as_str(), "feature")
         );
-        open_gate(&agent.first);
-        open_gate(&agent.second);
+        release(&state, &agent);
     });
 }
 
@@ -617,8 +616,7 @@ fn a_sidebar_triage_sends_one_notice() {
                 .any(|m| m.starts_with("Triage started for branch"))
         });
         assert_eq!(told, vec!["Triage started for branch feature".to_string()]);
-        open_gate(&agent.first);
-        open_gate(&agent.second);
+        release(&state, &agent);
     });
 }
 
@@ -768,8 +766,7 @@ fn a_note_goes_to_the_agent_on_a_detached_head() {
             "{:?}",
             tasks(&state)
         );
-        open_gate(&agent.first);
-        open_gate(&agent.second);
+        release(&state, &agent);
     });
 }
 
@@ -800,8 +797,7 @@ fn a_validation_starts_on_the_host_with_the_app_locked() {
         assert!(sent.is_ok(), "{sent:?}");
         let kinds: Vec<String> = tasks(&state).into_iter().map(|row| row.kind).collect();
         assert!(kinds.contains(&"validate".to_string()), "{kinds:?}");
-        open_gate(&agent.first);
-        open_gate(&agent.second);
+        release(&state, &agent);
     });
 }
 
