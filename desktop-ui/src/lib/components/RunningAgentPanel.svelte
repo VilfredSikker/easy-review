@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from "svelte";
   import type { BackgroundTaskSnapshot, AgentLogEntry } from "$lib/types";
   import { sourceColor } from "$lib/utils/agentLog";
   import { copyToClipboard } from "$lib/clipboard";
@@ -20,26 +21,10 @@
   let stickToBottom = $state(true);
   const running = $derived(task?.status === "running");
 
-  // A task `jobs` lists carries no tail, so its log is read once on open
-  // as well, finished or not.
   $effect(() => {
     const id = taskId;
     const live = running;
-    let cancelled = false;
-    const read = async () => {
-      try {
-        const result = await tasksAdapter.log(id);
-        if (!cancelled && (live || result.length > 0)) logLines = result;
-      } catch {
-        // A pruned task stops answering; the snapshot tail stays on screen.
-      }
-    };
-    void read();
-    const handle = live ? setInterval(read, 1000) : undefined;
-    return () => {
-      cancelled = true;
-      if (handle !== undefined) clearInterval(handle);
-    };
+    return untrack(() => tasksAdapter.follow(id, live, (lines) => (logLines = lines)));
   });
 
   function handleScroll() {
