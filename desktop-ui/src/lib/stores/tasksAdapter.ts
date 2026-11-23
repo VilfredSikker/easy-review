@@ -3,7 +3,8 @@ import type { Resource } from "$lib/protocol/generated/Resource";
 import type { TabKey } from "$lib/protocol/generated/TabKey";
 import type { TaskJob } from "$lib/protocol/generated/TaskJob";
 import type { Invoke, ResourceClient } from "$lib/protocol/client";
-import type { AgentLogEntry, AppSnapshot, BackgroundTaskSnapshot } from "$lib/types";
+import type { AgentCommandStatus, AgentLogEntry, AppSnapshot, BackgroundTaskSnapshot } from "$lib/types";
+import { snapshotTaskTarget } from "$lib/snapshotChrome";
 import { JOBS } from "./annotationsAdapter";
 import type { ResourceStore } from "./resourceStore";
 
@@ -21,6 +22,52 @@ function text(value: unknown): string {
   return typeof value === "string" ? value : "";
 }
 
+function nullable(value: unknown): string | null {
+  return typeof value === "string" ? value : null;
+}
+
+function list(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((v): v is string => typeof v === "string") : [];
+}
+
+/** A scoped run of `reviewers` on `tab`. */
+function scoped(tab: TabKey, a: Args, paths: string[], reviewers: string[]): Command {
+  return {
+    kind: "run_scoped_review",
+    tab,
+    scope: text(a.scope),
+    paths,
+    reviewers,
+    focusPrompt: nullable(a.focusPrompt ?? a.focus_prompt),
+  };
+}
+
+/** The wire command for a run on `tab`; null for any other command. */
+export function runCommand(command: string, a: Args, tab: TabKey): Command | null {
+  switch (command) {
+    case "run_ai_review":
+      return { kind: "run_review", tab, scope: text(a.scope) };
+    case "generate_tour":
+      return { kind: "generate_tour", tab };
+    case "run_importance_agent":
+      return { kind: "run_importance_agent", tab };
+    case "generate_diagram":
+      return { kind: "generate_diagram", tab, diagramKind: text(a.kind), customPrompt: nullable(a.customPrompt) };
+    case "run_ai_expert_review":
+      return { kind: "run_expert_review", tab, scope: text(a.scope), expertId: text(a.expertId) };
+    case "run_ai_professor_review":
+      return scoped(tab, a, [], ["professor"]);
+    case "run_ai_triage_review":
+      return scoped(tab, a, [], ["triage"]);
+    case "run_ai_review_files":
+      return scoped(tab, a, list(a.paths), ["general"]);
+    case "run_ai_scoped_review":
+      return scoped(tab, a, list(a.paths), list(a.reviewerKinds));
+    default:
+      return null;
+  }
+}
+
 /** The wire command for a task command; null for any other command. */
 export function taskCommand(command: string, a: Args): Command | null {
   switch (command) {
@@ -31,6 +78,21 @@ export function taskCommand(command: string, a: Args): Command | null {
     default:
       return null;
   }
+}
+
+/**
+ * Whether `task` targets the tab `snap` paints, by the App's rule
+ * (`matches_target`): repo, PR, remote and branch label, in any bucket.
+ */
+function onPaintedTab(task: TaskJob, snap: AppSnapshot): boolean {
+  const target = snapshotTaskTarget(snap);
+  return (
+    target !== null &&
+    task.repo_root === target.repo_root &&
+    task.pr_number === target.pr_number &&
+    task.remote_repo === target.remote_repo &&
+    task.branch_label === target.branch_label
+  );
 }
 
 /** A `jobs` task row as the page's task shape. */
@@ -46,7 +108,12 @@ interface TasksAdapterDeps {
   /** The registry's active tab, the one the page shows. */
   activeKey: () => TabKey | null;
   invoke: Invoke;
+  /** Each host task's output lines as last read, by task id. */
+  logs: Map<string, AgentLogEntry[]>;
 }
+
+/** The most lines the active tab's agent log shows, as the App's snapshot caps it. */
+const LOG_LINES = 200;
 
 /**
  * The background tasks. With the flag off the App's snapshot lists them and
@@ -55,19 +122,69 @@ interface TasksAdapterDeps {
  * its output read through `task_log`.
  */
 export class TasksAdapter {
+  /** The status each host task had when its log was last read. */
+  private readonly readAt = new Map<string, string>();
+
   constructor(private readonly deps: TasksAdapterDeps) {}
+
+  /** The task rows `jobs` lists; null with the flag off or before it answers. */
+  private rows(): TaskJob[] | null {
+    if (!this.deps.flagOn) return null;
+    const held = this.deps.store.get(JOBS)?.value;
+    return held?.kind === "jobs" ? held.tasks : null;
+  }
 
   /** The tasks `jobs` lists; null with the flag off or before it answers. */
   tasks(): BackgroundTaskSnapshot[] | null {
-    if (!this.deps.flagOn) return null;
-    const held = this.deps.store.get(JOBS)?.value;
-    return held?.kind === "jobs" ? held.tasks.map(asSnapshot) : null;
+    return this.rows()?.map(asSnapshot) ?? null;
   }
 
-  /** `raw` with the host's tasks from `jobs` after the App's. */
+  /**
+   * `raw` with the host's tasks from `jobs` after the App's, and the tasks
+   * on the painted bucket among the tab's agent commands and in its agent
+   * log, as the App's snapshot merges its own.
+   */
   overlay(raw: AppSnapshot): AppSnapshot {
-    const tasks = this.tasks();
-    return tasks === null ? raw : { ...raw, background_tasks: [...(raw.background_tasks ?? []), ...tasks] };
+    const rows = this.rows();
+    if (rows === null) return raw;
+    const tasks = rows.map(asSnapshot);
+    const painted = rows.filter((task) => onPaintedTab(task, raw));
+    const commands: AgentCommandStatus[] = [...(raw.agent_commands ?? [])];
+    for (const task of painted) {
+      if (!commands.some((c) => c.name === task.kind)) {
+        commands.push({ name: task.kind, status: task.status, error: task.error ?? null });
+      }
+    }
+    const log = [...(raw.agent_log ?? []), ...painted.flatMap((task) => this.deps.logs.get(task.id) ?? [])];
+    return {
+      ...raw,
+      background_tasks: [...(raw.background_tasks ?? []), ...tasks],
+      agent_commands: commands,
+      agent_log: log.slice(-LOG_LINES),
+    };
+  }
+
+  /**
+   * Reads again the log of each host task on the tab `snap` paints that
+   * runs, or that finished since its log was last read, into `logs`, and
+   * drops the logs of tasks `jobs` no longer lists.
+   */
+  async refreshLogs(snap: AppSnapshot | null): Promise<void> {
+    const rows = this.rows();
+    if (rows === null) return;
+    const listed = new Set(rows.map((task) => task.id));
+    for (const id of [...this.deps.logs.keys()]) if (!listed.has(id)) this.deps.logs.delete(id);
+    for (const id of [...this.readAt.keys()]) if (!listed.has(id)) this.readAt.delete(id);
+    if (!snap) return;
+    const painted = rows.filter((task) => onPaintedTab(task, snap));
+    await Promise.all(
+      painted
+        .filter((task) => task.status === "running" || this.readAt.get(task.id) !== task.status)
+        .map(async (task) => {
+          this.deps.logs.set(task.id, await this.log(task.id));
+          this.readAt.set(task.id, task.status);
+        }),
+    );
   }
 
   /** Whether `jobs` lists `id` as one of the host's tasks. */
@@ -75,9 +192,16 @@ export class TasksAdapter {
     return (this.tasks() ?? []).some((task) => task.id === id);
   }
 
-  /** With the flag on, a stop of a host task goes through `er_send`; null for anything else. */
+  /**
+   * With the flag on, a run goes through `er_send` keyed to the active tab,
+   * and so does a stop of a host task; null for anything else.
+   */
   route(command: string, args: Args = {}): Promise<void> | null {
     if (!this.deps.flagOn) return null;
+    const tab = this.deps.activeKey();
+    const run = tab === null ? null : runCommand(command, args, tab);
+    // The host's started or queued notice is the run's one message.
+    if (run !== null) return this.send(run);
     const wire = taskCommand(command, args);
     if (wire === null || !this.onHost(text(args.id))) return null;
     return this.send(wire);

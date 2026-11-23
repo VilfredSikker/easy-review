@@ -68,6 +68,10 @@ pub struct Launch {
     pub scoped_stamp: Option<ScopedRunStamp>,
     pub config: Arc<ErConfig>,
     pub selection: AiSelection,
+    /// The caller tells the person once for a run of several tasks, so the
+    /// host sends no started or queued notice of its own while it accepts
+    /// this one; a start later, from the queue, is told as any other.
+    pub quiet: bool,
 }
 
 impl TaskHost {
@@ -190,6 +194,7 @@ pub fn enqueue(desktop: &DesktopState, launch: Launch) -> Result<String, String>
         finished_at_ms: None,
     };
     let command_name = launch.command_name.clone();
+    let quiet = launch.quiet;
     {
         // One lock over the busy check and the push, so two clicks at once
         // queue one task.
@@ -216,12 +221,23 @@ pub fn enqueue(desktop: &DesktopState, launch: Launch) -> Result<String, String>
     }
     host.clock.bump();
     dispatch(desktop);
+    // Under one lock with the position, so no dispatch can start a quiet
+    // task between our reading that it waits and our letting it tell its start.
     let position = {
-        let tasks = host.lock();
-        let waiting: Vec<&Task> = tasks.iter().filter(|task| task.queued.is_some()).collect();
-        waiting.iter().position(|task| task.row.id == id)
+        let mut tasks = host.lock();
+        let position = tasks
+            .iter()
+            .filter(|task| task.queued.is_some())
+            .position(|task| task.row.id == id);
+        if position.is_some() && quiet {
+            hear_from_queue(&mut tasks, &id);
+        }
+        position
     };
     if let Some(position) = position {
+        if quiet {
+            return Ok(id);
+        }
         let label = target.display_label();
         crate::resources::notice::tell(
             desktop,
@@ -230,6 +246,17 @@ pub fn enqueue(desktop: &DesktopState, launch: Launch) -> Result<String, String>
         );
     }
     Ok(id)
+}
+
+/// Lets the queued task `id` tell the person when it starts.
+fn hear_from_queue(tasks: &mut [Task], id: &str) {
+    if let Some(queued) = tasks
+        .iter_mut()
+        .find(|task| task.row.id == id)
+        .and_then(|task| task.queued.as_mut())
+    {
+        queued.launch.quiet = false;
+    }
 }
 
 /// Starts queued tasks, oldest first, while fewer than the cap run here and
@@ -329,7 +356,9 @@ fn launch(
             dispatch(&desktop_for_worker);
         })
         .map_err(|e| format!("start the task worker: {e}"))?;
-    crate::resources::notice::tell(desktop, started, false);
+    if !launch.quiet {
+        crate::resources::notice::tell(desktop, started, false);
+    }
     Ok(())
 }
 

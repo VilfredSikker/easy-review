@@ -4059,6 +4059,12 @@ pub async fn run_ai_review(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
+    #[cfg(feature = "v1-service")]
+    return run_blocking(move || {
+        ask_on_desktop(&state, |desktop| crate::runs::review(desktop, None, scope))
+    })
+    .await;
+    #[cfg(not(feature = "v1-service"))]
     run_blocking(move || {
         let (
             scope,
@@ -4171,6 +4177,12 @@ pub async fn run_ai_review(
 #[tauri::command]
 pub async fn generate_tour(state: State<'_, AppState>) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
+    #[cfg(feature = "v1-service")]
+    return run_blocking(move || {
+        ask_on_desktop(&state, |desktop| crate::runs::tour(desktop, None))
+    })
+    .await;
+    #[cfg(not(feature = "v1-service"))]
     run_blocking(move || {
         let mut app = state.app.lock().map_err(|e| e.to_string())?;
         // `raw_diff_for_review("branch")` returns the active view's diff (the PR
@@ -4271,6 +4283,12 @@ pub async fn generate_tour(state: State<'_, AppState>) -> Result<AppSnapshot, St
 #[tauri::command]
 pub async fn run_importance_agent(state: State<'_, AppState>) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
+    #[cfg(feature = "v1-service")]
+    return run_blocking(move || {
+        ask_on_desktop(&state, |desktop| crate::runs::importance(desktop, None))
+    })
+    .await;
+    #[cfg(not(feature = "v1-service"))]
     run_blocking(move || {
         let mut app = state.app.lock().map_err(|e| e.to_string())?;
         app.spawn_background_importance()
@@ -4294,6 +4312,14 @@ pub async fn generate_diagram(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
+    #[cfg(feature = "v1-service")]
+    return run_blocking(move || {
+        ask_on_desktop(&state, |desktop| {
+            crate::runs::diagram(desktop, None, kind, custom_prompt)
+        })
+    })
+    .await;
+    #[cfg(not(feature = "v1-service"))]
     run_blocking(move || {
         if !er_engine::ai::is_valid_diagram_kind(&kind) {
             return Err(format!("Unknown diagram kind: {kind}"));
@@ -4437,6 +4463,14 @@ pub async fn run_ai_expert_review(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
+    #[cfg(feature = "v1-service")]
+    return run_blocking(move || {
+        ask_on_desktop(&state, |desktop| {
+            crate::runs::expert(desktop, None, scope, expert_id)
+        })
+    })
+    .await;
+    #[cfg(not(feature = "v1-service"))]
     run_blocking(move || {
         if er_engine::ai::expert_by_id(&expert_id).is_none() {
             return Err(format!("Unknown expert: {expert_id}"));
@@ -4558,6 +4592,14 @@ pub async fn run_ai_scoped_review(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
+    #[cfg(feature = "v1-service")]
+    return run_blocking(move || {
+        ask_on_desktop(&state, |desktop| {
+            crate::runs::scoped(desktop, None, scope, paths, reviewer_kinds, focus_prompt)
+        })
+    })
+    .await;
+    #[cfg(not(feature = "v1-service"))]
     run_blocking(move || {
         if reviewer_kinds.is_empty() {
             return Err("No reviewers selected".to_string());
@@ -4597,36 +4639,9 @@ pub async fn run_ai_scoped_review(
             return Err("Nothing to review".to_string());
         }
 
-        let scoped_files = !paths.is_empty();
-        let mut scope_paths = paths;
-        scope_paths.sort();
-        scope_paths.dedup();
+        let (scoped_files, scope_paths, diff_body) =
+            scoped_diff(&er_dir, raw, paths, &repo_root, remote_repo.as_deref())?;
         let file_count = scope_paths.len();
-        let er_path = std::path::Path::new(&er_dir);
-        let diff_body = if scoped_files {
-            let filtered = er_engine::git::filter_raw_diff_by_paths(&raw, &scope_paths);
-            if filtered.trim().is_empty() {
-                return Err("No diff for selected files".to_string());
-            }
-            let manifest = scope_paths.join("\n");
-            std::fs::write(er_path.join("review-files.txt"), format!("{manifest}\n"))
-                .map_err(|e| format!("Failed to write review-files.txt: {e}"))?;
-            // The agent writes only its lens's overlay; the host stamps the
-            // scope and the base identity on exit.
-            std::fs::create_dir_all(er_path.join("scoped/experts"))
-                .map_err(|e| format!("Failed to create scoped output directory: {e}"))?;
-            filtered
-        } else {
-            let ignore = er_engine::projects_pins::review_ignore_globs_for_repo(
-                &repo_root,
-                remote_repo.as_deref(),
-            );
-            if ignore.is_empty() {
-                raw
-            } else {
-                er_engine::git::filter_raw_diff_exclude_globs(&raw, &ignore)
-            }
-        };
 
         let review_md = er_engine::ai::review_md::collect(
             &app.ports,
@@ -4658,7 +4673,9 @@ pub async fn run_ai_scoped_review(
         };
 
         let (started, skipped) = spawn_scoped_reviewers(
-            &mut app,
+            &mut |reviewer, target, prompt, stamp| {
+                spawn_on_app(&mut app, reviewer, target, prompt, stamp)
+            },
             target,
             &reviewer_kinds,
             focus_prompt.as_deref(),
@@ -4677,29 +4694,7 @@ pub async fn run_ai_scoped_review(
             ));
         }
 
-        let file_note = if scoped_files {
-            format!(
-                " for {file_count} file{}",
-                if file_count == 1 { "" } else { "s" }
-            )
-        } else {
-            String::new()
-        };
-
-        let msg = if skipped.is_empty() {
-            format!(
-                "Started {} reviewer(s){file_note}: {}",
-                started.len(),
-                started.join(", ")
-            )
-        } else {
-            format!(
-                "Started {} reviewer(s){file_note}: {} (skipped: {})",
-                started.len(),
-                started.join(", "),
-                skipped.join(", ")
-            )
-        };
+        let msg = scoped_message(&started, &skipped, scoped_files.then_some(file_count));
         app.notify(&msg);
 
         Ok(snap_from(&app, &state))
@@ -4707,9 +4702,76 @@ pub async fn run_ai_scoped_review(
     .await
 }
 
+/// The diff a scoped run reviews: `raw` cut to `paths` (sorted, without
+/// duplicates) with the file manifest and the overlay directory written into
+/// the bucket, or the whole diff without the project's ignored files when
+/// `paths` is empty. Answers whether it is scoped, the paths and the diff.
+pub(crate) fn scoped_diff(
+    er_dir: &str,
+    raw: String,
+    paths: Vec<String>,
+    repo_root: &str,
+    remote_repo: Option<&str>,
+) -> Result<(bool, Vec<String>, String), String> {
+    let scoped_files = !paths.is_empty();
+    let mut scope_paths = paths;
+    scope_paths.sort();
+    scope_paths.dedup();
+    let er_path = std::path::Path::new(er_dir);
+    let diff_body = if scoped_files {
+        let filtered = er_engine::git::filter_raw_diff_by_paths(&raw, &scope_paths);
+        if filtered.trim().is_empty() {
+            return Err("No diff for selected files".to_string());
+        }
+        let manifest = scope_paths.join("\n");
+        std::fs::write(er_path.join("review-files.txt"), format!("{manifest}\n"))
+            .map_err(|e| format!("Failed to write review-files.txt: {e}"))?;
+        // The agent writes only its lens's overlay; the host stamps the
+        // scope and the base identity on exit.
+        std::fs::create_dir_all(er_path.join("scoped/experts"))
+            .map_err(|e| format!("Failed to create scoped output directory: {e}"))?;
+        filtered
+    } else {
+        let ignore = er_engine::projects_pins::review_ignore_globs_for_repo(repo_root, remote_repo);
+        if ignore.is_empty() {
+            raw
+        } else {
+            er_engine::git::filter_raw_diff_exclude_globs(&raw, &ignore)
+        }
+    };
+    Ok((scoped_files, scope_paths, diff_body))
+}
+
+/// What a scoped run tells the person: who started, over how many files,
+/// and who was already running.
+pub(crate) fn scoped_message(
+    started: &[String],
+    skipped: &[String],
+    file_count: Option<usize>,
+) -> String {
+    let file_note = match file_count {
+        Some(count) => format!(" for {count} file{}", if count == 1 { "" } else { "s" }),
+        None => String::new(),
+    };
+    if skipped.is_empty() {
+        format!(
+            "Started {} reviewer(s){file_note}: {}",
+            started.len(),
+            started.join(", ")
+        )
+    } else {
+        format!(
+            "Started {} reviewer(s){file_note}: {} (skipped: {})",
+            started.len(),
+            started.join(", "),
+            skipped.join(", ")
+        )
+    }
+}
+
 /// Per-lens stamps for a scoped run: the sorted selected paths, the base
 /// file's identity captured before the agent starts, and the overlay bytes.
-fn scope_stamps(
+pub(crate) fn scope_stamps(
     er_dir: &str,
     scope_paths: &[String],
     reviewer_kinds: &[String],
@@ -4797,9 +4859,42 @@ fn base_identity<T: er_store::Artifact>(
     (diff_hash.to_string(), created_at.to_string())
 }
 
-fn spawn_scoped_reviewers(
-    app: &mut er_engine::app::App,
-    target: er_engine::app::BackgroundTaskTarget,
+/// Starts one scoped reviewer through `spawn`, which takes its kind, its
+/// target, its prompt and its stamp.
+pub(crate) type SpawnReviewer<'a> = dyn FnMut(
+        &er_engine::ai::ReviewerKind,
+        er_engine::task_target::BackgroundTaskTarget,
+        String,
+        Option<er_engine::ai::ScopedRunStamp>,
+    ) -> Result<(), String>
+    + 'a;
+
+/// Starts a reviewer on the App, as the flag-off scoped run does.
+#[cfg(not(feature = "v1-service"))]
+fn spawn_on_app(
+    app: &mut App,
+    reviewer: &er_engine::ai::ReviewerKind,
+    target: er_engine::task_target::BackgroundTaskTarget,
+    prompt: String,
+    stamp: Option<er_engine::ai::ScopedRunStamp>,
+) -> Result<(), String> {
+    use er_engine::ai::ReviewerKind;
+    match reviewer {
+        ReviewerKind::Triage => app.spawn_background_triage_review(target, prompt, true),
+        ReviewerKind::General => app.spawn_background_review(target, prompt, true, stamp),
+        ReviewerKind::Expert(id) => {
+            app.spawn_background_expert_review(id, target, prompt, true, stamp)
+        }
+        ReviewerKind::Professor => {
+            app.spawn_background_professor_review(target, prompt, true, stamp)
+        }
+    }
+    .map_err(|e| e.to_string())
+}
+
+pub(crate) fn spawn_scoped_reviewers(
+    spawn: &mut SpawnReviewer<'_>,
+    target: er_engine::task_target::BackgroundTaskTarget,
     reviewer_kinds: &[String],
     focus_prompt: Option<&str>,
     diff_hash: &str,
@@ -4827,7 +4922,7 @@ fn spawn_scoped_reviewers(
             ReviewerKind::Triage => {
                 let prompt =
                     prompts::build_triage_review_prompt_prepared_diff(scope, er_dir, diff_hash);
-                app.spawn_background_triage_review(target.clone(), prompt, true)
+                spawn(&parsed, target.clone(), prompt, None)
             }
             ReviewerKind::General => {
                 let overlay = er_engine::ai::scoped_overlay_path("review");
@@ -4843,7 +4938,7 @@ fn spawn_scoped_reviewers(
                     er_dir,
                     overlay.as_deref(),
                 );
-                app.spawn_background_review(target.clone(), prompt, true, stamp)
+                spawn(&parsed, target.clone(), prompt, stamp)
             }
             ReviewerKind::Expert(id) => {
                 let overlay = er_engine::ai::scoped_overlay_path(&format!("expert-{id}"));
@@ -4858,7 +4953,7 @@ fn spawn_scoped_reviewers(
                     er_dir,
                     overlay.as_deref(),
                 );
-                app.spawn_background_expert_review(id, target.clone(), prompt, true, stamp)
+                spawn(&parsed, target.clone(), prompt, stamp)
             }
             ReviewerKind::Professor => {
                 let overlay = er_engine::ai::scoped_overlay_path("professor");
@@ -4873,14 +4968,13 @@ fn spawn_scoped_reviewers(
                     er_dir,
                     overlay.as_deref(),
                 );
-                app.spawn_background_professor_review(target.clone(), prompt, true, stamp)
+                spawn(&parsed, target.clone(), prompt, stamp)
             }
         };
 
         match spawn_result {
             Ok(()) => started.push(label),
-            Err(e) => {
-                let msg = e.to_string();
+            Err(msg) => {
                 if msg.contains("already running") {
                     skipped.push(label);
                 } else {

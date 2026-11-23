@@ -37,6 +37,8 @@ pub mod resources;
 pub mod revision_watcher;
 pub mod risk_commands;
 #[cfg(feature = "v1-service")]
+pub mod runs;
+#[cfg(feature = "v1-service")]
 pub mod service;
 pub mod settings;
 pub mod snapshot;
