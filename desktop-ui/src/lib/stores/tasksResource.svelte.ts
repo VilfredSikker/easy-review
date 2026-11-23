@@ -18,6 +18,7 @@ export const tasksAdapter = new TasksAdapter({
   activeKey: () => tabsResource.activeKey,
   invoke,
   logs: new SvelteMap(),
+  toast: (message) => app.showToast("success", message),
 });
 
 // With the flag on the page lists the tasks from `jobs`, and the runs go
@@ -30,5 +31,5 @@ if (flagOn) {
   });
   // The painted tab's agent log reads its tasks' output, which `jobs`
   // leaves out, once a second.
-  setInterval(() => void tasksAdapter.refreshLogs(app.appSnapshot?.review_bucket_er_dir), 1000);
+  setInterval(() => void tasksAdapter.refreshLogs(app.appSnapshot), 1000);
 }

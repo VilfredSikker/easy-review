@@ -327,6 +327,59 @@ fn the_run_commands_start_with_the_app_locked() {
     });
 }
 
+/// Each run command on `er_send` starts its own run with the App locked:
+/// `jobs` lists a row of the command's kind, and a scoped run keeps its
+/// reviewers and paths.
+#[test]
+fn each_run_command_through_er_send_lists_its_kind_in_jobs() {
+    with_storage(|dir| {
+        let (state, agent) = tasking(dir, 50);
+        let tab = open(&state, dir.path(), "a");
+        let bucket = bucket(&state, &tab);
+        let wire = er_service::wire_tab_key(tab.0);
+        let commands = [
+            ("tour", Command::GenerateTour { tab: wire }),
+            ("importance", Command::RunImportanceAgent { tab: wire }),
+            (
+                "diagram:flows",
+                Command::GenerateDiagram {
+                    tab: wire,
+                    diagram_kind: "flows".into(),
+                    custom_prompt: None,
+                },
+            ),
+            (
+                "expert:security",
+                Command::RunExpertReview {
+                    tab: wire,
+                    scope: "branch".into(),
+                    expert_id: "security".into(),
+                },
+            ),
+            (
+                "triage",
+                Command::RunScopedReview {
+                    tab: wire,
+                    scope: "branch".into(),
+                    paths: vec!["src/f1.rs".into()],
+                    reviewers: vec!["triage".into()],
+                    focus_prompt: None,
+                },
+            ),
+        ];
+        for (kind, command) in commands {
+            let ack = send(&state, "a run", command).unwrap_or_else(|e| panic!("{kind}: {e:?}"));
+            assert!(ack.changed.iter().any(|c| c.key == ResourceKey::Jobs));
+            let kinds: Vec<String> = tasks(&state).into_iter().map(|row| row.kind).collect();
+            assert!(kinds.iter().any(|k| k == kind), "{kind}: {kinds:?}");
+        }
+        let listed = std::fs::read_to_string(Path::new(&bucket).join("review-files.txt"));
+        assert_eq!(listed.ok().as_deref(), Some("src/f1.rs\n"));
+        open_gate(&agent.first);
+        open_gate(&agent.second);
+    });
+}
+
 /// The run module never names the App.
 #[test]
 fn the_runs_name_no_app() {
