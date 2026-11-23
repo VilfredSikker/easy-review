@@ -29,7 +29,7 @@ pub fn apply(desktop: &DesktopState, command: Command, effects: &Effects<'_>) ->
     let applied = match command {
         Command::NewTab => commands::service_new_tab(desktop)
             .map_err(refused)
-            .map(|_| opened(desktop)),
+            .map(|()| opened(desktop)),
         Command::CloseTab { key } => close(desktop, key),
         Command::SelectTab { key } => resolve(desktop, key).and_then(|key| {
             content_routes::app_command(desktop, AppCommand::SelectTab { key }).map_err(refused)?;

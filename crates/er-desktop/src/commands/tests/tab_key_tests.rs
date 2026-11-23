@@ -195,7 +195,6 @@ fn a_restore_with_every_tab_broken_leaves_a_working_tab_on_the_launch_root() {
         let launch = dir_in(dir, "launch");
 
         crate::tabs::restore(
-            &super::app_stub(),
             &state.view,
             state.service.app_registry(),
             &ports(),
@@ -235,13 +234,7 @@ fn the_launch_root_comes_from_the_registry() {
         );
         assert!(saved.is_ok(), "{saved:?}");
         let state = state(dir);
-        crate::tabs::restore(
-            &super::app_stub(),
-            &state.view,
-            state.service.app_registry(),
-            &ports(),
-            None,
-        );
+        crate::tabs::restore(&state.view, state.service.app_registry(), &ports(), None);
 
         let registry = state.service.app_registry();
         let fallback = dir_in(dir, "fallback");
@@ -397,18 +390,38 @@ fn a_restore_follows_the_registry_and_closes_a_broken_tab() {
         assert!(saved.is_ok(), "{saved:?}");
         let state = state(dir);
 
-        crate::tabs::restore(
-            &super::app_stub(),
-            &state.view,
-            state.service.app_registry(),
-            &ports(),
-            None,
-        );
+        crate::tabs::restore(&state.view, state.service.app_registry(), &ports(), None);
 
         let view = state.service.app_registry().tabs_view();
         assert_eq!(view.tabs.len(), 2, "the broken tab stayed open");
         let active = view.active_entry().expect("an active tab");
         assert_eq!(active.descriptor.repo_root, last.repo_root);
+    });
+}
+
+/// A launch with no saved tabs opens a Working tab on the launch root, and
+/// one with no launch root opens none.
+#[test]
+fn a_restore_with_no_saved_tabs_opens_the_launch_root() {
+    with_storage(|dir| {
+        let state = state(dir);
+        crate::tabs::restore(&state.view, state.service.app_registry(), &ports(), None);
+        assert!(state.service.app_registry().tabs_view().tabs.is_empty());
+        let launch = dir_in(dir, "launch");
+        crate::tabs::restore(
+            &state.view,
+            state.service.app_registry(),
+            &ports(),
+            Some(&launch),
+        );
+        let view = state.service.app_registry().tabs_view();
+        let roots: Vec<&str> = view
+            .tabs
+            .iter()
+            .map(|t| t.descriptor.repo_root.as_str())
+            .collect();
+        assert_eq!(roots, [launch.as_str()]);
+        assert_eq!(view.active, Some(view.tabs[0].key));
     });
 }
 

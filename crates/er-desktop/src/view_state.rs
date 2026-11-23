@@ -12,8 +12,7 @@ use std::sync::{Arc, Mutex};
 
 use er_engine::TabKey;
 
-/// Shared handle in `AppState`. Lock order: the engine lock first, then this
-/// one. Release it before building a snapshot, which takes it again.
+/// Shared handle in `DesktopState`.
 pub type ViewStateHandle = Arc<Mutex<DesktopViewState>>;
 
 #[derive(Debug, Default)]
@@ -26,10 +25,6 @@ pub struct DesktopViewState {
     /// written at, so `view(tab)` has a version per tab that never repeats.
     browser_clock: u64,
     browser_revisions: HashMap<TabKey, u64>,
-    /// Selection and scroll on the service path, keyed by the app registry's
-    /// tab keys. The default build keeps these on the engine tab until the
-    /// TUI's view state moves too, so it never writes here.
-    nav: HashMap<TabKey, TabNavState>,
     /// Each tab's file filter on the service path, and the clock its writes
     /// move, which `diff(tab)`'s version adds so a filter change moves it.
     filters: HashMap<TabKey, TabFilter>,
@@ -84,7 +79,6 @@ impl DesktopViewState {
     pub fn retain_tabs(&mut self, live: &[TabKey]) {
         self.tabs.retain(|key, _| live.contains(key));
         self.browser_revisions.retain(|key, _| live.contains(key));
-        self.nav.retain(|key, _| live.contains(key));
         self.filters.retain(|key, _| live.contains(key));
     }
 
@@ -109,15 +103,6 @@ impl DesktopViewState {
         filter.tick = self.filter_clock;
         filter.tick
     }
-
-    /// The tab's selection and scroll; a tab that never moved starts at the top.
-    pub fn nav(&self, key: TabKey) -> TabNavState {
-        self.nav.get(&key).copied().unwrap_or_default()
-    }
-
-    pub fn nav_mut(&mut self, key: TabKey) -> &mut TabNavState {
-        self.nav.entry(key).or_default()
-    }
 }
 
 /// How many recent filters a tab keeps.
@@ -130,22 +115,6 @@ pub struct TabFilter {
     pub history: Vec<String>,
     /// The filter clock's tick at this tab's last filter write; 0 when never.
     pub tick: u64,
-}
-
-/// One tab's selection and scroll positions. `selected_file` indexes the
-/// tab's diff files, the same index the snapshot translates into a position
-/// in the visible list.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct TabNavState {
-    pub selected_file: usize,
-    pub current_hunk: usize,
-    pub current_line: Option<usize>,
-    pub diff_scroll: u16,
-    pub h_scroll: u16,
-    /// The split view's two columns scroll on their own.
-    pub h_scroll_old: u16,
-    pub h_scroll_new: u16,
-    pub panel_scroll: u16,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -389,31 +358,14 @@ mod tests {
         assert_eq!(browser.url, "http://localhost:5173/", "untouched");
     }
 
-    /// Each tab keeps its own selection, and a tab that never moved starts
-    /// at the top.
-    #[test]
-    fn nav_state_is_kept_per_tab_key() {
-        let (a, b) = (TabKey::next(), TabKey::next());
-        let mut view = DesktopViewState::default();
-        view.nav_mut(a).selected_file = 3;
-        view.nav_mut(a).current_hunk = 2;
-        assert_eq!(view.nav(a).selected_file, 3);
-        assert_eq!(view.nav(a).current_hunk, 2);
-        assert_eq!(view.nav(b), TabNavState::default());
-    }
-
     #[test]
     fn retain_tabs_drops_closed_tabs_only() {
         let (a, b) = (TabKey::next(), TabKey::next());
         let mut view = DesktopViewState::default();
         view.browser_mut(a).url = "a".into();
         view.browser_mut(b).url = "b".into();
-        view.nav_mut(a).selected_file = 2;
-        view.nav_mut(b).selected_file = 5;
         view.retain_tabs(&[b]);
         assert_eq!(view.browser(a), TabBrowserState::default());
         assert_eq!(view.browser(b).url, "b");
-        assert_eq!(view.nav(a), TabNavState::default());
-        assert_eq!(view.nav(b).selected_file, 5);
     }
 }

@@ -38,12 +38,7 @@ fn a_followed_stub_gets_its_first_diff_when_it_becomes_active() {
         let state = state_over(dir, fake_ports());
         let (stub, stub_tab) = listed(&state, dir, "stub");
         let (shown, shown_tab) = listed(&state, dir, "shown");
-        tabs::follow_service(
-            &state.service,
-            super::app_stub(),
-            Arc::clone(&state.view),
-            fake_ports(),
-        );
+        tabs::follow_service(&state.service, Arc::clone(&state.view));
         assert!(
             wait_for_load(&state, shown, &shown_tab),
             "the active tab never loaded"
@@ -92,12 +87,7 @@ fn the_warmer_loads_each_unloaded_tab_of_the_active_repo_once() {
 fn an_open_succeeds_when_the_follower_loads_its_tab_first() {
     with_storage(|dir| {
         let state = state_over(dir, fake_ports());
-        tabs::follow_service(
-            &state.service,
-            super::app_stub(),
-            Arc::clone(&state.view),
-            fake_ports(),
-        );
+        tabs::follow_service(&state.service, Arc::clone(&state.view));
         let mut failed = Vec::new();
         for n in 0..40 {
             let root = dir.path().join(format!("open{n}"));

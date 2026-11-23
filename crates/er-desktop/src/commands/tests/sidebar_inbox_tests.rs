@@ -182,7 +182,9 @@ fn every_inbox_command_reaches_the_sidebar_owner() {
         assert_eq!(state.inbox.lock().unwrap().last_refresh_ms, 42);
         send(&state, Command::RefreshNotifications);
         let swept = wait_for(|| {
-            let running = state.loading.lock().unwrap().pr_list;
+            let running = state
+                .pr_list_running
+                .load(std::sync::atomic::Ordering::Acquire);
             !running && state.inbox.lock().unwrap().last_refresh_ms != 42
         });
         assert!(swept, "the refresh did not run the PR sweep");

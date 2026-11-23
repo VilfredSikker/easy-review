@@ -5,20 +5,15 @@ use std::sync::{Arc, Mutex};
 use tauri::menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem, Submenu};
 use tauri::Manager;
 
+use er_desktop::browser_webview::BrowserWebviewState;
 #[cfg(test)]
 use er_desktop::comment_tick::comment_sync_recently_synced;
 use er_desktop::frame_script::FRAME_SCRIPT;
-use er_desktop::snapshot::{
-    LoadingFlags, LoadingState, PrInfo, ProjectMeta, WatchStatusSnapshot, WatchStatusState,
-};
+use er_desktop::snapshot::{PrInfo, ProjectMeta, WatchStatusSnapshot, WatchStatusState};
 use er_desktop::{
-    arena_commands, browser_proxy, browser_webview, commands, config_commands, dev_log,
-    gh_pr_actions, gh_status_cache, inbox, main_webview_policy, native_notify, pr_cache,
-    pr_open_cache, profile_log, projects, risk_commands, snapshot, tabs, terminal,
-    window_placement,
+    browser_proxy, browser_webview, commands, dev_log, gh_status_cache, inbox, main_webview_policy,
+    native_notify, pr_cache, profile_log, projects, snapshot, tabs, terminal, window_placement,
 };
-use er_desktop::{browser_webview::BrowserWebviewState, commands::AppState};
-use er_engine::app::App;
 
 /// Inject the annotation content script before `</head>` (or `</body>` as fallback).
 fn inject_script(mut html: Vec<u8>) -> Vec<u8> {
@@ -611,13 +606,10 @@ fn probe_recently_done(
 /// local-branch checkout (project root or linked worktree) and refreshes the
 /// diff when tracked files in that checkout change.
 ///
-/// With `v1-service` the target comes from the registry's active tab and its
-/// content (`watcher::Follower`), never the App lock, and a file change
-/// refreshes that tab's content with auto-unmark. The App's tab still gets
-/// the checkout root and a refresh without unmark, since the page draws its
-/// hunks until they are served by hash.
+/// The target comes from the registry's active tab and its content
+/// (`watcher::Follower`), and a file change refreshes that tab's content with
+/// auto-unmark.
 fn run_active_branch_watcher(
-    watcher_app: Arc<Mutex<App>>,
     watcher_status: WatchStatusState,
     watcher_session: er_desktop::state::SessionClock,
     watcher_desktop_rev: Arc<std::sync::atomic::AtomicU64>,
@@ -667,9 +659,6 @@ fn run_active_branch_watcher(
                 watcher_session.set_watch_status(&watcher_status, WatchStatusSnapshot::default());
             }
 
-            // Mirror checkout root onto the active tab so refresh_diff
-            // uses the working-tree helper.
-            mirror_checkout_root(&watcher_app, desired.clone());
             current_key = desired;
             profile_log::bump_desktop_revision(&watcher_desktop_rev, "watcher_status");
         }
@@ -685,42 +674,9 @@ fn run_active_branch_watcher(
             Err(mpsc::RecvTimeoutError::Timeout | mpsc::RecvTimeoutError::Disconnected) => {}
         }
 
-        if !got_event {
-            continue;
+        if got_event && current_key.is_some() {
+            follower.on_change(&watcher_service);
         }
-        let Some((watched_branch, _root_path)) = current_key.clone() else {
-            continue;
-        };
-        follower.on_change(&watcher_service);
-        let app = Arc::clone(&watcher_app);
-        let rev = Arc::clone(&watcher_desktop_rev);
-        std::thread::spawn(move || {
-            let result = app.lock().ok().and_then(|mut g| {
-                if active_tab_watched_branch(&g).as_deref() != Some(watched_branch.as_str()) {
-                    return None;
-                }
-                Some(refresh_watched_app_tab(g.tab_mut()))
-            });
-            match result {
-                Some(Ok(())) => {
-                    let unmark_count = app
-                        .lock()
-                        .ok()
-                        .map(|mut g| std::mem::replace(&mut g.tab_mut().pending_unmark_count, 0))
-                        .unwrap_or(0);
-                    if unmark_count > 0 {
-                        log::info!(
-                            "active-branch watcher: auto-unmarked {unmark_count} reviewed file(s) whose diff changed (branch={watched_branch})"
-                        );
-                    }
-                    profile_log::bump_desktop_revision(&rev, "watcher_refresh");
-                }
-                Some(Err(e)) => {
-                    log::error!("active-branch watcher refresh failed: {e}");
-                }
-                None => {}
-            }
-        });
     }
 }
 
@@ -776,142 +732,22 @@ fn spawn_base_probe(
     });
 }
 
-/// The App tab's refresh on a watched file change. The content's refresh
-/// clears the reviewed marks, so the App's only redraws.
-fn refresh_watched_app_tab(tab: &mut er_engine::app::TabState) -> anyhow::Result<()> {
-    tab.refresh_diff_quick()
-}
-
-/// Mirrors the watcher's target onto the App's active tab. With
-/// `v1-service` on a thread of its own, so the watcher never waits on the
-/// App lock.
-fn mirror_checkout_root(app: &Arc<Mutex<App>>, desired: Option<(String, String)>) {
-    {
-        let app = Arc::clone(app);
-        std::thread::spawn(move || {
-            if let Ok(mut g) = app.lock() {
-                apply_watch_checkout_root(g.tab_mut(), desired);
-            }
-        });
-    }
-}
-
-/// The App keeps its startup tab until the service is built; then
-/// `tabs::restore` replaces it with the registry's tabs under their keys.
-fn restore_app_tabs(
-    _app: &mut App,
-    _ports: &er_engine::ports::Ports,
-) -> (Vec<usize>, er_desktop::view_state::DesktopViewState) {
-    (
-        Vec::new(),
-        er_desktop::view_state::DesktopViewState::default(),
-    )
-}
-
 fn main() {
     er_engine::env_path::init_cli_path();
     dev_log::init();
 
     let ports = er_engine::ports::Ports::cli();
-
-    // When a persisted tabs.json exists we're going to replace `app.tabs`
-    // entirely below, so the engine init only needs a placeholder tab —
-    // running the initial `refresh_diff()` here would be wasted work
-    // (~900ms on a large repo). Use the unloaded constructor in that case.
-    let has_persisted_tabs = tabs::load_tabs()
-        .map(|f| !f.tabs.is_empty())
-        .unwrap_or(false);
     let cwd_repo_root = ports.git.repo_root_cwd().ok();
 
-    let mut app = match (has_persisted_tabs, cwd_repo_root.clone()) {
-        (true, Some(root)) => App::new_unloaded(root, ports.clone()).unwrap_or_else(|e| {
-            empty_app(&format!("er-desktop: failed to init engine: {e}"), &ports)
-        }),
-        (true, None) => {
-            // No CWD repo but we have tabs to restore: open against a saved
-            // project so the engine has a valid root.
-            let fallback = startup_root_from_projects(&projects::load());
-            match fallback
-                .as_deref()
-                .map(|p| App::new_unloaded(p.to_string(), ports.clone()))
-            {
-                Some(Ok(a)) => a,
-                Some(Err(e)) => empty_app(
-                    &format!(
-                        "er-desktop: failed to init engine for {}: {e}",
-                        fallback.as_deref().unwrap_or("?")
-                    ),
-                    &ports,
-                ),
-                None => empty_app(
-                    "er-desktop: not started from a git repo, and no saved project folder still exists",
-                    &ports,
-                ),
-            }
-        }
-        (false, _) => match App::new_with_args(&[], ports.clone()) {
-            Ok(a) => a,
-            Err(cwd_err) => {
-                let fallback = startup_root_from_projects(&projects::load());
-                match fallback
-                    .as_deref()
-                    .map(|p| App::new_with_args(&[p.to_string()], ports.clone()))
-                {
-                    Some(Ok(a)) => {
-                        log::info!(
-                            "er-desktop: cwd not a repo ({cwd_err}); opened last active project: {}",
-                            fallback.as_deref().unwrap_or("?")
-                        );
-                        a
-                    }
-                    _ => empty_app(
-                        &format!("er-desktop: failed to init engine: {cwd_err}"),
-                        &ports,
-                    ),
-                }
-            }
-        },
-    };
-
-    // Restore persisted tab list, if present. Failures are non-fatal: we
-    // simply keep the default single-tab launch.
-    //
-    // Two-phase startup: refresh the diff eagerly only for the single restored
-    // active tab. Every other tab is rebuilt as a stub (`needs_initial_refresh`
-    // set) so a fresh launch with many tabs across many repos doesn't pay N
-    // cold `git diff` calls before the window appears. Each stub is upgraded
-    // when its tab gains focus (see `commands::kick_deferred_tab_refresh`).
-    //
-    // With `v1-service` the app registry issues the keys, so the restore runs
-    // once the service is built (`tabs::restore`). Focus does not upgrade a
-    // stub there: the flag-on select never calls `kick_deferred_tab_refresh`.
-    let (deferred_tab_indices, view_state) = restore_app_tabs(&mut app, &ports);
-
-    app.announce_legacy_root();
-    // Register every unique repo root / remote referenced by open tabs. With
-    // `v1-service` the App holds only its startup tab here, so the
-    // registration waits for the registry (`register_open_projects`).
-
-    // With every saved tab broken, the restore opens a Working tab here, and
-    // the launch root falls back to it for a remote PR.
+    // With no saved tab, or every saved tab broken, the restore opens a
+    // Working tab here, and the launch root falls back to it for a remote PR.
     let restore_root: Option<String> = cwd_repo_root
         .clone()
         .or_else(|| startup_root_from_projects(&projects::load()));
 
-    // Scope background tab warmup to the active project (or the restored active
-    // tab's repo). Never warm cross-project stubs when active_id is missing.
-    // With `v1-service` the registry's active tab scopes it (`tabs::warm`).
-
     let pr_cache: Arc<Mutex<HashMap<String, Vec<PrInfo>>>> = Arc::new(Mutex::new(HashMap::new()));
     let pr_cache_fetched_at: Arc<Mutex<HashMap<String, u64>>> =
         Arc::new(Mutex::new(HashMap::new()));
-    let pr_open_cache: Arc<Mutex<HashMap<commands::PrOpenCacheKey, commands::PrOpenCacheEntry>>> =
-        Arc::new(Mutex::new(
-            pr_open_cache::load_persisted_pr_open_cache()
-                .ok()
-                .flatten()
-                .unwrap_or_default(),
-        ));
     let meta_cache: Arc<Mutex<HashMap<String, ProjectMeta>>> = Arc::new(Mutex::new(HashMap::new()));
     let gh_user: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
     let gh_status_cache: snapshot::GhStatusCache = Arc::new(Mutex::new(
@@ -929,7 +765,6 @@ fn main() {
         Arc::clone(&inbox),
     ));
     app_owner.read_status_from(Arc::clone(&gh_status_cache));
-    let loading: LoadingState = Arc::new(Mutex::new(LoadingFlags::default()));
     let watch_status: WatchStatusState = Arc::new(Mutex::new(WatchStatusSnapshot::default()));
     let tauri_app_handle: Arc<Mutex<Option<tauri::AppHandle>>> = Arc::new(Mutex::new(None));
 
@@ -951,21 +786,14 @@ fn main() {
         });
     }
 
-    // Capture the launch-time active root for the first meta-refresh iteration.
-    // On the service path the registry's active tab names it, after the restore.
-
     let gh_status_in_flight: Arc<Mutex<std::collections::HashSet<(String, String, u64)>>> =
         Arc::new(Mutex::new(std::collections::HashSet::new()));
-    let app_arc: Arc<Mutex<App>> = Arc::new(Mutex::new(app));
-    let view_arc: er_desktop::view_state::ViewStateHandle = Arc::new(Mutex::new(view_state));
+    let view_arc: er_desktop::view_state::ViewStateHandle = Arc::default();
     let terminals: Arc<Mutex<HashMap<String, terminal::PtySession>>> =
         Arc::new(Mutex::new(HashMap::new()));
     let terminals_for_exit = Arc::clone(&terminals);
     let desktop_revision: Arc<std::sync::atomic::AtomicU64> =
         Arc::new(std::sync::atomic::AtomicU64::new(0));
-    if let Ok(mut app) = app_arc.lock() {
-        arena_commands::attach_arena_notify(&mut app, Arc::clone(&desktop_revision));
-    }
     let branch_base_remote_oid: Arc<Mutex<HashMap<String, String>>> =
         Arc::new(Mutex::new(HashMap::new()));
     // The resource relay's wakes; the relay starts with the window.
@@ -974,8 +802,7 @@ fn main() {
     session.wake_with(resource_wake.clone());
     let service = Arc::new(
         er_desktop::service::ServiceState::with_revision_relay(ports.clone(), {
-            // The revision watcher emits `er://revision` for this bump, so the
-            // relay does not emit one of its own.
+            // The revision watcher wakes the tick for this bump.
             let desktop_revision = Arc::clone(&desktop_revision);
             move |_| {
                 profile_log::bump_desktop_revision(&desktop_revision, "service_view");
@@ -984,29 +811,20 @@ fn main() {
         .with_resource_wake(resource_wake.clone()),
     );
     app_owner.set_wake(resource_wake);
-    // The registry issues every tab key on this path: the App restores from
-    // its list, then follows each change to it.
-    {
-        let registry = Arc::clone(service.app_registry());
-        tabs::restore(
-            &app_arc,
-            &view_arc,
-            &registry,
-            &ports,
-            restore_root.as_deref(),
-        );
-        let (app, view) = (Arc::clone(&app_arc), Arc::clone(&view_arc));
-        tabs::follow_service(&service, app, view, ports.clone());
-    }
+    // The registry loads the saved tabs and issues every tab key.
+    tabs::restore(
+        &view_arc,
+        service.app_registry(),
+        &ports,
+        restore_root.as_deref(),
+    );
+    tabs::follow_service(&service, Arc::clone(&view_arc));
     let launch_root = er_desktop::app_owner::startup::launch_root(
         service.app_registry(),
         restore_root.as_deref(),
     );
-    if let Ok(app) = app_arc.lock() {
-        er_desktop::arena_commands::attach_live_runs(&app, Arc::clone(&service));
-    }
     // Each listed tab's flow bucket, resolved from its descriptor: no tab has
-    // loaded yet, and the App is not read.
+    // loaded yet.
     er_desktop::flow_service::reconcile_on_load(
         &service.app_registry().tabs_view(),
         &ports,
@@ -1019,7 +837,6 @@ fn main() {
         pr_cache: Arc::clone(&pr_cache),
         pr_cache_fetched_at: Arc::clone(&pr_cache_fetched_at),
         branch_base_remote_oid: Arc::clone(&branch_base_remote_oid),
-        pr_open_cache: Arc::clone(&pr_open_cache),
         meta_cache: Arc::clone(&meta_cache),
         app_owner: Arc::clone(&app_owner),
         gh_user: Arc::clone(&gh_user),
@@ -1028,16 +845,11 @@ fn main() {
         ui_annotations: session.clock(),
         ui_annotations_io: Arc::default(),
         gh_status_cache: Arc::clone(&gh_status_cache),
-        loading: Arc::clone(&loading),
+        pr_list_running: Arc::default(),
         pr_list_clock: session.clock(),
         status_fetch_clock: session.clock(),
         gh_status_in_flight: Arc::clone(&gh_status_in_flight),
         gh_status_fetched: Arc::default(),
-        pr_open_prefetch_in_flight: Arc::new(Mutex::new(std::collections::HashMap::new())),
-        branch_preload_in_flight: Arc::new(Mutex::new(std::collections::HashSet::new())),
-        pr_ref_fetch_in_flight: Arc::new(Mutex::new(std::collections::HashSet::new())),
-        remote_pr_open_cache: Arc::new(Mutex::new(HashMap::new())),
-        remote_pr_open_in_flight: Arc::new(Mutex::new(std::collections::HashSet::new())),
         desktop_revision: Arc::clone(&desktop_revision),
         watch_status: Arc::clone(&watch_status),
         inbox: Arc::clone(&inbox),
@@ -1049,7 +861,7 @@ fn main() {
         live_tabs: Default::default(),
         tasks: er_desktop::tasks::TaskHost::new(session.clock()),
     };
-    let state = AppState::new(desktop.clone(), Arc::clone(&app_arc));
+    let state = desktop.clone();
     er_desktop::app_owner::startup::read_inbox_prefs_from_settings(&desktop);
     er_desktop::app_owner::startup::register_open_projects(&state);
 
@@ -1068,7 +880,7 @@ fn main() {
     // so the on-disk files stay small across launches. Skip entirely when no
     // projects are known: an empty keep-set would wipe otherwise-valid caches
     // (e.g. a missing/corrupt projects.json), and the in-memory caps
-    // (MAX_PR_OPEN_CACHE_ENTRIES; gh_status is memory-only at runtime) already
+    // (the registry's PR-open cap; gh_status is memory-only at runtime) already
     // bound in-session growth. The two caches live in different key spaces, so
     // each is pruned against its own derived keep-set.
     {
@@ -1103,10 +915,7 @@ fn main() {
                     }
                 }
             }
-            if let Ok(mut map) = pr_open_cache.lock() {
-                pr_open_cache::prune_pr_open_cache(&mut map, &pr_open_keep);
-            }
-            // The app registry owns the file on the flag path; it prunes its own copy.
+            // The app registry owns the PR-open cache file and prunes it.
             state
                 .service
                 .app_registry()
@@ -1230,7 +1039,7 @@ fn main() {
     {
         let gh_status_bg = Arc::clone(&gh_status_cache);
         let loop_state = state.clone();
-        let fetches = state.desktop.clone();
+        let fetches = state.clone();
         let gh_status_desktop_rev = Arc::clone(&desktop_revision);
         std::thread::spawn(move || loop {
             // Sleep FIRST: kills the startup burst — a sleep at the bottom
@@ -1273,7 +1082,7 @@ fn main() {
         });
     }
 
-    er_desktop::comment_tick::spawn(state.desktop.clone());
+    er_desktop::comment_tick::spawn(state.clone());
 
     // Spawn background GitHub comment sync. Three-phase design so network I/O
     // never holds the app mutex:
@@ -1285,7 +1094,6 @@ fn main() {
     // tab's local-branch checkout (project root or linked worktree) and
     // refreshes the diff when tracked files in that checkout change.
     std::thread::spawn({
-        let watcher_app = Arc::clone(&app_arc);
         let watcher_status = Arc::clone(&watch_status);
         let watcher_session = session.clone();
         let watcher_desktop_rev = Arc::clone(&desktop_revision);
@@ -1293,7 +1101,6 @@ fn main() {
         let watcher_git = Arc::clone(&ports.git);
         move || {
             run_active_branch_watcher(
-                watcher_app,
                 watcher_status,
                 watcher_session,
                 watcher_desktop_rev,
@@ -1389,8 +1196,7 @@ fn main() {
     });
 
     // Spawn background meta-cache refresh: keeps per-project git metadata
-    // (branches, worktrees, current/base branch) fresh without ever taking
-    // the AppState.app mutex.
+    // (branches, worktrees, current/base branch) fresh.
     let meta_owner = Arc::clone(&app_owner);
     let meta_desktop_rev = Arc::clone(&desktop_revision);
     let meta_state = state.clone();
@@ -1433,21 +1239,10 @@ fn main() {
         });
     });
 
-    // Background warmer: refresh persisted tab stubs that belong to the
-    // **active project**. Tabs from other projects stay stubs until the user
-    // focuses them (`commands::kick_deferred_tab_refresh` loads the diff then).
-    // Avoids paying `git diff` cost on launch for repos the user didn't open.
-    // With `v1-service` the warmer loads the registry's tabs through the
-    // service (`tabs::spawn_warmer`), after the same grace period.
-    {
-        let _ = deferred_tab_indices;
-        tabs::spawn_warmer(Arc::clone(&service), std::time::Duration::from_secs(2));
-    }
+    // Background warmer: loads the registry's tabs that belong to the active
+    // project through the service, after a grace period.
+    tabs::spawn_warmer(Arc::clone(&service), std::time::Duration::from_secs(2));
 
-    let persist_app = Arc::clone(&app_arc);
-    let persist_app_on_close = Arc::clone(&app_arc);
-    let persist_view = Arc::clone(&view_arc);
-    let persist_view_on_close = Arc::clone(&view_arc);
     // Throttles eager geometry saves on move/resize (see the on_window_event
     // handler below). Init to now() so the programmatic resizes fired during the
     // startup restore_state don't trigger a redundant save.
@@ -1479,7 +1274,6 @@ fn main() {
                 .skip_initial_state("main")
                 .build(),
         )
-        .manage(state)
         .manage(desktop)
         .manage(BrowserWebviewState::default())
         // `erp://host/path` proxies `http://host/path`; `erps://host/path`
@@ -1495,11 +1289,6 @@ fn main() {
                 return;
             }
             match event {
-                tauri::WindowEvent::CloseRequested { .. } => {
-                    if let Ok(guard) = persist_app_on_close.lock() {
-                        tabs::persist_app_tabs(&guard, &persist_view_on_close);
-                    }
-                }
                 // The window-state plugin only writes geometry to disk on a
                 // graceful RunEvent::Exit; move/resize merely update its in-memory
                 // cache. A `tauri dev` rebuild (or a crash) hard-kills the app, so
@@ -1531,47 +1320,36 @@ fn main() {
                     &er_desktop::store_registry::registry(),
                 );
             }
-            if let Some(state) = app.try_state::<AppState>() {
+            if let Some(state) = app.try_state::<er_desktop::state::DesktopState>() {
                 if let Ok(mut h) = state.tauri_app_handle.lock() {
                     *h = Some(app.handle().clone());
                 }
                 native_notify::initialize(app.handle());
                 er_desktop::app_owner::startup::flush_pending_notifications(&state);
-                // Revision watcher: emit a Tauri event whenever the backend's
-                // `desktop_revision` advances. The frontend listens and only
-                // calls `poll` on demand instead of every 2s — cuts idle
-                // backend mutex/lock contention to ~zero, and lets the UI
-                // react within ~50ms of a real change.
-                let watch_handle = app.handle().clone();
-                let emit = move |revision: u64, delta: u64| {
-                    use tauri::Emitter;
-                    if let Err(e) = watch_handle.emit("er://revision", revision) {
-                        log::warn!("revision watcher emit failed: {e}");
-                    } else {
-                        profile_log::profile_log(
-                            "revision_emit",
-                            &[
-                                ("coalesced_rev", revision.to_string()),
-                                ("delta_rev", delta.to_string()),
-                            ],
-                        );
-                    }
-                };
-                // With the flag on, each emitted revision also runs the backend
-                // tick, which drives the duties the poll ran on each event.
+                // Revision watcher: each advance of `desktop_revision` wakes
+                // the backend tick, which runs the duties that move resources.
                 {
                     use er_desktop::resources::tick;
-                    let desktop = state.desktop.clone();
+                    let desktop = state.inner().clone();
                     std::thread::spawn(move || {
                         let never = std::sync::atomic::AtomicBool::new(false);
-                        tick::follow_revisions(desktop, tick::INTERVAL, &never, &emit);
+                        let traced = |revision: u64, delta: u64| {
+                            profile_log::profile_log(
+                                "revision_tick",
+                                &[
+                                    ("coalesced_rev", revision.to_string()),
+                                    ("delta_rev", delta.to_string()),
+                                ],
+                            );
+                        };
+                        tick::follow_revisions(desktop, tick::INTERVAL, &never, &traced);
                     });
                 }
                 {
                     use er_desktop::resources::relay;
                     use tauri::Emitter;
                     let handle = app.handle().clone();
-                    relay::spawn(state.desktop.clone(), resource_wakes, move |moved| {
+                    relay::spawn(state.inner().clone(), resource_wakes, move |moved| {
                         let changed = relay::wire(&moved);
                         if changed.is_empty() {
                             return;
@@ -1644,195 +1422,23 @@ fn main() {
             er_desktop::resources::commands::er_fetch,
             er_desktop::resources::commands::er_versions,
             er_desktop::direct::window::start_window_drag,
-            commands::get_snapshot,
-            commands::toggle_panel,
-            commands::request_file_content,
-            commands::request_file_preview,
-            commands::request_image_preview,
             er_desktop::github_image::fetch_github_image,
-            commands::select_file,
-            commands::next_file,
-            commands::prev_file,
-            commands::jump_to_unreviewed,
-            commands::set_mode,
-            commands::toggle_reviewed,
-            commands::mark_reviewed,
-            commands::unmark_reviewed,
-            commands::bulk_review_pillar,
-            commands::unbulk_review_pillar,
-            commands::generate_tour,
-            commands::run_importance_agent,
-            commands::generate_diagram,
-            commands::delete_diagram,
             er_desktop::direct::os::open_in_editor,
             er_desktop::direct::os::open_in_vscode,
             er_desktop::direct::os::open_source,
             er_desktop::direct::os::open_url_in_browser,
-            commands::check_app_update,
             er_desktop::direct::os::reveal_er_folder,
             er_desktop::direct::os::reveal_path,
-            commands::list_review_revisions,
-            commands::read_review_json,
-            commands::next_hunk,
-            commands::prev_hunk,
-            commands::toggle_compacted,
-            commands::set_filter,
-            commands::clear_filter,
-            commands::add_comment,
-            commands::add_question,
-            commands::add_note,
-            commands::add_document_thread,
-            commands::reply_to_thread,
-            commands::reply_to_github_thread,
-            commands::delete_thread,
-            commands::resolve_thread,
-            commands::refresh_diff,
-            commands::force_refresh_diff,
-            commands::refresh_stack,
-            commands::refresh_github_status,
-            commands::pull_github_comments,
-            commands::submit_github_pr_decision,
-            commands::post_github_pr_comment,
-            commands::get_pending_review,
-            commands::add_pending_review_comment,
-            commands::remove_pending_review_comment,
-            commands::submit_pending_review,
-            commands::post_github_line_comment,
-            gh_pr_actions::run_github_pr_action,
-            commands::run_ai_review,
-            commands::run_ai_expert_review,
-            commands::run_ai_professor_review,
-            commands::run_ai_triage_review,
-            commands::run_pr_triage,
-            commands::cancel_queued_review,
-            commands::cancel_running_review,
-            commands::run_branch_triage,
-            commands::list_ai_experts,
-            commands::list_ai_reviewers,
-            commands::run_ai_review_files,
-            commands::run_ai_scoped_review,
-            commands::run_ai_validate,
-            commands::list_diff_paths,
-            commands::set_ai_model,
-            commands::list_ai_providers,
-            arena_commands::arena_estimate,
-            arena_commands::arena_start,
-            arena_commands::start_review_flow,
-            arena_commands::confirm_review_flow,
-            arena_commands::decline_review_flow,
-            arena_commands::cancel_review_flow,
-            arena_commands::rerun_review_flow,
-            arena_commands::flow_accept_findings,
-            arena_commands::flow_get_run,
-            arena_commands::arena_validate_findings,
-            arena_commands::arena_start_batch,
-            arena_commands::arena_estimate_batch,
-            arena_commands::arena_accept_findings,
-            arena_commands::arena_progress,
-            arena_commands::arena_get,
-            arena_commands::arena_list,
-            arena_commands::arena_delete,
-            arena_commands::arena_cancel,
-            arena_commands::arena_override,
             er_desktop::direct::dev_log::dev_log_filter,
-            commands::set_ai_selection,
-            config_commands::get_config_hub,
-            config_commands::set_review_flow_models,
-            config_commands::apply_config_patch,
-            config_commands::save_config_global_cmd,
-            config_commands::preview_uninstall,
-            config_commands::run_uninstall,
-            config_commands::refresh_ai_models,
-            config_commands::upsert_ai_provider,
-            config_commands::delete_ai_provider,
-            config_commands::upsert_ai_model,
-            config_commands::delete_ai_model,
-            risk_commands::get_risk_rules,
-            risk_commands::get_risk_files,
-            commands::set_ai_effort,
-            commands::promote_to_comment,
-            commands::promote_to_note,
-            commands::ask_ai,
-            commands::validate_with_ai,
-            commands::elaborate_with_ai,
-            commands::send_note_to_agent,
             er_desktop::direct::line_commits::line_commits,
-            commands::run_standard_review_flow,
-            commands::open_pr_url,
-            commands::open_remote_pr,
-            commands::open_worktree,
-            commands::dismiss_finding,
-            commands::resolve_finding,
-            commands::unresolve_finding,
-            commands::toggle_checklist_item,
-            commands::delete_review_artifact,
-            commands::remove_finding_thread,
-            commands::promote_finding_to_comment,
-            commands::reply_to_finding,
-            commands::update_thread_message,
-            commands::update_finding_response,
-            commands::delete_finding_response,
             er_desktop::direct::export::export_review,
             er_desktop::direct::export::export_review_to_file,
             er_desktop::direct::export::export_to_agent,
-            commands::open_commit_composer,
-            commands::select_commit,
-            commands::exit_history,
-            commands::poll,
-            commands::open_local_branch,
-            commands::open_pr_branch,
-            commands::open_pr_review,
-            commands::prefetch_pr_open,
-            commands::prefetch_inbox_item,
-            commands::prefetch_remote_pr_open,
-            commands::refresh_pr_list,
-            commands::refresh_project_pr_list,
-            commands::open_inbox_item,
-            commands::change_base,
-            commands::mark_inbox_item_read,
-            commands::mark_all_inbox_read,
-            commands::mark_inbox_items_read,
-            commands::clear_read_inbox_items,
-            commands::clear_inbox_items,
-            commands::refresh_notifications,
-            commands::test_native_notification,
-            commands::dismiss_remote_pr,
-            commands::undismiss_remote_pr,
-            commands::sync_pr,
-            commands::sync_branch,
-            commands::track_pr,
-            commands::untrack_pr,
-            commands::save_pr,
-            commands::unsave_pr,
-            commands::list_available_prs,
-            commands::set_active_project,
-            commands::patch_project_review_settings,
-            commands::add_tracked_branch,
-            commands::remove_tracked_branch,
-            commands::list_available_branches,
-            commands::delete_project,
-            commands::reorder_projects,
-            commands::open_project_branch,
-            commands::new_tab,
-            commands::close_tab,
-            commands::select_tab,
-            commands::reorder_tabs,
-            commands::add_ui_annotation,
-            commands::delete_ui_annotation,
-            commands::clear_ui_annotations,
-            commands::clear_ui_annotations_for_page,
-            commands::update_tab_browser,
-            commands::cycle_tab_browser_layout,
-            commands::list_ui_annotations,
-            commands::update_ui_annotation_anchors,
-            commands::save_annotation_screenshot,
-            commands::read_annotation_screenshot,
             er_desktop::direct::terminal::terminal_spawn,
             er_desktop::direct::terminal::terminal_write,
             er_desktop::direct::terminal::terminal_resize,
             er_desktop::direct::terminal::terminal_close,
             er_desktop::direct::terminal::detect_dev_url,
-            commands::get_background_task_log,
             browser_webview::browser_ensure,
             browser_webview::browser_hide,
             browser_webview::browser_suspend_for_overlay,
@@ -1851,9 +1457,6 @@ fn main() {
         let _ = handle;
         match event {
             tauri::RunEvent::ExitRequested { .. } => {
-                if let Ok(guard) = persist_app.lock() {
-                    tabs::persist_app_tabs(&guard, &persist_view);
-                }
                 // Kill any live shell sessions. Drop runs PtySession::drop on
                 // each, which kills + reaps the child.
                 if let Ok(mut map) = terminals_for_exit.lock() {
@@ -1875,43 +1478,6 @@ fn main() {
     });
 }
 
-/// Branch the active-branch watcher should follow. Remote-only tabs have no
-/// local checkout. Local PR tabs store a GitHub slug for status keys; they
-/// still watch when the head branch is checked out.
-fn watch_branch_for_tab(tab: &er_engine::app::TabState) -> Option<String> {
-    if tab.is_remote() {
-        return None;
-    }
-    let branch = tab
-        .local_branch_view
-        .clone()
-        .unwrap_or_else(|| tab.current_branch.clone());
-    if branch.is_empty() {
-        None
-    } else {
-        Some(branch)
-    }
-}
-
-/// Branch name the active tab is reviewing (for watch refresh guard).
-fn active_tab_watched_branch(app: &App) -> Option<String> {
-    watch_branch_for_tab(app.tab())
-}
-
-/// Mirror the watcher target onto the tab. Local PR tabs with a GitHub slug
-/// must not treat `desired = None` as "clear checkout": `remote_repo` makes
-/// both sides `None`, which hides Local Branch and makes Branch/PR Diff load
-/// the same `gh pr diff`.
-fn apply_watch_checkout_root(
-    tab: &mut er_engine::app::TabState,
-    desired: Option<(String, String)>,
-) {
-    let desired_branch = desired.as_ref().map(|(b, _)| b.clone());
-    if watch_branch_for_tab(tab) == desired_branch {
-        tab.local_branch_checkout_root = desired.as_ref().map(|(_, r)| r.clone());
-    }
-}
-
 /// Root to open when the CWD is not a repo, which is every Finder launch.
 ///
 /// The active project comes first, but only while its folder still exists:
@@ -1929,13 +1495,6 @@ fn startup_root_from_projects(file: &projects::ProjectsFile) -> Option<String> {
     active
         .or_else(|| file.projects.iter().find(on_disk))
         .map(|p| p.root_path.clone())
-}
-
-/// Start with no repo open instead of exiting. A Finder launch with nothing to
-/// open lands here, and the front end shows its welcome so a repo can be picked.
-fn empty_app(msg: &str, ports: &er_engine::ports::Ports) -> App {
-    eprintln!("{msg}; opening with no repo");
-    App::new_empty(ports.clone())
 }
 
 /// Base cadence for the branch-base staleness probe: one `git ls-remote` a
@@ -2030,67 +1589,6 @@ mod tests {
             Instant::now(),
             Duration::from_secs(300),
         ));
-    }
-
-    // ── local-PR slug vs remote-only watch ──
-    // Local PR tabs store `remote_repo` for GitHub status keys. Treating that
-    // as remote-only made both watch sides `None`, which cleared a just-attached
-    // checkout root. Local Branch then loaded the same `gh pr diff` as PR Diff.
-
-    fn local_pr_tab_with_slug() -> er_engine::app::TabState {
-        let mut tab = er_engine::app::TabState::new_for_test(vec![]);
-        tab.remote_repo = Some("owner/repo".into());
-        tab.local_branch_view = Some("feat/x".into());
-        tab.pr_number = Some(42);
-        tab
-    }
-
-    #[test]
-    fn watch_branch_skips_remote_only_tabs() {
-        let mut tab = er_engine::app::TabState::new_for_test(vec![]);
-        tab.remote_repo = Some("owner/repo".into());
-        tab.local_branch_view = None;
-        tab.current_branch.clear();
-        assert_eq!(watch_branch_for_tab(&tab), None);
-    }
-
-    #[test]
-    fn watch_branch_follows_local_pr_with_github_slug() {
-        let tab = local_pr_tab_with_slug();
-        assert_eq!(
-            watch_branch_for_tab(&tab).as_deref(),
-            Some("feat/x"),
-            "a GitHub slug must not hide the local PR head from the watcher"
-        );
-    }
-
-    #[test]
-    fn apply_watch_checkout_root_keeps_local_pr_checkout_when_desired_is_none() {
-        let mut tab = local_pr_tab_with_slug();
-        tab.local_branch_checkout_root = Some("/worktree".into());
-        apply_watch_checkout_root(&mut tab, None);
-        assert_eq!(
-            tab.local_branch_checkout_root.as_deref(),
-            Some("/worktree"),
-            "desired=None used to clear checkout because both watch sides were None"
-        );
-    }
-
-    #[test]
-    fn apply_watch_checkout_root_sets_root_when_desired_matches() {
-        let mut tab = local_pr_tab_with_slug();
-        apply_watch_checkout_root(&mut tab, Some(("feat/x".into(), "/wt".into())));
-        assert_eq!(tab.local_branch_checkout_root.as_deref(), Some("/wt"));
-    }
-
-    #[test]
-    fn apply_watch_checkout_root_clears_remote_only_when_desired_is_none() {
-        let mut tab = er_engine::app::TabState::new_for_test(vec![]);
-        tab.remote_repo = Some("owner/repo".into());
-        tab.local_branch_view = None;
-        tab.local_branch_checkout_root = Some("/stale".into());
-        apply_watch_checkout_root(&mut tab, None);
-        assert!(tab.local_branch_checkout_root.is_none());
     }
 
     // ── probe_recently_done (throttle) ──

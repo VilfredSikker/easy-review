@@ -32,7 +32,7 @@ pub async fn er_send(
     })
     .await?;
     match applied.uninstalled {
-        Some(result) => crate::config_commands::finish_uninstall(&app, result)
+        Some(result) => finish_uninstall(&app, result)
             .map(|_| applied.ack)
             .map_err(|message| ErError {
                 kind: er_protocol::ErErrorKind::Refused,
@@ -88,4 +88,35 @@ where
             kind: er_protocol::ErErrorKind::Internal,
             message: format!("blocking task failed: {e}"),
         })?
+}
+
+/// Quits after an uninstall that asked for it, and reports what failed.
+fn finish_uninstall(
+    app_handle: &tauri::AppHandle,
+    result: er_engine::uninstall::UninstallResult,
+) -> Result<er_engine::uninstall::UninstallResult, String> {
+    if !result.failed.is_empty() && !result.should_quit {
+        let msg = format!("Uninstall failed:\n{}", result.failed.join("\n"));
+        log::error!("run_uninstall: {msg}");
+        return Err(msg);
+    }
+
+    if result.should_quit {
+        let handle = app_handle.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(400));
+            handle.exit(0);
+        });
+    }
+
+    if !result.failed.is_empty() {
+        let msg = format!(
+            "Uninstall partially failed (quitting so in-use paths can be removed):\n{}",
+            result.failed.join("\n")
+        );
+        log::error!("run_uninstall: {msg}");
+        return Err(msg);
+    }
+
+    Ok(result)
 }

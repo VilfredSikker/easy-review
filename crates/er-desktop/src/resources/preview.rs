@@ -53,12 +53,6 @@ pub fn diff_paths(
     Ok((0, Resource::DiffPaths(DiffPaths { paths })))
 }
 
-/// The registry's active tab, for the old preview commands' flag-on bodies.
-pub fn active(desktop: &DesktopState) -> Option<TabEntry> {
-    let tabs = desktop.service.app_registry().tabs_view();
-    tabs.active_entry().cloned()
-}
-
 pub fn document(
     desktop: &DesktopState,
     entry: &TabEntry,

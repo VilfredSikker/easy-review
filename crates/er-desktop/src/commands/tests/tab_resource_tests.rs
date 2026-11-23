@@ -480,12 +480,7 @@ fn a_close_prunes_the_closed_tabs_view() {
                 view.browser_mut(key).url = "http://localhost:5173/".into();
             }
         }
-        crate::tabs::follow_service(
-            &state.service,
-            super::app_stub(),
-            Arc::clone(&state.view),
-            ports(),
-        );
+        crate::tabs::follow_service(&state.service, Arc::clone(&state.view));
 
         let pruned = on_a_thread(&state, "close_tab", move |state| {
             let effects = Effects {

@@ -291,7 +291,9 @@ fn a_guard_dropped_in_a_panic_ends_its_refresh_and_fetch() {
         }));
         assert!(panicked.is_err());
         assert!(!jobs_of(&state).1.pr_list_refresh);
-        assert!(!state.loading.lock().unwrap().pr_list);
+        assert!(!state
+            .pr_list_running
+            .load(std::sync::atomic::Ordering::Acquire));
         assert!(state.begin_pr_list_refresh().is_some());
         assert!(state.begin_status_fetch(&key).is_some());
     });

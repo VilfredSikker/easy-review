@@ -62,9 +62,8 @@ impl ServiceState {
     }
 
     /// Like [`Self::new`], with every actor's published revisions forwarded to
-    /// `relay`. The desktop bumps its revision from it, so a flag-path change
-    /// reaches the front end as an `er://revision` event instead of waiting
-    /// for a poll; a live arena run's progress reaches the page this way.
+    /// `relay`. The desktop bumps its revision from it, which wakes the
+    /// backend tick; a live arena run's progress reaches the page this way.
     pub fn with_revision_relay(ports: Ports, relay: impl Fn(u64) + Send + Sync + 'static) -> Self {
         Self::with_deps(WorkspaceDeps::new(ports), relay)
     }
@@ -315,18 +314,6 @@ impl ServiceState {
             Ok(handles) => handles.len(),
             Err(poisoned) => poisoned.into_inner().len(),
         }
-    }
-
-    /// Whether any actor this process started is running `run_id`, from the
-    /// published views. The App asks before it marks a run stale.
-    pub fn arena_run_live(&self, run_id: &str) -> bool {
-        let handles: Vec<WorkspaceHandle> = match self.handles.lock() {
-            Ok(handles) => handles.values().cloned().collect(),
-            Err(poisoned) => poisoned.into_inner().values().cloned().collect(),
-        };
-        handles
-            .iter()
-            .any(|handle| handle.view().arena_run(run_id).is_some())
     }
 
     /// The key of the started actor whose published view holds `run_id`
