@@ -391,7 +391,7 @@ fn spawn_github_comment_deletes(
 
 /// What one agent stdout line adds to the agent log: the parsed stream-json
 /// event, or the trimmed raw line for other formats. `None` when that is empty.
-fn stdout_log_text(line: &str, is_stream_json: bool) -> Option<String> {
+pub fn stdout_log_text(line: &str, is_stream_json: bool) -> Option<String> {
     let display = if is_stream_json {
         parse_stream_json_line(line)
     } else {
