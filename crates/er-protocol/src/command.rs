@@ -331,6 +331,115 @@ pub enum Command {
         path: String,
         compacted: bool,
     },
+    /// Adds a question on a diff line of the tab the page painted, whichever
+    /// tab is active. Refused when the tab shows another view than `view`,
+    /// the one `annotations(tab)` named. `client_id` is the id of the row
+    /// the page painted; the `Ack`'s `created` is the row's id.
+    AddQuestion {
+        tab: TabKey,
+        view: PaintedView,
+        target: LineTarget,
+        body: String,
+        side: Option<String>,
+        client_id: Option<String>,
+    },
+    /// Adds a private note, as `AddQuestion` adds a question.
+    AddNote {
+        tab: TabKey,
+        view: PaintedView,
+        target: LineTarget,
+        body: String,
+        side: Option<String>,
+        client_id: Option<String>,
+    },
+    /// Adds a comment and posts it to the tab's pull request.
+    AddComment {
+        tab: TabKey,
+        view: PaintedView,
+        target: LineTarget,
+        body: String,
+        side: Option<String>,
+        client_id: Option<String>,
+    },
+    /// Anchors a question or note (`thread_kind`) on a line of a previewed
+    /// document.
+    /// Refused when the document's preview key in the tab is no longer
+    /// `preview_key`, the one the line was picked in.
+    AddDocumentThread {
+        tab: TabKey,
+        path: String,
+        thread_kind: String,
+        line: u32,
+        line_end: Option<u32>,
+        body: String,
+        preview_key: String,
+    },
+    ReplyToThread {
+        tab: TabKey,
+        view: PaintedView,
+        parent_id: String,
+        body: String,
+        client_id: Option<String>,
+    },
+    UpdateThreadMessage {
+        tab: TabKey,
+        view: PaintedView,
+        id: String,
+        body: String,
+    },
+    /// Deletes a thread or one reply, and any ask-AI reply still being
+    /// written for it.
+    DeleteThread {
+        tab: TabKey,
+        view: PaintedView,
+        id: String,
+    },
+    ResolveThread {
+        tab: TabKey,
+        view: PaintedView,
+        id: String,
+    },
+    /// Turns a question into a private note; with no body the question's is
+    /// kept.
+    PromoteToNote {
+        tab: TabKey,
+        view: PaintedView,
+        id: String,
+        body: Option<String>,
+    },
+    /// Posts a question or note to the pull request, then removes it.
+    PromoteToComment {
+        tab: TabKey,
+        view: PaintedView,
+        id: String,
+        body: Option<String>,
+    },
+    /// Posts a finding to the pull request, then removes it.
+    PromoteFindingToComment {
+        tab: TabKey,
+        view: PaintedView,
+        finding_id: String,
+        body: Option<String>,
+    },
+    /// Replies to a finding as the reviewer. An AI-assisted reply is not on
+    /// the wire yet.
+    ReplyToFinding {
+        tab: TabKey,
+        view: PaintedView,
+        finding_id: String,
+        body: String,
+        client_id: Option<String>,
+    },
+}
+
+/// The diff line a thread anchors to, as the page painted it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct LineTarget {
+    pub file: String,
+    pub hunk_idx: u32,
+    pub line_num: Option<u32>,
+    pub line_num_end: Option<u32>,
 }
 
 /// The review settings a patch changes; a field left empty stays as it is.

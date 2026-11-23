@@ -302,7 +302,19 @@ pub fn send(desktop: &DesktopState, command: Command) -> Result<Ack, ErError> {
         | Command::ToggleReviewed { .. }
         | Command::MarkReviewed { .. }
         | Command::BulkReviewPillar { .. }
-        | Command::SetFileCompacted { .. }) => {
+        | Command::SetFileCompacted { .. }
+        | Command::AddQuestion { .. }
+        | Command::AddNote { .. }
+        | Command::AddComment { .. }
+        | Command::AddDocumentThread { .. }
+        | Command::ReplyToThread { .. }
+        | Command::UpdateThreadMessage { .. }
+        | Command::DeleteThread { .. }
+        | Command::ResolveThread { .. }
+        | Command::PromoteToNote { .. }
+        | Command::PromoteToComment { .. }
+        | Command::PromoteFindingToComment { .. }
+        | Command::ReplyToFinding { .. }) => {
             return Err(ErError {
                 kind: ErErrorKind::Internal,
                 message: format!("not a sidebar command: {other:?}"),

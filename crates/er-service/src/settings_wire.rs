@@ -220,7 +220,19 @@ pub fn settings_command(command: wire::Command) -> Result<SettingsCommand, Box<w
         | wire::Command::ToggleReviewed { .. }
         | wire::Command::MarkReviewed { .. }
         | wire::Command::BulkReviewPillar { .. }
-        | wire::Command::SetFileCompacted { .. }) => return Err(Box::new(other)),
+        | wire::Command::SetFileCompacted { .. }
+        | wire::Command::AddQuestion { .. }
+        | wire::Command::AddNote { .. }
+        | wire::Command::AddComment { .. }
+        | wire::Command::AddDocumentThread { .. }
+        | wire::Command::ReplyToThread { .. }
+        | wire::Command::UpdateThreadMessage { .. }
+        | wire::Command::DeleteThread { .. }
+        | wire::Command::ResolveThread { .. }
+        | wire::Command::PromoteToNote { .. }
+        | wire::Command::PromoteToComment { .. }
+        | wire::Command::PromoteFindingToComment { .. }
+        | wire::Command::ReplyToFinding { .. }) => return Err(Box::new(other)),
     })
 }
 

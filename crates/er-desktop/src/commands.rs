@@ -12747,6 +12747,8 @@ mod tests {
     use er_engine::ai::{load_ui_annotations, save_ui_annotations, UiAnnotation};
 
     #[cfg(feature = "v1-service")]
+    mod annotation_write_tests;
+    #[cfg(feature = "v1-service")]
     mod annotations_resource_tests;
     #[cfg(feature = "v1-service")]
     mod content_route_tests;

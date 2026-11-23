@@ -12,6 +12,9 @@ pub struct Annotations {
     pub ai: AiAnnotations,
     pub tour: Tour,
     pub other_bucket: Option<OtherBucket>,
+    /// The view these annotations were read in. A write the page paints from
+    /// them sends it back, and is refused once the tab shows another view.
+    pub view: crate::PaintedView,
 }
 
 /// The AI section as the cards read it, counts and thread order included.

@@ -33,7 +33,7 @@ pub use annotations::{
     TriageGuard, TriagePriorityFile, TriageReviewUpdate, TriageSensitiveReason, UiAnnotation,
     UiAnnotations,
 };
-pub use command::{Ack, Command, ProjectReviewSettingsPatch};
+pub use command::{Ack, Command, LineTarget, ProjectReviewSettingsPatch};
 pub use diff::{
     BaseBehind, BranchDivergence, CommitRow, DiffLineStats, FileRow, FilterSuggestion, ScopeStat,
     TabDiff,

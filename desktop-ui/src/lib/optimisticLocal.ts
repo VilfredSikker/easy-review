@@ -60,13 +60,22 @@ export const OPTIMISTIC_COMMANDS = [
 export type OptimisticCommand = (typeof OPTIMISTIC_COMMANDS)[number];
 
 /**
- * The global ops' commands and the bulk reviews. With the flag on the server
- * applies the pin cap, the dismissed filter and each inbox read or clear,
- * counts the unread items and the reviewed files; the `prs`, `inbox` and
- * `reviewed(tab)` pushes show the result, so these leave the optimistic path
- * and paint nothing (A8).
+ * The global ops' commands, the bulk reviews and the thread writes. With the
+ * flag on the server applies the pin cap, the dismissed filter and each inbox
+ * read or clear, counts the unread items and the reviewed files, and orders
+ * the threads; the `prs`, `inbox`, `reviewed(tab)` and `annotations(tab)`
+ * pushes show the result, so these leave the optimistic path (A8). A thread
+ * create still shows its row until acknowledged, drawn by the annotation
+ * writes over `annotations(tab)`.
  */
 const SNAPSHOT_PATH_ONLY: ReadonlySet<string> = new Set([
+  "add_question",
+  "add_note",
+  "reply_to_thread",
+  "resolve_thread",
+  "delete_thread",
+  "update_thread_message",
+  "promote_to_note",
   "save_pr",
   "unsave_pr",
   "dismiss_remote_pr",
