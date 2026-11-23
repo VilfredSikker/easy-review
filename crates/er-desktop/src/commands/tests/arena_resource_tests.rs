@@ -60,6 +60,25 @@ impl JobSink for HoldingSink {
 }
 
 impl HoldingSink {
+    /// How many jobs the sink holds unanswered.
+    pub(super) fn held(&self) -> usize {
+        self.held
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .map_or(0, Vec::len)
+    }
+
+    /// Ends the oldest held job with no answer, which its reviewer reads as a
+    /// failure; the other held jobs stay live.
+    pub(super) fn end_one(&self) {
+        let mut held = self.held.lock().unwrap_or_else(|e| e.into_inner());
+        let jobs = held.get_or_insert_with(Vec::new);
+        assert!(!jobs.is_empty(), "no job is held");
+        let (job, _answer) = jobs.remove(0);
+        job.handle.mark_finished();
+    }
+
     pub(super) fn release(&self) {
         self.released
             .store(true, std::sync::atomic::Ordering::Release);
