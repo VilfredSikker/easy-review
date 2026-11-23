@@ -1134,8 +1134,15 @@ fn main() {
     #[cfg(feature = "v1-service")]
     if let Ok(app) = app_arc.lock() {
         er_desktop::arena_commands::attach_live_runs(&app, Arc::clone(&service));
-        er_desktop::flow_service::reconcile_on_load(&app, &service);
     }
+    // Each listed tab's flow bucket, resolved from its descriptor: no tab has
+    // loaded yet, and the App is not read.
+    #[cfg(feature = "v1-service")]
+    er_desktop::flow_service::reconcile_on_load(
+        &service.app_registry().tabs_view(),
+        &ports,
+        &service,
+    );
     let desktop = er_desktop::state::DesktopState {
         ports: ports.clone(),
         #[cfg(feature = "v1-service")]

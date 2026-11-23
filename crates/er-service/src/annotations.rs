@@ -691,7 +691,7 @@ pub(crate) fn reply_to_finding(
     ai_assist: bool,
     client_id: Option<String>,
 ) -> Written<(String, String)> {
-    let state = ai::load_ai_state(&ctx.er_dir, &ctx.diff_hash, None);
+    let state = finding_thread_state(ctx);
     let mut placement: Option<(String, usize, Option<usize>)> = None;
     if let Some(review) = state.review.as_ref() {
         'outer: for (path, file) in review.files.iter() {
@@ -764,6 +764,23 @@ pub(crate) fn reply_to_finding(
         (root_id, reply_id),
         ContentPatch::Several(vec![root_patch, reply_patch]),
     ))
+}
+
+/// The tab's AI state with the GitHub comments read from `comments_dir`,
+/// where [`add_private`] writes a finding's thread root. A tab whose PR
+/// bucket differs from its private one (a local PR tab in Branch view) would
+/// otherwise miss the root and write another one on every reply.
+fn finding_thread_state(ctx: &TabContext) -> ai::AiState {
+    let mut state = ai::load_ai_state(&ctx.er_dir, &ctx.diff_hash, None);
+    if ctx.comments_dir != ctx.er_dir {
+        state.github_comments = Scope::dir(&ctx.comments_dir).ok().and_then(|scope| {
+            match ai::annotation_store::load_github_comments(&store_registry::store(), &scope) {
+                Ok(Loaded::Found(stored)) => Some(stored.value),
+                _ => None,
+            }
+        });
+    }
+    state
 }
 
 /// The thread an AI-assisted finding reply asks in: the finding's own, or a

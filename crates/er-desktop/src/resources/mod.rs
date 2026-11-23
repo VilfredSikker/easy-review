@@ -19,6 +19,8 @@ pub mod commands;
 #[cfg(feature = "v1-service")]
 pub mod diff;
 #[cfg(feature = "v1-service")]
+pub mod flows;
+#[cfg(feature = "v1-service")]
 pub mod github_writes;
 #[cfg(feature = "v1-service")]
 mod host;

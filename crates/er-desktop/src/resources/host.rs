@@ -90,6 +90,11 @@ pub fn fetch(desktop: &DesktopState, key: ResourceKey) -> Result<Versioned<Resou
         ResourceKey::Pr { tab } => super::pr::pr(desktop, *tab)?,
         ResourceKey::PrStatus { remote, number } => super::pr::pr_status(desktop, remote, *number),
         ResourceKey::PendingReview { tab } => super::github_writes::pending_review(desktop, *tab)?,
+        ResourceKey::ReviewFlowRun {
+            tab,
+            er_dir,
+            run_id,
+        } => super::flows::run(desktop, *tab, er_dir, run_id)?,
     };
     Ok(Versioned {
         key,
@@ -128,7 +133,8 @@ pub fn version(desktop: &DesktopState, key: ResourceKey) -> Result<ResourceVersi
         | ResourceKey::ArenaEstimate { .. }
         | ResourceKey::ArenaRuns { .. }
         | ResourceKey::ArenaRun { .. }
-        | ResourceKey::PendingReview { .. } => 0,
+        | ResourceKey::PendingReview { .. }
+        | ResourceKey::ReviewFlowRun { .. } => 0,
         ResourceKey::Prs { remote } => sidebar(desktop).prs(remote).0,
         ResourceKey::Worktrees { root } => sidebar(desktop).worktrees(root).0,
         ResourceKey::Inbox => sidebar(desktop).inbox().0,
@@ -363,7 +369,8 @@ pub fn send(desktop: &DesktopState, command: Command) -> Result<Ack, ErError> {
         | Command::AddPendingReviewComment { .. }
         | Command::RemovePendingReviewComment { .. }
         | Command::SubmitPendingReview { .. }
-        | Command::RunGithubPrAction { .. }) => {
+        | Command::RunGithubPrAction { .. }
+        | Command::ReviewFlow { .. }) => {
             return Err(ErError {
                 kind: ErErrorKind::Internal,
                 message: format!("not a sidebar command: {other:?}"),

@@ -42,6 +42,7 @@ pub use arena::{
 };
 pub use command::{
     Ack, AnchorUpdate, Command, LineTarget, NewUiAnnotation, ProjectReviewSettingsPatch,
+    ReviewFlowAction,
 };
 pub use diff::{
     BaseBehind, BranchDivergence, CommitRow, DiffLineStats, FileRow, FilterSuggestion, ScopeStat,
@@ -50,7 +51,7 @@ pub use diff::{
 pub use direct::{BlameSpan, ExportOptions, LineCommits, OpenSource, OpenSourceKind};
 pub use error::{ErError, ErErrorKind};
 pub use hunks::{FileHunks, Hunk, HunkLine};
-pub use jobs::{AiReplyJob, Jobs};
+pub use jobs::{AiReplyJob, Jobs, ReviewFlowJob};
 pub use notice::{Notice, NoticeLevel};
 pub use pr::{
     CheckRun, GithubStatus, MergeMethod, PendingReview, PendingReviewComment, PrAction, PrCard,
