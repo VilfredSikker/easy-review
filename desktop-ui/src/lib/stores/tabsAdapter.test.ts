@@ -60,7 +60,7 @@ function backend(value: unknown = { kind: "tabs", ...wireTabs }) {
 const settle = () => new Promise((r) => setTimeout(r, 0));
 
 describe("TabsAdapter", () => {
-  it("reads the rows of the tabs resource through er_fetch with the flag on", async () => {
+  it("reads the rows of the tabs resource through er_fetch", async () => {
     const { calls, store } = backend({
       kind: "tabs",
       tabs: [wireRow(11, "x"), wireRow(12, "y", { kind: "remote_pr", branch: null, pr_number: 9, remote: "acme/y" })],
@@ -289,7 +289,7 @@ describe("TabsAdapter.route", () => {
   });
 
   for (const [name, args, wire] of ROUTED) {
-    it(`sends ${name} ${JSON.stringify(args)} through er_send with the flag on, and resolves once the Ack's versions are held`, async () => {
+    it(`sends ${name} ${JSON.stringify(args)} through er_send, and resolves once the Ack's versions are held`, async () => {
       const { sent, waited, releases, store } = sender();
       const tabs = new TabsAdapter({ store, rows: () => snapshot.tabs });
       const routed = tabs.route(name, args);
@@ -312,7 +312,7 @@ describe("TabsAdapter.route", () => {
   }
 
   it("resolves a prefetch with no hint at once and sends nothing", async () => {
-    const { sent, waited, store } = sender(true);
+    const { sent, waited, store } = sender();
     const tabs = new TabsAdapter({ store, rows: () => snapshot.tabs });
     await tabs.route("prefetch_pr_open", { projectId: "p", prNumber: 7 });
     expect(sent).toEqual([]);
@@ -321,14 +321,14 @@ describe("TabsAdapter.route", () => {
   });
 
   it("rejects a position the resource does not list", async () => {
-    const { sent, store } = sender(true);
+    const { sent, store } = sender();
     const tabs = new TabsAdapter({ store, rows: () => snapshot.tabs });
     await expect(tabs.route("select_tab", { idx: 5 }) ?? Promise.resolve()).rejects.toThrow("no tab at position 5");
     expect(sent).toEqual([]);
   });
 });
 
-describe("the strip's staleness with the flag on", () => {
+describe("the strip's staleness", () => {
   it("reads no snapshot row's stale mark", () => {
     const here = dirname(fileURLToPath(import.meta.url));
     const source = readFileSync(join(here, "tabsAdapter.ts"), "utf8");

@@ -46,7 +46,7 @@ function harness(shown: AiSnapshot) {
     },
     whenAt: () => new Promise<void>((resolve) => (held = resolve)),
   };
-  const writes = new AnnotationWrites({ flagOn: true, store, activeKey: () => TAB, shownAi: () => shown });
+  const writes = new AnnotationWrites({ store, activeKey: () => TAB, shownAi: () => shown });
   const ack: Ack = { changed: [{ key: { kind: "annotations", tab: TAB }, version: 2 }], created: null };
   const settle = async () => {
     answer(ack);
@@ -59,7 +59,7 @@ function harness(shown: AiSnapshot) {
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
-describe("the annotation writes with the flag on", () => {
+describe("the annotation writes", () => {
   it("show a question until acknowledged, on the row the server confirms by its client id", async () => {
     const { sent, writes, settle } = harness(ai([]));
     const done = writes.route("add_question", { file: "src/a.rs", hunkIdx: 0, lineNum: 2, text: "why?" });

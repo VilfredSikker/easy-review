@@ -25,7 +25,7 @@ const JOBS_HELD: Resource = {
 };
 
 /** An adapter over a backend that records what it was asked. */
-function adapter(flagOn: boolean) {
+function adapter() {
   const sent: Command[] = [];
   const fetched: ResourceKey[] = [];
   const invoked: [string, Record<string, unknown>][] = [];
@@ -34,7 +34,6 @@ function adapter(flagOn: boolean) {
     return { run: { id: "run-old" } } as T;
   };
   const flows = new ReviewFlowAdapter({
-    flagOn,
     activeKey: () => TAB,
     invoke,
     store: {
@@ -60,14 +59,14 @@ const painted = (bucket: string) =>
 
 describe("ReviewFlowAdapter", () => {
   it("reads the painted bucket's flow from jobs, and none for a bucket jobs does not hold", () => {
-    const { flows } = adapter(true);
+    const { flows } = adapter();
     expect(flows.overlay(painted("/b")).review_flow?.state).toBe("awaiting_confirmation");
     expect(flows.overlay(painted("/a")).review_flow?.state).toBe("finding");
     expect(flows.overlay(painted("/c")).review_flow).toBeNull();
   });
 
   it("sends each control keyed to the active tab and the painted bucket", async () => {
-    const { flows, sent } = adapter(true);
+    const { flows, sent } = adapter();
     const controls: [string, Record<string, unknown>, ReviewFlowAction][] = [
       ["start_review_flow", { scope: "current", erDir: "/a" }, { kind: "start", scope: "current" }],
       ["confirm_review_flow", { erDir: "/b" }, { kind: "confirm" }],
@@ -89,14 +88,14 @@ describe("ReviewFlowAdapter", () => {
   });
 
   it("fetches a flow's run by its captured bucket", async () => {
-    const { flows, fetched, invoked } = adapter(true);
+    const { flows, fetched, invoked } = adapter();
     const run = await flows.getRun("/b", "run-1");
     expect(run.run.id).toBe("run-1");
     expect(fetched).toEqual([{ kind: "review_flow_run", tab: TAB, er_dir: "/b", run_id: "run-1" }]);
     expect(invoked).toEqual([]);
   });
 
-  it("with the flag on the page reads each flow from jobs and sends the controls through er_send", () => {
+  it("the page reads each flow from jobs and sends the controls through er_send", () => {
     const here = dirname(fileURLToPath(import.meta.url));
     const read = (name: string) => readFileSync(join(here, name), "utf8");
     expect(read("reviewFlowResource.svelte.ts")).toMatch(/^\/\/[^\n]*\nimport "\.\/diffResource\.svelte";/);

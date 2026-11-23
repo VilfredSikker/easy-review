@@ -7,7 +7,7 @@ import { annotationWrite } from "./annotationWrites";
 const TAB = 4;
 const VIEW = { repo_root: "/repo", pr_number: 7, branch: "", mode: "pr" };
 
-function writes(flagOn: boolean, ack: Ack = { changed: [], created: null }) {
+function writes(ack: Ack = { changed: [], created: null }) {
   const sent: Command[] = [];
   const held: string[] = [];
   const store = {
@@ -19,13 +19,13 @@ function writes(flagOn: boolean, ack: Ack = { changed: [], created: null }) {
       held.push(`${JSON.stringify(key)}@${version}`);
     },
   };
-  return { sent, held, github: new GithubWrites({ flagOn, store, activeKey: () => TAB }) };
+  return { sent, held, github: new GithubWrites({ store, activeKey: () => TAB }) };
 }
 
-describe("the GitHub senders with the flag on", () => {
+describe("the GitHub senders", () => {
   it("send each command keyed to the active tab and wait for the keys the Ack names", async () => {
     const ack: Ack = { changed: [{ key: { kind: "annotations", tab: TAB }, version: 9 }], created: null };
-    const { sent, held, github } = writes(true, ack);
+    const { sent, held, github } = writes(ack);
     const target = { file: "src/a.rs", lineNum: 3, lineNumEnd: null, side: "RIGHT" };
     const pr = { owner: "acme", repo: "widgets", number: 7 };
     const action = { kind: "close" };
@@ -45,7 +45,7 @@ describe("the GitHub senders with the flag on", () => {
   });
 
   it("leave other commands to their own routes", () => {
-    expect(writes(true).github.route("open_url_in_browser", {})).toBeNull();
+    expect(writes().github.route("open_url_in_browser", {})).toBeNull();
     expect(githubWrite("reply_to_thread", {}, TAB)).toBeNull();
   });
 

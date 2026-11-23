@@ -23,12 +23,11 @@ function store() {
 }
 
 describe("BrowserViewAdapter", () => {
-  it("reads the active tab's view with the flag on and follows the active key", () => {
+  it("reads the active tab's view and follows the active key", () => {
     const s = store();
     let active = 12;
     const queued: (() => void)[] = [];
     const view = new BrowserViewAdapter({
-      flagOn: true,
       store: s,
       snapshot: () => ({ browser: { ...split, url: "from the snapshot" } }),
       activeKey: () => active,

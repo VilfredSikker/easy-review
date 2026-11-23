@@ -134,14 +134,13 @@ const settle = () => new Promise((r) => setTimeout(r, 0));
 /** What the old `patch_project_review_settings` answers. */
 const patchedSnapshot = { projects: [] } as unknown as AppSnapshot;
 
-function adapter(flagOn: boolean, active: TabSummary | null = tab(), invokeFails: string | null = null) {
+function adapter(active: TabSummary | null = tab(), invokeFails: string | null = null) {
   const { calls, client, store } = backend();
   const old: { name: string; args: Record<string, unknown> }[] = [];
   const commanded: string[] = [];
   const ingested: AppSnapshot[] = [];
   const reported: { command: string; message: string }[] = [];
   const projects = new ProjectsAdapter({
-    flagOn,
     store,
     client,
     snapshot: () => snapshot,
@@ -168,8 +167,8 @@ function adapter(flagOn: boolean, active: TabSummary | null = tab(), invokeFails
 }
 
 describe("ProjectsAdapter", () => {
-  it("reads the projects and each shown project's branches through er_fetch with the flag on", async () => {
-    const { calls, projects } = adapter(true);
+  it("reads the projects and each shown project's branches through er_fetch", async () => {
+    const { calls, projects } = adapter();
     await settle();
     projects.showBranches(projects.projectIds);
     projects.showPrs(projects.remotes);
@@ -198,7 +197,7 @@ describe("ProjectsAdapter", () => {
   });
 
   it("shows each named remote's PR lists once, keyed by the remote as the project writes it", async () => {
-    const { calls, projects } = adapter(true);
+    const { calls, projects } = adapter();
     await settle();
     expect(projects.remotes).toEqual(["Acme/A"]);
     projects.showPrs(["Acme/A", "Acme/A"]);
@@ -211,8 +210,8 @@ describe("ProjectsAdapter", () => {
     expect(projects.heldPrs.map((p) => p.rows.map((r) => r.number))).toEqual([[5, 9]]);
   });
 
-  it("with the flag on a pin paints nothing and shows once the prs push lands", async () => {
-    const { calls, old, projects } = adapter(true);
+  it("a pin paints nothing and shows once the prs push lands", async () => {
+    const { calls, old, projects } = adapter();
     await settle();
     projects.showPrs(projects.remotes);
     await settle();
@@ -229,7 +228,7 @@ describe("ProjectsAdapter", () => {
   });
 
   it("sends the review-settings change with every other field left as it is", async () => {
-    const { calls, projects } = adapter(true);
+    const { calls, projects } = adapter();
     await projects.patchReviewSettings("a", { autoTriageMaxDiffKb: 12 });
     expect(calls.find((c) => c.command === "er_send")?.args.command).toEqual({
       kind: "patch_project_review_settings",
@@ -239,7 +238,7 @@ describe("ProjectsAdapter", () => {
   });
 
   it("marks the branch the active tab views as current in the active project", async () => {
-    const { projects } = adapter(true, tab({ branch: "feature" }));
+    const { projects } = adapter(tab({ branch: "feature" }));
     await settle();
     projects.showBranches(projects.projectIds);
     await settle();
@@ -249,7 +248,7 @@ describe("ProjectsAdapter", () => {
   });
 
   it("sends the project commands through er_send and returns once the Ack's versions are held", async () => {
-    const { calls, old, projects, store } = adapter(true);
+    const { calls, old, projects, store } = adapter();
     await settle();
     const held = () => store.get({ kind: "projects" })?.version;
     expect(held()).toBe(3);
@@ -271,14 +270,14 @@ describe("ProjectsAdapter", () => {
     expect(old).toEqual([]);
   });
 
-  it("reads the available branches once through er_fetch with the flag on", async () => {
-    const { calls, projects } = adapter(true);
+  it("reads the available branches once through er_fetch", async () => {
+    const { calls, projects } = adapter();
     expect(await projects.availableBranches("a")).toEqual(["spare"]);
     expect(calls.at(-1)?.args.keys).toEqual([{ kind: "available_branches", project: "a" }]);
   });
 
   it("releases the branches of a project that leaves the list, and shows them again when it returns", async () => {
-    const { calls, projects, store } = adapter(true);
+    const { calls, projects, store } = adapter();
     await settle();
     projects.showBranches(["a", "b"]);
     await settle();

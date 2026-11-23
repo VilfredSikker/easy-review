@@ -77,8 +77,8 @@ const annotations: Resource = { kind: "annotations", ai: ai(), tour: { available
 /** `diff(tab)` showing `mode`; the adapter reads nothing else of it. */
 const diffIn = (mode: string): Resource => ({ kind: "diff", mode }) as unknown as Resource;
 
-function adapter(flagOn: boolean, values: [ResourceKey, Resource][]): AnnotationsAdapter {
-  return new AnnotationsAdapter({ flagOn, store: holding(values), activeKey: () => TAB });
+function adapter(values: [ResourceKey, Resource][]): AnnotationsAdapter {
+  return new AnnotationsAdapter({ store: holding(values), activeKey: () => TAB });
 }
 
 function thinking(snapshot: AppSnapshot): [number, number] {
@@ -88,31 +88,29 @@ function thinking(snapshot: AppSnapshot): [number, number] {
 }
 
 describe("the annotations adapter", () => {
-  it("shows exactly one thinking reply per in-flight reply with the flag on and with it off", () => {
-    for (const flagOn of [false, true]) {
-      for (const fetched of [true, false]) {
-        const values: [ResourceKey, Resource][] = [[JOBS, inFlight]];
-        if (fetched) values.push([annotationsKey(TAB), annotations]);
-        const shown = adapter(flagOn, values).overlay(appSnapshot());
-        expect(thinking(shown), `flag ${flagOn ? "on" : "off"}, annotations ${fetched ? "held" : "not held"}`).toEqual([1, 1]);
-      }
+  it("shows exactly one thinking reply per in-flight reply", () => {
+    for (const fetched of [true, false]) {
+      const values: [ResourceKey, Resource][] = [[JOBS, inFlight]];
+      if (fetched) values.push([annotationsKey(TAB), annotations]);
+      const shown = adapter(values).overlay(appSnapshot());
+      expect(thinking(shown), `annotations ${fetched ? "held" : "not held"}`).toEqual([1, 1]);
     }
   });
 
-  it("draws the in-flight replies from jobs with the flag on, and none once jobs drops them", () => {
-    const running = adapter(true, [[JOBS, inFlight], [annotationsKey(TAB), annotations]]);
+  it("draws the in-flight replies from jobs, and none once jobs drops them", () => {
+    const running = adapter([[JOBS, inFlight], [annotationsKey(TAB), annotations]]);
     const shown = running.overlay(appSnapshot());
     expect(shown.ai.threads[0].replies.at(-1)?.ai_action).toBe("ask");
     expect(running.threads()?.[0].replies.map((r) => r.body_markdown)).toEqual([THINKING]);
 
-    const answered = adapter(true, [[JOBS, { kind: "jobs", ai_replies: [], arena_runs: [], review_flows: [] }], [annotationsKey(TAB), annotations]]);
+    const answered = adapter([[JOBS, { kind: "jobs", ai_replies: [], arena_runs: [], review_flows: [] }], [annotationsKey(TAB), annotations]]);
     expect(thinking(answered.overlay(appSnapshot()))).toEqual([0, 0]);
   });
 
-  // With the flag on a switch to a view the workspace loads never reaches the
-  // App, so its mode can say History while diff(tab) shows Branch.
+  // A switch to a view the workspace loads never reaches the App, so its
+  // mode can say History while diff(tab) shows Branch.
   it("reads annotations(tab) while diff(tab) shows a view the workspace loads, whatever the App's mode", () => {
-    const held = adapter(true, [[JOBS, inFlight], [annotationsKey(TAB), annotations], [diffKey(TAB), diffIn("branch")]]);
+    const held = adapter([[JOBS, inFlight], [annotationsKey(TAB), annotations], [diffKey(TAB), diffIn("branch")]]);
     const raw = appSnapshot("history");
     const shown = held.overlay(raw);
     expect(shown).not.toBe(raw);
@@ -123,11 +121,11 @@ describe("the annotations adapter", () => {
 
   // The workspace loads every view, History included, so a visit to History
   // and back reads annotations(tab) throughout. The App's mode stays at
-  // History, as a switch with the flag on never reaches it.
+  // History, as a switch never reaches it.
   it("reads the AI cards, tour and threads from annotations(tab) in History, then Branch", () => {
     const values = new Map<string, Versioned<Resource>>();
     const put = (key: ResourceKey, value: Resource) => values.set(resourceKeyId(key), { key, version: 1, value });
-    const shown = new AnnotationsAdapter({ flagOn: true, store: { get: (key) => values.get(resourceKeyId(key)) }, activeKey: () => TAB });
+    const shown = new AnnotationsAdapter({ store: { get: (key) => values.get(resourceKeyId(key)) }, activeKey: () => TAB });
     const fetched = ai();
     fetched.summary_markdown = "fetched";
     const tour = (annotations as { tour: unknown }).tour;
@@ -152,7 +150,6 @@ describe("the annotations adapter", () => {
       hidden: [],
     };
     const shown = new AnnotationsAdapter({
-      flagOn: true,
       store: holding([[annotationsKey(TAB), annotations]]),
       activeKey: () => TAB,
       paints: () => [paint],
@@ -174,7 +171,7 @@ describe("the annotations adapter", () => {
       [annotationsKey(TAB), annotations],
       [uiAnnotationsKey(TAB), { kind: "ui_annotations", rows: [row] }],
     ];
-    const shown = adapter(true, values).overlay(appSnapshot());
+    const shown = adapter(values).overlay(appSnapshot());
     expect(shown.ui_annotations?.[0].dom_context).toEqual({ tag: "button" });
   });
 

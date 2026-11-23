@@ -74,7 +74,7 @@ function backend() {
 
 const settle = () => new Promise((r) => setTimeout(r, 0));
 
-function adapter(flagOn: boolean) {
+function adapter() {
   const { calls, store } = backend();
   const snapshot = {
     inbox_items: [snapshotItem("a"), snapshotItem("b")],
@@ -84,7 +84,6 @@ function adapter(flagOn: boolean) {
   const old: { name: string; args: Record<string, unknown> }[] = [];
   const reported: { command: string; message: string }[] = [];
   const inbox = new InboxAdapter({
-    flagOn,
     store,
     snapshot: () => snapshot,
     command: async (name, args) => {
@@ -105,8 +104,8 @@ const sends = (calls: { command: string; args: Record<string, unknown> }[]) =>
   calls.filter((c) => c.command === "er_send").map((c) => c.args.command);
 
 describe("InboxAdapter", () => {
-  it("reads the items, the server's unread count and the last refresh from inbox with the flag on", async () => {
-    const { inbox } = adapter(true);
+  it("reads the items, the server's unread count and the last refresh from inbox", async () => {
+    const { inbox } = adapter();
     expect(inbox.items).toEqual([]);
     expect(inbox.unreadCount).toBe(0);
     await settle();
@@ -127,8 +126,8 @@ describe("InboxAdapter", () => {
     expect(inbox.lastRefreshMs).toBe(1_003);
   });
 
-  it("with the flag on a read paints nothing and shows once the inbox push lands", async () => {
-    const { calls, old, inbox, snapshot } = adapter(true);
+  it("a read paints nothing and shows once the inbox push lands", async () => {
+    const { calls, old, inbox, snapshot } = adapter();
     await settle();
     const before = snapshot.inbox_items;
     await inbox.markItemsRead(["a"]);
@@ -145,8 +144,8 @@ describe("InboxAdapter", () => {
     expect(inbox.unreadCount).toBe(44);
   });
 
-  it("with the flag on a clear paints nothing and shows once the inbox push lands", async () => {
-    const { calls, old, inbox } = adapter(true);
+  it("a clear paints nothing and shows once the inbox push lands", async () => {
+    const { calls, old, inbox } = adapter();
     await settle();
     await inbox.clearItems(["b", "c"]);
     expect(sends(calls)).toEqual([{ kind: "clear_inbox_items", ids: ["b", "c"] }]);
@@ -154,8 +153,8 @@ describe("InboxAdapter", () => {
     expect(inbox.items.map((i) => i.id)).toEqual(["a", "b"]);
   });
 
-  it("with the flag on sends the refresh and the test notification through er_send", async () => {
-    const { calls, old, inbox } = adapter(true);
+  it("sends the refresh and the test notification through er_send", async () => {
+    const { calls, old, inbox } = adapter();
     await inbox.refresh();
     const refused = await inbox.testNotification().then(
       () => null,

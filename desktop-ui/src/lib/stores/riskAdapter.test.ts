@@ -51,15 +51,15 @@ function fakeBackend() {
   return { run, names: () => calls.map((c) => c.command), calls };
 }
 
-function adapter(flagOn: boolean) {
+function adapter() {
   const backend = fakeBackend();
   const store = new ResourceStore(resourceClient(backend.run, async () => () => {}), 60_000);
-  return { backend, risk: new RiskAdapter({ flagOn, store, invoke: backend.run }) };
+  return { backend, risk: new RiskAdapter({ store, invoke: backend.run }) };
 }
 
 describe("RiskAdapter", () => {
-  it("loads through er_send and reads risk(key) through er_fetch with the flag on", async () => {
-    const { backend, risk: adapterRisk } = adapter(true);
+  it("loads through er_send and reads risk(key) through er_fetch", async () => {
+    const { backend, risk: adapterRisk } = adapter();
     const view = await adapterRisk.load(TARGET, ["db/a.sql", "src/b.rs"]);
     expect(view.files.map((f) => f.path)).toEqual(["db/a.sql", "src/b.rs"]);
     expect(view.rules[0].fileCount).toBe(1);

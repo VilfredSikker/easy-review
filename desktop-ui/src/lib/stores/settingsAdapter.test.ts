@@ -4,7 +4,7 @@ import type { Command } from "$lib/protocol/generated/Command";
 import type { Settings } from "$lib/protocol/generated/Settings";
 import type { GetConfigHubResponse } from "$lib/pageTypes";
 import { ResourceStore } from "./resourceStore";
-import { SettingsAdapter, type NoticeLevel } from "./settingsAdapter";
+import { SettingsAdapter } from "./settingsAdapter";
 
 function wireSettings(theme: string): Settings {
   return {
@@ -89,22 +89,15 @@ function fakeBackend() {
   };
 }
 
-function adapter(flagOn: boolean) {
+function adapter() {
   const backend = fakeBackend();
   const store = new ResourceStore(resourceClient(backend.run, async () => () => {}), 60_000);
-  const notices: [NoticeLevel, string][] = [];
-  const settingsAdapter = new SettingsAdapter({
-    flagOn,
-    store,
-    invoke: backend.run,
-    notify: (level, message) => notices.push([level, message]),
-  });
-  return { backend, settings: settingsAdapter, notices };
+  return { backend, settings: new SettingsAdapter({ store }) };
 }
 
 describe("SettingsAdapter", () => {
-  it("reads the settings resource and writes through er_send with the flag on", async () => {
-    const { backend, settings } = adapter(true);
+  it("reads the settings resource and writes through er_send", async () => {
+    const { backend, settings } = adapter();
     await settings.open();
     expect(themeOf(settings.read())).toBe("dark");
     await settings.patch("display.theme", "paper");
@@ -117,12 +110,10 @@ describe("SettingsAdapter", () => {
     ]);
   });
 
-  it("rejects a refused write with its text in both builds", async () => {
-    for (const flagOn of [false, true]) {
-      const { backend, settings } = adapter(flagOn);
-      await settings.open();
-      backend.refuseWith("An earlier settings save was refused");
-      await expect(settings.patch("display.theme", "x")).rejects.toBe("An earlier settings save was refused");
-    }
+  it("rejects a refused write with its text", async () => {
+    const { backend, settings } = adapter();
+    await settings.open();
+    backend.refuseWith("An earlier settings save was refused");
+    await expect(settings.patch("display.theme", "x")).rejects.toBe("An earlier settings save was refused");
   });
 });

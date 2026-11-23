@@ -79,8 +79,8 @@ function backend(held: { version: number; value: TabReviewed }, { shown = true }
   };
 }
 
-function adapter(store: ResourceStore, flagOn = true, rowsHeld: () => boolean = () => true) {
-  return new ReviewedAdapter({ flagOn, store, activeKey: () => KEY, rowsHeld });
+function adapter(store: ResourceStore, rowsHeld: () => boolean = () => true) {
+  return new ReviewedAdapter({ store, activeKey: () => KEY, rowsHeld });
 }
 
 const flags = (snap: AppSnapshot) => snap.files.map((f) => [f.path, f.reviewed]);
@@ -165,7 +165,7 @@ describe("ReviewedAdapter", () => {
     const backendState = backend({ version: 3, value: marks([], 0) });
     await settle();
     let rows = false;
-    const reviewed = adapter(backendState.store, true, () => rows);
+    const reviewed = adapter(backendState.store, () => rows);
     expect(reviewed.held()).not.toBeNull();
 
     const writes = (["mark_reviewed", "unmark_reviewed", "toggle_reviewed"] as const).map((command) =>
@@ -212,7 +212,7 @@ describe("ReviewedAdapter", () => {
   });
 });
 
-describe("the reviewed count with the flag on", () => {
+describe("the reviewed count", () => {
   const here = dirname(fileURLToPath(import.meta.url));
   const code = (file: string) =>
     readFileSync(join(here, file), "utf8")
