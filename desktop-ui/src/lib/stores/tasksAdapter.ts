@@ -103,11 +103,16 @@ export class TasksAdapter {
 
   constructor(private readonly deps: TasksAdapterDeps) {}
 
-  /** The tasks `jobs` lists; null with the flag off or before it answers. */
-  tasks(): BackgroundTaskSnapshot[] | null {
+  /** The task rows `jobs` lists; null with the flag off or before it answers. */
+  private rows(): TaskJob[] | null {
     if (!this.deps.flagOn) return null;
     const held = this.deps.store.get(JOBS)?.value;
-    return held?.kind === "jobs" ? held.tasks.map(asSnapshot) : null;
+    return held?.kind === "jobs" ? held.tasks : null;
+  }
+
+  /** The tasks `jobs` lists; null with the flag off or before it answers. */
+  tasks(): BackgroundTaskSnapshot[] | null {
+    return this.rows()?.map(asSnapshot) ?? null;
   }
 
   /**
@@ -116,9 +121,10 @@ export class TasksAdapter {
    * log, as the App's snapshot merges its own.
    */
   overlay(raw: AppSnapshot): AppSnapshot {
-    const tasks = this.tasks();
-    if (tasks === null) return raw;
-    const painted = tasks.filter((task) => task.er_dir === raw.review_bucket_er_dir);
+    const rows = this.rows();
+    if (rows === null) return raw;
+    const tasks = rows.map(asSnapshot);
+    const painted = rows.filter((task) => task.er_dir === raw.review_bucket_er_dir);
     const commands: AgentCommandStatus[] = [...(raw.agent_commands ?? [])];
     for (const task of painted) {
       if (!commands.some((c) => c.name === task.kind)) {
@@ -140,7 +146,7 @@ export class TasksAdapter {
    */
   async refreshLogs(bucket: string | null | undefined): Promise<void> {
     if (!bucket) return;
-    const painted = (this.tasks() ?? []).filter((task) => task.er_dir === bucket);
+    const painted = (this.rows() ?? []).filter((task) => task.er_dir === bucket);
     await Promise.all(
       painted
         .filter((task) => task.status === "running" || this.readAt.get(task.id) !== task.status)
