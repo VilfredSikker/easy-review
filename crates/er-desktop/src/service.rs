@@ -88,6 +88,14 @@ impl ServiceState {
         self
     }
 
+    /// The same service, whose settings actor owns `config_path`. Set it
+    /// before the settings actor starts.
+    #[must_use]
+    pub fn with_config_path(mut self, config_path: PathBuf) -> Self {
+        self.settings_path = Some(config_path);
+        self
+    }
+
     /// Gives `deps` the one app registry: the one it already carries, or a new
     /// one over its ports.
     fn from_deps(deps: WorkspaceDeps, relay: Option<RevisionRelay>) -> Self {
@@ -319,6 +327,26 @@ impl ServiceState {
         handles
             .iter()
             .any(|handle| handle.view().arena_run(run_id).is_some())
+    }
+
+    /// The key of the started actor whose published view holds `run_id`
+    /// live. Starts no actor.
+    pub fn live_arena_key(&self, run_id: &str) -> Option<String> {
+        let handles: Vec<(String, WorkspaceHandle)> = match self.handles.lock() {
+            Ok(handles) => handles
+                .iter()
+                .map(|(k, h)| (k.clone(), h.clone()))
+                .collect(),
+            Err(poisoned) => poisoned
+                .into_inner()
+                .iter()
+                .map(|(k, h)| (k.clone(), h.clone()))
+                .collect(),
+        };
+        handles
+            .into_iter()
+            .find(|(_, handle)| handle.view().arena_run(run_id).is_some())
+            .map(|(key, _)| key)
     }
 
     /// The key of the started actor whose published view holds the review

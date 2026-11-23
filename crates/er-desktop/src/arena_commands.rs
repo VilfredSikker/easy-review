@@ -137,7 +137,9 @@ pub fn arena_estimate(
     state: State<AppState>,
 ) -> Result<ArenaDiffPreview, String> {
     #[cfg(feature = "v1-service")]
-    return crate::arena_service::estimate(&state, req);
+    return on_active(&state, |desktop, tab| {
+        crate::arena_service::estimate(desktop, tab, &estimate_plan(req))
+    });
     #[cfg(not(feature = "v1-service"))]
     arena_estimate_local(req, state)
 }
@@ -171,7 +173,9 @@ pub fn arena_estimate_batch(
     state: State<AppState>,
 ) -> Result<ArenaDiffPreview, String> {
     #[cfg(feature = "v1-service")]
-    return crate::arena_service::estimate_batch(&state, req);
+    return on_active(&state, |desktop, tab| {
+        crate::arena_service::estimate_batch(desktop, tab, &estimate_batch_params(req))
+    });
     #[cfg(not(feature = "v1-service"))]
     arena_estimate_batch_local(req, state)
 }
@@ -227,7 +231,12 @@ pub async fn arena_start(
     #[cfg(feature = "v1-service")]
     return {
         let state = state.inner().clone();
-        crate::commands::run_blocking(move || crate::arena_service::start(&state, req)).await
+        crate::commands::run_blocking(move || {
+            on_active(&state, |desktop, tab| {
+                crate::arena_service::start(desktop, tab, start_params(req))
+            })
+        })
+        .await
     };
     #[cfg(not(feature = "v1-service"))]
     arena_start_local(req, state).await
@@ -477,7 +486,12 @@ pub async fn arena_validate_findings(state: State<'_, AppState>) -> Result<Optio
     #[cfg(feature = "v1-service")]
     return {
         let state = state.inner().clone();
-        crate::commands::run_blocking(move || crate::arena_service::validate_findings(&state)).await
+        crate::commands::run_blocking(move || {
+            on_active(&state, |desktop, tab| {
+                crate::arena_service::validate_findings(desktop, tab)
+            })
+        })
+        .await
     };
     #[cfg(not(feature = "v1-service"))]
     arena_validate_findings_local(state).await
@@ -509,7 +523,12 @@ pub async fn arena_start_batch(
     #[cfg(feature = "v1-service")]
     return {
         let state = state.inner().clone();
-        crate::commands::run_blocking(move || crate::arena_service::start_batch(&state, req)).await
+        crate::commands::run_blocking(move || {
+            on_active(&state, |desktop, tab| {
+                crate::arena_service::start_batch(desktop, tab, start_batch_params(req))
+            })
+        })
+        .await
     };
     #[cfg(not(feature = "v1-service"))]
     arena_start_batch_local(req, state).await
@@ -552,7 +571,9 @@ pub fn arena_accept_findings(
     state: State<AppState>,
 ) -> Result<usize, String> {
     #[cfg(feature = "v1-service")]
-    return crate::arena_service::accept_findings(&state, req);
+    return on_active(&state, |desktop, tab| {
+        crate::arena_service::accept_findings(desktop, tab, req.run_id, req.finding_ids)
+    });
     #[cfg(not(feature = "v1-service"))]
     arena_accept_findings_local(req, state)
 }
@@ -577,7 +598,9 @@ pub fn arena_progress(
     state: State<AppState>,
 ) -> Result<ArenaProgressState, String> {
     #[cfg(feature = "v1-service")]
-    return crate::arena_service::progress(&state, run_id);
+    return on_active(&state, |desktop, tab| {
+        Ok(crate::arena_service::progress(desktop, tab, &run_id))
+    });
     #[cfg(not(feature = "v1-service"))]
     arena_progress_local(run_id, state)
 }
@@ -594,7 +617,9 @@ fn arena_progress_local(
 #[tauri::command]
 pub fn arena_get(run_id: String, state: State<AppState>) -> Result<ArenaRunSnapshotWire, String> {
     #[cfg(feature = "v1-service")]
-    return crate::arena_service::get(&state, run_id);
+    return on_active(&state, |desktop, tab| {
+        crate::arena_service::get(desktop, tab, &run_id)
+    });
     #[cfg(not(feature = "v1-service"))]
     arena_get_local(run_id, state)
 }
@@ -611,7 +636,9 @@ fn arena_get_local(run_id: String, state: State<AppState>) -> Result<ArenaRunSna
 #[tauri::command]
 pub fn arena_list(state: State<AppState>) -> Result<Vec<ArenaRunSummaryWire>, String> {
     #[cfg(feature = "v1-service")]
-    return crate::arena_service::list(&state);
+    return on_active(&state, |desktop, tab| {
+        crate::arena_service::list(desktop, tab)
+    });
     #[cfg(not(feature = "v1-service"))]
     arena_list_local(state)
 }
@@ -630,7 +657,9 @@ fn arena_list_local(state: State<AppState>) -> Result<Vec<ArenaRunSummaryWire>, 
 #[tauri::command]
 pub fn arena_delete(run_id: String, state: State<AppState>) -> Result<(), String> {
     #[cfg(feature = "v1-service")]
-    return crate::arena_service::delete(&state, run_id);
+    return on_active(&state, |desktop, tab| {
+        crate::arena_service::delete(desktop, tab, run_id)
+    });
     #[cfg(not(feature = "v1-service"))]
     arena_delete_local(run_id, state)
 }
@@ -648,7 +677,9 @@ fn arena_delete_local(run_id: String, state: State<AppState>) -> Result<(), Stri
 #[tauri::command]
 pub fn arena_cancel(run_id: String, state: State<AppState>) -> Result<(), String> {
     #[cfg(feature = "v1-service")]
-    return crate::arena_service::cancel(&state, run_id);
+    return on_active(&state, |desktop, tab| {
+        crate::arena_service::cancel(desktop, tab, run_id)
+    });
     #[cfg(not(feature = "v1-service"))]
     arena_cancel_local(run_id, state)
 }
@@ -669,7 +700,19 @@ pub fn arena_override(
     state: State<AppState>,
 ) -> Result<ArenaRunSnapshotWire, String> {
     #[cfg(feature = "v1-service")]
-    return crate::arena_service::override_finding(&state, req);
+    return on_active(&state, |desktop, tab| {
+        let run_id = req.run_id.clone();
+        let verdict = parse_verdict(&req.verdict);
+        crate::arena_service::override_finding(
+            desktop,
+            tab,
+            req.run_id,
+            req.finding_id,
+            verdict,
+            req.note,
+        )?;
+        crate::arena_service::get(desktop, tab, &run_id)
+    });
     #[cfg(not(feature = "v1-service"))]
     arena_override_local(req, state)
 }
@@ -694,6 +737,83 @@ fn arena_override_local(
     };
     state.desktop_revision.fetch_add(1, Ordering::Relaxed);
     Ok(wire_snapshot(snap))
+}
+
+/// Runs a flag-on arena command on the registry's active tab, the tab the
+/// page shows, with no App lock.
+#[cfg(feature = "v1-service")]
+fn on_active<T>(
+    desktop: &crate::state::DesktopState,
+    run: impl FnOnce(
+        &crate::state::DesktopState,
+        &crate::arena_service::ArenaTab,
+    ) -> Result<T, er_protocol::ErError>,
+) -> Result<T, String> {
+    crate::arena_service::tab(desktop, None)
+        .and_then(|tab| run(desktop, &tab))
+        .map_err(|error| error.message)
+}
+
+#[cfg(feature = "v1-service")]
+fn estimate_plan(req: ArenaEstimateRequest) -> crate::arena_service::Plan {
+    crate::arena_service::Plan {
+        scope: parse_scope(&req.scope),
+        files: req.files,
+        reviewers: wire_reviewers(&req.reviewers),
+        rounds: req.rounds,
+        arbiter: req.arbiter.as_ref().map(wire_reviewer),
+    }
+}
+
+#[cfg(feature = "v1-service")]
+fn estimate_batch_params(
+    req: ArenaBatchEstimateRequest,
+) -> er_engine::arena::ArenaBatchStartParams {
+    er_engine::arena::ArenaBatchStartParams {
+        scope: parse_scope(&req.scope),
+        files: req.files,
+        rounds: req.rounds,
+        arbiter: req.arbiter.as_ref().map(wire_reviewer),
+        confirm: false,
+        groups: wire_groups(&req.groups),
+        effort: None,
+    }
+}
+
+#[cfg(feature = "v1-service")]
+fn start_params(req: ArenaStartRequest) -> er_engine::arena::ArenaStartParams {
+    er_engine::arena::ArenaStartParams {
+        title: req.title,
+        reviewers: wire_reviewers(&req.reviewers),
+        scope: parse_scope(&req.scope),
+        files: req.files,
+        rounds: req.rounds,
+        arbiter: req.arbiter.as_ref().map(wire_reviewer),
+        confirm: req.confirm.unwrap_or(false),
+        agent_kind: req.agent_kind,
+        effort: req.effort,
+    }
+}
+
+#[cfg(feature = "v1-service")]
+fn start_batch_params(req: ArenaBatchStartRequest) -> er_engine::arena::ArenaBatchStartParams {
+    er_engine::arena::ArenaBatchStartParams {
+        scope: parse_scope(&req.scope),
+        files: req.files,
+        rounds: req.rounds,
+        arbiter: req.arbiter.as_ref().map(wire_reviewer),
+        confirm: req.confirm.unwrap_or(false),
+        groups: wire_groups(&req.groups),
+        effort: req.effort,
+    }
+}
+
+/// Tells the App's arena recovery which runs the actors own. Without it a tab
+/// switch marks an actor's running run stale, since the App's registry never
+/// holds it.
+#[cfg(feature = "v1-service")]
+pub fn attach_live_runs(app: &App, service: Arc<crate::service::ServiceState>) {
+    app.set_arena_live_elsewhere(Arc::new(move |run_id| service.arena_run_live(run_id)));
 }
 
 #[tauri::command]
@@ -778,8 +898,9 @@ mod route_tests {
             "ArenaCommand::Delete",
             "ArenaCommand::Cancel",
             "ArenaCommand::Override",
-            "ArenaCommand::Estimate {",
-            "ArenaCommand::EstimateBatch",
+            // An estimate reads the diff off the actor, as every read does.
+            "arena::estimate(",
+            "arena::estimate_batch(",
             // Reads take the published view and the store, never a round trip.
             "arena::read_progress(",
             "arena::read_run(",
@@ -789,7 +910,7 @@ mod route_tests {
         }
         // The App's recovery must know the actors' runs, or a tab switch marks
         // them stale.
-        assert!(include_str!("main.rs").contains("arena_service::attach("));
+        assert!(include_str!("main.rs").contains("arena_commands::attach_live_runs("));
     }
 
     /// Every review-flow command needs a flag-path route, or the flag path

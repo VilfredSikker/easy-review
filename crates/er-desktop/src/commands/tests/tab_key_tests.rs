@@ -28,7 +28,7 @@ fn diff() -> String {
     raw
 }
 
-fn ports() -> er_engine::ports::Ports {
+pub(super) fn ports() -> er_engine::ports::Ports {
     let git: Arc<dyn er_git::Git> = Arc::new(
         er_git::FakeGit::default()
             .with_current_branch(Ok("feature".to_string()))

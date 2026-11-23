@@ -55,9 +55,16 @@ pub(crate) fn bucket_scope(dir: &str) -> Result<Scope, WorkspaceError> {
 /// the one `er` opens by default, has neither and takes the same `diff_raw`
 /// fallthrough as `TabState::fetch_tab_raw_diff`.
 pub(crate) fn fetch_raw(deps: &WorkspaceDeps, ctx: &TabContext) -> Result<String, WorkspaceError> {
+    fetch_raw_with(deps.ports(), ctx)
+}
+
+/// [`fetch_raw`] over the ports alone, for a reader off the actor.
+pub(crate) fn fetch_raw_with(
+    ports: &er_engine::ports::Ports,
+    ctx: &TabContext,
+) -> Result<String, WorkspaceError> {
     if ctx.local_branch_view.is_none() && ctx.remote_repo.is_none() {
-        return deps
-            .ports()
+        return ports
             .git
             .diff_raw(
                 &ctx.scope,
@@ -68,7 +75,7 @@ pub(crate) fn fetch_raw(deps: &WorkspaceDeps, ctx: &TabContext) -> Result<String
             .map_err(|error| failed("fetch the diff", error));
     }
     let inputs = BranchScopeFetchInputs {
-        ports: deps.ports().clone(),
+        ports: ports.clone(),
         repo_root: ctx.repo_root.clone(),
         base_branch: ctx.base_branch.clone(),
         local_branch_view: ctx.local_branch_view.clone(),
