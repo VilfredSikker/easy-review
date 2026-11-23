@@ -107,7 +107,8 @@ fn recovered(
         .is_some_and(|view| view.review_flow(bucket).is_some())
 }
 
-/// Starts a review of the branch view on `tab`, painted on `er_dir`.
+/// Starts a review of the branch view on `tab`, painted on `er_dir`, on a
+/// thread.
 fn start(state: &DesktopState, tab: TabKey, er_dir: String) -> Result<(), ErError> {
     super::on_a_thread(state, "flow start", move |state| {
         let wire = er_service::wire_tab_key(tab);
@@ -275,9 +276,8 @@ fn a_review_flow_on_a_remote_pr_tab_keys_through_tabs() {
     });
 }
 
-/// At startup no tab has loaded, and the App, which a restore has already
-/// filled, is locked: recovery still finds each listed tab's flow, in the
-/// bucket its descriptor resolves to.
+/// At startup no tab has loaded: recovery still finds each listed tab's
+/// flow, in the bucket its descriptor resolves to.
 #[test]
 fn startup_recovery_recovers_each_listed_unloaded_tab() {
     with_storage(|dir| {

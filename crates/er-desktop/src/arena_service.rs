@@ -525,10 +525,9 @@ diff --git a/src/lib.rs b/src/lib.rs
         bucket.to_string_lossy().into_owned()
     }
 
-    /// The live arena page re-reads only on `er://revision`. A run's progress
-    /// and its end publish from the actor after the start command has
-    /// answered, so they reach the page only if a published view bumps the
-    /// desktop revision.
+    /// A run's progress and its end publish from the actor after the start
+    /// command has answered, so they reach the page only if a published view
+    /// bumps the desktop revision.
     #[test]
     fn a_published_arena_view_bumps_the_desktop_revision() {
         let dir = tempfile::tempdir().unwrap();

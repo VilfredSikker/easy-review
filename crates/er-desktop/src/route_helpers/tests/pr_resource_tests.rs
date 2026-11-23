@@ -1,6 +1,6 @@
 //! `pr(tab)` and `pr_status`: a stack lookup lands in the
 //! PR section and moves `pr(tab)`, a stored status moves `pr_status` at the
-//! owner's next publish, and the status loop picks its PR.
+//! owner's next publish, and the status loop picks its PR from the registry.
 
 use std::sync::Arc;
 

@@ -274,7 +274,7 @@ fn each_browser_annotation_write_moves_ui_annotations() {
 }
 
 /// Writes sent together each land: 24 adds started at once leave 24 rows.
-/// The threads call the route itself, since `send` holds the App lock and
+/// The threads call the route itself, since `send` waits on each one and
 /// would line them up on its own.
 #[test]
 fn browser_annotation_writes_sent_together_each_land() {

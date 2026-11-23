@@ -1,5 +1,6 @@
 //! The review flows on `er_send` and `jobs`: a control names the tab and
-//! the bucket the page painted and runs on that tab's actor, and the flows reach the page through `jobs`.
+//! the bucket the page painted and runs on that tab's actor, and the flows
+//! reach the page through `jobs`.
 
 use std::path::Path;
 use std::sync::Arc;

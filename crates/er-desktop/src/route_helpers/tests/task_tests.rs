@@ -141,7 +141,7 @@ fn log(state: &DesktopState, id: &str) -> Vec<String> {
 }
 
 /// A task of `kind` on a bucket under `dir`, run with the settings view's
-/// config and saved pick, queued. Answers its id.
+/// config and saved pick, queued on a thread. Answers its id.
 fn queued(state: &DesktopState, dir: &Path, kind: &str) -> String {
     let launch = launch(state, dir, kind, "feature");
     super::on_a_thread(state, "the enqueue", move |state| {
@@ -609,7 +609,8 @@ fn a_triage_request_shows_in_jobs() {
     });
 }
 
-/// A sidebar branch triage queues its run on the task host: `jobs` lists a triage task for the branch.
+/// A sidebar branch triage queues its run on the task host: `jobs` lists a
+/// triage task for the branch.
 #[test]
 fn a_sidebar_triage_queues_on_the_host() {
     with_storage(|dir| {
@@ -728,7 +729,7 @@ fn note(
     }
 }
 
-/// (`send` holds it), a note sent to the agent through
+/// A note sent to the agent through
 /// `er_send` is read from the tab's AI section and runs on the task host,
 /// which lists it and reads its output lines.
 #[test]
