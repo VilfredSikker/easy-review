@@ -51,7 +51,7 @@ pub use diff::{
 pub use direct::{BlameSpan, ExportOptions, LineCommits, OpenSource, OpenSourceKind};
 pub use error::{ErError, ErErrorKind};
 pub use hunks::{FileHunks, Hunk, HunkLine};
-pub use jobs::{AiReplyJob, Jobs, ReviewFlowJob};
+pub use jobs::{AiReplyJob, Jobs, ReviewFlowJob, TaskJob, TaskLog, TaskLogLine};
 pub use notice::{Notice, NoticeLevel};
 pub use pr::{
     CheckRun, GithubStatus, MergeMethod, PendingReview, PendingReviewComment, PrAction, PrCard,

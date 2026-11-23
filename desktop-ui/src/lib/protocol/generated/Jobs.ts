@@ -2,6 +2,7 @@
 import type { AiReplyJob } from "./AiReplyJob";
 import type { ArenaRunJob } from "./ArenaRunJob";
 import type { ReviewFlowJob } from "./ReviewFlowJob";
+import type { TaskJob } from "./TaskJob";
 
 /**
  * The work in flight that the page shows while it runs.
@@ -18,4 +19,14 @@ arena_runs: Array<ArenaRunJob>,
 /**
  * The review flows every started workspace holds, by bucket.
  */
-review_flows: Array<ReviewFlowJob>, };
+review_flows: Array<ReviewFlowJob>, 
+/**
+ * The background agent tasks queued, running or just finished, oldest
+ * first. Their output lines are read per task through `task_log`.
+ */
+tasks: Array<TaskJob>, 
+/**
+ * The sidebar triage requests still being prepared, before their task
+ * is queued, by remote and PR or branch.
+ */
+triage: Array<string>, };
