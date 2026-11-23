@@ -2734,23 +2734,7 @@ impl TabState {
 
     /// Whether `raw_diff` (if present) matches the review `scope` for this tab.
     fn review_scope_matches_cached_diff(&self, scope: &str) -> bool {
-        if self.remote_repo.is_some() {
-            return true;
-        }
-        if self.local_branch_view.is_some() && self.local_branch_checkout_root.is_none() {
-            return true;
-        }
-        match scope {
-            "unstaged" => self.mode == DiffMode::Unstaged,
-            "staged" => self.mode == DiffMode::Staged,
-            // Tour is the branch diff regrouped, so its cached raw_diff is the
-            // branch diff and matches a "branch"-scoped review.
-            _ => {
-                self.mode == DiffMode::Branch
-                    || self.mode == DiffMode::PrDiff
-                    || self.mode == DiffMode::Tour
-            }
-        }
+        crate::review_flow_driver::cached_diff_matches_scope(&self.identity(), scope)
     }
 
     /// GitHub PR diff for AI review when this tab is PR-associated. Skips local
