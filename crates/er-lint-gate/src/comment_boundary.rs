@@ -397,7 +397,7 @@ mod tests {
     #[test]
     fn a_file_not_on_the_list_is_flagged() {
         let map = by_file(
-            "crates/er-desktop/src/commands.rs",
+            "crates/er-desktop/src/route_helpers.rs",
             "fn f() { let _ = NewLineComment { path: \"a\" }; }",
         );
         let diags = evaluate(&map, &[], CODE);
@@ -408,7 +408,7 @@ mod tests {
     #[test]
     fn a_finding_outside_the_allow_list_fails() {
         let mut map = by_file(
-            "crates/er-desktop/src/commands.rs",
+            "crates/er-desktop/src/route_helpers.rs",
             "fn f() { let _ = NewLineComment { path: \"a\" }; }",
         );
         // The allowed entry is live, so the only diagnostic is the outsider.

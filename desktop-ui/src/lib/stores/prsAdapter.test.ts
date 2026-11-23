@@ -81,7 +81,7 @@ describe("a project's PR lists", () => {
   });
 });
 
-/** `snapshot.rs`'s `detected_pr_number`, case by case. */
+/** `detectedPrNumber`, case by case. */
 describe("the active branch's PR", () => {
   const local = { kind: "working" as const, pr_number: null };
 

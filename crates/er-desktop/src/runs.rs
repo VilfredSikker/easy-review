@@ -4,8 +4,6 @@
 //! and the settings view, and queues its agent on the desktop's task host,
 //! so no run waits on the App. The bucket a review flow owns is refused, as
 //! on the App (`check_bucket_admission`).
-//!
-//! Only compiled with `v1-service`.
 
 use er_engine::ai::{prompts, ReviewerKind, ScopedRunStamp};
 use er_engine::task_target::BackgroundTaskTarget;

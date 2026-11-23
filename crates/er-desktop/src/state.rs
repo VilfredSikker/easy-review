@@ -21,9 +21,9 @@ pub struct DesktopState {
     /// Desktop-only view state (ADR 0068).
     pub view: crate::view_state::ViewStateHandle,
     pub pr_cache: Arc<Mutex<HashMap<String, Vec<PrInfo>>>>,
-    /// Background-probed remote oid of the active branch tab's base branch,
-    /// keyed by "{repo_root}\0{base_short}". Compared in build_snapshot against
-    /// the local origin/<base> oid to detect a stale ("behind main") branch diff.
+    /// The `origin/<base>` oid a sync last fetched, keyed by
+    /// "{repo_root}\0{base_short}". The page snapshot that compared it is gone,
+    /// so nothing reads it now.
     pub branch_base_remote_oid: Arc<Mutex<HashMap<String, String>>>,
     /// The sidebar's resources and the metadata cache's one writer.
     pub app_owner: Arc<crate::app_owner::AppOwner>,

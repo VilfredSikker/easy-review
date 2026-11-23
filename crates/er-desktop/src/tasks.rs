@@ -1,4 +1,4 @@
-//! The background agent tasks with the flag on: review lenses, tours,
+//! The background agent tasks: review lenses, tours,
 //! diagrams, importance ranking and sidebar triage, queued and run here with
 //! no App. `jobs` lists each task's row, and `task_log` reads its output
 //! lines, so a line moves no version.
@@ -9,8 +9,6 @@
 //! every agent shares, as the App's and the service's flows do. Its outputs
 //! reach the tabs' content through the tick's `ReloadSidecars`, since the
 //! agent's writes move the sidecars' stamps.
-//!
-//! Only compiled with `v1-service`.
 
 use std::collections::VecDeque;
 use std::sync::mpsc::Sender;

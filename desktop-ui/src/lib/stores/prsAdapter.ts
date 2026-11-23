@@ -16,7 +16,7 @@ export function prListRefreshing(store: Pick<ResourceStore, "get">): boolean {
   return held?.kind === "jobs" && held.pr_list_refresh;
 }
 
-/** After this long the sidebar marks a remote's PR list stale (`snapshot.rs`, 10 min). */
+/** After this long the sidebar marks a remote's PR list stale (10 min). */
 export const PR_CACHE_TTL_MS = 10 * 60 * 1000;
 
 export function prInfo(row: PrRow): PrInfo {

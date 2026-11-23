@@ -257,7 +257,7 @@ lint: fmt-check clippy check-ui lint-ui docs-check comments-check atomic-tmp-che
 # clippy and frontend lint gates, tests, docs, inline comments, atomic temp
 # names, the protocol bindings, headless engine builds.
 [group('ci')]
-ci: fmt-check clippy lint-ui docs-check comments-check atomic-tmp-check protocol-check test build-engine-headless build-service-headless test-v1
+ci: fmt-check clippy lint-ui docs-check comments-check atomic-tmp-check protocol-check test build-engine-headless build-service-headless check-desktop test-v1
 
 # Build the headless engine the way CI does (no UI features, then +highlight).
 [group('ci')]
@@ -270,6 +270,13 @@ build-engine-headless:
 [group('ci')]
 build-service-headless:
     cargo check -p er-service --all-targets
+
+# Check the desktop in its own graph, tests included. Resolver 2 unifies
+# er-engine's features with er-tui in a workspace build, which turns `ui` on,
+# so only this check fails when the desktop names the App (ADR 0072).
+[group('ci')]
+check-desktop:
+    cargo check -p er-desktop --all-targets
 
 # The flag-on suite: er-tui is the one package that declares the flag.
 [group('ci')]

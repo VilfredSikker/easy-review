@@ -46,7 +46,7 @@ export function sidebarWorktrees(snapshot: Pick<AppSnapshot, "worktrees"> | null
   return snapshot ? reads.worktrees(snapshot) : [];
 }
 
-/** The PR the active tab's branch has (`snapshot.rs`'s `detected_pr_number`). */
+/** The PR the active tab's branch has. */
 export function detectedPrNumber(snapshot: DetectSnapshot): number | null {
   const tab = snapshot.tabs.find((t) => t.is_active) ?? snapshot.tabs[snapshot.active_tab];
   return reads.detectedPrNumber(snapshot, tab);

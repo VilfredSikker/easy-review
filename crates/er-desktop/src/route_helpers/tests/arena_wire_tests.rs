@@ -304,10 +304,10 @@ fn an_unloaded_tab_answers_no_runs_and_loads() {
     });
 }
 
-/// `arena_runs` lists what the flag-off App lists for the same bucket and
-/// branch, newest first.
+/// `arena_runs` lists what the engine lists for the same bucket and branch,
+/// newest first.
 #[test]
-fn the_run_list_matches_the_app_list() {
+fn the_run_list_matches_the_engine_list() {
     with_storage(|dir| {
         let sink = Arc::new(HoldingSink::default());
         let state = arena_state(dir, local_ports(), Arc::clone(&sink));
@@ -332,12 +332,12 @@ fn the_run_list_matches_the_app_list() {
         let Ok(Resource::ArenaRuns(listed)) = fetched.map(|f| f.value) else {
             panic!("not a run list");
         };
-        let mut app = er_engine::app::App::new_for_test(Vec::new());
-        app.tab_mut().er_root = er_engine::paths::ErRoot::managed(bucket(&state, &tab));
-        let flag_off = app.arena_list_summaries(Some("feature"));
-        let flag_off = flag_off.unwrap_or_else(|e| panic!("{e}"));
+        let bucket = bucket(&state, &tab);
+        let engine =
+            er_engine::arena::list_summaries(std::path::Path::new(&bucket), Some("feature"));
+        let engine = engine.unwrap_or_else(|e| panic!("{e}"));
         let rows = |runs: Vec<(String, String, u32)>| runs;
-        assert_eq!(flag_off.len(), 2, "the fixture lists {flag_off:?}");
+        assert_eq!(engine.len(), 2, "the fixture lists {engine:?}");
         assert_eq!(
             rows(
                 listed
@@ -347,7 +347,7 @@ fn the_run_list_matches_the_app_list() {
                     .collect()
             ),
             rows(
-                flag_off
+                engine
                     .iter()
                     .map(|s| (s.id.clone(), s.created_at.clone(), s.reviewer_count as u32))
                     .collect()

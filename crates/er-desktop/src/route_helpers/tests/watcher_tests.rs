@@ -7,8 +7,7 @@ use std::path::Path;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use er_engine::app::TabState;
-use er_engine::tab_identity::{resolve_descriptor, DiffMode};
+use er_engine::tab_identity::DiffMode;
 use er_engine::tabs_record::{TabDescriptor, TabKind};
 use er_engine::TabKey;
 use er_service::{AppCommand, Command, TabContent};
@@ -120,7 +119,7 @@ fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
 
 /// On a branch view whose branch is checked out in a linked worktree with an
 /// unstaged edit, the load finds the worktree, so its Unstaged view is the
-/// worktree's, as the App's is once its watcher sets the root.
+/// worktree's: the files git shows changed there.
 #[test]
 fn a_branch_checked_out_in_a_linked_worktree_loads_that_worktree() {
     with_storage(|dir| {
@@ -151,16 +150,8 @@ fn a_branch_checked_out_in_a_linked_worktree_loads_that_worktree() {
             "the load left the checkout root unset"
         );
 
-        let ports = er_engine::ports::Ports::cli();
-        let mut resolved = resolve_descriptor(&*ports.git, &tab).unwrap_or_else(|e| panic!("{e}"));
-        resolved.mode = DiffMode::Unstaged;
-        let mut app_tab =
-            TabState::from_resolved(resolved, ports).unwrap_or_else(|e| panic!("{e}"));
-        app_tab.local_branch_checkout_root = loaded.tab.checkout_root.clone();
-        app_tab.refresh_diff().unwrap_or_else(|e| panic!("{e}"));
-        let app: Vec<String> = app_tab.files.iter().map(|f| f.path.clone()).collect();
-        assert_eq!(paths(&loaded), app);
-        assert_eq!(app, ["a.txt"]);
+        assert_eq!(paths(&loaded), unstaged.lines().collect::<Vec<_>>());
+        assert_eq!(paths(&loaded), ["a.txt"]);
     });
 }
 
