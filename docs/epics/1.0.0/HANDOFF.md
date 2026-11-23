@@ -1,5 +1,7 @@
 # Epic 1.0.0 phase 5: handover (2026-11-23)
 
+> **Phase 5 is done (2026-11-23, cloud session).** Everything below is the state before the cloud session; the outcome, rulings and exit list are in BUILD_LOG.md, and the timeline in `coordinator/LEDGER.md`.
+
 The goal is **"implement phase 5 fully"**: finish every item of ADDENDUM-06 (desktop protocol) on `release/v1.0.0` of VilfredSikker/easy-review. Phase 5b (TUI, P65c onward) is out of scope.
 
 ## Where it stands
