@@ -4076,6 +4076,7 @@ pub async fn post_github_line_comment(
 
 // ── AI integration ───────────────────────────────────────────────────────────
 
+#[cfg(any(test, not(feature = "v1-service")))]
 pub(crate) fn resolve_review_scope(
     scope: &str,
     tab: &er_engine::app::TabState,
@@ -5196,7 +5197,7 @@ pub(crate) fn ai_model(state: &AppState, model: String) -> Result<AppSnapshot, S
     {
         crate::ai_selection_service::ai_model(&state.desktop, model)?;
         let app = state.app.lock().map_err(|e| e.to_string())?;
-        return Ok(snap_from(&app, state));
+        Ok(snap_from(&app, state))
     }
     #[cfg(not(feature = "v1-service"))]
     {
