@@ -9,6 +9,8 @@
   import "$lib/stores/githubResource.svelte";
   import "$lib/stores/selectionResource.svelte";
   import { arena } from "$lib/stores/arena.svelte";
+  import { onJobsMoved } from "$lib/stores/arenaResource.svelte";
+  import { v1ServiceRequested } from "$lib/v1ServiceFlag";
   import { startNotices, stopNotices } from "$lib/stores/noticeFeed.svelte";
   import { initKeyboard } from "$lib/stores/keyboard";
   import AppMark from "$lib/components/AppMark.svelte";
@@ -300,9 +302,13 @@
     startNotices();
     const cleanupKeyboard = initKeyboard();
     const cleanupLinkGuard = installExternalLinkGuard();
-    const unlistenArena = listen<number>("er://revision", () => {
-      arena.onRevision();
-    });
+    // A live run's progress reaches the arena page through `jobs` with the
+    // flag on, and through the desktop revision without it.
+    const unlistenArena = v1ServiceRequested()
+      ? Promise.resolve(onJobsMoved(() => arena.onRevision()))
+      : listen<number>("er://revision", () => {
+          arena.onRevision();
+        });
     return () => {
       cleanupKeyboard();
       cleanupLinkGuard();

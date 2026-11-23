@@ -5,7 +5,8 @@ use crate::settings::{
     ConfigFieldValue, ModelUpsert, ProviderUpsert, ReviewModelGroups, UninstallOptions,
 };
 use crate::{
-    PaintedView, Panel, PrAction, PrOpenHint, PrTarget, ResourceChanged, ReviewLine, TabKey,
+    ArenaPlan, PaintedView, Panel, PrAction, PrOpenHint, PrTarget, ResourceChanged, ReviewLine,
+    TabKey,
 };
 
 /// A command the frontend sends to the backend.
@@ -520,6 +521,47 @@ pub enum Command {
         tab: TabKey,
         view: PaintedView,
         updates: Vec<AnchorUpdate>,
+    },
+    /// Starts a plan on the tab's diff. The `Ack`'s `created` is the run id;
+    /// a plan with groups starts one run per group, and `created` holds
+    /// their ids, one per line.
+    ArenaStart {
+        tab: TabKey,
+        plan: Box<ArenaPlan>,
+        title: Option<String>,
+        confirm: bool,
+        agent_kind: Option<String>,
+        /// None runs at the saved selection's effort.
+        effort: Option<String>,
+    },
+    /// Dedupes the tab's expert findings and rules on them with one arbiter.
+    /// The `Ack`'s `created` is the run id; none when there was nothing to
+    /// validate.
+    ArenaValidateFindings {
+        tab: TabKey,
+    },
+    /// Imports a run's findings into the tab's review; all of them when
+    /// `finding_ids` is none. The `Ack`'s `created` is how many it took.
+    ArenaAcceptFindings {
+        tab: TabKey,
+        run_id: String,
+        finding_ids: Option<Vec<String>>,
+    },
+    ArenaDelete {
+        tab: TabKey,
+        run_id: String,
+    },
+    ArenaCancel {
+        tab: TabKey,
+        run_id: String,
+    },
+    /// Records the reviewer's verdict on one finding beside the arbiter's.
+    ArenaOverride {
+        tab: TabKey,
+        run_id: String,
+        finding_id: String,
+        verdict: String,
+        note: String,
     },
 
     // ── The PR card ──

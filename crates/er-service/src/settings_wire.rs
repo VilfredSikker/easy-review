@@ -247,6 +247,12 @@ pub fn settings_command(command: wire::Command) -> Result<SettingsCommand, Box<w
         | wire::Command::ClearUiAnnotationsForPage { .. }
         | wire::Command::ClearUiAnnotations { .. }
         | wire::Command::UpdateUiAnnotationAnchors { .. }
+        | wire::Command::ArenaStart { .. }
+        | wire::Command::ArenaValidateFindings { .. }
+        | wire::Command::ArenaAcceptFindings { .. }
+        | wire::Command::ArenaDelete { .. }
+        | wire::Command::ArenaCancel { .. }
+        | wire::Command::ArenaOverride { .. }
         | wire::Command::RefreshStack { .. }
         | wire::Command::RefreshGithubStatus { .. }
         | wire::Command::ReplyToGithubThread { .. }
