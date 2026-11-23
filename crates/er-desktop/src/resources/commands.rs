@@ -18,10 +18,8 @@ pub async fn er_send(
     command: Command,
     app: tauri::AppHandle,
     state: State<'_, DesktopState>,
-    pick: State<'_, crate::ai_selection_service::SessionPick>,
 ) -> Result<Ack, ErError> {
     let desktop = state.inner().clone();
-    let pick = pick.inner().clone();
     let emitter = app.clone();
     let applied = blocking(move || {
         let notify = |level, message| {
@@ -29,7 +27,6 @@ pub async fn er_send(
         };
         let effects = super::send::Effects {
             notify: &notify,
-            follow_selection: &|selection| pick.follow(selection),
             check_update: || super::session::app_update(crate::commands::app_update_cached()),
             webviews: &emitter,
             pick_folder: &pick_folder,

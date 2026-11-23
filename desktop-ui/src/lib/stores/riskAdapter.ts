@@ -1,3 +1,4 @@
+import { SvelteMap } from "svelte/reactivity";
 import type { ResourceKey } from "$lib/protocol/generated/ResourceKey";
 import type { RiskTarget } from "$lib/riskRequests";
 import type { RiskFileSnapshot, RiskRuleSnapshot, RiskTier } from "$lib/pageTypes";
@@ -15,6 +16,8 @@ export interface RiskView {
 
 export const riskKey = (key: string): ResourceKey => ({ kind: "risk", key });
 
+const targetId = (target: RiskTarget) => `${target.repoRoot}\n${target.remoteRepo ?? ""}`;
+
 interface RiskAdapterDeps {
   store: Pick<ResourceStore, "get" | "show" | "send" | "whenAt">;
 }
@@ -26,6 +29,8 @@ interface RiskAdapterDeps {
  */
 export class RiskAdapter {
   private readonly shown = new Set<string>();
+  /** The `risk(key)` and version each target's last load read, by target. */
+  private readonly read = new SvelteMap<string, { key: string; version: number }>();
 
   constructor(private readonly deps: RiskAdapterDeps) {}
 
@@ -42,6 +47,18 @@ export class RiskAdapter {
     return (await this.load(target, paths)).rules;
   }
 
+  /**
+   * Whether a push moved `target`'s `risk(key)` past the version its last load
+   * read, as an importance run's reload does; the Risks tab then loads again.
+   * Reactive. Always false before a load.
+   */
+  pushed(target: RiskTarget): boolean {
+    const read = this.read.get(targetId(target));
+    if (!read) return false;
+    const held = this.deps.store.get(riskKey(read.key));
+    return held !== undefined && held.version > read.version;
+  }
+
   private async loadResource(target: RiskTarget, paths: string[]): Promise<RiskView> {
     const ack = await this.deps.store.send({ kind: "load_risk", ...target, paths });
     const key = riskKey(ack.created ?? "");
@@ -51,6 +68,7 @@ export class RiskAdapter {
       this.deps.store.show(key);
     }
     const moved = ack.changed.find((c) => c.key.kind === "risk");
+    this.read.set(targetId(target), { key: ack.created ?? "", version: moved?.version ?? 0 });
     if (moved) await this.deps.store.whenAt(key, moved.version);
     const held = this.deps.store.get(key)?.value;
     if (held?.kind !== "risk") throw new Error(`no risk rules arrived for ${target.repoRoot}`);

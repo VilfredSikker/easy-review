@@ -105,7 +105,7 @@ fn an_outside_comment_in_the_pr_bucket_reaches_a_branch_view_through_the_tick() 
         );
         stamp_ahead(&pr_bucket.join("github-comments.json"));
 
-        tick::run(&state.desktop, &state.app);
+        tick::run(&state.desktop);
 
         wait_until("the PR bucket's comment", || {
             let now = content(&state, &tab);
@@ -145,7 +145,7 @@ fn an_arena_accept_reaches_the_ai_section_through_the_tick() {
             std::fs::create_dir_all(&run).and_then(|()| std::fs::write(run.join("run.json"), "{}"));
         assert!(wrote.is_ok(), "run.json: {wrote:?}");
 
-        tick::run(&state.desktop, &state.app);
+        tick::run(&state.desktop);
 
         wait_until("the accept to reload the AI section", || {
             content(&state, &tab).ai.revision > loaded.ai.revision
@@ -291,7 +291,7 @@ fn a_service_question_moves_the_annotations_once_across_the_next_tick() {
         let written = annotations_version(&state, &tab);
         assert!(written > before, "the question moved no version");
 
-        tick::run(&state.desktop, &state.app);
+        tick::run(&state.desktop);
         std::thread::sleep(Duration::from_millis(500));
 
         assert_eq!(
@@ -318,7 +318,7 @@ fn an_outside_question_moves_the_annotations_through_the_tick() {
         );
         stamp_ahead(&Path::new(&bucket).join("questions.json"));
 
-        tick::run(&state.desktop, &state.app);
+        tick::run(&state.desktop);
 
         wait_until("the outside question", || {
             annotations_version(&state, &tab) > before
@@ -354,7 +354,7 @@ fn an_outside_promotion_reaches_the_finding_through_the_tick() {
             } } }),
         );
         stamp_ahead(&bucket.join("review.json"));
-        tick::run(&state.desktop, &state.app);
+        tick::run(&state.desktop);
         wait_until("the review", || {
             annotations(&state, &tab)
                 .1
@@ -370,7 +370,7 @@ fn an_outside_promotion_reaches_the_finding_through_the_tick() {
         let saved = er_engine::ai::save_finding_promotions(&er_dir, &promoted);
         assert!(saved.is_ok(), "{saved:?}");
         stamp_ahead(&bucket.join("finding-promotions.json"));
-        tick::run(&state.desktop, &state.app);
+        tick::run(&state.desktop);
 
         wait_until("the annotations to move", || {
             annotations(&state, &tab).0 > before

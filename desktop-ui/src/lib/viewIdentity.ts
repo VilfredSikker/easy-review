@@ -47,3 +47,26 @@ export function tabViewKey(view: Pick<AppSnapshot, "tabs" | "active_tab">): stri
   const branch = tab.pr_number != null ? "" : (tab.branch ?? "");
   return `${tab.idx}|${tab.repo_root}|${tab.kind}|${branch}|${tab.pr_number ?? ""}`;
 }
+
+/** What the App matches a background task against (`matches_target`). */
+export type TaskTarget = {
+  repo_root: string;
+  pr_number: number | null;
+  remote_repo: string | null;
+  branch_label: string;
+};
+
+/**
+ * The target the view's tab files its background tasks under: the viewed
+ * local branch, else the live branch the view names.
+ */
+export function viewTaskTarget(view: AppSnapshot): TaskTarget | null {
+  const tab = view.tabs?.find((t) => t.is_active);
+  if (!tab) return null;
+  return {
+    repo_root: tab.repo_root,
+    pr_number: tab.pr_number,
+    remote_repo: tab.remote,
+    branch_label: tab.branch ?? view.branch,
+  };
+}

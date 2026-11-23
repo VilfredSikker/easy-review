@@ -5,7 +5,8 @@ use crate::{
     AnnotationScreenshot, Annotations, ArenaEstimate, ArenaPlan, ArenaRun, ArenaRuns,
     AvailableBranches, AvailablePrs, Branches, DiffPaths, FileHunks, FilePreview, ImagePreview,
     Inbox, Jobs, Panels, PendingReview, PrStatus, Projects, Prs, ReviewJson, ReviewRevisions, Risk,
-    Session, Settings, TabDiff, TabPr, TabReviewed, TabRow, TabView, UiAnnotations, Worktrees,
+    Session, Settings, TabDiff, TabPr, TabReviewed, TabRow, TabView, TaskLog, UiAnnotations,
+    Worktrees,
 };
 
 /// A tab as the wire names it. The engine's key has no public constructor, so
@@ -97,6 +98,9 @@ pub enum ResourceKey {
     UiAnnotations { tab: TabKey },
     /// The app-wide work in flight.
     Jobs,
+    /// One background task's output lines, read on each fetch and never
+    /// pushed: a line moves no version.
+    TaskLog { id: String },
     /// One open tab's review as JSON, read on each fetch and never pushed.
     ReviewJson { tab: TabKey },
     /// One open tab's review revisions, read on each fetch and never pushed.
@@ -160,6 +164,7 @@ pub enum Resource {
     Annotations(Box<Annotations>),
     UiAnnotations(UiAnnotations),
     Jobs(Jobs),
+    TaskLog(TaskLog),
     ReviewJson(ReviewJson),
     ReviewRevisions(ReviewRevisions),
     AnnotationScreenshot(AnnotationScreenshot),

@@ -242,10 +242,12 @@ macro_rules! snap {
 /// Build a snapshot using the lock guards directly (when callers already hold them).
 /// Differential: hunks the frontend already holds are omitted (`hunks_omitted`).
 pub fn snap_from(app: &App, state: &AppState) -> AppSnapshot {
+    send_app_notice(app, state);
     crate::snapshot::build_snapshot_with_delta(app, &snapshot_sources(state))
 }
 
 fn snap_from_with_arbiter(app: &App, state: &AppState, overlay: Option<&[u8]>) -> AppSnapshot {
+    send_app_notice(app, state);
     let mut sources = snapshot_sources(state);
     sources.other_bucket_arbiter = Some(overlay);
     crate::snapshot::build_snapshot_with_delta(app, &sources)
@@ -371,7 +373,46 @@ fn snap_from_command_invalidate(app: &App, state: &AppState) {
 }
 
 fn chrome_snap_from(app: &App, state: &AppState) -> AppSnapshot {
+    send_app_notice(app, state);
     build_chrome_snapshot(app, &snapshot_sources(state))
+}
+
+/// With the flag on the page shows the App's notification only as a notice,
+/// so every snapshot an App command builds sends it, under the lock the
+/// command holds, and answers what it sent. P62.2 deletes this with the
+/// App's commands.
+#[cfg(feature = "v1-service")]
+fn send_app_notice(app: &App, state: &AppState) -> Option<er_protocol::Notice> {
+    let notice = app_notice(app.notification.as_ref(), &state.session.app_notice_seq)?;
+    let handle = state
+        .tauri_app_handle
+        .lock()
+        .ok()
+        .and_then(|handle| handle.clone());
+    if let Some(handle) = handle {
+        crate::resources::notice::emit(&handle, &notice);
+    }
+    Some(notice)
+}
+
+#[cfg(not(feature = "v1-service"))]
+fn send_app_notice(_: &App, _: &AppState) -> Option<er_protocol::Notice> {
+    None
+}
+
+/// The App's notification as a notice, once: `sent` holds the engine's
+/// sequence number of the last one sent, and the App keeps its last
+/// notification set, so every later snapshot sees it again.
+#[cfg(feature = "v1-service")]
+pub(crate) fn app_notice(
+    notification: Option<&er_engine::app::Notification>,
+    sent: &AtomicU64,
+) -> Option<er_protocol::Notice> {
+    let notification = notification?;
+    let before = sent.fetch_max(notification.seq, Ordering::AcqRel);
+    (before < notification.seq).then(|| {
+        crate::resources::notice::engine_notice(notification.message.clone(), notification.long)
+    })
 }
 
 fn log_branch_open_phase(
@@ -609,59 +650,123 @@ fn is_one_pending_review_error(raw: &str) -> bool {
     raw.to_lowercase().contains("one pending review")
 }
 
-/// Files the finished and failed background tasks in the inbox. The backend
-/// tick runs it with the flag on; the poll runs it with the flag off.
+/// Files the finished and failed background tasks in the inbox. The poll
+/// runs it with the flag off; with the flag on the task host files each task
+/// as it finishes (`file_tasks_in_inbox`).
+#[cfg(not(feature = "v1-service"))]
 pub(crate) fn process_ai_task_inbox(app: &App, state: &DesktopState) {
-    let now = now_ms();
     let tasks = app.background_task_snapshots();
     let tab = app.tab();
-    let repo_root = tab.repo_root.clone();
-    let remote = tab.remote_repo.clone();
-    let pr_number = tab.pr_number;
-    let branch = tab
-        .local_branch_view
-        .clone()
-        .unwrap_or_else(|| tab.current_branch.clone());
+    let target = InboxTarget {
+        project_id: projects::resolve_project_id_for_inbox(
+            None,
+            Some(tab.repo_root.as_str()),
+            tab.remote_repo.as_deref(),
+        ),
+        repo_root: Some(tab.repo_root.clone()),
+        remote: tab.remote_repo.clone(),
+        pr_number: tab.pr_number,
+        branch: Some(
+            tab.local_branch_view
+                .clone()
+                .unwrap_or_else(|| tab.current_branch.clone()),
+        ),
+        url: None,
+    };
+    let rows = tasks.iter().map(|task| {
+        let row = InboxTask {
+            id: &task.id,
+            kind: &task.kind,
+            status: &task.status,
+            target_label: &task.target_label,
+            label: &task.label,
+            error: task.error.as_deref(),
+        };
+        (row, target.clone())
+    });
+    file_in_inbox(state, &app.config.inbox, rows);
+}
 
-    let project_id =
-        projects::resolve_project_id_for_inbox(None, Some(repo_root.as_str()), remote.as_deref());
+/// Files finished background tasks of the flag path in the inbox, each
+/// under its own target's project.
+#[cfg(feature = "v1-service")]
+pub(crate) fn file_tasks_in_inbox(state: &DesktopState, tasks: &[er_protocol::TaskJob]) {
+    let config = crate::arena_service::config(state);
+    let rows = tasks.iter().map(|task| {
+        let row = InboxTask {
+            id: &task.id,
+            kind: &task.kind,
+            status: &task.status,
+            target_label: &task.target_label,
+            label: &task.label,
+            error: task.error.as_deref(),
+        };
+        let target = InboxTarget {
+            project_id: projects::resolve_project_id_for_inbox(
+                None,
+                Some(task.repo_root.as_str()),
+                task.remote_repo.as_deref(),
+            ),
+            repo_root: Some(task.repo_root.clone()),
+            remote: task.remote_repo.clone(),
+            pr_number: task.pr_number,
+            branch: Some(task.branch_label.clone()),
+            url: None,
+        };
+        (row, target)
+    });
+    file_in_inbox(state, &config.inbox, rows);
+}
 
+/// One background task as the inbox files it.
+pub(crate) struct InboxTask<'a> {
+    id: &'a str,
+    kind: &'a str,
+    status: &'a str,
+    target_label: &'a str,
+    label: &'a str,
+    error: Option<&'a str>,
+}
+
+fn file_in_inbox<'a>(
+    state: &DesktopState,
+    config: &er_engine::config::InboxConfig,
+    tasks: impl Iterator<Item = (InboxTask<'a>, InboxTarget)>,
+) {
+    let now = now_ms();
     let mut emitted_any = false;
     let mut just_added: Vec<InboxItem> = Vec::new();
     if let Ok(mut inbox) = state.inbox.lock() {
-        for task in tasks {
-            let (kind, severity, title, body) = match task.status.as_str() {
+        for (task, target) in tasks {
+            let failure = |fallback: &str| task.error.unwrap_or(fallback).to_string();
+            let (kind, severity, title, body) = match task.status {
                 "done" if task.kind == "triage" => (
                     "ai_triage_done".to_string(),
                     "success".to_string(),
                     format!("Triage completed ({})", task.target_label),
-                    task.label.clone(),
+                    task.label.to_string(),
                 ),
                 "done" => (
                     "ai_review_done".to_string(),
                     "success".to_string(),
                     format!("AI review completed ({})", task.target_label),
-                    task.label.clone(),
+                    task.label.to_string(),
                 ),
                 "failed" if task.kind == "triage" => (
                     "ai_triage_failed".to_string(),
                     "error".to_string(),
                     format!("Triage failed ({})", task.target_label),
-                    task.error
-                        .clone()
-                        .unwrap_or_else(|| "Triage failed".to_string()),
+                    failure("Triage failed"),
                 ),
                 "failed" => (
                     "ai_review_failed".to_string(),
                     "error".to_string(),
                     format!("AI review failed ({})", task.target_label),
-                    task.error
-                        .clone()
-                        .unwrap_or_else(|| "Review failed".to_string()),
+                    failure("Review failed"),
                 ),
                 _ => continue,
             };
-            if !app.config.inbox.stores(&kind) {
+            if !config.stores(&kind) {
                 continue;
             }
             let item = InboxItem {
@@ -671,14 +776,7 @@ pub(crate) fn process_ai_task_inbox(app: &App, state: &DesktopState) {
                 title,
                 body,
                 source: "ai".to_string(),
-                target: InboxTarget {
-                    project_id: project_id.clone(),
-                    repo_root: Some(repo_root.clone()),
-                    remote: remote.clone(),
-                    pr_number,
-                    branch: Some(branch.clone()),
-                    url: None,
-                },
+                target,
                 created_at_ms: now,
                 read_at_ms: None,
                 dedupe_key: format!("ai:{}:{}", task.id, task.status),
@@ -690,12 +788,7 @@ pub(crate) fn process_ai_task_inbox(app: &App, state: &DesktopState) {
         }
     }
     for item in &just_added {
-        maybe_send_native_notification(
-            &state.inbox,
-            &state.tauri_app_handle,
-            &app.config.inbox,
-            item,
-        );
+        maybe_send_native_notification(&state.inbox, &state.tauri_app_handle, config, item);
     }
     if emitted_any {
         crate::inbox::save_inbox_state(&state.inbox);
@@ -2104,11 +2197,54 @@ fn ingest_github_notifications(
     }
 }
 
+#[cfg(not(feature = "v1-service"))]
 fn auto_triage_ctx(state: &AppState) -> crate::auto_triage::AutoTriageContext {
+    let (app, spawn_app) = (Arc::clone(&state.app), Arc::clone(&state.app));
     crate::auto_triage::AutoTriageContext {
-        app: Arc::clone(&state.app),
+        ports: state.desktop.ports.clone(),
+        spawn: Arc::new(move |target, prompt| {
+            let mut app = spawn_app.lock().map_err(|e| e.to_string())?;
+            app.spawn_background_triage_review(target, prompt, true)
+                .map_err(|e| e.to_string())
+        }),
+        notify: Arc::new(move |message| {
+            if let Ok(mut app) = app.lock() {
+                app.notify(&message);
+            }
+        }),
         in_flight: Arc::clone(&state.auto_triage_in_flight),
+        queue_moved: Arc::new(|| {}),
         desktop_revision: Arc::clone(&state.desktop_revision),
+    }
+}
+
+/// Sidebar triage on the flag path: queued on the task host, with the
+/// request set shown in `jobs`.
+#[cfg(feature = "v1-service")]
+pub(crate) fn triage_ctx(desktop: &DesktopState) -> crate::auto_triage::AutoTriageContext {
+    let (spawn_desktop, notify_desktop, clock) = (
+        desktop.clone(),
+        desktop.clone(),
+        desktop.tasks.clock.clone(),
+    );
+    crate::auto_triage::AutoTriageContext {
+        ports: desktop.ports.clone(),
+        spawn: Arc::new(move |target, prompt| {
+            crate::runs::spawn_reviewer(
+                &spawn_desktop,
+                &er_engine::ai::ReviewerKind::Triage,
+                target,
+                prompt,
+                None,
+                true,
+            )
+        }),
+        notify: Arc::new(move |message| {
+            crate::resources::notice::tell(&notify_desktop, message, false);
+        }),
+        in_flight: Arc::clone(&desktop.auto_triage_in_flight),
+        queue_moved: Arc::new(move || clock.bump()),
+        desktop_revision: Arc::clone(&desktop.desktop_revision),
     }
 }
 
@@ -2145,6 +2281,31 @@ pub fn run_pr_triage(
     pr_number: u64,
     state: State<AppState>,
 ) -> Result<AppSnapshot, String> {
+    #[cfg(feature = "v1-service")]
+    return ask_on_desktop(&state, |desktop| {
+        pr_triage(desktop, &triage_ctx(desktop), &project_id, pr_number)
+            .map_err(crate::tasks::refused)
+    });
+    #[cfg(not(feature = "v1-service"))]
+    {
+        pr_triage(
+            &state.desktop,
+            &auto_triage_ctx(&state),
+            &project_id,
+            pr_number,
+        )?;
+        let app = state.app.lock().map_err(|e| e.to_string())?;
+        Ok(snap_from(&app, &state))
+    }
+}
+
+/// Queues triage of one project's PR on `ctx`.
+pub(crate) fn pr_triage(
+    desktop: &DesktopState,
+    ctx: &crate::auto_triage::AutoTriageContext,
+    project_id: &str,
+    pr_number: u64,
+) -> Result<(), String> {
     let file = projects::load();
     let project = file
         .projects
@@ -2155,7 +2316,7 @@ pub fn run_pr_triage(
         .remote
         .clone()
         .ok_or_else(|| "Project has no GitHub remote".to_string())?;
-    let pr = pr_from_cache(&state.pr_cache, &remote, pr_number)
+    let pr = pr_from_cache(&desktop.pr_cache, &remote, pr_number)
         .ok_or_else(|| format!("PR #{pr_number} not in cache — try Sync first"))?;
 
     let req = crate::auto_triage::AutoTriageRequest {
@@ -2168,10 +2329,8 @@ pub fn run_pr_triage(
         review_ignore_globs: project.review_ignore_globs.clone(),
         auto_triage_max_diff_kb: project.auto_triage_max_diff_kb,
     };
-    let ctx = auto_triage_ctx(&state);
-    crate::auto_triage::dispatch_auto_triage(&ctx, vec![req]);
-    let app = state.app.lock().map_err(|e| e.to_string())?;
-    Ok(snap_from(&app, &state))
+    crate::auto_triage::dispatch_auto_triage(ctx, vec![req]);
+    Ok(())
 }
 
 /// Triage a tracked branch: uses the open PR when `branch` is a PR head, else local branch diff.
@@ -2181,6 +2340,32 @@ pub fn run_branch_triage(
     branch: String,
     state: State<AppState>,
 ) -> Result<AppSnapshot, String> {
+    #[cfg(feature = "v1-service")]
+    return ask_on_desktop(&state, |desktop| {
+        branch_triage(desktop, &triage_ctx(desktop), &project_id, &branch)
+            .map_err(crate::tasks::refused)
+    });
+    #[cfg(not(feature = "v1-service"))]
+    {
+        branch_triage(
+            &state.desktop,
+            &auto_triage_ctx(&state),
+            &project_id,
+            &branch,
+        )?;
+        let app = state.app.lock().map_err(|e| e.to_string())?;
+        Ok(snap_from(&app, &state))
+    }
+}
+
+/// Queues triage of one project's branch on `ctx`: its open PR when it has
+/// one, else the branch diff.
+pub(crate) fn branch_triage(
+    desktop: &DesktopState,
+    ctx: &crate::auto_triage::AutoTriageContext,
+    project_id: &str,
+    branch: &str,
+) -> Result<(), String> {
     let file = projects::load();
     let project = file
         .projects
@@ -2192,33 +2377,35 @@ pub fn run_branch_triage(
         .clone()
         .ok_or_else(|| "Project has no GitHub remote".to_string())?;
 
-    if let Some(pr) = open_pr_for_branch(&state.pr_cache, &remote, &branch) {
-        return run_pr_triage(project_id, pr.number, state);
+    if let Some(pr) = open_pr_for_branch(&desktop.pr_cache, &remote, branch) {
+        return pr_triage(desktop, ctx, project_id, pr.number);
     }
-
-    let ctx = auto_triage_ctx(&state);
     crate::auto_triage::dispatch_branch_triage(
-        &ctx,
+        ctx,
         &project.id,
         &remote,
         &project.root_path,
-        &branch,
+        branch,
         &project.review_ignore_globs,
     );
-    let app = state.app.lock().map_err(|e| e.to_string())?;
-    Ok(snap_from(&app, &state))
+    Ok(())
 }
 
 /// Remove a queued (not yet started) review from the AI review queue.
 /// Running reviews are unaffected.
 #[tauri::command]
 pub fn cancel_queued_review(id: String, state: State<AppState>) -> Result<AppSnapshot, String> {
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    if !app.cancel_queued_background_task(&id) {
-        return Err("Queued review not found (it may have started)".to_string());
+    #[cfg(feature = "v1-service")]
+    return ask_on_desktop(&state, |desktop| crate::tasks::cancel_queued(desktop, &id));
+    #[cfg(not(feature = "v1-service"))]
+    {
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        if !app.cancel_queued_background_task(&id) {
+            return Err("Queued review not found (it may have started)".to_string());
+        }
+        state.desktop_revision.fetch_add(1, Ordering::Relaxed);
+        Ok(snap_from(&app, &state))
     }
-    state.desktop_revision.fetch_add(1, Ordering::Relaxed);
-    Ok(snap_from(&app, &state))
 }
 
 /// Stop a running review.
@@ -2228,19 +2415,24 @@ pub fn cancel_queued_review(id: String, state: State<AppState>) -> Result<AppSna
 /// other command — including the poll that would show the stop took effect.
 #[tauri::command]
 pub fn cancel_running_review(id: String, state: State<AppState>) -> Result<AppSnapshot, String> {
-    let run = {
-        let app = state.app.lock().map_err(|e| e.to_string())?;
-        app.running_background_review(&id)
-    };
-    let Some(run) = run else {
-        return Err("No running review with that id".to_string());
-    };
-    run.kill();
+    #[cfg(feature = "v1-service")]
+    return ask_on_desktop(&state, |desktop| crate::tasks::cancel_running(desktop, &id));
+    #[cfg(not(feature = "v1-service"))]
+    {
+        let run = {
+            let app = state.app.lock().map_err(|e| e.to_string())?;
+            app.running_background_review(&id)
+        };
+        let Some(run) = run else {
+            return Err("No running review with that id".to_string());
+        };
+        run.kill();
 
-    // Re-read for the snapshot only after the signal is away.
-    let app = state.app.lock().map_err(|e| e.to_string())?;
-    state.desktop_revision.fetch_add(1, Ordering::Relaxed);
-    Ok(snap_from(&app, &state))
+        // Re-read for the snapshot only after the signal is away.
+        let app = state.app.lock().map_err(|e| e.to_string())?;
+        state.desktop_revision.fetch_add(1, Ordering::Relaxed);
+        Ok(snap_from(&app, &state))
+    }
 }
 
 #[tauri::command]
@@ -3926,6 +4118,7 @@ pub async fn post_github_line_comment(
 
 // ── AI integration ───────────────────────────────────────────────────────────
 
+#[cfg(any(test, not(feature = "v1-service")))]
 pub(crate) fn resolve_review_scope(
     scope: &str,
     tab: &er_engine::app::TabState,
@@ -3997,6 +4190,12 @@ pub async fn run_ai_review(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
+    #[cfg(feature = "v1-service")]
+    return run_blocking(move || {
+        ask_on_desktop(&state, |desktop| crate::runs::review(desktop, None, scope))
+    })
+    .await;
+    #[cfg(not(feature = "v1-service"))]
     run_blocking(move || {
         let (
             scope,
@@ -4109,6 +4308,12 @@ pub async fn run_ai_review(
 #[tauri::command]
 pub async fn generate_tour(state: State<'_, AppState>) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
+    #[cfg(feature = "v1-service")]
+    return run_blocking(move || {
+        ask_on_desktop(&state, |desktop| crate::runs::tour(desktop, None))
+    })
+    .await;
+    #[cfg(not(feature = "v1-service"))]
     run_blocking(move || {
         let mut app = state.app.lock().map_err(|e| e.to_string())?;
         // `raw_diff_for_review("branch")` returns the active view's diff (the PR
@@ -4209,6 +4414,12 @@ pub async fn generate_tour(state: State<'_, AppState>) -> Result<AppSnapshot, St
 #[tauri::command]
 pub async fn run_importance_agent(state: State<'_, AppState>) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
+    #[cfg(feature = "v1-service")]
+    return run_blocking(move || {
+        ask_on_desktop(&state, |desktop| crate::runs::importance(desktop, None))
+    })
+    .await;
+    #[cfg(not(feature = "v1-service"))]
     run_blocking(move || {
         let mut app = state.app.lock().map_err(|e| e.to_string())?;
         app.spawn_background_importance()
@@ -4232,6 +4443,14 @@ pub async fn generate_diagram(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
+    #[cfg(feature = "v1-service")]
+    return run_blocking(move || {
+        ask_on_desktop(&state, |desktop| {
+            crate::runs::diagram(desktop, None, kind, custom_prompt)
+        })
+    })
+    .await;
+    #[cfg(not(feature = "v1-service"))]
     run_blocking(move || {
         if !er_engine::ai::is_valid_diagram_kind(&kind) {
             return Err(format!("Unknown diagram kind: {kind}"));
@@ -4375,6 +4594,14 @@ pub async fn run_ai_expert_review(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
+    #[cfg(feature = "v1-service")]
+    return run_blocking(move || {
+        ask_on_desktop(&state, |desktop| {
+            crate::runs::expert(desktop, None, scope, expert_id)
+        })
+    })
+    .await;
+    #[cfg(not(feature = "v1-service"))]
     run_blocking(move || {
         if er_engine::ai::expert_by_id(&expert_id).is_none() {
             return Err(format!("Unknown expert: {expert_id}"));
@@ -4496,6 +4723,14 @@ pub async fn run_ai_scoped_review(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
+    #[cfg(feature = "v1-service")]
+    return run_blocking(move || {
+        ask_on_desktop(&state, |desktop| {
+            crate::runs::scoped(desktop, None, scope, paths, reviewer_kinds, focus_prompt)
+        })
+    })
+    .await;
+    #[cfg(not(feature = "v1-service"))]
     run_blocking(move || {
         if reviewer_kinds.is_empty() {
             return Err("No reviewers selected".to_string());
@@ -4535,36 +4770,9 @@ pub async fn run_ai_scoped_review(
             return Err("Nothing to review".to_string());
         }
 
-        let scoped_files = !paths.is_empty();
-        let mut scope_paths = paths;
-        scope_paths.sort();
-        scope_paths.dedup();
+        let (scoped_files, scope_paths, diff_body) =
+            scoped_diff(&er_dir, raw, paths, &repo_root, remote_repo.as_deref())?;
         let file_count = scope_paths.len();
-        let er_path = std::path::Path::new(&er_dir);
-        let diff_body = if scoped_files {
-            let filtered = er_engine::git::filter_raw_diff_by_paths(&raw, &scope_paths);
-            if filtered.trim().is_empty() {
-                return Err("No diff for selected files".to_string());
-            }
-            let manifest = scope_paths.join("\n");
-            std::fs::write(er_path.join("review-files.txt"), format!("{manifest}\n"))
-                .map_err(|e| format!("Failed to write review-files.txt: {e}"))?;
-            // The agent writes only its lens's overlay; the host stamps the
-            // scope and the base identity on exit.
-            std::fs::create_dir_all(er_path.join("scoped/experts"))
-                .map_err(|e| format!("Failed to create scoped output directory: {e}"))?;
-            filtered
-        } else {
-            let ignore = er_engine::projects_pins::review_ignore_globs_for_repo(
-                &repo_root,
-                remote_repo.as_deref(),
-            );
-            if ignore.is_empty() {
-                raw
-            } else {
-                er_engine::git::filter_raw_diff_exclude_globs(&raw, &ignore)
-            }
-        };
 
         let review_md = er_engine::ai::review_md::collect(
             &app.ports,
@@ -4596,7 +4804,9 @@ pub async fn run_ai_scoped_review(
         };
 
         let (started, skipped) = spawn_scoped_reviewers(
-            &mut app,
+            &mut |reviewer, target, prompt, stamp| {
+                spawn_on_app(&mut app, reviewer, target, prompt, stamp)
+            },
             target,
             &reviewer_kinds,
             focus_prompt.as_deref(),
@@ -4615,29 +4825,7 @@ pub async fn run_ai_scoped_review(
             ));
         }
 
-        let file_note = if scoped_files {
-            format!(
-                " for {file_count} file{}",
-                if file_count == 1 { "" } else { "s" }
-            )
-        } else {
-            String::new()
-        };
-
-        let msg = if skipped.is_empty() {
-            format!(
-                "Started {} reviewer(s){file_note}: {}",
-                started.len(),
-                started.join(", ")
-            )
-        } else {
-            format!(
-                "Started {} reviewer(s){file_note}: {} (skipped: {})",
-                started.len(),
-                started.join(", "),
-                skipped.join(", ")
-            )
-        };
+        let msg = scoped_message(&started, &skipped, scoped_files.then_some(file_count));
         app.notify(&msg);
 
         Ok(snap_from(&app, &state))
@@ -4645,9 +4833,76 @@ pub async fn run_ai_scoped_review(
     .await
 }
 
+/// The diff a scoped run reviews: `raw` cut to `paths` (sorted, without
+/// duplicates) with the file manifest and the overlay directory written into
+/// the bucket, or the whole diff without the project's ignored files when
+/// `paths` is empty. Answers whether it is scoped, the paths and the diff.
+pub(crate) fn scoped_diff(
+    er_dir: &str,
+    raw: String,
+    paths: Vec<String>,
+    repo_root: &str,
+    remote_repo: Option<&str>,
+) -> Result<(bool, Vec<String>, String), String> {
+    let scoped_files = !paths.is_empty();
+    let mut scope_paths = paths;
+    scope_paths.sort();
+    scope_paths.dedup();
+    let er_path = std::path::Path::new(er_dir);
+    let diff_body = if scoped_files {
+        let filtered = er_engine::git::filter_raw_diff_by_paths(&raw, &scope_paths);
+        if filtered.trim().is_empty() {
+            return Err("No diff for selected files".to_string());
+        }
+        let manifest = scope_paths.join("\n");
+        std::fs::write(er_path.join("review-files.txt"), format!("{manifest}\n"))
+            .map_err(|e| format!("Failed to write review-files.txt: {e}"))?;
+        // The agent writes only its lens's overlay; the host stamps the
+        // scope and the base identity on exit.
+        std::fs::create_dir_all(er_path.join("scoped/experts"))
+            .map_err(|e| format!("Failed to create scoped output directory: {e}"))?;
+        filtered
+    } else {
+        let ignore = er_engine::projects_pins::review_ignore_globs_for_repo(repo_root, remote_repo);
+        if ignore.is_empty() {
+            raw
+        } else {
+            er_engine::git::filter_raw_diff_exclude_globs(&raw, &ignore)
+        }
+    };
+    Ok((scoped_files, scope_paths, diff_body))
+}
+
+/// What a scoped run tells the person: who started, over how many files,
+/// and who was already running.
+pub(crate) fn scoped_message(
+    started: &[String],
+    skipped: &[String],
+    file_count: Option<usize>,
+) -> String {
+    let file_note = match file_count {
+        Some(count) => format!(" for {count} file{}", if count == 1 { "" } else { "s" }),
+        None => String::new(),
+    };
+    if skipped.is_empty() {
+        format!(
+            "Started {} reviewer(s){file_note}: {}",
+            started.len(),
+            started.join(", ")
+        )
+    } else {
+        format!(
+            "Started {} reviewer(s){file_note}: {} (skipped: {})",
+            started.len(),
+            started.join(", "),
+            skipped.join(", ")
+        )
+    }
+}
+
 /// Per-lens stamps for a scoped run: the sorted selected paths, the base
 /// file's identity captured before the agent starts, and the overlay bytes.
-fn scope_stamps(
+pub(crate) fn scope_stamps(
     er_dir: &str,
     scope_paths: &[String],
     reviewer_kinds: &[String],
@@ -4735,9 +4990,42 @@ fn base_identity<T: er_store::Artifact>(
     (diff_hash.to_string(), created_at.to_string())
 }
 
-fn spawn_scoped_reviewers(
-    app: &mut er_engine::app::App,
-    target: er_engine::app::BackgroundTaskTarget,
+/// Starts one scoped reviewer through `spawn`, which takes its kind, its
+/// target, its prompt and its stamp.
+pub(crate) type SpawnReviewer<'a> = dyn FnMut(
+        &er_engine::ai::ReviewerKind,
+        er_engine::task_target::BackgroundTaskTarget,
+        String,
+        Option<er_engine::ai::ScopedRunStamp>,
+    ) -> Result<(), String>
+    + 'a;
+
+/// Starts a reviewer on the App, as the flag-off scoped run does.
+#[cfg(not(feature = "v1-service"))]
+fn spawn_on_app(
+    app: &mut App,
+    reviewer: &er_engine::ai::ReviewerKind,
+    target: er_engine::task_target::BackgroundTaskTarget,
+    prompt: String,
+    stamp: Option<er_engine::ai::ScopedRunStamp>,
+) -> Result<(), String> {
+    use er_engine::ai::ReviewerKind;
+    match reviewer {
+        ReviewerKind::Triage => app.spawn_background_triage_review(target, prompt, true),
+        ReviewerKind::General => app.spawn_background_review(target, prompt, true, stamp),
+        ReviewerKind::Expert(id) => {
+            app.spawn_background_expert_review(id, target, prompt, true, stamp)
+        }
+        ReviewerKind::Professor => {
+            app.spawn_background_professor_review(target, prompt, true, stamp)
+        }
+    }
+    .map_err(|e| e.to_string())
+}
+
+pub(crate) fn spawn_scoped_reviewers(
+    spawn: &mut SpawnReviewer<'_>,
+    target: er_engine::task_target::BackgroundTaskTarget,
     reviewer_kinds: &[String],
     focus_prompt: Option<&str>,
     diff_hash: &str,
@@ -4765,7 +5053,7 @@ fn spawn_scoped_reviewers(
             ReviewerKind::Triage => {
                 let prompt =
                     prompts::build_triage_review_prompt_prepared_diff(scope, er_dir, diff_hash);
-                app.spawn_background_triage_review(target.clone(), prompt, true)
+                spawn(&parsed, target.clone(), prompt, None)
             }
             ReviewerKind::General => {
                 let overlay = er_engine::ai::scoped_overlay_path("review");
@@ -4781,7 +5069,7 @@ fn spawn_scoped_reviewers(
                     er_dir,
                     overlay.as_deref(),
                 );
-                app.spawn_background_review(target.clone(), prompt, true, stamp)
+                spawn(&parsed, target.clone(), prompt, stamp)
             }
             ReviewerKind::Expert(id) => {
                 let overlay = er_engine::ai::scoped_overlay_path(&format!("expert-{id}"));
@@ -4796,7 +5084,7 @@ fn spawn_scoped_reviewers(
                     er_dir,
                     overlay.as_deref(),
                 );
-                app.spawn_background_expert_review(id, target.clone(), prompt, true, stamp)
+                spawn(&parsed, target.clone(), prompt, stamp)
             }
             ReviewerKind::Professor => {
                 let overlay = er_engine::ai::scoped_overlay_path("professor");
@@ -4811,14 +5099,13 @@ fn spawn_scoped_reviewers(
                     er_dir,
                     overlay.as_deref(),
                 );
-                app.spawn_background_professor_review(target.clone(), prompt, true, stamp)
+                spawn(&parsed, target.clone(), prompt, stamp)
             }
         };
 
         match spawn_result {
             Ok(()) => started.push(label),
-            Err(e) => {
-                let msg = e.to_string();
+            Err(msg) => {
                 if msg.contains("already running") {
                     skipped.push(label);
                 } else {
@@ -4831,13 +5118,22 @@ fn spawn_scoped_reviewers(
     Ok((started, skipped))
 }
 
+#[cfg(not(feature = "v1-service"))]
 fn eligible_github_comment_count(tab: &er_engine::app::TabState) -> usize {
-    if let Some(gc) = tab.ai.github_comments.as_ref() {
+    github_comment_count(tab.ai.github_comments.as_ref(), &tab.github_comments_dir())
+}
+
+/// The GitHub comments a validation checks: from the loaded sidecar, else
+/// read from `comments_dir`.
+pub(crate) fn github_comment_count(
+    loaded: Option<&er_engine::ai::ErGithubComments>,
+    comments_dir: &str,
+) -> usize {
+    if let Some(gc) = loaded {
         return er_engine::ai::count_eligible_github_comments(gc);
     }
     let store = er_engine::store_registry::store();
-    let comments_dir = tab.github_comments_dir();
-    if let Ok(scope) = er_store::Scope::dir(comments_dir.as_str()) {
+    if let Ok(scope) = er_store::Scope::dir(comments_dir) {
         if let Ok(er_store::Loaded::Found(stored)) =
             er_engine::ai::annotation_store::load_github_comments(&store, &scope)
         {
@@ -4853,6 +5149,14 @@ pub async fn run_ai_validate(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
+    #[cfg(feature = "v1-service")]
+    return run_blocking(move || {
+        ask_on_desktop(&state, |desktop| {
+            crate::runs::validate(desktop, None, scope)
+        })
+    })
+    .await;
+    #[cfg(not(feature = "v1-service"))]
     run_blocking(move || {
         let mut app = state.app.lock().map_err(|e| e.to_string())?;
         let scope = resolve_review_scope(&scope, app.tab())?;
@@ -4932,7 +5236,11 @@ pub async fn set_ai_model(
 /// writer of the config files (ADR 0069); the flag-off bodies save the App's.
 pub(crate) fn ai_model(state: &AppState, model: String) -> Result<AppSnapshot, String> {
     #[cfg(feature = "v1-service")]
-    return crate::ai_selection_service::ai_model(state, model);
+    {
+        crate::ai_selection_service::ai_model(&state.desktop, model)?;
+        let app = state.app.lock().map_err(|e| e.to_string())?;
+        Ok(snap_from(&app, state))
+    }
     #[cfg(not(feature = "v1-service"))]
     {
         let app = state.app.lock().map_err(|e| e.to_string())?;
@@ -5005,7 +5313,9 @@ pub(crate) fn ai_selection(
     let persist = persist.unwrap_or(true);
     #[cfg(feature = "v1-service")]
     if persist {
-        return crate::ai_selection_service::ai_selection(state, provider_id, model_id, effort);
+        crate::ai_selection_service::ai_selection(&state.desktop, provider_id, model_id, effort)?;
+        let app = state.app.lock().map_err(|e| e.to_string())?;
+        return Ok(snap_from(&app, state));
     }
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
     let agent = app.config.agent.clone();
@@ -5065,7 +5375,9 @@ pub(crate) fn ai_effort(
     let persist = persist.unwrap_or(false);
     #[cfg(feature = "v1-service")]
     if persist {
-        return crate::ai_selection_service::ai_effort(state, effort);
+        crate::ai_selection_service::ai_effort(&state.desktop, effort)?;
+        let app = state.app.lock().map_err(|e| e.to_string())?;
+        return Ok(snap_from(&app, state));
     }
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
     let default_selection = app
@@ -5325,7 +5637,7 @@ pub async fn elaborate_with_ai(
 
 /// Tracked agent-command name for Send to agent. Single-flight per tab: two
 /// agents editing one working tree would race over the same files.
-const SEND_NOTE_COMMAND: &str = "send-to-agent";
+pub(crate) const SEND_NOTE_COMMAND: &str = "send-to-agent";
 
 /// What the Send-to-agent prompt says about the note and where it sits.
 struct SendNotePromptParams<'a> {
@@ -5400,13 +5712,8 @@ Finish with a short markdown summary: the files you changed and what changed in 
 /// agent command runs. A remote PR tab has no working tree and opening one must
 /// not check anything out (ADR 0020); a local PR or branch view whose head is
 /// not checked out would have the agent edit some other branch.
+#[cfg(any(test, not(feature = "v1-service")))]
 fn send_note_blocked_reason(tab: &er_engine::app::TabState) -> Result<(), String> {
-    if tab.is_remote() {
-        return Err(
-            "Send to agent edits the working tree, so it is off on a remote PR tab. Check the PR out locally to use it."
-                .to_string(),
-        );
-    }
     // `local_checkout_root` treats a local PR tab as the main checkout; its
     // branch only is one once the watcher has set the checkout root.
     let checked_out = if tab.pr_number.is_some() || tab.is_local_branch_view() {
@@ -5414,8 +5721,24 @@ fn send_note_blocked_reason(tab: &er_engine::app::TabState) -> Result<(), String
     } else {
         tab.local_checkout_root()
     };
+    send_note_blocked(tab.is_remote(), checked_out, &tab.repo_root)
+}
+
+/// Why a note cannot go to the agent: a remote tab, or a branch checked out
+/// elsewhere or nowhere, so there is no working tree here to edit.
+pub(crate) fn send_note_blocked(
+    is_remote: bool,
+    checked_out: Option<&str>,
+    repo_root: &str,
+) -> Result<(), String> {
+    if is_remote {
+        return Err(
+            "Send to agent edits the working tree, so it is off on a remote PR tab. Check the PR out locally to use it."
+                .to_string(),
+        );
+    }
     match checked_out {
-        Some(root) if root == tab.repo_root => Ok(()),
+        Some(root) if root == repo_root => Ok(()),
         Some(root) => Err(format!(
             "This branch is checked out at {root}. Open that worktree to send notes to an agent."
         )),
@@ -5468,6 +5791,14 @@ pub async fn send_note_to_agent(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
+    #[cfg(feature = "v1-service")]
+    return run_blocking(move || {
+        ask_on_desktop(&state, |desktop| {
+            crate::runs::send_note(desktop, None, note_id)
+        })
+    })
+    .await;
+    #[cfg(not(feature = "v1-service"))]
     run_blocking(move || {
         if !note_id.starts_with("n-") {
             return Err("Send to agent works on notes only".to_string());
@@ -5485,39 +5816,13 @@ pub async fn send_note_to_agent(
 
         let (prompt, toast) = {
             let tab = app.tab();
-            let notes: &[er_engine::ai::PrivateAnnotation] = tab
-                .ai
-                .notes
-                .as_ref()
-                .map(|ns| ns.notes.as_slice())
-                .unwrap_or(&[]);
-            let note = notes
-                .iter()
-                .find(|n| n.id == note_id)
-                .ok_or_else(|| "Note not found".to_string())?;
-            let mut thread_body = note.text.clone();
-            for r in notes
-                .iter()
-                .filter(|r| r.in_reply_to.as_deref() == Some(note_id.as_str()))
-            {
-                thread_body.push_str(&format!("\n\n**{}** replied:\n{}", r.author, r.text));
-            }
-            let prompt = build_send_note_prompt(&SendNotePromptParams {
-                repo_root: &tab.repo_root,
-                base_branch: &tab.base_branch,
-                current_branch: &tab.current_branch,
-                file: &note.file,
-                line_start: note.line_start,
-                line_end: note.line_end,
-                line_content: &note.line_content,
-                thread_body: &thread_body,
-            });
-            let name = note.file.rsplit('/').next().unwrap_or(&note.file);
-            let toast = match note_range_label(note.line_start, note.line_end) {
-                Some(range) => format!("Note sent to the agent with {range} of {name} as context"),
-                None => format!("Note sent to the agent with {name} as context"),
-            };
-            (prompt, toast)
+            note_prompt(
+                tab.ai.notes.as_ref(),
+                &note_id,
+                &tab.repo_root,
+                &tab.base_branch,
+                &tab.current_branch,
+            )?
         };
 
         app.spawn_agent_prompt(SEND_NOTE_COMMAND, &prompt)
@@ -5528,6 +5833,46 @@ pub async fn send_note_to_agent(
         Ok(snap_from(&app, &state))
     })
     .await
+}
+
+/// The prompt that sends note `note_id` and its replies from `notes` to the
+/// agent, and the toast that names its context.
+pub(crate) fn note_prompt(
+    notes: Option<&er_engine::ai::ErNotes>,
+    note_id: &str,
+    repo_root: &str,
+    base_branch: &str,
+    current_branch: &str,
+) -> Result<(String, String), String> {
+    let notes: &[er_engine::ai::PrivateAnnotation] =
+        notes.map(|ns| ns.notes.as_slice()).unwrap_or(&[]);
+    let note = notes
+        .iter()
+        .find(|n| n.id == note_id)
+        .ok_or_else(|| "Note not found".to_string())?;
+    let mut thread_body = note.text.clone();
+    for r in notes
+        .iter()
+        .filter(|r| r.in_reply_to.as_deref() == Some(note_id))
+    {
+        thread_body.push_str(&format!("\n\n**{}** replied:\n{}", r.author, r.text));
+    }
+    let prompt = build_send_note_prompt(&SendNotePromptParams {
+        repo_root,
+        base_branch,
+        current_branch,
+        file: &note.file,
+        line_start: note.line_start,
+        line_end: note.line_end,
+        line_content: &note.line_content,
+        thread_body: &thread_body,
+    });
+    let name = note.file.rsplit('/').next().unwrap_or(&note.file);
+    let toast = match note_range_label(note.line_start, note.line_end) {
+        Some(range) => format!("Note sent to the agent with {range} of {name} as context"),
+        None => format!("Note sent to the agent with {name} as context"),
+    };
+    Ok((prompt, toast))
 }
 
 /// Invoke the configured AI agent (`claude` CLI by default) on a question or
@@ -11997,21 +12342,36 @@ pub fn get_background_task_log(
     task_id: String,
     state: State<AppState>,
 ) -> Result<Vec<AgentLogSnapshot>, String> {
-    let app = state.app.lock().map_err(|e| e.to_string())?;
-    let entries = app.background_task_log_tail(&task_id);
-    let log: Vec<AgentLogSnapshot> = entries
-        .iter()
-        .map(|e| AgentLogSnapshot {
-            command_name: e.command_name.to_string(),
-            source: match &e.source {
-                er_engine::app::AgentLogSource::Stdout => "stdout".to_string(),
-                er_engine::app::AgentLogSource::Stderr => "stderr".to_string(),
-                er_engine::app::AgentLogSource::Status => "status".to_string(),
-            },
-            text: e.text.clone(),
+    #[cfg(feature = "v1-service")]
+    return Ok(state
+        .desktop
+        .tasks
+        .log(&task_id)
+        .into_iter()
+        .map(|line| AgentLogSnapshot {
+            command_name: line.command_name,
+            source: line.source,
+            text: line.text,
         })
-        .collect();
-    Ok(log)
+        .collect());
+    #[cfg(not(feature = "v1-service"))]
+    {
+        let app = state.app.lock().map_err(|e| e.to_string())?;
+        let entries = app.background_task_log_tail(&task_id);
+        let log: Vec<AgentLogSnapshot> = entries
+            .iter()
+            .map(|e| AgentLogSnapshot {
+                command_name: e.command_name.to_string(),
+                source: match &e.source {
+                    er_engine::app::AgentLogSource::Stdout => "stdout".to_string(),
+                    er_engine::app::AgentLogSource::Stderr => "stderr".to_string(),
+                    er_engine::app::AgentLogSource::Status => "status".to_string(),
+                },
+                text: e.text.clone(),
+            })
+            .collect();
+        Ok(log)
+    }
 }
 
 #[cfg(test)]
@@ -12077,6 +12437,8 @@ mod tests {
     mod tab_load_tests;
     #[cfg(feature = "v1-service")]
     mod tab_resource_tests;
+    #[cfg(feature = "v1-service")]
+    mod task_tests;
     #[cfg(feature = "v1-service")]
     mod ui_annotation_write_tests;
     #[cfg(feature = "v1-service")]
@@ -12416,6 +12778,8 @@ mod tests {
             line_commits_cache: Arc::default(),
             session: Default::default(),
             live_jobs: Default::default(),
+            #[cfg(feature = "v1-service")]
+            tasks: Default::default(),
         };
         #[cfg(feature = "v1-service")]
         crate::app_owner::startup::read_inbox_prefs_from_settings(&desktop);
@@ -13109,8 +13473,8 @@ mod tests {
     }
 
     /// With the feature on, the AI picker's three saves reach the settings
-    /// actor before the App lock is taken, and the App only follows the saved
-    /// selection: its own copy of the config is never written.
+    /// actor before the App lock is taken, and the App takes none of it:
+    /// neither its session pick nor its copy of the config is written.
     #[cfg(feature = "v1-service")]
     #[test]
     fn the_ai_picker_saves_route_with_the_feature_on() {
@@ -13120,6 +13484,22 @@ mod tests {
         };
         er_engine::storage::with_process_test_storage_root(tmp.path(), || {
             let state = shared_config_state(&dir);
+            let before = {
+                let Ok(app) = state.app.lock() else {
+                    panic!("the App lock is poisoned");
+                };
+                (
+                    app.current_ai_provider.clone(),
+                    app.current_ai_model.clone(),
+                    app.current_ai_effort.clone(),
+                )
+            };
+            assert_ne!(before.0.as_deref(), Some("fake"), "the fixture's pick");
+            assert_ne!(
+                before.1.as_deref(),
+                Some("fake-model"),
+                "the fixture's pick"
+            );
             saved_while_locked(
                 &state,
                 "set_ai_model",
@@ -13150,9 +13530,15 @@ mod tests {
             let Ok(app) = state.app.lock() else {
                 panic!("the App lock is poisoned");
             };
-            assert_eq!(app.current_ai_provider.as_deref(), Some("fake"));
-            assert_eq!(app.current_ai_model.as_deref(), Some("fake-model"));
-            assert_eq!(app.current_ai_effort.as_deref(), Some("high"));
+            assert_eq!(
+                (
+                    app.current_ai_provider.clone(),
+                    app.current_ai_model.clone(),
+                    app.current_ai_effort.clone(),
+                ),
+                before,
+                "the saved pick was copied into the App"
+            );
             assert_eq!(
                 app.config.ai_hub.default_model, None,
                 "the App's copy was written"
@@ -13455,6 +13841,9 @@ mod tests {
         });
     }
 
+    /// The App's flows run only with the flag off; with it on the service
+    /// runs them (P60.1) and the tick no longer polls the App's tasks.
+    #[cfg(not(feature = "v1-service"))]
     #[test]
     fn review_flow_poll_delivers_flow_progress_after_background_wake() {
         use std::time::{Duration, Instant};
@@ -13485,10 +13874,6 @@ mod tests {
             let mut observed_terminal = false;
             while Instant::now() < deadline {
                 std::thread::sleep(Duration::from_millis(20));
-                // With the flag on the backend tick drives the flow; the poll
-                // only delivers it.
-                #[cfg(feature = "v1-service")]
-                crate::resources::tick::run(&state.desktop, &state.app);
                 let response = poll_impl(&state).unwrap();
                 if let Some(snapshot) = response.snapshot {
                     if snapshot

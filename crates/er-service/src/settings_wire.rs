@@ -257,6 +257,18 @@ pub fn settings_command(command: wire::Command) -> Result<SettingsCommand, Box<w
         | wire::Command::ValidateWithAi { .. }
         | wire::Command::ElaborateWithAi { .. }
         | wire::Command::AskAiOnFinding { .. }
+        | wire::Command::RunReview { .. }
+        | wire::Command::GenerateTour { .. }
+        | wire::Command::RunImportanceAgent { .. }
+        | wire::Command::GenerateDiagram { .. }
+        | wire::Command::RunExpertReview { .. }
+        | wire::Command::RunScopedReview { .. }
+        | wire::Command::RunValidate { .. }
+        | wire::Command::SendNoteToAgent { .. }
+        | wire::Command::RunPrTriage { .. }
+        | wire::Command::RunBranchTriage { .. }
+        | wire::Command::CancelQueuedTask { .. }
+        | wire::Command::CancelRunningTask { .. }
         | wire::Command::RefreshStack { .. }
         | wire::Command::RefreshGithubStatus { .. }
         | wire::Command::ReplyToGithubThread { .. }

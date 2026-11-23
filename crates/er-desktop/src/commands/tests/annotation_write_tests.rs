@@ -354,7 +354,6 @@ fn the_add_question_reports_its_flag_on_median() {
         let painted = view(&state, key);
         let effects = crate::resources::send::Effects {
             notify: &|_, _| {},
-            follow_selection: &|_| {},
             check_update: || panic!("no update check in this test"),
             webviews: &crate::browser_webview::NoWebviews,
             pick_folder: &|| None,

@@ -12,9 +12,15 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender};
 use std::sync::Arc;
 
-use er_agent::agent_run::AgentRunHandle;
+pub use er_agent::agent_run::AgentRunHandle;
 use er_agent::agent_timing::AgentRunTimer;
-use er_agent::job::{JobError, JobOutput, JobProgress, JobRun, JobRunner, JobSpec, RetryPolicy};
+use er_agent::job::{JobError, JobOutput, JobRun, JobRunner, JobSpec};
+pub use er_agent::job::{JobProgress, RetryPolicy};
+
+/// How many agent slots the process's one pool has handed out now.
+pub fn active_agent_slots() -> usize {
+    er_agent::agent_slots::active_count()
+}
 
 /// Names one submitted job for its whole life: its progress, its cancel and
 /// its finish all carry it. Unique within the process.

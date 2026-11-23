@@ -75,7 +75,6 @@ fn open(state: &AppState, tab: TabDescriptor) -> TabKey {
 fn send(state: &AppState, command: Command) -> Ack {
     let effects = Effects {
         notify: &|_, _| {},
-        follow_selection: &|_| {},
         check_update: || panic!("no update check in this test"),
         webviews: &crate::browser_webview::NoWebviews,
         pick_folder: &|| None,

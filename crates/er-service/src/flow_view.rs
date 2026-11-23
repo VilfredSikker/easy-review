@@ -38,22 +38,25 @@ impl ReviewedTab for ContentTab<'_> {
     /// The repo's tables under the key the diff loaded them by, as
     /// `diff(tab)` reads them.
     fn owned_rules(&self) -> OwnedRepoRules {
-        let meta = &self.content.diff.meta;
-        OwnedRepoRules {
-            file_kinds: self
-                .config
-                .file_kinds
-                .repo(&meta.rules_key)
-                .cloned()
-                .unwrap_or_default(),
-            risk: self
-                .config
-                .risk_rules_merged(&meta.rules_key, meta.risk_artifact.clone()),
-        }
+        review_rules(self.content, self.config)
     }
 
     fn review_md_source(&self) -> ReviewMdSource {
         review_flow_driver::review_md_source(self.ports, &self.content.tab.identity())
+    }
+}
+
+/// The repo's tables a review of `content`'s tab reads, under the key the
+/// diff loaded them by, as `diff(tab)` reads them.
+pub fn review_rules(content: &TabContent, config: &ErConfig) -> OwnedRepoRules {
+    let meta = &content.diff.meta;
+    OwnedRepoRules {
+        file_kinds: config
+            .file_kinds
+            .repo(&meta.rules_key)
+            .cloned()
+            .unwrap_or_default(),
+        risk: config.risk_rules_merged(&meta.rules_key, meta.risk_artifact.clone()),
     }
 }
 

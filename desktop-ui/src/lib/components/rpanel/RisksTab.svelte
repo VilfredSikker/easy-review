@@ -49,9 +49,16 @@
   const target = $derived(riskTarget(pageView.current));
   const targetKey = $derived(target ? `${target.repoRoot}\n${target.remoteRepo ?? ""}` : "");
 
+  // A push of the repo's rules (an importance run's reload) loads them again.
+  let reloads = $state(0);
+  $effect(() => {
+    if (target && riskResource.pushed(target)) untrack(() => (reloads += 1));
+  });
+
   $effect(() => {
     void fileKey;
     void targetKey;
+    void reloads;
     const current = untrack(() => target);
     if (!current) {
       ruleTable = null;

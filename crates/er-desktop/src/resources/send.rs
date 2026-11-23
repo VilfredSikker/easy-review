@@ -5,7 +5,6 @@
 //! own. A tab command or an open goes to the app registry (`tabs`); a diff
 //! command or a reviewed write goes to the tab's workspace actor.
 
-use er_engine::config::AiSelection;
 use er_engine::uninstall::UninstallResult;
 use er_protocol::{
     Ack, AppUpdate, Command, ErError, NoticeLevel, Panel, ResourceChanged, ResourceKey,
@@ -29,9 +28,6 @@ pub struct Effects<'a> {
     /// provider whose model listing failed), since an `Ack` carries only
     /// versions.
     pub notify: &'a dyn Fn(NoticeLevel, String),
-    /// Copies a saved AI pick into the App's session pick, which the ask
-    /// runs still read.
-    pub follow_selection: &'a dyn Fn(&AiSelection),
     /// Compares the running build with the latest release. Blocking; runs
     /// on a thread of its own.
     pub check_update: fn() -> AppUpdate,
@@ -92,6 +88,15 @@ pub fn apply(
         super::tabs::Routed::Other(command) => command,
     };
     let command = match super::ai_asks::apply(desktop, command) {
+        super::tabs::Routed::Applied(ack) => {
+            return ack.map(|ack| Applied {
+                ack,
+                uninstalled: None,
+            })
+        }
+        super::tabs::Routed::Other(command) => command,
+    };
+    let command = match super::runs::apply(desktop, command) {
         super::tabs::Routed::Applied(ack) => {
             return ack.map(|ack| Applied {
                 ack,
@@ -183,10 +188,7 @@ pub fn apply(
                 uninstalled: None,
             });
         }
-        SettingsReply::AiSelectionSaved { selection, .. } => {
-            (effects.follow_selection)(&selection);
-        }
-        SettingsReply::UninstallPreviewed(_) => {}
+        SettingsReply::AiSelectionSaved { .. } | SettingsReply::UninstallPreviewed(_) => {}
     }
     // The actor publishes before it answers, so the view read now carries
     // the command.
