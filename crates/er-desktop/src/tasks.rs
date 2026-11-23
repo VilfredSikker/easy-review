@@ -227,14 +227,21 @@ pub fn enqueue(desktop: &DesktopState, launch: Launch) -> Result<String, String>
     }
     host.clock.bump();
     dispatch(desktop);
+    // Under one lock with the position, so no dispatch can start a quiet
+    // task between our reading that it waits and our letting it tell its start.
     let position = {
-        let tasks = host.lock();
-        let waiting: Vec<&Task> = tasks.iter().filter(|task| task.queued.is_some()).collect();
-        waiting.iter().position(|task| task.row.id == id)
+        let mut tasks = host.lock();
+        let position = tasks
+            .iter()
+            .filter(|task| task.queued.is_some())
+            .position(|task| task.row.id == id);
+        if position.is_some() && quiet {
+            hear_from_queue(&mut tasks, &id);
+        }
+        position
     };
     if let Some(position) = position {
         if quiet {
-            hear_from_queue(host, &id);
             return Ok(id);
         }
         let label = target.display_label();
@@ -320,8 +327,7 @@ pub fn hold_agent(
 }
 
 /// Lets the queued task `id` tell the person when it starts.
-fn hear_from_queue(host: &TaskHost, id: &str) {
-    let mut tasks = host.lock();
+fn hear_from_queue(tasks: &mut [Task], id: &str) {
     if let Some(queued) = tasks
         .iter_mut()
         .find(|task| task.row.id == id)
