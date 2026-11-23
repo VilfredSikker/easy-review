@@ -115,6 +115,18 @@ describe("TasksAdapter", () => {
     expect(runCommand("refresh_diff", {}, TAB)).toBeNull();
   });
 
+  it("sends a sidebar triage through er_send with no tab", async () => {
+    const { tasks, sent } = adapter(true);
+    await tasks.route("run_pr_triage", { projectId: "p", prNumber: 7 });
+    await tasks.route("run_branch_triage", { projectId: "p", branch: "feature" });
+    expect(sent).toEqual([
+      { kind: "run_pr_triage", projectId: "p", prNumber: 7 },
+      { kind: "run_branch_triage", projectId: "p", branch: "feature" },
+    ]);
+    expect(runCommand("run_pr_triage", { projectId: "p", prNumber: 7 }, null)).not.toBeNull();
+    expect(runCommand("run_ai_review", {}, null)).toBeNull();
+  });
+
   it("shows the painted bucket's host tasks in the agent output, rows and log", async () => {
     const { tasks, logs } = adapter(true);
     await tasks.refreshLogs("/bucket");
