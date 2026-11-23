@@ -700,46 +700,66 @@ fn two_clicks_at_once_queue_one_task() {
     });
 }
 
+/// Agent launches a test counts, each held running by its kept result
+/// sender.
+#[derive(Default)]
+struct Launches {
+    count: std::sync::atomic::AtomicUsize,
+    results: std::sync::Mutex<Vec<std::sync::mpsc::Sender<anyhow::Result<()>>>>,
+}
+
+impl Launches {
+    fn count(&self) -> usize {
+        self.count.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// A launch that takes a moment and leaves its task running.
+    fn launch(&self) -> anyhow::Result<er_engine::app::AgentPromptRun> {
+        self.count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        std::thread::sleep(Duration::from_millis(2));
+        let (tx, result) = std::sync::mpsc::channel();
+        self.results
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(tx);
+        Ok(er_engine::app::AgentPromptRun {
+            run: er_engine::jobs::AgentRunHandle::new(),
+            result,
+        })
+    }
+}
+
+/// Sends `validate` on `target` once the gate opens; answers whether the
+/// host took it.
+fn send_at_gate(
+    state: &AppState,
+    gate: &std::sync::Barrier,
+    target: BackgroundTaskTarget,
+    launches: &Launches,
+) -> bool {
+    gate.wait();
+    crate::tasks::hold_agent(&state.desktop, target, "validate", |_| launches.launch()).is_ok()
+}
+
 /// Two sends of the same tab command on one bucket at once start one
 /// agent: the busy check, the launch and the record are one step.
 #[test]
 fn two_sends_at_once_start_one_agent() {
     with_storage(|dir| {
         let (state, _agent) = tasking(dir, 50);
-        let launches = std::sync::atomic::AtomicUsize::new(0);
-        // Held so each started agent stays running for the rest of the test.
-        let results = std::sync::Mutex::new(Vec::new());
+        let launches = Launches::default();
         for round in 0..60 {
             let mut target = launch(&state, dir.path(), "validate", "feature").target;
-            target.er_dir = dir
-                .path()
-                .join(format!("bucket-{round}"))
-                .to_string_lossy()
-                .into_owned();
-            let before = launches.load(std::sync::atomic::Ordering::SeqCst);
+            let bucket = dir.path().join(format!("bucket-{round}"));
+            target.er_dir = bucket.to_string_lossy().into_owned();
+            let before = launches.count();
             let gate = std::sync::Barrier::new(2);
             let accepted = std::thread::scope(|scope| {
                 let sends: Vec<_> = (0..2)
                     .map(|_| {
-                        let (state, gate, target) = (&state, &gate, target.clone());
-                        let (launches, results) = (&launches, &results);
-                        scope.spawn(move || {
-                            gate.wait();
-                            crate::tasks::hold_agent(&state.desktop, target, "validate", |_| {
-                                launches.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                                std::thread::sleep(Duration::from_millis(2));
-                                let (tx, result) = std::sync::mpsc::channel();
-                                results
-                                    .lock()
-                                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                                    .push(tx);
-                                Ok(er_engine::app::AgentPromptRun {
-                                    run: er_engine::jobs::AgentRunHandle::new(),
-                                    result,
-                                })
-                            })
-                            .is_ok()
-                        })
+                        let (state, gate, launches) = (&state, &gate, &launches);
+                        let target = target.clone();
+                        scope.spawn(move || send_at_gate(state, gate, target, launches))
                     })
                     .collect();
                 sends
@@ -748,7 +768,7 @@ fn two_sends_at_once_start_one_agent() {
                     .filter(|accepted| *accepted)
                     .count()
             });
-            let started = launches.load(std::sync::atomic::Ordering::SeqCst) - before;
+            let started = launches.count() - before;
             assert_eq!(
                 (accepted, started),
                 (1, 1),
