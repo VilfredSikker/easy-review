@@ -349,6 +349,10 @@ pub fn send(desktop: &DesktopState, command: Command) -> Result<Ack, ErError> {
         | Command::ArenaDelete { .. }
         | Command::ArenaCancel { .. }
         | Command::ArenaOverride { .. }
+        | Command::AskAi { .. }
+        | Command::ValidateWithAi { .. }
+        | Command::ElaborateWithAi { .. }
+        | Command::AskAiOnFinding { .. }
         | Command::RefreshStack { .. }
         | Command::RefreshGithubStatus { .. }
         | Command::ReplyToGithubThread { .. }

@@ -25,12 +25,15 @@ use crate::snapshot::{
     PrInfo,
 };
 pub use crate::state::{run_blocking, DesktopState, PrOpenPrefetchClaim, PrOpenPrefetchMap};
+#[cfg(not(feature = "v1-service"))]
 use er_engine::ai::CommentType;
 #[cfg(test)]
 use er_engine::app::CardAiInvocation;
-use er_engine::app::{
-    plan_card_ai_invocation, run_card_ai_subprocess, App, CommentTarget, DiffMode, InputMode,
-};
+#[cfg(any(test, not(feature = "v1-service")))]
+use er_engine::app::run_card_ai_subprocess;
+use er_engine::app::{App, DiffMode, InputMode};
+#[cfg(not(feature = "v1-service"))]
+use er_engine::app::{plan_card_ai_invocation, CommentTarget};
 use er_engine::config::InboxConfig;
 
 pub(crate) const DEFAULT_ASK_AI_PROMPT: &str = "Elaborate on this and answer any question directly.";
@@ -5445,6 +5448,14 @@ pub async fn validate_with_ai(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
+    #[cfg(feature = "v1-service")]
+    return run_blocking(move || {
+        ask_on_desktop(&state, |desktop| {
+            crate::ai_ask::validate(desktop, None, thread_id, finding_id)
+        })
+    })
+    .await;
+    #[cfg(not(feature = "v1-service"))]
     run_blocking(move || {
         let resolved_finding = {
             let app = state.app.lock().map_err(|e| e.to_string())?;
@@ -5478,6 +5489,14 @@ pub async fn elaborate_with_ai(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
+    #[cfg(feature = "v1-service")]
+    return run_blocking(move || {
+        ask_on_desktop(&state, |desktop| {
+            crate::ai_ask::elaborate(desktop, None, thread_id)
+        })
+    })
+    .await;
+    #[cfg(not(feature = "v1-service"))]
     run_blocking(move || {
         let prompt = card_action_prompt(&thread_id, er_engine::ai::AI_ACTION_ELABORATE)
             .ok_or_else(|| "Elaborate works on questions and notes only".to_string())?;
@@ -5704,6 +5723,14 @@ pub async fn ask_ai(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
+    #[cfg(feature = "v1-service")]
+    return run_blocking(move || {
+        ask_on_desktop(&state, |desktop| {
+            crate::ai_ask::ask(desktop, None, thread_id, prompt)
+        })
+    })
+    .await;
+    #[cfg(not(feature = "v1-service"))]
     run_blocking(move || {
         // An empty prompt is the one-click Ask AI: answer with the kind's own
         // prompt. Typed text is the reviewer's own question and goes as written.
@@ -5723,6 +5750,19 @@ pub async fn ask_ai(
     .await
 }
 
+/// A card ask on the flag path, on the registry's active tab. It reads the
+/// tab's content and the settings view, never the App, and the reply being
+/// written shows in `jobs`; the page reads that, so no snapshot is built.
+#[cfg(feature = "v1-service")]
+fn ask_on_desktop(
+    state: &AppState,
+    ask: impl FnOnce(&crate::state::DesktopState) -> Result<(), er_protocol::ErError>,
+) -> Result<AppSnapshot, String> {
+    ask(&state.desktop).map_err(|e| e.message)?;
+    Ok(AppSnapshot::default())
+}
+
+#[cfg(not(feature = "v1-service"))]
 /// Body of `ask_ai`; also reached from `validate_with_ai`, `elaborate_with_ai`
 /// and `reply_to_finding`. Blocking: builds the prompt context (raw diff,
 /// files) under the app lock, so callers run it on the blocking pool.
@@ -5815,6 +5855,7 @@ fn ask_ai_impl(
     Ok(snap)
 }
 
+#[cfg(any(test, not(feature = "v1-service")))]
 /// What an ask reads from the App's tab: the raw diff a review of the view
 /// reads, and the checkout, or a remote tab's bucket, as the provider's
 /// directory.
@@ -5853,6 +5894,7 @@ pub(crate) fn card_progress() -> er_engine::app::ProgressSink {
 }
 
 /// Run AI validation on a finding; reply is stored in `Finding.responses`.
+#[cfg(not(feature = "v1-service"))]
 fn ask_ai_for_finding(
     finding_id: String,
     prompt: String,
@@ -10038,6 +10080,7 @@ fn promote_finding_to_comment_impl(
     Ok(snap_from_confirmed(&app, state))
 }
 
+#[cfg(not(feature = "v1-service"))]
 const FINDING_THREAD_STUB: &str = "Follow-up on this finding.";
 
 #[tauri::command]
@@ -10051,44 +10094,41 @@ pub async fn reply_to_finding(
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
     #[cfg(feature = "v1-service")]
-    return run_blocking(move || match finding_reply_route(ai_assist) {
-        FindingReplyRoute::Service => route_annotation(&state, view.as_ref(), |context| {
-            er_service::Command::ReplyToFinding {
-                context,
-                finding_id,
-                body,
-                ai_assist,
-                client_id: id,
-            }
-        }),
-        // AI-assist spawns an agent, which stays the desktop's job; the
-        // service's finding reply is the plain write only.
-        FindingReplyRoute::FlagOff => {
-            reply_to_finding_impl(finding_id, body, ai_assist, id, view, &state)
-        }
+    return run_blocking(move || {
+        reply_to_finding_on_service(&state, finding_id, body, ai_assist, id, view.as_ref())
     })
     .await;
     #[cfg(not(feature = "v1-service"))]
     run_blocking(move || reply_to_finding_impl(finding_id, body, ai_assist, id, view, &state)).await
 }
 
-/// Which path answers a finding reply. AI-assist stays on the flag-off route;
-/// only the plain write goes through the service.
+/// The flag path of a finding reply. The plain reply is the workspace's
+/// write; an AI-assisted one finds or creates the finding's thread there and
+/// asks in it, with the reply being written shown in `jobs`.
 #[cfg(feature = "v1-service")]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum FindingReplyRoute {
-    Service,
-    FlagOff,
+fn reply_to_finding_on_service(
+    state: &AppState,
+    finding_id: String,
+    body: String,
+    ai_assist: bool,
+    id: Option<String>,
+    view: Option<&crate::snapshot::OptimisticView>,
+) -> Result<AppSnapshot, String> {
+    if ai_assist {
+        crate::ai_ask::ask_on_finding(&state.desktop, None, None, finding_id, body, id)
+            .map_err(|e| e.message)?;
+        return Ok(AppSnapshot::default());
+    }
+    route_annotation(state, view, |context| er_service::Command::ReplyToFinding {
+        context,
+        finding_id,
+        body,
+        ai_assist: false,
+        client_id: id,
+    })
 }
 
-#[cfg(feature = "v1-service")]
-fn finding_reply_route(ai_assist: bool) -> FindingReplyRoute {
-    if ai_assist {
-        FindingReplyRoute::FlagOff
-    } else {
-        FindingReplyRoute::Service
-    }
-}
+#[cfg(not(feature = "v1-service"))]
 fn reply_to_finding_impl(
     finding_id: String,
     body: String,
@@ -12453,6 +12493,8 @@ mod tests {
     mod annotation_write_tests;
     #[cfg(feature = "v1-service")]
     mod annotations_resource_tests;
+    #[cfg(feature = "v1-service")]
+    mod ai_ask_tests;
     #[cfg(feature = "v1-service")]
     mod ask_context_tests;
     #[cfg(feature = "v1-service")]
@@ -16325,14 +16367,20 @@ mod projected_review_tests {
 
 #[cfg(all(test, feature = "v1-service"))]
 mod route_tests {
-    use super::{finding_reply_route, FindingReplyRoute};
-
-    /// AI-assist spawns an agent the service does not own, so it stays on the
-    /// flag-off path; only the plain finding reply is routed.
+    /// Both finding replies take the service route: the plain reply is the
+    /// workspace's write, and an AI-assisted one asks through the flag path's
+    /// asks, which never reach the App.
     #[test]
-    fn only_plain_finding_replies_take_the_service_route() {
-        assert_eq!(finding_reply_route(false), FindingReplyRoute::Service);
-        assert_eq!(finding_reply_route(true), FindingReplyRoute::FlagOff);
+    fn both_finding_replies_take_the_service_route() {
+        let source = include_str!("commands.rs");
+        let start = source
+            .find("fn reply_to_finding_on_service(")
+            .unwrap_or_else(|| panic!("no flag path for finding replies"));
+        let body = &source[start..];
+        let body = &body[..body.find("\n}\n").unwrap_or(body.len())];
+        assert!(body.contains("ai_ask::ask_on_finding("), "{body}");
+        assert!(body.contains("er_service::Command::ReplyToFinding"), "{body}");
+        assert!(!body.contains("reply_to_finding_impl"), "{body}");
     }
 
     /// Every routed annotation command has a service route. The service tests

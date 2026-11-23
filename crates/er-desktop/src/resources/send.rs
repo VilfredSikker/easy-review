@@ -91,6 +91,15 @@ pub fn apply(
         }
         super::tabs::Routed::Other(command) => command,
     };
+    let command = match super::ai_asks::apply(desktop, command) {
+        super::tabs::Routed::Applied(ack) => {
+            return ack.map(|ack| Applied {
+                ack,
+                uninstalled: None,
+            })
+        }
+        super::tabs::Routed::Other(command) => command,
+    };
     let command = match super::ui_annotation_writes::apply(desktop, command) {
         super::tabs::Routed::Applied(ack) => {
             return ack.map(|ack| Applied {

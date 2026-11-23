@@ -253,6 +253,10 @@ pub fn settings_command(command: wire::Command) -> Result<SettingsCommand, Box<w
         | wire::Command::ArenaDelete { .. }
         | wire::Command::ArenaCancel { .. }
         | wire::Command::ArenaOverride { .. }
+        | wire::Command::AskAi { .. }
+        | wire::Command::ValidateWithAi { .. }
+        | wire::Command::ElaborateWithAi { .. }
+        | wire::Command::AskAiOnFinding { .. }
         | wire::Command::RefreshStack { .. }
         | wire::Command::RefreshGithubStatus { .. }
         | wire::Command::ReplyToGithubThread { .. }
