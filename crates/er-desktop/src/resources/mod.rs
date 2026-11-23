@@ -8,6 +8,8 @@
 //! read the App; the tick is the one exception, and it is handed the App.
 
 #[cfg(feature = "v1-service")]
+pub mod ai_asks;
+#[cfg(feature = "v1-service")]
 pub mod annotation_writes;
 #[cfg(feature = "v1-service")]
 pub mod annotations;

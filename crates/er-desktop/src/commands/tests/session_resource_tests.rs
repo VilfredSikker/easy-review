@@ -13,7 +13,6 @@ use er_protocol::{
 };
 
 use super::{review_flow_test_state, while_the_app_is_locked, ReviewFlowTestDir};
-use crate::ai_selection_service::SessionPick;
 use crate::commands::AppState;
 use crate::resources::send::{apply, Applied, Effects};
 use crate::resources::{self, tick};
@@ -138,60 +137,6 @@ fn wait_until(what: &str, done: impl Fn() -> bool) {
         assert!(Instant::now() < deadline, "timed out waiting for {what}");
         std::thread::sleep(Duration::from_millis(20));
     }
-}
-
-/// With the flag on, a pick through `er_send` saves, and the next ask, still
-/// on the App until the ask runs read the settings view, runs the new model:
-/// the mapping copies the saved pick into the App's session pick.
-#[test]
-fn a_pick_through_er_send_runs_the_next_ask_with_the_new_model() {
-    with_storage(|dir| {
-        let state = echo_state(dir);
-        let pick = SessionPick::new(Arc::clone(&state.app), Arc::new(AtomicU64::new(0)));
-        let follow = |selection: &er_engine::config::AiSelection| pick.follow(selection);
-        let applied = apply(&state.desktop, pick_second(), &effects(&|_, _| {}, &follow));
-        assert!(applied.is_ok(), "{applied:?}");
-
-        let question = {
-            let mut app = state.app.lock().unwrap_or_else(|e| e.into_inner());
-            let target = er_engine::app::CommentTarget {
-                file: "src/lib.rs".into(),
-                hunk_idx: 0,
-                line_num: Some(1),
-                line_num_end: None,
-            };
-            let asked = app.submit_comment_text(
-                target,
-                "Why this change?".into(),
-                er_engine::ai::CommentType::Question,
-                None,
-                None,
-            );
-            assert!(asked.is_ok(), "{asked:?}");
-            app.tab()
-                .ai
-                .questions
-                .as_ref()
-                .and_then(|qs| qs.questions.first().map(|q| q.id.clone()))
-                .unwrap_or_else(|| panic!("no question was written"))
-        };
-        let asked = crate::commands::ask_ai_impl(question.clone(), "Explain".into(), None, &state);
-        assert!(asked.is_ok(), "{:?}", asked.map(drop));
-
-        let reply = || {
-            let app = state.app.lock().unwrap_or_else(|e| e.into_inner());
-            app.tab().ai.questions.as_ref().and_then(|qs| {
-                qs.questions
-                    .iter()
-                    .find(|q| q.in_reply_to.as_deref() == Some(question.as_str()))
-                    .map(|q| q.text.clone())
-            })
-        };
-        wait_until("the AI reply", || reply().is_some());
-        let reply = reply().unwrap_or_default();
-        assert!(reply.contains("mark-second"), "the ask ran: {reply}");
-        assert!(!reply.contains("mark-first"), "the ask ran: {reply}");
-    });
 }
 
 /// With the App locked, the picker's providers and the session labels answer

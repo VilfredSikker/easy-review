@@ -564,6 +564,40 @@ pub enum Command {
         note: String,
     },
 
+    // ── Card asks ──
+    /// Asks the AI about a thread; the answer lands as a reply in it. An
+    /// empty prompt asks with the thread kind's own prompt. `jobs` shows the
+    /// reply being written until it lands.
+    AskAi {
+        tab: TabKey,
+        thread_id: String,
+        prompt: String,
+    },
+    /// Has the AI check a finding, whose responses take the answer, or a
+    /// thread, which takes it as a reply. A thread opened on a finding asks
+    /// about the finding.
+    ValidateWithAi {
+        tab: TabKey,
+        thread_id: Option<String>,
+        finding_id: Option<String>,
+    },
+    /// Has the AI rewrite a question or note as a self-contained one.
+    ElaborateWithAi {
+        tab: TabKey,
+        thread_id: String,
+    },
+    /// Asks the AI about a finding in the finding's thread, which this
+    /// creates when the finding has none. Painted in `view`, so a tab that
+    /// shows another view since refuses it. The `Ack`'s `created` is the
+    /// thread's root id.
+    AskAiOnFinding {
+        tab: TabKey,
+        view: PaintedView,
+        finding_id: String,
+        body: String,
+        client_id: Option<String>,
+    },
+
     // ── The PR card ──
     /// Reads the tab's `gh stack` again into `pr(tab)`.
     RefreshStack {

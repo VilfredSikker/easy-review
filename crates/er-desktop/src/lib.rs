@@ -1,4 +1,6 @@
 #[cfg(feature = "v1-service")]
+pub mod ai_ask;
+#[cfg(feature = "v1-service")]
 pub mod ai_selection_service;
 pub mod app_owner;
 pub mod arena_commands;
