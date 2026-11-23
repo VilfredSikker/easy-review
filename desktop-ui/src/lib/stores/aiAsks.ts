@@ -37,15 +37,13 @@ export function aiAsk(command: string, a: Args, tab: TabKey, view: PaintedView |
 }
 
 interface AiAsksDeps {
-  /** Whether the backend serves resources (the `v1-service` build). */
-  flagOn: boolean;
   store: Pick<ResourceStore, "get" | "send" | "whenAt">;
   /** The registry's active tab, the one the page shows. */
   activeKey: () => TabKey | null;
 }
 
 /**
- * The card asks with the flag on: each goes through `er_send` keyed to the
+ * The card asks: each goes through `er_send` keyed to the
  * active tab, and resolves once every key the `Ack` names is held, so the
  * reply being written already shows from `jobs`; the answer comes with the
  * push of `annotations(tab)`.
@@ -54,7 +52,6 @@ export class AiAsks {
   constructor(private readonly deps: AiAsksDeps) {}
 
   route(command: string, args: Args = {}): Promise<void> | null {
-    if (!this.deps.flagOn) return null;
     const tab = this.deps.activeKey();
     if (tab === null) return null;
     const wire = aiAsk(command, args, tab, this.view(tab));

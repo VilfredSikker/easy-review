@@ -19,6 +19,7 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
   import { app } from "$lib/stores/app.svelte";
+  import { pageView } from "$lib/stores/pageView.svelte";
   import { readDiffPaths } from "$lib/stores/diffResource.svelte";
   import ModalShell from "$lib/components/ui/ModalShell.svelte";
   import Button from "$lib/components/ui/Button.svelte";
@@ -48,7 +49,7 @@
   let treeHostEl: HTMLDivElement | null = $state(null);
   let reviewerPickerRef = $state<{ moveHighlight: (d: number) => void; toggleHighlighted: () => void } | null>(null);
 
-  const mode = $derived(app.snapshot?.mode);
+  const mode = $derived(pageView.current?.mode);
   const reviewScope = $derived(reviewScopeFromMode(mode));
 
   const scopeLabel = $derived.by(() => {
@@ -64,7 +65,7 @@
 
   // Triage-recommended files present in this view — drives the quick-select button.
   const triagePaths = $derived.by(() => {
-    const recommended = triageRecommendedPaths(app.snapshot?.ai.triage);
+    const recommended = triageRecommendedPaths(pageView.current?.ai.triage);
     if (recommended.length === 0) return [];
     const available = new Set(pickerFiles.map((f) => f.path));
     return recommended.filter((p) => available.has(p));
@@ -76,7 +77,7 @@
   }
 
   function pathsToFileSnapshots(paths: string[]): FileSnapshot[] {
-    const byPath = filesByPathMap(app.snapshot?.files ?? []);
+    const byPath = filesByPathMap(pageView.current?.files ?? []);
     return paths.map((path, i) => {
       const existing = byPath.get(path);
       if (existing) return existing;

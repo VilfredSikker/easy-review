@@ -21,7 +21,7 @@ const loader = new HunkLoader({
   report: (e) => console.warn(`[hunks] ${e.kind}: ${e.message}`),
 });
 
-/** The hunks the page holds by hash, and the fetch of the ones it shows and lacks. Flag-on only. */
+/** The hunks the page holds by hash, and the fetch of the ones it shows and lacks. */
 export const hunksResource = {
   get(hash: string): Hunk[] | undefined {
     void revision;

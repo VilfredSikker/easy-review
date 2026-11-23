@@ -4,6 +4,7 @@
   import { arena, type ArenaStartConfig } from "$lib/stores/arena.svelte";
   import { arenaAdapter } from "$lib/stores/arenaResource.svelte";
   import { app } from "$lib/stores/app.svelte";
+  import { pageView } from "$lib/stores/pageView.svelte";
   import { sessionResource } from "$lib/stores/sessionResource.svelte";
   import { triageRecommendedPaths } from "$lib/triageSuggestions";
   import type { AiProviderInfo, ReviewerInfo } from "$lib/pageTypes";
@@ -91,7 +92,7 @@
   const arbiterOn = $derived(effectiveRounds >= 2);
   const arbiterRef = $derived(arbiterKey ? refFromKey(arbiterKey) : null);
   const arbiterLabel = $derived(arbiterRef && providers.length ? modelLabel(providers, arbiterRef) : "—");
-  const triageExperts = $derived(app.snapshot?.ai.triage?.fresh ? app.snapshot.ai.triage.experts : []);
+  const triageExperts = $derived(pageView.current?.ai.triage?.fresh ? pageView.current.ai.triage.experts : []);
 
   function modelInfo(ref: ReviewerRef) {
     return providers.find((p) => p.id === ref.provider_id)?.models.find((m) => m.id === ref.model_id) ?? null;
@@ -131,7 +132,7 @@
 
   /** PR tabs and read-only branch views have no working-tree unstaged/staged diff. */
   const arenaDiffReadOnly = $derived(
-    app.snapshot?.pr != null || (app.snapshot?.local_branch != null && !app.snapshot?.local_branch_checked_out),
+    pageView.current?.pr != null || (pageView.current?.local_branch != null && !pageView.current?.local_branch_checked_out),
   );
   const scopeOptions = $derived(
     arenaDiffReadOnly ? SCOPE_OPTIONS.filter((o) => o.id === "branch" || o.id === "selected") : SCOPE_OPTIONS,
@@ -155,7 +156,7 @@
     return isArena ? `${effectiveRounds} rounds · ${body}` : body;
   });
 
-  const triagePaths = $derived(triageRecommendedPaths(app.snapshot?.ai.triage));
+  const triagePaths = $derived(triageRecommendedPaths(pageView.current?.ai.triage));
   const triageSelected = $derived(
     scope === "selected" &&
       triagePaths.length > 0 &&
@@ -197,7 +198,7 @@
   }
 
   function startScopePayload(): { scope: ArenaScope; files?: string[] } {
-    if (scope === "selected") return { scope: scopeFromMode(app.snapshot?.mode), files: selectedPaths };
+    if (scope === "selected") return { scope: scopeFromMode(pageView.current?.mode), files: selectedPaths };
     return { scope };
   }
 
@@ -270,7 +271,7 @@
 
   $effect(() => {
     if (!open) return;
-    const mode = app.snapshot?.mode;
+    const mode = pageView.current?.mode;
     scope = mode === "unstaged" || mode === "staged" ? mode : "branch";
     selectedPaths = [];
     costApproved = false;

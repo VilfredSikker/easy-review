@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { PrSnapshot, GithubStatusSnapshot } from "$lib/pageTypes";
   import { app } from "$lib/stores/app.svelte";
+  import { pageView } from "$lib/stores/pageView.svelte";
   import { tabsResource } from "$lib/stores/tabsResource.svelte";
   import { projectsResource } from "$lib/stores/projectsResource.svelte";
   import { sessionResource } from "$lib/stores/sessionResource.svelte";
@@ -83,7 +84,7 @@
 
   // Comment / Approve / Request changes live in the Review popover, where the
   // pending line comments go out with the decision; this opens it.
-  const reviewEntry = $derived(reviewGate(resolveActivePrNumber(app.snapshot), github));
+  const reviewEntry = $derived(reviewGate(resolveActivePrNumber(pageView.current), github));
 
   const watchStatus = $derived(sessionResource.watchStatus);
   const isWatching = $derived(watchStatus?.active === true);
@@ -93,7 +94,7 @@
       : "Watching",
   );
   let manualRefreshing = $state(false);
-  const refreshing = $derived(manualRefreshing || (app.snapshot?.bg_loading?.gh_status ?? false));
+  const refreshing = $derived(manualRefreshing || (pageView.current?.bg_loading?.gh_status ?? false));
 
   const checkStats = $derived(countChecks(github?.checks ?? []));
 
@@ -134,7 +135,7 @@
 
   const activeProject = $derived(projectsResource.projects.find((p) => p.is_active) ?? null);
   const effectivePrNumber = $derived(
-    pr_number ?? resolveActivePrNumber(app.snapshot),
+    pr_number ?? resolveActivePrNumber(pageView.current),
   );
   const isSaved = $derived(
     effectivePrNumber !== null &&
@@ -162,7 +163,7 @@
   let stackMenuPos = $state({ top: 0, left: 0 });
   let stackFetching = $state(false);
 
-  const stack = $derived(app.snapshot?.stack ?? null);
+  const stack = $derived(pageView.current?.stack ?? null);
   const stackControlVisible = $derived(
     shouldShowStackControl(stack) || stackFetching || stackOpen,
   );
@@ -184,7 +185,7 @@
       await app.cmd("refresh_stack");
     } finally {
       stackFetching = false;
-      const result = app.snapshot?.stack;
+      const result = pageView.current?.stack;
       if (result?.unavailable && !result.retryable) stackOpen = false;
     }
   }

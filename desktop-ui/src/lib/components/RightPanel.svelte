@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { AiSnapshot } from "$lib/pageTypes";
   import { app } from "$lib/stores/app.svelte";
+  import { pageView } from "$lib/stores/pageView.svelte";
   import { panelThreads } from "./rpanel/commentsPanel";
   import { threadsByAuthor } from "./rpanel/commentsAuthor";
   import { commentsAuthorFilter } from "./rpanel/commentsAuthorFilter.svelte";
@@ -41,18 +42,18 @@
   useCommentAutoPull();
   useReviewerFilterSync(() => ai);
 
-  const currentFile = $derived(app.snapshot?.files[app.snapshot.selected_file]?.path ?? null);
+  const currentFile = $derived(pageView.current?.files[pageView.current.selected_file]?.path ?? null);
 
   // Tab counts are of what each tab lists: open findings (under the reviewer
   // filter the diff applies), changed files, and
   // the threads the Comments tab shows (GitHub ones under the diff's filters).
-  const files = $derived(app.snapshot?.files);
+  const files = $derived(pageView.current?.files);
   const findingCount = $derived(scopeToReviewer(ai, aiReviewFilter.filter).open.length);
   const fileCount = $derived(files?.length ?? 0);
   const threadCount = $derived(
     threadsByAuthor(
       panelThreads(ai?.threads, app.commentVisibility, files),
-      commentsAuthorFilter.authorFor(reviewPageTabKey(app.snapshot)),
+      commentsAuthorFilter.authorFor(reviewPageTabKey(pageView.current)),
     ).length,
   );
   const TAB_LABEL: Record<PrimaryRightPanelTab, string> = {

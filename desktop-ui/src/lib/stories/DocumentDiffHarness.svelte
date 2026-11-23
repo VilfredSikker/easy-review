@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { app, type DiffViewMode } from "$lib/stores/app.svelte";
+  import type { DiffViewMode } from "$lib/stores/app.svelte";
+  import { pageView } from "$lib/stores/pageView.svelte";
   import { annotationDrafts } from "$lib/stores/annotationDrafts.svelte";
   import { diffPreview } from "$lib/stores/diffPreview.svelte";
   import { diffNav } from "$lib/stores/diffNav.svelte";
@@ -36,12 +37,12 @@
         return snapshot;
       },
     });
-    app.snapshot = snapshot;
+    pageView.current = snapshot;
     diffPreview.sync(snapshot);
     for (const path of Object.keys(documents)) diffPreview.setMode(snapshot, path, documentMode);
     return () => {
       Reflect.set(window, "__TAURI_INTERNALS__", previous);
-      app.snapshot = null;
+      pageView.current = null;
       diffPreview.sync(null);
       annotationDrafts.sync(null);
     };

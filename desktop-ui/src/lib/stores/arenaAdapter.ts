@@ -6,7 +6,7 @@ import type { Command } from "$lib/protocol/generated/Command";
 import type { Resource } from "$lib/protocol/generated/Resource";
 import type { ResourceKey } from "$lib/protocol/generated/ResourceKey";
 import type { TabKey } from "$lib/protocol/generated/TabKey";
-import type { Invoke, ResourceClient } from "$lib/protocol/client";
+import type { ResourceClient } from "$lib/protocol/client";
 import type { AppSnapshot } from "$lib/pageTypes";
 import type {
   ArenaEstimate,
@@ -36,13 +36,10 @@ export interface ArenaStartRequest extends ArenaRequest {
 }
 
 interface ArenaAdapterDeps {
-  /** Whether the backend serves resources (the `v1-service` build). */
-  flagOn: boolean;
   store: Pick<ResourceStore, "get" | "send">;
   client: Pick<ResourceClient, "fetch">;
   /** The registry's active tab, the one the page paints. */
   activeKey: () => TabKey | null;
-  invoke: Invoke;
   /** Called after a write that changes the active tab's run list, which nothing pushes. */
   runsMoved?: () => void;
 }
@@ -97,9 +94,8 @@ function live(job: ArenaRunJob): boolean {
 }
 
 /**
- * The arena's commands and reads: the Tauri commands with the flag off, and
- * with it on `er_send` and `er_fetch` keyed to the active tab, with progress
- * and the live runs read from `jobs`.
+ * The arena's commands and reads: `er_send` and `er_fetch` keyed to the
+ * active tab, with progress and the live runs read from `jobs`.
  */
 export class ArenaAdapter {
   constructor(private readonly deps: ArenaAdapterDeps) {}
@@ -126,18 +122,18 @@ export class ArenaAdapter {
     return created;
   }
 
-  /** The live runs `jobs` holds; empty with the flag off. */
+  /** The live runs `jobs` holds. */
   liveRuns(): ArenaRunJob[] {
-    const held = this.deps.flagOn ? this.deps.store.get(JOBS)?.value : undefined;
+    const held = this.deps.store.get(JOBS)?.value;
     return held?.kind === "jobs" ? held.arena_runs : [];
   }
 
-  /** `jobs`' version, which moves with every live run's progress; null with the flag off. */
+  /** `jobs`' version, which moves with every live run's progress; null before it is held. */
   jobsVersion(): number | null {
-    return this.deps.flagOn ? (this.deps.store.get(JOBS)?.version ?? null) : null;
+    return this.deps.store.get(JOBS)?.version ?? null;
   }
 
-  /** `raw` with the run lists from the resources, which the App's snapshot no longer feeds with the flag on. */
+  /** `raw` with the run lists from the resources. */
   overlay(raw: AppSnapshot, runs: ArenaRunSummary[]): AppSnapshot {
     return {
       ...raw,
@@ -148,10 +144,6 @@ export class ArenaAdapter {
   }
 
   async estimate(req: ArenaRequest): Promise<ArenaEstimate> {
-    if (!this.deps.flagOn) {
-      const command = req.groups?.length ? "arena_estimate_batch" : "arena_estimate";
-      return this.deps.invoke<ArenaEstimate>(command, { req });
-    }
     const value = await this.fetch({ kind: "arena_estimate", tab: this.tab(), plan: plan(req) });
     if (value?.kind !== "arena_estimate") throw new Error("The estimate did not answer");
     return value;
@@ -159,10 +151,6 @@ export class ArenaAdapter {
 
   /** Starts one run, or one per agent group; answers the run ids. */
   async start(req: ArenaStartRequest): Promise<string[]> {
-    if (!this.deps.flagOn) {
-      if (req.groups?.length) return this.deps.invoke<string[]>("arena_start_batch", { req });
-      return [await this.deps.invoke<string>("arena_start", { req })];
-    }
     const created = await this.sendMoving({
       kind: "arena_start",
       tab: this.tab(),
@@ -176,17 +164,11 @@ export class ArenaAdapter {
   }
 
   async validateFindings(): Promise<string | null> {
-    if (!this.deps.flagOn) return this.deps.invoke<string | null>("arena_validate_findings", {});
     return this.send({ kind: "arena_validate_findings", tab: this.tab() });
   }
 
   /** Imports a run's findings; answers how many it took. */
   async acceptFindings(runId: string, findingIds?: string[]): Promise<number> {
-    if (!this.deps.flagOn) {
-      return this.deps.invoke<number>("arena_accept_findings", {
-        req: { run_id: runId, finding_ids: findingIds },
-      });
-    }
     const created = await this.sendMoving({
       kind: "arena_accept_findings",
       tab: this.tab(),
@@ -197,48 +179,33 @@ export class ArenaAdapter {
   }
 
   async get(runId: string): Promise<ArenaRunSnapshot> {
-    if (!this.deps.flagOn) return this.deps.invoke<ArenaRunSnapshot>("arena_get", { runId });
     const value = await this.fetch({ kind: "arena_run", tab: this.tab(), run_id: runId });
     if (value?.kind !== "arena_run") throw new Error("The run did not answer");
     return JSON.parse(value.json) as ArenaRunSnapshot;
   }
 
-  /** A live run's progress: from `jobs` with the flag on, empty for a run nothing runs. */
+  /** A live run's progress: from `jobs`, empty for a run nothing runs. */
   async progress(runId: string): Promise<ArenaProgressState> {
-    if (!this.deps.flagOn) return this.deps.invoke<ArenaProgressState>("arena_progress", { runId });
     const job = this.liveRuns().find((run) => run.run_id === runId);
     return job ? job.progress : { round: 0, total_rounds: 0, phase: "", thinking: [], done: [] };
   }
 
-  /** The active tab's runs on its branch, newest first; with the flag off the snapshot carries them. */
+  /** The active tab's runs on its branch, newest first. */
   async runs(): Promise<ArenaRunSummary[]> {
     const value = await this.fetch({ kind: "arena_runs", tab: this.tab() });
     return value?.kind === "arena_runs" ? value.runs.map(summaryOf) : [];
   }
 
   async cancel(runId: string): Promise<void> {
-    if (!this.deps.flagOn) {
-      await this.deps.invoke("arena_cancel", { runId });
-      return;
-    }
     await this.send({ kind: "arena_cancel", tab: this.tab(), runId });
   }
 
   async delete(runId: string): Promise<void> {
-    if (!this.deps.flagOn) {
-      await this.deps.invoke("arena_delete", { runId });
-      return;
-    }
     await this.sendMoving({ kind: "arena_delete", tab: this.tab(), runId });
   }
 
   /** Records the reviewer's verdict, then reads the run back. */
   async override(runId: string, findingId: string, verdict: string, note: string): Promise<ArenaRunSnapshot> {
-    if (!this.deps.flagOn) {
-      return this.deps.invoke<ArenaRunSnapshot>("arena_override", {
-        req: { run_id: runId, finding_id: findingId, verdict, note },
-      });
-    }
     await this.send({ kind: "arena_override", tab: this.tab(), runId, findingId, verdict, note });
     return this.get(runId);
   }

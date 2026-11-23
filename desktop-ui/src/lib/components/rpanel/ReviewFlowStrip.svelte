@@ -1,5 +1,6 @@
 <script lang="ts">
   import { app } from "$lib/stores/app.svelte";
+  import { pageView } from "$lib/stores/pageView.svelte";
   import { arena } from "$lib/stores/arena.svelte";
   import { reviewScopeFromMode } from "$lib/reviewScope";
   import { reviewFlowControls, reviewFlowStage } from "$lib/reviewFlow";
@@ -10,23 +11,23 @@
   // button when nothing has run, the Deep confirmation, then progress. The
   // Triage card carries the same controls once a triage exists.
 
-  const reviewScope = $derived(reviewScopeFromMode(app.snapshot?.mode));
-  const flow = $derived(app.snapshot?.review_flow ?? null);
+  const reviewScope = $derived(reviewScopeFromMode(pageView.current?.mode));
+  const flow = $derived(pageView.current?.review_flow ?? null);
   const controls = $derived(reviewFlowControls(flow));
 
   function start() {
-    const erDir = app.snapshot?.review_bucket_er_dir;
+    const erDir = pageView.current?.review_bucket_er_dir;
     if (!reviewScope || !erDir || !controls.start) return;
     void app.cmd("start_review_flow", { scope: reviewScope, erDir });
   }
 
   function control(command: "confirm_review_flow" | "decline_review_flow" | "cancel_review_flow") {
-    const erDir = app.snapshot?.review_bucket_er_dir;
+    const erDir = pageView.current?.review_bucket_er_dir;
     if (erDir) void app.cmd(command, { erDir });
   }
 
   function openResults() {
-    const erDir = app.snapshot?.review_bucket_er_dir;
+    const erDir = pageView.current?.review_bucket_er_dir;
     const runId = flow?.arena_run_id;
     if (erDir && runId) void arena.openFlowOverlay(erDir, runId);
   }

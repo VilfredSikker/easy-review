@@ -1,6 +1,7 @@
 <script lang="ts">
   import { untrack } from "svelte";
   import { app } from "$lib/stores/app.svelte";
+  import { pageView } from "$lib/stores/pageView.svelte";
   import { exportReviewToFile } from "$lib/stores/quickExport";
   import { commandPalette } from "$lib/stores/commandPalette.svelte";
   import { sessionResource } from "$lib/stores/sessionResource.svelte";
@@ -45,7 +46,7 @@
   let flashId = $state<string | null>(null);
   let flashTimer: ReturnType<typeof setTimeout> | null = null;
 
-  const snapshot = $derived(app.snapshot);
+  const snapshot = $derived(pageView.current);
 
   function cancelFlash() {
     if (flashTimer !== null) clearTimeout(flashTimer);
@@ -301,10 +302,10 @@
   }
 
   // ── Provider / model / effort nested picker ──────────────────────────────
-  /** Saves the pick as the default; a refused one shows why. With the flag off it goes through `app.cmd`, as it always has. */
+  /** Saves the pick as the default; a refused one shows why. */
   function pickAi(providerId: string, modelId: string | null, effort?: string): Promise<void> {
     return sessionResource
-      .setAiSelection(providerId, modelId, effort, "app")
+      .setAiSelection(providerId, modelId, effort)
       .catch((e) => app.showToast("error", `set_ai_selection: ${e}`));
   }
 

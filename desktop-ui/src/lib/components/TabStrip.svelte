@@ -1,5 +1,6 @@
 <script lang="ts">
   import { app } from "$lib/stores/app.svelte";
+  import { pageView } from "$lib/stores/pageView.svelte";
   import { tabSeen } from "$lib/stores/tabSeen.svelte";
   import { tabsResource } from "$lib/stores/tabsResource.svelte";
   import { arena } from "$lib/stores/arena.svelte";
@@ -45,8 +46,8 @@
   const runningTabs = $derived.by(() => {
     if (runningProp) return runningProp;
     const jobs = aggregateJobs({
-      backgroundTasks: app.snapshot?.background_tasks,
-      agentCommands: app.snapshot?.agent_commands,
+      backgroundTasks: pageView.current?.background_tasks,
+      agentCommands: pageView.current?.agent_commands,
       arenaRuns: arenaRunsAcrossTabs(arena.summaries, arena.backgroundRuns),
       tabs,
       activeTabIdx: tabsResource.active,

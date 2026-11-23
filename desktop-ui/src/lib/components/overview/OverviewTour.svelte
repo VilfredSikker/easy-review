@@ -2,6 +2,7 @@
   import { tick } from "svelte";
   import type { PillarSnapshot, TourSnapshot } from "$lib/pageTypes";
   import { app } from "$lib/stores/app.svelte";
+  import { pageView } from "$lib/stores/pageView.svelte";
   import { reviewPage } from "$lib/stores/reviewPage.svelte";
   import { diffNav } from "$lib/stores/diffNav.svelte";
   import { shortAge } from "$lib/relativeTime";
@@ -12,7 +13,7 @@
   }
 
   const { tour: tourOverride }: Props = $props();
-  const tour = $derived(tourOverride !== undefined ? tourOverride : (app.snapshot?.tour ?? null));
+  const tour = $derived(tourOverride !== undefined ? tourOverride : (pageView.current?.tour ?? null));
   const pillars = $derived(tour?.available ? tour.pillars : []);
   const age = $derived(tour?.createdAt ? shortAge(tour.createdAt) : "");
 
@@ -41,9 +42,9 @@
   async function openPillar(p: PillarSnapshot) {
     if (!reviewPage.available("tour")) return;
     app.setMainView("diff");
-    if (app.snapshot?.mode !== "tour") await app.cmd("set_mode", { mode: "tour" });
+    if (pageView.current?.mode !== "tour") await app.cmd("set_mode", { mode: "tour" });
     const first = p.files[0]?.path;
-    if (!first || app.snapshot?.mode !== "tour") return;
+    if (!first || pageView.current?.mode !== "tour") return;
     // One flush mounts the diff and runs its mode-change scroll restore; the
     // second lets that restore's deferred write land before ours.
     await tick();

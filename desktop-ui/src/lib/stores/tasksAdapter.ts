@@ -4,7 +4,7 @@ import type { TabKey } from "$lib/protocol/generated/TabKey";
 import type { TaskJob } from "$lib/protocol/generated/TaskJob";
 import type { Invoke, ResourceClient } from "$lib/protocol/client";
 import type { AgentCommandStatus, AgentLogEntry, AppSnapshot, BackgroundTaskSnapshot } from "$lib/pageTypes";
-import { snapshotTaskTarget } from "$lib/snapshotChrome";
+import { viewTaskTarget } from "$lib/viewIdentity";
 import { JOBS } from "./annotationsAdapter";
 import type { ResourceStore } from "./resourceStore";
 
@@ -92,11 +92,11 @@ export function taskCommand(command: string, a: Args): Command | null {
 }
 
 /**
- * Whether `task` targets the tab `snap` paints, by the App's rule
+ * Whether `task` targets the tab `view` paints, by the App's rule
  * (`matches_target`): repo, PR, remote and branch label, in any bucket.
  */
-function onPaintedTab(task: TaskJob, snap: AppSnapshot): boolean {
-  const target = snapshotTaskTarget(snap);
+function onPaintedTab(task: TaskJob, view: AppSnapshot): boolean {
+  const target = viewTaskTarget(view);
   return (
     target !== null &&
     task.repo_root === target.repo_root &&
@@ -112,8 +112,6 @@ function asSnapshot(task: TaskJob): BackgroundTaskSnapshot {
 }
 
 interface TasksAdapterDeps {
-  /** Whether the backend serves resources (the `v1-service` build). */
-  flagOn: boolean;
   store: Pick<ResourceStore, "get" | "send" | "whenAt">;
   client: Pick<ResourceClient, "fetch">;
   /** The registry's active tab, the one the page shows. */
@@ -127,10 +125,9 @@ interface TasksAdapterDeps {
 const LOG_LINES = 200;
 
 /**
- * The background tasks. With the flag off the App's snapshot lists them and
- * the Tauri commands stop them. With it on, `jobs` lists the task host's
- * tasks beside the App's, and a host task is stopped through `er_send` and
- * its output read through `task_log`.
+ * The background tasks. `jobs` lists the task host's tasks beside the App's,
+ * and a host task is stopped through `er_send` and its output read through
+ * `task_log`.
  */
 export class TasksAdapter {
   /** The status each host task had when its log was last read. */
@@ -138,14 +135,13 @@ export class TasksAdapter {
 
   constructor(private readonly deps: TasksAdapterDeps) {}
 
-  /** The task rows `jobs` lists; null with the flag off or before it answers. */
+  /** The task rows `jobs` lists; null before it answers. */
   private rows(): TaskJob[] | null {
-    if (!this.deps.flagOn) return null;
     const held = this.deps.store.get(JOBS)?.value;
     return held?.kind === "jobs" ? held.tasks : null;
   }
 
-  /** The tasks `jobs` lists; null with the flag off or before it answers. */
+  /** The tasks `jobs` lists; null before it answers. */
   tasks(): BackgroundTaskSnapshot[] | null {
     return this.rows()?.map(asSnapshot) ?? null;
   }
@@ -176,18 +172,18 @@ export class TasksAdapter {
   }
 
   /**
-   * Reads again the log of each host task on the tab `snap` paints that
+   * Reads again the log of each host task on the tab `view` paints that
    * runs, or that finished since its log was last read, into `logs`, and
    * drops the logs of tasks `jobs` no longer lists.
    */
-  async refreshLogs(snap: AppSnapshot | null): Promise<void> {
+  async refreshLogs(view: AppSnapshot | null): Promise<void> {
     const rows = this.rows();
     if (rows === null) return;
     const listed = new Set(rows.map((task) => task.id));
     for (const id of [...this.deps.logs.keys()]) if (!listed.has(id)) this.deps.logs.delete(id);
     for (const id of [...this.readAt.keys()]) if (!listed.has(id)) this.readAt.delete(id);
-    if (!snap) return;
-    const painted = rows.filter((task) => onPaintedTab(task, snap));
+    if (!view) return;
+    const painted = rows.filter((task) => onPaintedTab(task, view));
     await Promise.all(
       painted
         .filter((task) => task.status === "running" || this.readAt.get(task.id) !== task.status)
@@ -204,11 +200,10 @@ export class TasksAdapter {
   }
 
   /**
-   * With the flag on, a run goes through `er_send` keyed to the active tab,
-   * and so does a stop of a host task; null for anything else.
+   * A run goes through `er_send` keyed to the active tab, and so does a stop
+   * of a host task; null for anything else.
    */
   route(command: string, args: Args = {}): Promise<void> | null {
-    if (!this.deps.flagOn) return null;
     const run = runCommand(command, args, this.deps.activeKey());
     // The host's started or queued notice is the run's one message.
     if (run !== null) return this.send(run);

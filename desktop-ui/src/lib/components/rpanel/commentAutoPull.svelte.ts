@@ -1,4 +1,5 @@
 import { app } from "$lib/stores/app.svelte";
+import { pageView } from "$lib/stores/pageView.svelte";
 import { commentAutoPullKey } from "$lib/prUrl";
 
 // Keys already pulled this session. Module-level so remounting the panel (it
@@ -24,15 +25,14 @@ export function useCommentAutoPull(): void {
   let inFlight = $state<string | null>(null);
 
   $effect(() => {
-    if (app.pendingTabSwitch) return;
-    const key = commentAutoPullKey(app.snapshot);
+    const key = commentAutoPullKey(pageView.current);
     if (!key || inFlight === key || pulledKeys.has(key)) return;
     inFlight = key;
     void (async () => {
       await app.cmd("pull_github_comments");
       // A tab switch mid-pull means the result belongs to another view; leave
       // the key unremembered so this PR pulls again when it comes back.
-      if (!app.pendingTabSwitch && commentAutoPullKey(app.snapshot) === key) remember(key);
+      if (commentAutoPullKey(pageView.current) === key) remember(key);
       if (inFlight === key) inFlight = null;
     })();
   });

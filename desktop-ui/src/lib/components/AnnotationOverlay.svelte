@@ -2,6 +2,7 @@
   import { readAnnotationScreenshot } from "$lib/stores/annotationReads";
   import type { ComponentProps } from "svelte";
   import { app } from "$lib/stores/app.svelte";
+  import { pageView } from "$lib/stores/pageView.svelte";
   import { browser } from "$lib/stores/browser.svelte";
   import { annotationMatchesPage } from "$lib/stores/browserUrl";
   import AnnotationComposer from "./AnnotationComposer.svelte";
@@ -39,7 +40,7 @@
   );
 
   const annotations: UiAnnotation[] = $derived(
-    (app.snapshot?.ui_annotations ?? []).filter((a) => annotationMatchesPage(a.url, browser.url)),
+    (pageView.current?.ui_annotations ?? []).filter((a) => annotationMatchesPage(a.url, browser.url)),
   );
 
   let composer = $state<{

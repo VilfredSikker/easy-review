@@ -14,6 +14,7 @@
     type ExportItem,
   } from "$lib/exportOptions";
   import { app } from "$lib/stores/app.svelte";
+  import { pageView } from "$lib/stores/pageView.svelte";
   import { tabsResource } from "$lib/stores/tabsResource.svelte";
   import { exportOptions } from "$lib/stores/exportOptions.svelte";
 
@@ -37,9 +38,9 @@
   function rowCount(key: ExportCategory, items: ExportItem[] | null): string {
     if (items) return `${items.filter((i) => !exportOptions.isExcluded(i.id)).length}/${items.length}`;
     if (key === "annotations") {
-      return String((app.snapshot?.ui_annotations ?? []).filter((a) => !(prefs.onlyUnresolved && a.stale)).length);
+      return String((pageView.current?.ui_annotations ?? []).filter((a) => !(prefs.onlyUnresolved && a.stale)).length);
     }
-    return String(app.snapshot?.ai?.checklist?.items.length ?? 0);
+    return String(pageView.current?.ai?.checklist?.items.length ?? 0);
   }
 
   async function refreshPreview() {
@@ -82,8 +83,8 @@
   $effect(() => {
     if (app.mainView !== "export-review") return;
     void exportOptions.current;
-    void app.snapshot?.ai;
-    void app.snapshot?.ui_annotations;
+    void pageView.current?.ai;
+    void pageView.current?.ui_annotations;
     void tabsResource.active;
     void refreshPreview();
   });

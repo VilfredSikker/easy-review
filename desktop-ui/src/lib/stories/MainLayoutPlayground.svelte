@@ -1,5 +1,6 @@
 <script lang="ts">
   import { app } from "$lib/stores/app.svelte";
+  import { pageView } from "$lib/stores/pageView.svelte";
   import { terminal } from "$lib/stores/terminal.svelte";
   import type { RightPanelTab } from "$lib/stores/rightPanelTab.svelte";
   import TabStrip from "$lib/components/TabStrip.svelte";
@@ -114,7 +115,7 @@
   // ── seed global store ────────────────────────────────────────────────────
   $effect(() => {
     const activeInbox = inboxOpen ? inboxFixture : [];
-    app.snapshot = {
+    pageView.current = {
       ...SHELL_SNAPSHOTS[shellState],
       panels: {
         left: leftRail !== "hidden",
@@ -207,7 +208,7 @@
         <!-- Right panel / collapsed rail -->
         {#if rightRail === "expanded"}
           <RightPanel
-            ai={app.snapshot?.ai ?? null}
+            ai={pageView.current?.ai ?? null}
             width={rightPanelWidth}
             dragging={false}
             onResizeStart={undefined}
@@ -215,7 +216,7 @@
           />
         {:else if rightRail === "collapsed"}
           <CollapsedRightRail
-            ai={app.snapshot?.ai ?? null}
+            ai={pageView.current?.ai ?? null}
             onExpand={expandRightPanelToTab}
           />
         {/if}
@@ -233,7 +234,7 @@
             <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="shrink-0">
               <polyline points="4 17 10 11 4 5" /><line x1="12" y1="19" x2="20" y2="19" />
             </svg>
-            <span class="truncate">{app.snapshot?.branch ?? "—"}</span>
+            <span class="truncate">{pageView.current?.branch ?? "—"}</span>
             <span class="ml-2 text-[10px] text-muted">[story mode — real Terminal requires Tauri]</span>
             <div class="flex-1"></div>
             <button

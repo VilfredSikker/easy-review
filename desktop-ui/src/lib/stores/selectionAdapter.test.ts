@@ -16,10 +16,9 @@ function snapshot(): AppSnapshot {
   return { files, selected_file: 0, current_hunk: 0 } as unknown as AppSnapshot;
 }
 
-function adapter(opts: { flagOn?: boolean; drawsFromDiff?: boolean } = {}) {
+function adapter(opts: { drawsFromDiff?: boolean } = {}) {
   const page: { snap: AppSnapshot } = { snap: snapshot() };
   const selection = new SelectionAdapter({
-    flagOn: opts.flagOn ?? true,
     activeKey: () => KEY,
     drawsFromDiff: () => opts.drawsFromDiff ?? true,
     shown: () => page.snap,
@@ -36,13 +35,11 @@ function adapter(opts: { flagOn?: boolean; drawsFromDiff?: boolean } = {}) {
 const at = (snap: AppSnapshot) => [snap.files[snap.selected_file]?.path, snap.current_hunk];
 
 describe("SelectionAdapter", () => {
-  it("leaves the App's selection with the flag off and in the views the App loads", () => {
-    for (const opts of [{ flagOn: false }, { drawsFromDiff: false }]) {
-      const { selection } = adapter(opts);
-      const snap = snapshot();
-      expect(selection.route("select_file", { idx: 9 })).toBeNull();
-      expect(selection.overlay(snap)).toBe(snap);
-    }
+  it("leaves the selection alone until diff(tab) is held", () => {
+    const { selection } = adapter({ drawsFromDiff: false });
+    const snap = snapshot();
+    expect(selection.route("select_file", { idx: 9 })).toBeNull();
+    expect(selection.overlay(snap)).toBe(snap);
   });
 
   it("selects a file in the page, by its source index, with no IPC call", async () => {

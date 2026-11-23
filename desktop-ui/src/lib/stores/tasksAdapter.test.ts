@@ -29,7 +29,6 @@ const HELD: Resource = { kind: "jobs", ai_replies: [], arena_runs: [], review_fl
 const APP_TASK = { ...TASK, id: "triage:9", kind: "triage" } as BackgroundTaskSnapshot;
 
 function adapter(
-  flagOn: boolean,
   logs = new Map<string, { command_name: string; source: string; text: string }[]>(),
   held: Resource = HELD,
 ) {
@@ -46,7 +45,6 @@ function adapter(
   const shown = { toast: (message: string) => toasts.push(message) };
   const tasks = new TasksAdapter({
     ...shown,
-    flagOn,
     activeKey: () => TAB,
     invoke,
     logs,
@@ -72,23 +70,21 @@ function adapter(
 }
 
 describe("TasksAdapter", () => {
-  it("lists the host's tasks from jobs after the App's with the flag on", () => {
+  it("lists the host's tasks from jobs after the App's", () => {
     const raw = { background_tasks: [APP_TASK] } as unknown as AppSnapshot;
-    expect(adapter(true).tasks.overlay(raw).background_tasks?.map((t) => t.id)).toEqual(["triage:9", "review:1"]);
-    expect(adapter(false).tasks.overlay(raw)).toBe(raw);
+    expect(adapter().tasks.overlay(raw).background_tasks?.map((t) => t.id)).toEqual(["triage:9", "review:1"]);
   });
 
   it("stops a host task through er_send and leaves the App's to its command", async () => {
-    const { tasks, sent, awaited } = adapter(true);
+    const { tasks, sent, awaited } = adapter();
     await tasks.route("cancel_running_review", { id: "review:1" });
     expect(sent).toEqual([{ kind: "cancel_running_task", id: "review:1" }]);
     expect(awaited).toEqual(["jobs@3"]);
     expect(tasks.route("cancel_queued_review", { id: "triage:9" })).toBeNull();
-    expect(adapter(false).tasks.route("cancel_running_review", { id: "review:1" })).toBeNull();
   });
 
   it("reads a host task's log through task_log and an App task's through its command", async () => {
-    const { tasks, fetched, invoked } = adapter(true);
+    const { tasks, fetched, invoked } = adapter();
     expect((await tasks.log("review:1")).map((l) => l.text)).toEqual(["host"]);
     expect(fetched).toEqual([{ kind: "task_log", id: "review:1" }]);
     expect((await tasks.log("triage:9")).map((l) => l.text)).toEqual(["app"]);
@@ -96,7 +92,7 @@ describe("TasksAdapter", () => {
   });
 
   it("sends a run through er_send keyed to the active tab and waits for jobs", async () => {
-    const { tasks, sent, awaited } = adapter(true);
+    const { tasks, sent, awaited } = adapter();
     await tasks.route("run_ai_review", { scope: "branch" });
     await tasks.route("run_ai_triage_review", { scope: "current" });
     expect(sent).toEqual([
@@ -104,7 +100,6 @@ describe("TasksAdapter", () => {
       { kind: "run_scoped_review", tab: TAB, scope: "current", paths: [], reviewers: ["triage"], focusPrompt: null },
     ]);
     expect(awaited).toEqual(["jobs@3", "jobs@3"]);
-    expect(adapter(false).tasks.route("run_ai_review", { scope: "branch" })).toBeNull();
   });
 
   it("maps every run command the page sends", () => {
@@ -126,7 +121,7 @@ describe("TasksAdapter", () => {
   });
 
   it("sends a sidebar triage through er_send with no tab", async () => {
-    const { tasks, sent } = adapter(true);
+    const { tasks, sent } = adapter();
     await tasks.route("run_pr_triage", { projectId: "p", prNumber: 7 });
     await tasks.route("run_branch_triage", { projectId: "p", branch: "feature" });
     expect(sent).toEqual([
@@ -140,7 +135,7 @@ describe("TasksAdapter", () => {
   it("shows the painted tab's host tasks in the agent output by target, in any bucket", async () => {
     const tour = { ...TASK, id: "tour:2", kind: "tour", er_dir: "/tour-bucket" };
     const held: Resource = { ...HELD, tasks: [TASK, tour] } as Resource;
-    const { tasks, logs } = adapter(true, undefined, held);
+    const { tasks, logs } = adapter(undefined, held);
     const active = { is_active: true, repo_root: "/repo", branch: null, pr_number: null, remote: null };
     const raw = {
       review_bucket_er_dir: "/unstaged",
@@ -160,13 +155,13 @@ describe("TasksAdapter", () => {
 
   it("drops the log of a task jobs no longer lists", async () => {
     const logs = new Map([["gone:7", [{ command_name: "review", source: "stdout", text: "old" }]]]);
-    const { tasks } = adapter(true, logs);
+    const { tasks } = adapter(logs);
     await tasks.refreshLogs(null);
     expect(logs.has("gone:7")).toBe(false);
   });
 
   it("shows no toast of its own for a routed run: the host's notice is its one message", async () => {
-    const { tasks, toasts } = adapter(true);
+    const { tasks, toasts } = adapter();
     await tasks.route("run_ai_review", { scope: "branch" });
     await tasks.route("run_ai_triage_review", { scope: "branch" });
     await tasks.route("run_ai_expert_review", { scope: "branch", expertId: "security" });
@@ -180,20 +175,20 @@ describe("TasksAdapter", () => {
       return () => {};
     };
     const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
-    const off = adapter(false);
-    off.tasks.follow("triage:9", false, () => {}, tick)();
-    off.tasks.follow("triage:9", true, () => {}, tick);
+    const appTask = adapter();
+    appTask.tasks.follow("triage:9", false, () => {}, tick)();
+    appTask.tasks.follow("triage:9", true, () => {}, tick);
     await settle();
-    expect(off.invoked).toEqual([]);
+    expect(appTask.invoked).toEqual([]);
     ticks[0]();
     await settle();
-    expect(off.invoked).toEqual(["get_background_task_log"]);
+    expect(appTask.invoked).toEqual(["get_background_task_log"]);
 
-    const on = adapter(true);
+    const hostTask = adapter();
     const shown: string[] = [];
-    on.tasks.follow("review:1", false, (lines) => shown.push(...lines.map((l) => l.text)), tick);
+    hostTask.tasks.follow("review:1", false, (lines) => shown.push(...lines.map((l) => l.text)), tick);
     await settle();
-    expect(on.fetched).toEqual([{ kind: "task_log", id: "review:1" }]);
+    expect(hostTask.fetched).toEqual([{ kind: "task_log", id: "review:1" }]);
     expect(shown).toEqual(["host"]);
     expect(ticks).toHaveLength(1);
   });

@@ -45,9 +45,8 @@ function backend(values: Map<string, unknown>, ack: Ack = { changed: [], created
   return { sent, store: new ResourceStore(resourceClient(run, async () => () => {}), 60_000) };
 }
 
-function adapter(store: ResourceStore, flagOn: boolean, held: HeldPrs[], active: TabSummary | null = tab({ kind: "working" })) {
+function adapter(store: ResourceStore, held: HeldPrs[], active: TabSummary | null = tab({ kind: "working" })) {
   return new PrAdapter({
-    flagOn,
     store,
     activeKey: () => KEY,
     activeTab: () => active,
@@ -65,12 +64,7 @@ const RAW = {
 } as unknown as AppSnapshot;
 
 describe("the PR adapter", () => {
-  it("leaves the snapshot's PR fields with the flag off", () => {
-    const { store } = backend(new Map());
-    expect(adapter(store, false, []).overlay(RAW)).toBe(RAW);
-  });
-
-  it("with the flag on, reads the card and stack from pr(tab) and the status the card's PR names", async () => {
+  it("reads the card and stack from pr(tab) and the status the card's PR names", async () => {
     const held = [list("acme/widgets", [row(9, "feat", "base"), row(8, "base")])];
     const target = { remote: "acme/widgets", number: 9 };
     const values = new Map<string, unknown>([
@@ -80,7 +74,7 @@ describe("the PR adapter", () => {
     const { store } = backend(values);
     const releases = [store.show(prKey(KEY)), store.show(prStatusKey(target))];
     await settle();
-    const shown = adapter(store, true, held).overlay(RAW);
+    const shown = adapter(store, held).overlay(RAW);
     expect(shown.pr).toEqual(CARD);
     expect(shown.stack).toEqual({ ...STACK, likely_stacked: true });
     expect(shown.github?.title).toBe("From status");
@@ -92,7 +86,7 @@ describe("the PR adapter", () => {
     const { store } = backend(values);
     const release = store.show(prKey(KEY));
     await settle();
-    const shown = adapter(store, true, [list("acme/widgets", [])]).overlay(RAW);
+    const shown = adapter(store, [list("acme/widgets", [])]).overlay(RAW);
     expect(shown.github).toBeNull();
     expect(shown.stack).toBeNull();
     release();
@@ -100,7 +94,7 @@ describe("the PR adapter", () => {
 
   it("sends the two refreshes keyed to the active tab", async () => {
     const { store, sent } = backend(new Map());
-    const pr = adapter(store, true, []);
+    const pr = adapter(store, []);
     await pr.route("refresh_stack");
     await pr.route("refresh_github_status");
     expect(sent).toEqual([
@@ -108,7 +102,6 @@ describe("the PR adapter", () => {
       { kind: "refresh_github_status", tab: KEY },
     ]);
     expect(pr.route("pull_github_comments")).toBeNull();
-    expect(adapter(store, false, []).route("refresh_stack")).toBeNull();
   });
 });
 

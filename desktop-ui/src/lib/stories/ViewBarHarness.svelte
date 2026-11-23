@@ -1,6 +1,6 @@
 <script lang="ts">
   import { untrack } from "svelte";
-  import { app } from "$lib/stores/app.svelte";
+  import { pageView } from "$lib/stores/pageView.svelte";
   import { pendingReview } from "$lib/stores/pendingReview.svelte";
   import { pendingReviewKey, type PendingReview } from "$lib/reviewSubmit";
   import { resolveActivePrNumber } from "$lib/prUrl";
@@ -18,7 +18,7 @@
   const { snapshot, pending, reviewOpen = false }: Props = $props();
 
   $effect(() => {
-    app.snapshot = snapshot;
+    pageView.current = snapshot;
     if (!pending) return;
     untrack(() => {
       // Claiming the key first makes the bar's `follow` a no-op, so it does

@@ -4,10 +4,8 @@ import type { ErError } from "$lib/protocol/generated/ErError";
 import type { Resource } from "$lib/protocol/generated/Resource";
 import type { ResourceKey } from "$lib/protocol/generated/ResourceKey";
 import type { ReviewRevision } from "$lib/protocol/generated/ReviewRevision";
-import { v1ServiceRequested } from "$lib/v1ServiceFlag";
 import { annotationsResource } from "./annotationsResource.svelte";
 
-const flagOn = v1ServiceRequested();
 const client = resourceClient();
 
 /** One key read on fetch; a refusal rejects with its text, as the old commands do. */
@@ -42,7 +40,6 @@ export async function listReviewRevisions(): Promise<ReviewRevision[]> {
 
 /** A saved annotation screenshot as a `data:` URL. */
 export async function readAnnotationScreenshot(path: string): Promise<string> {
-  if (!flagOn) return invoke<string>("read_annotation_screenshot", { path });
   const value = await fetchOne({ kind: "annotation_screenshot", path });
   return value.kind === "annotation_screenshot" ? value.data_url : "";
 }

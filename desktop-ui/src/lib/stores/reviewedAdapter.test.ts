@@ -7,7 +7,6 @@ import type { Ack } from "$lib/protocol/generated/Ack";
 import type { ResourceKey } from "$lib/protocol/generated/ResourceKey";
 import type { TabReviewed } from "$lib/protocol/generated/TabReviewed";
 import type { AppSnapshot } from "$lib/pageTypes";
-import { isOptimisticCommand } from "../optimisticLocal";
 import { ResourceStore } from "./resourceStore";
 import { ReviewedAdapter, reviewedKey } from "./reviewedAdapter";
 
@@ -80,23 +79,13 @@ function backend(held: { version: number; value: TabReviewed }, { shown = true }
   };
 }
 
-function adapter(store: ResourceStore, flagOn = true, rowsHeld: () => boolean = () => true) {
-  return new ReviewedAdapter({ flagOn, store, activeKey: () => KEY, rowsHeld });
+function adapter(store: ResourceStore, rowsHeld: () => boolean = () => true) {
+  return new ReviewedAdapter({ store, activeKey: () => KEY, rowsHeld });
 }
 
 const flags = (snap: AppSnapshot) => snap.files.map((f) => [f.path, f.reviewed]);
 
 describe("ReviewedAdapter", () => {
-  it("leaves the snapshot alone and sends nothing with the flag off", async () => {
-    const { store, sent } = backend({ version: 3, value: marks(["src/a.rs"], 1) });
-    await settle();
-    const reviewed = adapter(store, false);
-    const snap = snapshot();
-    expect(reviewed.overlay(snap)).toBe(snap);
-    expect(reviewed.route("mark_reviewed", { path: "src/a.rs" })).toBeNull();
-    expect(sent).toEqual([]);
-  });
-
   it("takes the marks and the count from reviewed(tab), in History too", async () => {
     const { store, held } = backend({ version: 3, value: marks(["src/b.rs"], 1) });
     await settle();
@@ -176,7 +165,7 @@ describe("ReviewedAdapter", () => {
     const backendState = backend({ version: 3, value: marks([], 0) });
     await settle();
     let rows = false;
-    const reviewed = adapter(backendState.store, true, () => rows);
+    const reviewed = adapter(backendState.store, () => rows);
     expect(reviewed.held()).not.toBeNull();
 
     const writes = (["mark_reviewed", "unmark_reviewed", "toggle_reviewed"] as const).map((command) =>
@@ -223,16 +212,7 @@ describe("ReviewedAdapter", () => {
   });
 });
 
-describe("the bulk reviews with the flag on", () => {
-  it("leave the optimistic path, so a bulk review paints nothing until reviewed(tab) moves", () => {
-    for (const command of ["bulk_review_pillar", "unbulk_review_pillar"]) {
-      expect(isOptimisticCommand(command, true)).toBe(false);
-      expect(isOptimisticCommand(command, false)).toBe(true);
-    }
-  });
-});
-
-describe("the reviewed count with the flag on", () => {
+describe("the reviewed count", () => {
   const here = dirname(fileURLToPath(import.meta.url));
   const code = (file: string) =>
     readFileSync(join(here, file), "utf8")

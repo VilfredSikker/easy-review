@@ -9,6 +9,7 @@ import {
 } from "$lib/arena/runKind";
 import { performUnlessSeeded } from "$lib/arena/runAction";
 import { app } from "$lib/stores/app.svelte";
+import { pageView } from "$lib/stores/pageView.svelte";
 import { aiReviewFilter } from "$lib/stores/aiReviewFilter.svelte";
 import { acceptFlowFindings, arenaAcceptanceRoute, type FlowAcceptanceOrigin } from "$lib/arenaFlowAcceptance";
 import { captureHistoryFlowOrigin, openArenaHistory } from "$lib/arenaHistory";
@@ -119,19 +120,19 @@ class ArenaStore {
   }
 
   get summaries(): ArenaRunSummary[] {
-    return app.snapshot?.arena_runs ?? [];
+    return pageView.current?.arena_runs ?? [];
   }
 
   /** Runs on the current branch (snapshot list is already branch-filtered; keep client filter as guard). */
   get branchSummaries(): ArenaRunSummary[] {
-    const branch = app.snapshot?.branch;
+    const branch = pageView.current?.branch;
     if (!branch) return this.summaries;
     return this.summaries.filter((s) => s.branch_ref === branch);
   }
 
   /** Active arena runs across ALL tabs (tab-independent background runs). */
   get backgroundRuns(): ArenaRunSummary[] {
-    return app.snapshot?.background_arena_runs ?? [];
+    return pageView.current?.background_arena_runs ?? [];
   }
 
   get hasLiveRun(): boolean {
@@ -140,7 +141,7 @@ class ArenaStore {
     // (rather than list length) avoids a stale indicator in the brief window
     // where a run is Complete on disk but not yet pruned from active_run_ids().
     if (this.backgroundRuns.some((s) => isArenaRunActive(s.status))) return true;
-    const id = app.snapshot?.active_arena_run ?? this.liveRunId;
+    const id = pageView.current?.active_arena_run ?? this.liveRunId;
     if (!id) return false;
     const sum = this.summaries.find((s) => s.id === id);
     return sum ? isArenaRunActive(sum.status) : this.runningOpen;
@@ -160,7 +161,7 @@ class ArenaStore {
     if (preset?.length) {
       this.lastConfig = {
         reviewers: preset,
-        scope: scopeFromMode(app.snapshot?.mode),
+        scope: scopeFromMode(pageView.current?.mode),
         rounds: mode === "single" || preset.length < 2 ? 1 : 3,
       };
     }
@@ -509,7 +510,7 @@ class ArenaStore {
 
   showRunningProgress() {
     const active =
-      app.snapshot?.active_arena_run ?? this.liveRunId ?? this.backgroundRuns[0]?.id ?? null;
+      pageView.current?.active_arena_run ?? this.liveRunId ?? this.backgroundRuns[0]?.id ?? null;
     if (!active) return;
     this.liveRunId = active;
     this.runningOpen = true;
@@ -601,7 +602,7 @@ class ArenaStore {
     const id = runId ?? this.branchSummaries[0]?.id;
     if (!id) return;
     const seq = ++this.overlaySeq;
-    const currentFlow = captureHistoryFlowOrigin(app.snapshot);
+    const currentFlow = captureHistoryFlowOrigin(pageView.current);
     if (!this.overlayOpen) {
       this.flowAcceptanceOrigin = null;
       this.overlayRunId = null;
@@ -675,7 +676,7 @@ class ArenaStore {
   async openFileInDiff(path: string) {
     this.closeOverlay();
     app.setMainView("diff");
-    const file = app.snapshot?.files.find((f) => f.path === path);
+    const file = pageView.current?.files.find((f) => f.path === path);
     if (!file) return;
     await app.cmd("select_file", { idx: file.source_index });
     await diffNav.scrollToFile(path);
@@ -721,7 +722,7 @@ class ArenaStore {
   closeOverlay() {
     this.overlayOpen = false;
     const active =
-      app.snapshot?.active_arena_run ??
+      pageView.current?.active_arena_run ??
       this.liveRunId ??
       this.backgroundRuns[0]?.id;
     if (active && this.hasLiveRun) {
@@ -778,7 +779,7 @@ class ArenaStore {
     // a branch switch without hijacking it to the newest run when several run
     // concurrently).
     const active =
-      app.snapshot?.active_arena_run ??
+      pageView.current?.active_arena_run ??
       this.liveRunId ??
       this.backgroundRuns[0]?.id ??
       null;

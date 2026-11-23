@@ -6,7 +6,7 @@ import { AiAsks } from "./aiAsks";
 const TAB = 4;
 const VIEW = { repo_root: "/repo", pr_number: null, branch: "feature", mode: "branch" };
 
-function asks(flagOn: boolean, ack: Ack = { changed: [], created: null }) {
+function asks(ack: Ack = { changed: [], created: null }) {
   const sent: Command[] = [];
   const held: string[] = [];
   const store = {
@@ -19,13 +19,13 @@ function asks(flagOn: boolean, ack: Ack = { changed: [], created: null }) {
       held.push(`${JSON.stringify(key)}@${version}`);
     },
   };
-  return { sent, held, asks: new AiAsks({ flagOn, store, activeKey: () => TAB }) };
+  return { sent, held, asks: new AiAsks({ store, activeKey: () => TAB }) };
 }
 
 describe("the card asks", () => {
-  it("send each ask keyed to the active tab with the flag on, and wait for the keys the Ack names", async () => {
+  it("send each ask keyed to the active tab, and wait for the keys the Ack names", async () => {
     const ack: Ack = { changed: [{ key: { kind: "jobs" }, version: 3 }], created: null };
-    const { sent, held, asks: ai } = asks(true, ack);
+    const { sent, held, asks: ai } = asks(ack);
     await ai.route("ask_ai", { threadId: "q-1", prompt: "" });
     await ai.route("validate_with_ai", { threadId: "q-1", findingId: null });
     await ai.route("validate_with_ai", { threadId: null, findingId: "f-1" });
@@ -41,16 +41,8 @@ describe("the card asks", () => {
     expect(held).toEqual(Array(5).fill('{"kind":"jobs"}@3'));
   });
 
-  it("leave every ask to its Tauri command with the flag off", () => {
-    const { asks: ai } = asks(false);
-    expect(ai.route("ask_ai", { threadId: "q-1", prompt: "" })).toBeNull();
-    expect(ai.route("validate_with_ai", { threadId: "q-1" })).toBeNull();
-    expect(ai.route("elaborate_with_ai", { threadId: "n-1" })).toBeNull();
-    expect(ai.route("reply_to_finding", { findingId: "f-1", body: "", aiAssist: true })).toBeNull();
-  });
-
   it("leave a plain finding reply and other commands to their own routes", () => {
-    const { asks: ai } = asks(true);
+    const { asks: ai } = asks();
     expect(ai.route("reply_to_finding", { findingId: "f-1", body: "agreed", aiAssist: false })).toBeNull();
     expect(ai.route("add_question", {})).toBeNull();
   });

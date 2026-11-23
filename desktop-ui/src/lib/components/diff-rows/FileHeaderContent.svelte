@@ -3,6 +3,7 @@
   import { diffFileCollapse } from "$lib/stores/diffFileCollapse.svelte";
   import { diffNav } from "$lib/stores/diffNav.svelte";
   import { app } from "$lib/stores/app.svelte";
+  import { pageView } from "$lib/stores/pageView.svelte";
   import { asErError } from "$lib/protocol/client";
   import { openSource as openFile, selectedSource } from "$lib/tabCommands";
   import type { CrossFileFlatRow } from "$lib/diffRenderModel";
@@ -33,14 +34,14 @@
 
   // Read reviewed live from the snapshot, not from the baked-in row: the diff
   // render model intentionally ignores `reviewed` so toggling it is a cache hit.
-  const file = $derived(app.snapshot?.files.find((f) => f.path === row.filePath) ?? null);
+  const file = $derived(pageView.current?.files.find((f) => f.path === row.filePath) ?? null);
   const reviewed = $derived(file?.reviewed ?? false);
 
   // Both chips read the attribution the diff view requested for its window.
   const attribution = $derived(file ? lineCommitStore.get(file.path, file.cache_key) : null);
-  const commits = $derived(app.snapshot?.commits ?? []);
+  const commits = $derived(pageView.current?.commits ?? []);
   const commitChip = $derived(
-    markLinesActive(app.markLines, app.snapshot?.selected_commit_sha, app.snapshot?.mode === "tour")
+    markLinesActive(app.markLines, pageView.current?.selected_commit_sha, pageView.current?.mode === "tour")
       ? fileCommitChip(attribution, commits)
       : null,
   );
@@ -75,7 +76,7 @@
     // re-points it to a different file — so re-reading `row.filePath` after the
     // collapse would mark/scroll the wrong file.
     const path = row.filePath;
-    const isReviewed = app.snapshot?.files.find((f) => f.path === path)?.reviewed ?? false;
+    const isReviewed = pageView.current?.files.find((f) => f.path === path)?.reviewed ?? false;
     try {
       if (isReviewed) {
         await app.cmd("unmark_reviewed", { path });
@@ -103,7 +104,7 @@
   async function openSource(e: MouseEvent) {
     e.stopPropagation();
     try {
-      const res = await openFile("open_source", selectedSource(app.snapshot));
+      const res = await openFile("open_source", selectedSource(pageView.current));
       if (res.kind === "needs_checkout") {
         app.showToast("info", "Create editable worktree to open locally");
       }

@@ -226,5 +226,5 @@ export class ResourceStore {
   }
 }
 
-/** The app's store, over the Tauri commands. Started by the poll loop with the flag on. */
+/** The app's store, over the Tauri commands. Started when the page mounts. */
 export const resources = new ResourceStore(resourceClient());

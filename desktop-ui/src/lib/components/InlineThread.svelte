@@ -1,6 +1,7 @@
 <script lang="ts">
   import { annotationDrafts } from "$lib/stores/annotationDrafts.svelte";
   import { app } from "$lib/stores/app.svelte";
+  import { pageView } from "$lib/stores/pageView.svelte";
   import { tabsResource } from "$lib/stores/tabsResource.svelte";
   import type { ThreadSnapshot } from "$lib/pageTypes";
   import PromoteModal from "$lib/components/PromoteModal.svelte";
@@ -38,7 +39,7 @@
   }
 
   const { thread, variant = "inline", documentAnchored }: Props = $props();
-  const draft = $derived(annotationDrafts.get(app.snapshot, "thread", thread.id));
+  const draft = $derived(annotationDrafts.get(pageView.current, "thread", thread.id));
 
   const isQuestion = $derived(thread.kind === "question");
   const isNote = $derived(thread.kind === "note");
@@ -92,7 +93,6 @@
   function deleteThread() {
     // Guard before touching the confirm state: a blocked paint must not eat
     // the user's confirm click.
-    if (!app.canPaintOptimistic()) return app.explainPaintBlocked("delete_thread");
     if (thread.replies.length > 0 && !confirmingDelete) {
       confirmingDelete = true;
       clearTimeout(confirmDeleteTimer);
@@ -137,7 +137,6 @@
       void postGithubReply(text);
       return;
     }
-    if (!app.canPaintOptimistic()) return app.explainPaintBlocked();
     void app.cmd("reply_to_thread", { parentId: thread.id, text });
     draft.replyText = "";
     draft.showReply = false;
@@ -156,13 +155,12 @@
       await app.cmd("ask_ai", { threadId: thread.id, prompt: "" });
       return;
     }
-    if (!app.canPaintOptimistic()) return app.explainPaintBlocked();
-    const before = ownReplyCount(app.snapshot, thread.id, text);
+    const before = ownReplyCount(pageView.current, thread.id, text);
     const posted = app.cmd("reply_to_thread", { parentId: thread.id, text });
     draft.replyText = "";
     draft.showReply = false;
     await posted;
-    if (ownReplyCount(app.snapshot, thread.id, text) <= before) {
+    if (ownReplyCount(pageView.current, thread.id, text) <= before) {
       // Give the text back for a retry unless the reviewer has started anew.
       if (!draft.replyText) {
         draft.replyText = text;
@@ -186,7 +184,6 @@
   }
 
   async function submitPromote(body: string) {
-    if (!app.canPaintOptimistic()) return app.explainPaintBlocked();
     promoteError = null;
     try {
       await app.cmd("promote_to_comment", { id: thread.id, body }, { throwOnError: true });
@@ -209,7 +206,7 @@
   const agentButton = $derived(
     sendToAgentButton({
       remotePr: tabsResource.activeTab?.kind === "remote_pr",
-      running: (app.snapshot?.agent_commands ?? []).some(
+      running: (pageView.current?.agent_commands ?? []).some(
         (c) => c.name === SEND_TO_AGENT_COMMAND && c.status === "running",
       ),
     }),
@@ -248,7 +245,6 @@
 
   function submitEdit(body: string) {
     if (!editMessageId) return;
-    if (!app.canPaintOptimistic()) return app.explainPaintBlocked();
     const id = editMessageId;
     void app.cmd("update_thread_message", { id, body });
     editMessageId = null;
@@ -263,7 +259,7 @@
       kind: thread.kind,
       resolved: thread.resolved,
       promoted: isPromoted,
-      documentAnchored: documentAnchored ?? isDocumentAnchored(thread, app.snapshot?.files),
+      documentAnchored: documentAnchored ?? isDocumentAnchored(thread, pageView.current?.files),
       rootEditable: thread.root.kind === "you",
     }),
   );

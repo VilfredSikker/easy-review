@@ -5,7 +5,6 @@ import type { PaintedView } from "$lib/protocol/generated/PaintedView";
 import type { Resource } from "$lib/protocol/generated/Resource";
 import type { ResourceKey } from "$lib/protocol/generated/ResourceKey";
 import type { Versioned } from "$lib/protocol/generated/Versioned";
-import { isOptimisticCommand } from "$lib/optimisticLocal";
 import type { AiSnapshot, FlatFinding, ThreadSnapshot } from "$lib/pageTypes";
 import { AnnotationWrites, withPending } from "./annotationWrites";
 
@@ -47,7 +46,7 @@ function harness(shown: AiSnapshot) {
     },
     whenAt: () => new Promise<void>((resolve) => (held = resolve)),
   };
-  const writes = new AnnotationWrites({ flagOn: true, store, activeKey: () => TAB, shownAi: () => shown });
+  const writes = new AnnotationWrites({ store, activeKey: () => TAB, shownAi: () => shown });
   const ack: Ack = { changed: [{ key: { kind: "annotations", tab: TAB }, version: 2 }], created: null };
   const settle = async () => {
     answer(ack);
@@ -60,7 +59,7 @@ function harness(shown: AiSnapshot) {
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
-describe("the annotation writes with the flag on", () => {
+describe("the annotation writes", () => {
   it("show a question until acknowledged, on the row the server confirms by its client id", async () => {
     const { sent, writes, settle } = harness(ai([]));
     const done = writes.route("add_question", { file: "src/a.rs", hunkIdx: 0, lineNum: 2, text: "why?" });
@@ -88,7 +87,6 @@ describe("the annotation writes with the flag on", () => {
       ["delete_thread", { id: "q-1" }],
       ["update_thread_message", { id: "q-1", body: "edited" }],
     ] as const) {
-      expect(isOptimisticCommand(command, true), command).toBe(false);
       const done = writes.route(command, args);
       expect(writes.paints(), command).toEqual([]);
       await settle();
@@ -112,7 +110,6 @@ describe("the annotation writes with the flag on", () => {
       ["delete_review_artifact", { kind: "triage" }],
       ["delete_diagram", { id: "flows" }],
     ] as const) {
-      expect(isOptimisticCommand(command, true), command).toBe(false);
       const done = writes.route(command, args);
       expect(writes.paints(), command).toEqual([]);
       await settle();
@@ -142,7 +139,6 @@ describe("the annotation writes with the flag on", () => {
       ["clear_ui_annotations", {}],
       ["update_ui_annotation_anchors", { updates: [{ id: "ui-1", fresh: false, new_box: [5, 6, 7, 8] }] }],
     ] as const) {
-      expect(isOptimisticCommand(command, true), command).toBe(false);
       const done = writes.route(command, args);
       expect(writes.paints(), command).toEqual([]);
       await settle();

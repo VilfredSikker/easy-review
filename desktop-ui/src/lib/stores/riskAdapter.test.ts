@@ -53,27 +53,15 @@ function fakeBackend() {
   return { run, names: () => calls.map((c) => c.command), calls, reload };
 }
 
-function adapter(flagOn: boolean) {
+function adapter() {
   const backend = fakeBackend();
   const store = new ResourceStore(resourceClient(backend.run, async () => () => {}), 60_000);
-  return { backend, store, risk: new RiskAdapter({ flagOn, store, invoke: backend.run }) };
+  return { backend, store, risk: new RiskAdapter({ store, invoke: backend.run }) };
 }
 
 describe("RiskAdapter", () => {
-  it("asks the old risk commands with the flag off", async () => {
-    const { backend, risk: adapterRisk } = adapter(false);
-    const view = await adapterRisk.load(TARGET, ["db/a.sql", "src/b.rs"]);
-    expect(view.repo).toBe("acme/widgets");
-    expect(view.files.map((f) => f.tier)).toEqual(["high", "ai"]);
-    expect(view.rules[0].fileCount).toBe(1);
-    expect(backend.names().sort()).toEqual(["get_risk_files", "get_risk_rules"]);
-    backend.calls.length = 0;
-    await adapterRisk.loadRules(TARGET, ["db/a.sql"]);
-    expect(backend.names()).toEqual(["get_risk_files"]);
-  });
-
-  it("loads through er_send and reads risk(key) through er_fetch with the flag on", async () => {
-    const { backend, risk: adapterRisk } = adapter(true);
+  it("loads through er_send and reads risk(key) through er_fetch", async () => {
+    const { backend, risk: adapterRisk } = adapter();
     const view = await adapterRisk.load(TARGET, ["db/a.sql", "src/b.rs"]);
     expect(view.files.map((f) => f.path)).toEqual(["db/a.sql", "src/b.rs"]);
     expect(view.rules[0].fileCount).toBe(1);
@@ -90,7 +78,7 @@ describe("RiskAdapter", () => {
   });
 
   it("reports a risk(key) push past its last load, so the Risks tab loads again", async () => {
-    const { backend, store, risk: adapterRisk } = adapter(true);
+    const { backend, store, risk: adapterRisk } = adapter();
     await adapterRisk.loadRules(TARGET, ["db/a.sql"]);
     expect(adapterRisk.pushed(TARGET)).toBe(false);
 

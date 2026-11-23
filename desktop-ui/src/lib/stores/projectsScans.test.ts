@@ -52,12 +52,11 @@ describe("projects source scans", () => {
     expect(sources().filter((f) => direct.test(stripped(f)))).toEqual([]);
   });
 
-  // With the flag on the projects adapter, the worktrees adapter and the PR
-  // rows answer these; the snapshot's copies are read only on the flag-off path.
-  // Without it the helpers would read the snapshot's copies with the flag on.
-  it("with the flag on the sidebar wiring installs the adapters as the sidebar reads", () => {
+  // The projects adapter, the worktrees adapter and the PR rows answer these.
+  // Without it the helpers would read the page view's empty copies.
+  it("the sidebar wiring installs the adapters as the sidebar reads", () => {
     const wiring = stripped(join("lib", "stores", "projectsResource.svelte.ts"));
-    expect(wiring).toMatch(/if \(flagOn\) \{\s*readSidebarFrom\(\{/);
+    expect(wiring).toMatch(/^readSidebarFrom\(\{/m);
     // Each read, inside the block it installs.
     const reads = wiring.slice(wiring.indexOf("readSidebarFrom({")).split("});")[0];
     expect(reads).toMatch(/\bprojects:\s*\(\)\s*=>\s*projectsResource\.projects\s*,/);
@@ -68,17 +67,10 @@ describe("projects source scans", () => {
     expect(read("main.ts")).toContain('import "$lib/stores/projectsResource.svelte";');
   });
 
-  // The adapter's flag-off review-settings change applies what it answers
-  // through this; without it the page would show the old values until the next snapshot.
-  it("the projects wiring applies the old command's snapshot through the app", () => {
-    const wiring = stripped(join("lib", "stores", "projectsResource.svelte.ts"));
-    expect(wiring).toMatch(/\bingest:\s*\(snapshot\)\s*=>\s*app\.ingestCommandSnapshot\(snapshot\)\s*,/);
-  });
-
   it("the page reads the projects, the worktrees and the detected PR through the sidebar reads", () => {
     const field = /\b(snapshot|snap)\??\.(projects|worktrees|detected_pr_number)\b/;
-    // The flag-off default of the reads, and the flag-off paints of the optimistic layer.
-    const allowed = [join("lib", "sidebarReads.ts"), join("lib", "optimisticLocal.ts")];
+    // The default of the reads, which the wiring replaces.
+    const allowed = [join("lib", "sidebarReads.ts")];
     expect(sources().filter((f) => !allowed.includes(f) && field.test(stripped(f)))).toEqual([]);
   });
 

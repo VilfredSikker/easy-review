@@ -847,10 +847,9 @@ fn mirror_checkout_root(app: &Arc<Mutex<App>>, desired: Option<(String, String)>
 
 /// Whether this build compiled the v1 service path.
 ///
-/// desktop-ui compares it with its own build-time `VITE_ER_V1_SERVICE` and
-/// refuses to start when the two disagree, so a mismatched dev or release
-/// build fails loudly instead of running one path while the front end expects
-/// the other.
+/// desktop-ui runs only on the service's resources and refuses to start when
+/// this answers false, so a backend built without the feature fails loudly
+/// instead of serving a page that cannot read it.
 #[tauri::command]
 fn v1_service_enabled() -> bool {
     cfg!(feature = "v1-service")
@@ -2458,19 +2457,20 @@ mod tests {
     use super::*;
     use std::time::{Duration, Instant};
 
-    /// The flag is opt-in: a plain build compiles the App path and reports it.
-    /// Flipping the feature into `default` makes this fail before anything runs.
+    /// The flag is on by default: desktop-ui reads only resources, so a plain
+    /// build must compile the service path and report it. Dropping the feature
+    /// from `default` makes this fail before anything runs.
     #[test]
     #[expect(
         clippy::assertions_on_constants,
         reason = "the constant is the build's compiled feature value, which is the point"
     )]
-    fn the_service_flag_is_off_in_a_default_build() {
+    fn the_service_flag_is_on_in_a_default_build() {
         assert!(
-            !cfg!(feature = "v1-service"),
-            "v1-service must stay off by default"
+            cfg!(feature = "v1-service"),
+            "v1-service must be on by default"
         );
-        assert!(!v1_service_enabled());
+        assert!(v1_service_enabled());
     }
 
     // ── comment_sync_recently_synced (skip gate) ──

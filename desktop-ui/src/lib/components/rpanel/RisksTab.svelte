@@ -4,6 +4,7 @@
   import { riskResource } from "$lib/stores/settingsResource.svelte";
   import type { AiSnapshot } from "$lib/pageTypes";
   import { app } from "$lib/stores/app.svelte";
+  import { pageView } from "$lib/stores/pageView.svelte";
   import { diffNav } from "$lib/stores/diffNav.svelte";
   import { baseName, shortFileName } from "$lib/shortFileName";
   import {
@@ -43,9 +44,9 @@
   let ruleTable = $state<RiskRuleWire[] | null>(null);
   let loadError = $state<string | null>(null);
 
-  const files = $derived(app.snapshot?.files ?? []);
+  const files = $derived(pageView.current?.files ?? []);
   const fileKey = $derived(files.map((f) => f.path).join("\n"));
-  const target = $derived(riskTarget(app.snapshot));
+  const target = $derived(riskTarget(pageView.current));
   const targetKey = $derived(target ? `${target.repoRoot}\n${target.remoteRepo ?? ""}` : "");
 
   // A push of the repo's rules (an importance run's reload) loads them again.
@@ -88,7 +89,7 @@
   const declared = $derived(rules.length > 0);
 
   async function jump(path: string) {
-    const file = app.snapshot?.files.find((f) => f.path === path);
+    const file = pageView.current?.files.find((f) => f.path === path);
     if (!file) return;
     await app.cmd("select_file", { idx: file.source_index });
     await tick();

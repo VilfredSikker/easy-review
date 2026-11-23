@@ -1,4 +1,4 @@
-import { app } from "./app.svelte";
+import { pageView } from "./pageView.svelte";
 import { tabsResource } from "./tabsResource.svelte";
 import { sessionResource } from "./sessionResource.svelte";
 import { localScopes, viewIsPr, type LocalScope } from "$lib/scopeRail";
@@ -22,7 +22,7 @@ function tabKey(tab: TabSummary | null): string {
 /** Shared view facts for the scope segment and the commits section. Call
  *  during component init: it registers the effect that records the source. */
 export function railView() {
-  const snapshot = $derived(app.snapshot);
+  const snapshot = $derived(pageView.current);
   const mode = $derived(snapshot?.mode ?? "branch");
   const activeTab = $derived(tabsResource.activeTab);
   const key = $derived(tabKey(activeTab));

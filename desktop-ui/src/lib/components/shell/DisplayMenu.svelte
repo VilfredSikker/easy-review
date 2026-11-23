@@ -1,6 +1,7 @@
 <script lang="ts">
   import { tick } from "svelte";
   import { app } from "$lib/stores/app.svelte";
+  import { pageView } from "$lib/stores/pageView.svelte";
   import { findingsVisibility } from "$lib/stores/findingsVisibility.svelte";
   import { displayMenuCounts } from "$lib/viewBarModel";
   import {
@@ -21,9 +22,9 @@
   let trigger = $state<HTMLButtonElement | null>(null);
   let menu = $state<HTMLDivElement | null>(null);
 
-  const counts = $derived(displayMenuCounts(app.snapshot));
+  const counts = $derived(displayMenuCounts(pageView.current));
   const vis = $derived(app.commentVisibility);
-  const commentFilters = $derived(commentFilterCounts(app.snapshot?.ai.threads, app.snapshot?.files));
+  const commentFilters = $derived(commentFilterCounts(pageView.current?.ai.threads, pageView.current?.files));
 
   // `d` toggles unified/split globally; the hint teaches it where it applies.
   const LAYOUT_ROWS = [

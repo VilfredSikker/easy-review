@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { AppSnapshot } from "$lib/pageTypes";
   import { app } from "$lib/stores/app.svelte";
+  import { pageView } from "$lib/stores/pageView.svelte";
   import { tabsResource } from "$lib/stores/tabsResource.svelte";
   import { reviewScopeFromMode } from "$lib/reviewScope";
   import { resolveActivePrNumber } from "$lib/prUrl";
@@ -15,7 +16,7 @@
   }
 
   const { snapshot: snapshotOverride }: Props = $props();
-  const snap = $derived(snapshotOverride !== undefined ? snapshotOverride : app.snapshot);
+  const snap = $derived(snapshotOverride !== undefined ? snapshotOverride : pageView.current);
   // A story passes its own snapshot; the page reads the tabs adapter.
   const activeRow = $derived(
     snapshotOverride !== undefined ? snapshotOverride?.tabs.find((t) => t.is_active) : (tabsResource.activeTab ?? undefined),

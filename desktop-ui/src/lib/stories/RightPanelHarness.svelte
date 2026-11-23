@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { app } from "$lib/stores/app.svelte";
+  import { pageView } from "$lib/stores/pageView.svelte";
   import { rightPanelTab, type RightPanelTab } from "$lib/stores/rightPanelTab.svelte";
   import RightPanel from "$lib/components/RightPanel.svelte";
   import CollapsedRightRail from "$lib/components/CollapsedRightRail.svelte";
@@ -15,7 +15,7 @@
 
   // The panel reads the global store, as it does in the app.
   $effect(() => {
-    app.snapshot = snapshot;
+    pageView.current = snapshot;
   });
   $effect(() => {
     rightPanelTab.set(tab);

@@ -164,7 +164,7 @@ type InvokeFn = (cmd: string, args: Record<string, unknown>) => Promise<unknown>
 
 let prefetchSend: InvokeFn = invoke;
 
-/** With the flag on the tabs adapter sends the prefetches through `er_send`. */
+/** The tabs adapter sends the prefetches through `er_send`. */
 export function routePrefetches(send: InvokeFn): void {
   prefetchSend = send;
 }
@@ -190,9 +190,7 @@ export function createPrPrefetch(
     if (prPrefetchTimers.has(key)) return;
     const timer = setTimeout(() => {
       prPrefetchTimers.delete(key);
-      // Bypass app.cmd() — that assigns the return value to app.snapshot, and
-      // prefetch_pr_open returns () which would null out the snapshot and
-      // render the empty page. Fire-and-forget invoke is correct here.
+      // Fire and forget: the prefetch answers nothing the page reads.
       invokeFn("prefetch_pr_open", {
         projectId,
         prNumber: pr.number,

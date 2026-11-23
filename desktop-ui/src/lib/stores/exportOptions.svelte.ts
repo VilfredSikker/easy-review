@@ -21,6 +21,7 @@ import {
 } from "$lib/exportOptions";
 import { exportReview } from "$lib/tabCommands";
 import { app } from "./app.svelte";
+import { pageView } from "./pageView.svelte";
 
 export const EXPORT_PREFS_KEY = "exportOptions";
 
@@ -46,13 +47,13 @@ class ExportOptionsStore {
   prefs = $state<ExportPrefs>(loadPrefs());
   private excludedByTab = $state<Record<string, ReadonlySet<string>>>({});
 
-  readonly items = $derived(collectExportItems(app.snapshot?.ai));
-  readonly excluded = $derived(this.excludedByTab[exportTabKey(app.snapshot)] ?? NO_EXCLUSIONS);
+  readonly items = $derived(collectExportItems(pageView.current?.ai));
+  readonly excluded = $derived(this.excludedByTab[exportTabKey(pageView.current)] ?? NO_EXCLUSIONS);
   readonly current: ExportOpts = $derived(buildExportOpts(this.prefs, this.items, this.excluded));
   // The last markdown rendered for these options on this tab. The count is
   // read from it because the snapshot does not list every exported item.
   private rendered = $state<{ key: string; body: string } | null>(null);
-  private readonly renderKey = $derived(JSON.stringify([exportTabKey(app.snapshot), this.current]));
+  private readonly renderKey = $derived(JSON.stringify([exportTabKey(pageView.current), this.current]));
   /** Null until the current options have been rendered once. */
   readonly itemCount: number | null = $derived(
     this.rendered?.key === this.renderKey ? countExportedItems(this.rendered.body) : null,
@@ -81,7 +82,7 @@ class ExportOptionsStore {
   }
 
   toggleItem(id: string) {
-    const key = exportTabKey(app.snapshot);
+    const key = exportTabKey(pageView.current);
     const ids = [...this.excluded];
     const next = this.excluded.has(id) ? ids.filter((x) => x !== id) : [...ids, id];
     // Replaced, never mutated: the record swap is what the deriveds track.

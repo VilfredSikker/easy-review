@@ -78,8 +78,6 @@ export function uiRows(rows: readonly WireUiAnnotation[]): UiAnnotation[] {
 }
 
 interface AnnotationsAdapterDeps {
-  /** Whether the backend serves resources (the `v1-service` build). */
-  flagOn: boolean;
   store: Pick<ResourceStore, "get">;
   /** The registry's active tab, whose annotations the page shows. */
   activeKey: () => TabKey | null;
@@ -88,18 +86,15 @@ interface AnnotationsAdapterDeps {
 }
 
 /**
- * The active tab's annotations: `app.snapshot`'s `ai`, `tour`,
- * `other_bucket` and `ui_annotations` with the flag off, and with it on
- * `annotations(tab)` joined with `jobs` and `ui_annotations(tab)` in every
- * view, since the workspace loads them all. The App's mode is not read: with
- * the flag on a view switch never reaches the App, so its mode goes stale.
+ * The active tab's annotations: `annotations(tab)` joined with `jobs` and
+ * `ui_annotations(tab)` in every view, since the workspace loads them all.
  */
 export class AnnotationsAdapter {
   constructor(private readonly deps: AnnotationsAdapterDeps) {}
 
-  /** The active tab's key while the page reads its annotations from the resources; null with the flag off. */
+  /** The active tab's key, whose annotations the page reads; null before the tab strip arrives. */
   fetchedTab(): TabKey | null {
-    return this.deps.flagOn ? this.deps.activeKey() : null;
+    return this.deps.activeKey();
   }
 
   private held(): Annotations | null {

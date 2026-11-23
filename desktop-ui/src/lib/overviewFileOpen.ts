@@ -1,6 +1,7 @@
 import { tick } from "svelte";
 import { asErError } from "$lib/protocol/client";
 import { app } from "$lib/stores/app.svelte";
+import { pageView } from "$lib/stores/pageView.svelte";
 import { diffNav } from "$lib/stores/diffNav.svelte";
 import { reviewPage } from "$lib/stores/reviewPage.svelte";
 import { openSource as openFile } from "$lib/tabCommands";
@@ -28,7 +29,7 @@ async function openSource(file: FileSnapshot): Promise<void> {
  * the editor, else the file on GitHub) and leaves the Overview where it is.
  */
 export async function openOverviewFile(path: string, e?: MouseEvent): Promise<void> {
-  const file = app.snapshot?.files.find((f) => f.path === path);
+  const file = pageView.current?.files.find((f) => f.path === path);
   if (!file) return;
   if (wantsSource(e)) return openSource(file);
   reviewPage.show("diff");

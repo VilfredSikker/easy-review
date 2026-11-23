@@ -1,12 +1,8 @@
 import { describe, expect, it } from "bun:test";
 import { resourceClient, type Invoke } from "$lib/protocol/client";
-import type { TabSummary, WorktreeSnapshot } from "$lib/pageTypes";
+import type { TabSummary } from "$lib/pageTypes";
 import { ResourceStore } from "./resourceStore";
 import { WorktreesAdapter, worktreesFromResource } from "./worktreesAdapter";
-
-const snapshotRows: WorktreeSnapshot[] = [
-  { path: "/old", branch: "main", is_current: true, is_pr: false, pr_number: null, is_merged: false, remote: null },
-];
 
 function wire(root: string) {
   return {
@@ -20,7 +16,7 @@ function wire(root: string) {
 
 const settle = () => new Promise((r) => setTimeout(r, 0));
 
-function adapter(flagOn: boolean) {
+function adapter() {
   const fetched: string[] = [];
   const run: Invoke = async <T,>(command: string, args: Record<string, unknown>): Promise<T> => {
     if (command !== "er_fetch") throw new Error(`unexpected ${command}`);
@@ -33,9 +29,7 @@ function adapter(flagOn: boolean) {
   const store = new ResourceStore(resourceClient(run, async () => () => {}), 60_000);
   let active: Pick<TabSummary, "repo_root"> | null = { repo_root: "/a" };
   const worktrees = new WorktreesAdapter({
-    flagOn,
     store,
-    snapshot: () => ({ worktrees: snapshotRows }),
     activeTab: () => active,
   });
   const activate = (root: string) => {
@@ -46,18 +40,10 @@ function adapter(flagOn: boolean) {
 }
 
 describe("WorktreesAdapter", () => {
-  it("reads the snapshot's rows with the flag off and fetches nothing", async () => {
-    const { activate, fetched, worktrees } = adapter(false);
-    activate("/a");
-    await settle();
-    expect(worktrees.worktrees).toBe(snapshotRows);
-    expect(fetched).toEqual([]);
-  });
-
   it("shows the active tab's root and marks the worktree at that root current", async () => {
-    const { activate, fetched, worktrees } = adapter(true);
-    // Until the key is held the snapshot's rows stand in.
-    expect(worktrees.worktrees).toBe(snapshotRows);
+    const { activate, fetched, worktrees } = adapter();
+    // Until the key is held there are none.
+    expect(worktrees.worktrees).toEqual([]);
     activate("/a");
     await settle();
     expect(worktrees.worktrees.map((w) => [w.path, w.is_current, w.pr_number, w.is_merged])).toEqual([
@@ -68,7 +54,7 @@ describe("WorktreesAdapter", () => {
   });
 
   it("releases the previous root when the active tab moves", async () => {
-    const { activate, fetched, store, worktrees } = adapter(true);
+    const { activate, fetched, store, worktrees } = adapter();
     activate("/a");
     await settle();
     activate("/b");
@@ -79,7 +65,7 @@ describe("WorktreesAdapter", () => {
   });
 
   it("lists none for a tab with no checkout, a remote PR's", async () => {
-    const { activate, fetched, store, worktrees } = adapter(true);
+    const { activate, fetched, store, worktrees } = adapter();
     activate("/a");
     await settle();
     activate("");

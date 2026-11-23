@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { AppSnapshot } from "$lib/pageTypes";
-  import { app } from "$lib/stores/app.svelte";
+  import { pageView } from "$lib/stores/pageView.svelte";
   import { githubStatusForActiveTab } from "$lib/prUrl";
   import { extractPrLinks } from "$lib/prLinks";
   import { longAge } from "$lib/relativeTime";
@@ -29,7 +29,7 @@
   }
 
   const { snapshot: snapshotOverride }: Props = $props();
-  const snap = $derived(snapshotOverride !== undefined ? snapshotOverride : app.snapshot);
+  const snap = $derived(snapshotOverride !== undefined ? snapshotOverride : pageView.current);
 
   const header = $derived(overviewHeader(snap));
   const github = $derived(snap ? githubStatusForActiveTab(snap) : null);
@@ -53,7 +53,7 @@
   // AgentOutputCard reads the live snapshot and draws nothing while idle; the
   // same test here keeps its wrapper's margin from leaving a gap.
   const hasAgentActivity = $derived(
-    (app.snapshot?.agent_commands?.length ?? 0) > 0 || (app.snapshot?.agent_log?.length ?? 0) > 0,
+    (pageView.current?.agent_commands?.length ?? 0) > 0 || (pageView.current?.agent_log?.length ?? 0) > 0,
   );
 
   const authorStyle = $derived.by(() => {

@@ -87,8 +87,6 @@ export function branchInPrStack(branch: string, restrict: string | null, held: r
 }
 
 interface PrAdapterDeps {
-  /** Whether the backend serves resources (the `v1-service` build). */
-  flagOn: boolean;
   store: Pick<ResourceStore, "get" | "send" | "whenAt">;
   /** The registry's active tab key and its row. */
   activeKey: () => TabKey | null;
@@ -99,20 +97,19 @@ interface PrAdapterDeps {
   heldPrs: () => readonly HeldPrs[];
 }
 
-/** The PR card commands `er_send` carries with the flag on. */
+/** The PR card commands `er_send` carries. */
 const ROUTED: ReadonlySet<string> = new Set(["refresh_stack", "refresh_github_status"]);
 
 /**
- * The active tab's PR card, stack and GitHub status: the snapshot's `pr`,
- * `stack` and `github` with the flag off, and with it on `pr(tab)` and
- * `pr_status(remote, number)`. Until a resource is held the snapshot's field
+ * The active tab's PR card, stack and GitHub status, from `pr(tab)` and
+ * `pr_status(remote, number)`. Until a resource is held the view's field
  * stays.
  */
 export class PrAdapter {
   constructor(private readonly deps: PrAdapterDeps) {}
 
   private held(): TabPr | null {
-    const key = this.deps.flagOn ? this.deps.activeKey() : null;
+    const key = this.deps.activeKey();
     if (key === null) return null;
     const value = this.deps.store.get(prKey(key))?.value;
     return value?.kind === "pr" ? value : null;
@@ -122,16 +119,14 @@ export class PrAdapter {
     return tab?.remote ?? (tab ? this.deps.repoRemote(tab.repo_root) : null);
   }
 
-  /** The status key the active tab's card reads, for `branch`; null with the flag off. */
+  /** The status key the active tab's card reads, for `branch`. */
   target(branch: string | null | undefined): StatusTarget | null {
-    if (!this.deps.flagOn) return null;
     const tab = this.deps.activeTab();
     return statusTarget(tab, branch, tab ? this.deps.repoRemote(tab.repo_root) : null, this.deps.heldPrs());
   }
 
-  /** `raw` with the resources' PR fields in place of the App's, when the page holds them. */
+  /** `raw` with the resources' PR fields laid over it, when the page holds them. */
   overlay(raw: AppSnapshot): AppSnapshot {
-    if (!this.deps.flagOn) return raw;
     const held = this.held();
     const next: AppSnapshot = { ...raw };
     const branch = raw.local_branch ?? raw.branch;
@@ -153,7 +148,7 @@ export class PrAdapter {
   }
 
   route(command: string): Promise<void> | null {
-    if (!this.deps.flagOn || !ROUTED.has(command)) return null;
+    if (!ROUTED.has(command)) return null;
     const tab = this.deps.activeKey();
     if (tab === null) return null;
     const wire: Command =

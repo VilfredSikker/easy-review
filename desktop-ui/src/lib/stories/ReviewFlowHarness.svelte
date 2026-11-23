@@ -1,13 +1,13 @@
 <script lang="ts">
   import type { ReviewFlowSnapshot } from "$lib/pageTypes";
-  import { app } from "$lib/stores/app.svelte";
+  import { pageView } from "$lib/stores/pageView.svelte";
   import AiReviewCard from "$lib/components/AiReviewCard.svelte";
   import TriageCard from "$lib/components/TriageCard.svelte";
   import { aiWithFindings, richSnapshot, triageBroadGuarded } from "./fixtures";
 
   let { flow, showTriage = true }: { flow: ReviewFlowSnapshot | null; showTriage?: boolean } = $props();
   $effect(() => {
-    app.snapshot = {
+    pageView.current = {
       ...richSnapshot,
       review_flow: flow,
       ai: { ...aiWithFindings, triage: showTriage ? triageBroadGuarded : null },

@@ -1,6 +1,9 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { app } from "$lib/stores/app.svelte";
+  import { legacySnapshot } from "$lib/stores/legacySnapshot.svelte";
+  import { pageView } from "$lib/stores/pageView.svelte";
+  import { resources } from "$lib/stores/resourceStore";
   import { tabsResource } from "$lib/stores/tabsResource.svelte";
   import "$lib/stores/diffResource.svelte";
   import "$lib/stores/reviewedResource.svelte";
@@ -32,11 +35,9 @@
   import StaleBanner from "$lib/components/shell/StaleBanner.svelte";
   import LocalBranchBanner from "$lib/components/shell/LocalBranchBanner.svelte";
   import ConfigLoadBanner from "$lib/components/shell/ConfigLoadBanner.svelte";
-  import TabPlaceholder from "$lib/components/TabPlaceholder.svelte";
   import TourEmptyState from "$lib/components/TourEmptyState.svelte";
-  import { tabPlaceholderTarget } from "$lib/tabPlaceholder";
   import { isReviewMainView } from "$lib/stores/reviewPageModel";
-  import { sidebarProjects } from "$lib/sidebarReads";
+  import { sidebarProjects, sidebarProjectsLoaded } from "$lib/sidebarReads";
   import { reviewPage } from "$lib/stores/reviewPage.svelte";
   import { refHighlight } from "$lib/stores/referenceHighlight.svelte";
   import OverviewView from "$lib/components/overview/OverviewView.svelte";
@@ -60,37 +61,42 @@
   import { startWindowDrag } from "$lib/windowDrag";
   import { applyTheme } from "$lib/themes";
   import { sessionResource } from "$lib/stores/sessionResource.svelte";
-  import { snapshotViewIdentity } from "$lib/snapshotChrome";
+  import { viewIdentity } from "$lib/viewIdentity";
 
   // Follow the configured theme (`display.theme`, same as the TUI): override
   // the CSS vars on the root element and switch the Shiki syntax theme.
   $effect(() => {
-    if (!app.snapshot) return;
+    if (!pageView.current) return;
     const theme = applyTheme(sessionResource.theme);
     if (app.currentSyntaxTheme !== theme.syntaxThemeId) {
       app.currentSyntaxTheme = theme.syntaxThemeId;
     }
   });
 
-  /** True when a loaded snapshot confirms there is no repo/diff and no saved projects. */
-  const naturalEmpty = $derived(
-    app.snapshot !== null &&
-      app.snapshot.branch === "" &&
-      app.snapshot.files.length === 0 &&
-      sidebarProjects(app.snapshot).length === 0,
-  );
   const hasOpenTabs = $derived(tabsResource.tabs.length > 0);
-  const explicitFullWelcome = $derived(app.showEmptyState && app.snapshot !== null && !hasOpenTabs);
+  /**
+   * True when the loaded resources confirm there is no repo/diff and no saved
+   * projects. They arrive in separate fetches, so an open tab or a project
+   * list not yet fetched is not taken for an empty app.
+   */
+  const naturalEmpty = $derived(
+    pageView.current !== null &&
+      !hasOpenTabs &&
+      sidebarProjectsLoaded() &&
+      pageView.current.branch === "" &&
+      pageView.current.files.length === 0 &&
+      sidebarProjects(pageView.current).length === 0,
+  );
+  const explicitFullWelcome = $derived(app.showEmptyState && pageView.current !== null && !hasOpenTabs);
   const showFullWelcome = $derived(
     showFullWelcomeFor({
       naturalEmpty,
       explicitFullWelcome,
-      loading: app.loading,
+      loading: pageView.current === null,
       mainView: app.mainView,
     }),
   );
-  const snapshotPending = $derived(app.snapshot === null && (!app.initialLoadDone || app.loading));
-  const snapshotUnavailable = $derived(app.snapshot === null && app.initialLoadDone && !app.loading);
+  const viewPending = $derived(pageView.current === null);
   /** "New review" while tabs are open — overlay on top of the review shell. */
   const showWelcomeOverlay = $derived(app.showEmptyState && hasOpenTabs && !naturalEmpty);
 
@@ -257,22 +263,18 @@
   $effect(() => {
     if (reviewLayers.diff !== "shown") refHighlight.closePopover();
   });
-  /** The tab an uncached switch is loading; the review area names it until it lands. */
-  const placeholderTab = $derived(
-    isReviewView ? tabPlaceholderTarget(tabsResource.tabs, app.switchingTabIdx) : null,
-  );
-  const inTour = $derived(app.snapshot?.mode === "tour");
+  const inTour = $derived(pageView.current?.mode === "tour");
   /** Tour mode with no tour for this view draws an empty state, not a pillar-less diff. */
-  const tourMissing = $derived(inTour && !(app.snapshot?.tour?.available ?? false));
+  const tourMissing = $derived(inTour && !(pageView.current?.tour?.available ?? false));
   /** The findings panel sits beside the Tour and the Diff, never over other pages. */
-  const showRightPanel = $derived(showDiff && app.mainView === "diff" && !placeholderTab);
+  const showRightPanel = $derived(showDiff && app.mainView === "diff");
 
   const activeTabIdx = $derived(tabsResource.active);
   const activeTab = $derived(tabsResource.tabs[activeTabIdx]);
-  const activeTabRoot = $derived(resolveTabRoot(app.snapshot, activeTab));
+  const activeTabRoot = $derived(resolveTabRoot(pageView.current, activeTab));
 
   $effect(() => {
-    app.snapshot;
+    pageView.current;
     arena.syncFromSnapshot();
   });
 
@@ -296,19 +298,20 @@
       /* ignore */
     }
     void import("$lib/dev/log").then(({ initDevLog }) => initDevLog());
-    app.load().then(() => app.startPolling());
+    void resources.start();
+    legacySnapshot.start();
     startNotices();
     const cleanupKeyboard = initKeyboard();
     const cleanupLinkGuard = installExternalLinkGuard();
-    // A live run's progress reaches the arena page through `jobs` with the
-    // flag on, and through the desktop revision without it.
+    // A live run's progress reaches the arena page through `jobs`.
     const unlistenArena = followRunProgress(() => arena.onRevision());
     return () => {
       cleanupKeyboard();
       cleanupLinkGuard();
-      app.stopPolling();
+      resources.stop();
+      legacySnapshot.stop();
       stopNotices();
-      void unlistenArena.then((fn) => fn());
+      unlistenArena();
     };
   });
 </script>
@@ -317,7 +320,7 @@
 
 {#if showFullWelcome}
   <EmptyState />
-{:else if snapshotPending || snapshotUnavailable}
+{:else if viewPending}
   <div class="h-screen flex flex-col bg-ink-900 text-ink-50 overflow-hidden">
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div
@@ -331,15 +334,9 @@
     </div>
     <main class="flex-1 flex items-center justify-center p-8">
       <div class="max-w-md text-center">
-        <div class="mx-auto mb-4 h-8 w-8 rounded-full border-2 border-ink-600 border-t-accent {snapshotPending ? 'animate-spin' : ''}"></div>
-        <h1 class="text-base font-medium text-fg-1">
-          {snapshotPending ? "Loading review..." : "Could not load review state"}
-        </h1>
-        <p class="mt-2 text-sm text-fg-3">
-          {snapshotPending
-            ? "Waiting for the desktop backend to return the current snapshot."
-            : (app.error ?? "The desktop backend did not return a snapshot.")}
-        </p>
+        <div class="mx-auto mb-4 h-8 w-8 rounded-full border-2 border-ink-600 border-t-accent animate-spin"></div>
+        <h1 class="text-base font-medium text-fg-1">Loading review...</h1>
+        <p class="mt-2 text-sm text-fg-3">Waiting for the desktop backend to send the open tabs.</p>
       </div>
     </main>
     <Toast toasts={app.toasts} />
@@ -353,29 +350,6 @@
   <TabStrip onToggleRightCollapse={rightRail.toggle} rightCollapsed={rightRail.collapsed} />
 
   <div class="flex-1 flex min-h-0 relative">
-    {#if app.switching && !placeholderTab}
-      <!-- Immediate loading feedback while a slow command (branch open, tab switch) is in flight. -->
-      <div class="absolute inset-0 z-50 flex items-center justify-center bg-ink-900/60 backdrop-blur-sm pointer-events-none">
-        <div class="flex items-center gap-2 px-4 py-2 rounded-md bg-ink-800 border border-ink-600 text-fg-2 text-sm">
-          <svg class="animate-spin w-4 h-4 text-accent" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-            <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/>
-          </svg>
-          {app.switchingLabel ?? "Switching review..."}
-        </div>
-      </div>
-    {/if}
-    {#if app.refreshing}
-      <!-- Loading feedback while force_refresh_diff fetches from the remote. -->
-      <div class="absolute inset-0 z-50 flex items-center justify-center bg-ink-900/60 backdrop-blur-sm pointer-events-none">
-        <div class="flex items-center gap-2 px-4 py-2 rounded-md bg-ink-800 border border-ink-600 text-fg-2 text-sm">
-          <svg class="animate-spin w-4 h-4 text-accent" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-            <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/>
-          </svg>
-          Fetching from remote…
-        </div>
-      </div>
-    {/if}
-
     {#if showDiff}
       <LeftSidebar collapsed={!layoutPanels.left} />
     {/if}
@@ -402,9 +376,7 @@
                 class="flex flex-1 min-w-0 min-h-0"
                 style="flex: {diffColumnFlex};"
               >
-                {#if placeholderTab}
-                  <TabPlaceholder tab={placeholderTab} status={app.switchingLabel} />
-                {:else if isReviewView}
+                {#if isReviewView}
                   <!-- Both review pages share one grid cell; the one not on
                        screen stays mounted so switching back is instant. -->
                   <div class="grid flex-1 min-w-0 min-h-0 grid-cols-[minmax(0,1fr)] grid-rows-[minmax(0,1fr)]">
@@ -472,15 +444,15 @@
         </main>
 
         {#if showRightPanel}
-          {#key app.snapshot ? snapshotViewIdentity(app.snapshot) : "none"}
+          {#key pageView.current ? viewIdentity(pageView.current) : "none"}
             {#if rightRail.collapsed}
               <CollapsedRightRail
-                ai={app.snapshot?.ai ?? null}
+                ai={pageView.current?.ai ?? null}
                 onExpand={expandRightPanelToTab}
               />
             {:else}
               <RightPanel
-                ai={app.snapshot?.ai ?? null}
+                ai={pageView.current?.ai ?? null}
                 width={rightPanelWidth}
                 dragging={resizingRightPanel}
                 onResizeStart={onRightPanelResizeStart}

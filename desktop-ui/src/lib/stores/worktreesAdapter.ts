@@ -1,6 +1,6 @@
 import type { ResourceKey } from "$lib/protocol/generated/ResourceKey";
 import type { Worktrees } from "$lib/protocol/generated/Worktrees";
-import type { AppSnapshot, TabSummary, WorktreeSnapshot } from "$lib/pageTypes";
+import type { TabSummary, WorktreeSnapshot } from "$lib/pageTypes";
 import type { ResourceStore } from "./resourceStore";
 
 export function worktreesKey(root: string): ResourceKey {
@@ -24,18 +24,12 @@ export function worktreesFromResource(wire: Worktrees, root: string): WorktreeSn
 }
 
 interface WorktreesAdapterDeps {
-  /** Whether the backend serves resources (the `v1-service` build). */
-  flagOn: boolean;
   store: Pick<ResourceStore, "get" | "show">;
-  snapshot: () => Pick<AppSnapshot, "worktrees"> | null;
   /** The active row of the tab strip. */
   activeTab: () => Pick<TabSummary, "repo_root"> | null;
 }
 
-/**
- * The active tab's worktrees, read from `app.snapshot` with the flag off and
- * from `worktrees(root)` with it on, once that key is held.
- */
+/** The active tab's worktrees, read from `worktrees(root)` once that key is held. */
 export class WorktreesAdapter {
   private shown: { root: string; release: () => void } | null = null;
 
@@ -43,7 +37,6 @@ export class WorktreesAdapter {
 
   /** Shows the worktrees of the active tab's root, releasing the previous root's. */
   follow(): void {
-    if (!this.deps.flagOn) return;
     const root = this.root();
     if (this.shown?.root === root) return;
     this.shown?.release();
@@ -52,12 +45,10 @@ export class WorktreesAdapter {
 
   /** A tab with no checkout, a remote PR's, has none. */
   get worktrees(): WorktreeSnapshot[] {
-    const rows = this.deps.snapshot()?.worktrees ?? [];
-    if (!this.deps.flagOn) return rows;
     const root = this.root();
     if (!root) return [];
     const held = this.deps.store.get(worktreesKey(root))?.value;
-    return held?.kind === "worktrees" ? worktreesFromResource(held, root) : rows;
+    return held?.kind === "worktrees" ? worktreesFromResource(held, root) : [];
   }
 
   private root(): string {

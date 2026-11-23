@@ -3,23 +3,21 @@ import { resourceClient } from "$lib/protocol/client";
 import type { ErError } from "$lib/protocol/generated/ErError";
 import type { TabKey } from "$lib/protocol/generated/TabKey";
 import type { PendingReview, ReviewLineTarget } from "$lib/reviewSubmit";
-import { v1ServiceRequested } from "$lib/v1ServiceFlag";
 import { app } from "./app.svelte";
 import { GithubWrites, reviewLine } from "./githubWrites";
 import { resources } from "./resourceStore";
 import { tabsResource } from "./tabsResource.svelte";
 
-const flagOn = v1ServiceRequested();
 const client = resourceClient();
 
-/** The GitHub senders, through `er_send` with the flag on. */
-export const githubWrites = new GithubWrites({ flagOn, store: resources, activeKey: () => tabsResource.activeKey });
+/** The GitHub senders, through `er_send`. */
+export const githubWrites = new GithubWrites({ store: resources, activeKey: () => tabsResource.activeKey });
 
-if (flagOn) app.routeCmds((command, args) => githubWrites.route(command, args));
+app.routeCmds((command, args) => githubWrites.route(command, args));
 
-/** The active tab's key while the pending review goes through the resources; null with the flag off. */
+/** The active tab's key, which the pending review is read and written on; null before the tab strip arrives. */
 function sentTab(): TabKey | null {
-  return flagOn ? tabsResource.activeKey : null;
+  return tabsResource.activeKey;
 }
 
 /** A refusal as the old commands reject: its text. */

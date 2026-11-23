@@ -4,7 +4,6 @@ import App from "./App.svelte";
 import { app } from "$lib/stores/app.svelte";
 // Installs the sidebar reads before the first mount reads them.
 import "$lib/stores/projectsResource.svelte";
-import { assertV1ServiceFlagAgreement } from "$lib/v1ServiceFlag";
 import { attachConsole, error as logError, warn as logWarn } from "@tauri-apps/plugin-log";
 
 // Route Rust log output to the browser devtools console.
@@ -67,10 +66,10 @@ async function boot(): Promise<void> {
     // No Tauri runtime (a browser dev server): there is no compiled backend
     // to disagree with, so mount the UI as before.
   }
-  if (backend !== undefined) {
-    // A mismatch throws before the mount, so a build for one path cannot run
-    // against the other.
-    assertV1ServiceFlagAgreement(backend, import.meta.env.VITE_ER_V1_SERVICE);
+  if (backend === false) {
+    // The page reads only the service's resources, which a backend built
+    // without the feature never serves; refuse before the mount.
+    throw new Error("the backend build has v1-service off; rebuild it with its default features");
   }
   mount(App, { target });
 }

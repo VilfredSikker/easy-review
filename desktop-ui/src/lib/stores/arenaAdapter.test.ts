@@ -28,7 +28,7 @@ const RUNNING: Resource = {
 };
 
 /** An adapter over a backend that records what it was asked and answers `created`. */
-function adapter(flagOn: boolean, created: string | null = null) {
+function adapter(created: string | null = null) {
   const moved: string[] = [];
   const sent: Command[] = [];
   const fetched: ResourceKey[] = [];
@@ -38,7 +38,6 @@ function adapter(flagOn: boolean, created: string | null = null) {
     return (command === "arena_start" ? "run-old" : null) as T;
   };
   const run = new ArenaAdapter({
-    flagOn,
     activeKey: () => TAB,
     invoke,
     runsMoved: () => moved.push(sent.at(-1)?.kind ?? ""),
@@ -62,7 +61,7 @@ function adapter(flagOn: boolean, created: string | null = null) {
 
 describe("ArenaAdapter", () => {
   it("has the run list read again after a start, an import and a delete, which nothing pushes", async () => {
-    const { run, moved } = adapter(true, "run-1");
+    const { run, moved } = adapter("run-1");
     await run.start({ scope: "branch", reviewers: [FAKE] });
     await run.acceptFindings("run-1");
     await run.delete("run-1");
@@ -70,16 +69,8 @@ describe("ArenaAdapter", () => {
     expect(moved).toEqual(["arena_start", "arena_accept_findings", "arena_delete"]);
   });
 
-  it("calls the Tauri commands with the flag off", async () => {
-    const { run, sent, invoked } = adapter(false);
-    expect(await run.start({ scope: "branch", reviewers: [FAKE] })).toEqual(["run-old"]);
-    await run.cancel("run-1");
-    expect(invoked.map(([command]) => command)).toEqual(["arena_start", "arena_cancel"]);
-    expect(sent).toEqual([]);
-  });
-
   it("sends a batch start keyed to the active tab and reads its run ids, one per line", async () => {
-    const { run, sent } = adapter(true, "run-a\nrun-b");
+    const { run, sent } = adapter("run-a\nrun-b");
     const ids = await run.start({
       scope: "branch",
       groups: [{ agent_kind: "security", models: [FAKE] }],
@@ -95,14 +86,14 @@ describe("ArenaAdapter", () => {
   });
 
   it("reads the accepted count from the Ack and a run from its JSON text", async () => {
-    const { run, fetched } = adapter(true, "3");
+    const { run, fetched } = adapter("3");
     expect(await run.acceptFindings("run-1", ["f-1"])).toBe(3);
     expect((await run.get("run-1")).run.id).toBe("run-1");
     expect(fetched).toEqual([{ kind: "arena_run", tab: TAB, run_id: "run-1" }]);
   });
 
   it("reads a live run's progress from jobs and lists only the live runs as background runs", async () => {
-    const { run, invoked } = adapter(true);
+    const { run, invoked } = adapter();
     expect((await run.progress("run-1")).thinking).toEqual(["fake-1"]);
     const shown = run.overlay({ active_arena_run: "stale", arena_runs: [], background_arena_runs: [] } as unknown as AppSnapshot, []);
     expect(shown.background_arena_runs?.map((s) => s.id)).toEqual(["run-1"]);

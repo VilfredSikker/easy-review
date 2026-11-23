@@ -7,7 +7,7 @@ import type { Project } from "$lib/protocol/generated/Project";
 import type { ProjectReviewSettingsPatch } from "$lib/protocol/generated/ProjectReviewSettingsPatch";
 import type { Prs } from "$lib/protocol/generated/Prs";
 import type { ResourceKey } from "$lib/protocol/generated/ResourceKey";
-import type { AppSnapshot, BranchInfo, ProjectSnapshot, TabSummary } from "$lib/pageTypes";
+import type { BranchInfo, ProjectSnapshot, TabSummary } from "$lib/pageTypes";
 import { projectPrFields, prsKey } from "./prsAdapter";
 import { resourceKeyId, type ResourceStore } from "./resourceStore";
 
@@ -97,44 +97,34 @@ export function projectsFromResource(
 const ACK_FETCH_WAIT_MS = 2_000;
 
 interface ProjectsAdapterDeps {
-  /** Whether the backend serves resources (the `v1-service` build). */
-  flagOn: boolean;
   store: Pick<ResourceStore, "get" | "show" | "send">;
   client: Pick<ResourceClient, "fetch">;
-  snapshot: () => Pick<AppSnapshot, "projects"> | null;
   /** The active row of the tab strip. */
   activeTab: () => TabSummary | null;
-  /** The old command path, which answers a snapshot; used with the flag off. */
-  command: (name: string, args: Record<string, unknown>) => Promise<void>;
-  /** A plain command call: the old path's list read, and its review-settings change, which `command` could drop. */
-  invoke: <T>(name: string, args: Record<string, unknown>) => Promise<T>;
   report: (command: string, e: ErError) => void;
-  /** Applies the snapshot an old command answered (`app.ingestCommandSnapshot`); flag off only. */
-  ingest: (snapshot: AppSnapshot) => void;
   /** The clock the PR lists are aged by. */
   now?: () => number;
-  /** Told how long a flag-on write took from the call until its `Ack`'s versions were held. */
+  /** Told how long a write took from the call until its `Ack`'s versions were held. */
   profile?: (command: string, ms: number) => void;
   sleep?: (ms: number) => Promise<void>;
 }
 
 /**
- * The sidebar's projects, read from `app.snapshot` with the flag off and
- * from the `projects` and `branches` resources with it on, behind one read
- * API; and the project commands, sent through the old commands or `er_send`.
+ * The sidebar's projects, read from the `projects` and `branches` resources,
+ * and the project commands, sent through `er_send`.
  */
 export class ProjectsAdapter {
   private readonly branchHolds = new Map<string, () => void>();
   private readonly prHolds = new Map<string, () => void>();
 
   constructor(private readonly deps: ProjectsAdapterDeps) {
-    if (deps.flagOn) deps.store.show(PROJECTS_KEY);
+    deps.store.show(PROJECTS_KEY);
   }
 
-  /** Until the `projects` resource first arrives, the flag-on page shows the snapshot's rows. */
+  /** Empty until the `projects` resource first arrives. */
   get projects(): ProjectSnapshot[] {
-    const held = this.deps.flagOn ? this.deps.store.get(PROJECTS_KEY)?.value : undefined;
-    if (held?.kind !== "projects") return this.deps.snapshot()?.projects ?? [];
+    const held = this.deps.store.get(PROJECTS_KEY)?.value;
+    if (held?.kind !== "projects") return [];
     const branches = (project: string) => {
       const value = this.deps.store.get(branchesKey(project))?.value;
       return value?.kind === "branches" ? value : undefined;
@@ -143,7 +133,12 @@ export class ProjectsAdapter {
     return projectsFromResource(held.projects, branches, (remote) => this.prs(remote), this.deps.activeTab(), now);
   }
 
-  /** The ids the `projects` resource lists; empty until it arrives or with the flag off. */
+  /** Whether the `projects` resource has arrived. */
+  get loaded(): boolean {
+    return this.deps.store.get(PROJECTS_KEY)?.value?.kind === "projects";
+  }
+
+  /** The ids the `projects` resource lists; empty until it arrives. */
   get projectIds(): string[] {
     const held = this.deps.store.get(PROJECTS_KEY)?.value;
     return held?.kind === "projects" ? held.projects.map((p) => p.id) : [];
@@ -166,28 +161,25 @@ export class ProjectsAdapter {
 
   /** Shows the PR lists of exactly these remotes, releasing the rest. */
   showPrs(remotes: readonly string[]): void {
-    if (!this.deps.flagOn) return;
     showExactly(this.prHolds, remotes, (remote) => this.deps.store.show(prsKey(remote)));
   }
 
   /** Shows the branches of exactly these projects, releasing the rest. */
   showBranches(ids: readonly string[]): void {
-    if (!this.deps.flagOn) return;
     showExactly(this.branchHolds, ids, (id) => this.deps.store.show(branchesKey(id)));
   }
 
   reorder(orderedIds: string[]): Promise<void> {
-    return this.write("reorder_projects", { orderedIds }, { kind: "reorder_projects", ordered: orderedIds });
+    return this.write("reorder_projects", { kind: "reorder_projects", ordered: orderedIds });
   }
 
   deleteProject(projectId: string): Promise<void> {
-    return this.write("delete_project", { projectId }, { kind: "delete_project", project: projectId });
+    return this.write("delete_project", { kind: "delete_project", project: projectId });
   }
 
   addTrackedBranch(projectId: string, name: string): Promise<void> {
     return this.write(
       "add_tracked_branch",
-      { projectId, name },
       { kind: "add_tracked_branch", project: projectId, name },
     );
   }
@@ -195,7 +187,6 @@ export class ProjectsAdapter {
   removeTrackedBranch(projectId: string, name: string): Promise<void> {
     return this.write(
       "remove_tracked_branch",
-      { projectId, name },
       { kind: "remove_tracked_branch", project: projectId, name },
     );
   }
@@ -207,43 +198,36 @@ export class ProjectsAdapter {
       reviewIgnoreGlobRemove: null,
       ...change,
     };
-    if (!this.deps.flagOn) return this.invokeAndIngest("patch_project_review_settings", { projectId, patch });
     return this.write(
       "patch_project_review_settings",
-      { projectId, patch },
       { kind: "patch_project_review_settings", project: projectId, patch },
     );
   }
 
   refreshPrList(): Promise<void> {
-    return this.write("refresh_pr_list", {}, { kind: "refresh_pr_list" });
+    return this.write("refresh_pr_list", { kind: "refresh_pr_list" });
   }
 
   refreshProjectPrList(projectId: string): Promise<void> {
-    return this.write("refresh_project_pr_list", { projectId }, { kind: "refresh_project_pr_list", project: projectId });
+    return this.write("refresh_project_pr_list", { kind: "refresh_project_pr_list", project: projectId });
   }
 
-  /**
-   * Flag off, the old command paints the pin at once. Flag on, nothing
-   * paints: the server keeps the 50-pin cap, and the `prs` push shows it.
-   */
+  /** Nothing paints: the server keeps the 50-pin cap, and the `prs` push shows it. */
   savePr(projectId: string, prNumber: number, title: string): Promise<void> {
     return this.write(
       "save_pr",
-      { projectId, prNumber, title },
       { kind: "save_pr", project: projectId, number: prNumber, title },
     );
   }
 
   unsavePr(projectId: string, prNumber: number): Promise<void> {
-    return this.write("unsave_pr", { projectId, prNumber }, { kind: "unsave_pr", project: projectId, number: prNumber });
+    return this.write("unsave_pr", { kind: "unsave_pr", project: projectId, number: prNumber });
   }
 
-  /** As `savePr`: flag on, the server's dismissed filter shows in the `prs` push. */
+  /** As `savePr`: the server's dismissed filter shows in the `prs` push. */
   dismissPr(projectId: string, prNumber: number): Promise<void> {
     return this.write(
       "dismiss_remote_pr",
-      { projectId, prNumber },
       { kind: "dismiss_pr", project: projectId, number: prNumber },
     );
   }
@@ -251,28 +235,22 @@ export class ProjectsAdapter {
   undismissPr(projectId: string, prNumber: number): Promise<void> {
     return this.write(
       "undismiss_remote_pr",
-      { projectId, prNumber },
       { kind: "undismiss_pr", project: projectId, number: prNumber },
     );
   }
 
   /** Local branches neither checked out nor tracked; read once, never shown. */
   async availableBranches(projectId: string): Promise<string[]> {
-    if (!this.deps.flagOn) {
-      return this.deps.invoke<string[]>("list_available_branches", { projectId });
-    }
     const [entry] = await this.deps.client.fetch([{ kind: "available_branches", project: projectId }]);
     return entry?.value.kind === "available_branches" ? entry.value.branches : [];
   }
 
   /**
-   * Flag off, the old command, which repaints from the snapshot it answers.
-   * Flag on, `er_send`; it resolves once each resource the `Ack` names is
-   * held at that version, so the caller's pending paint gives way to the
-   * new rows and not to the old ones.
+   * Sends `command`; it resolves once each resource the `Ack` names is held
+   * at that version, so the caller's pending paint gives way to the new rows
+   * and not to the old ones.
    */
-  private async write(name: string, args: Record<string, unknown>, command: Command): Promise<void> {
-    if (!this.deps.flagOn) return this.deps.command(name, args);
+  private async write(name: string, command: Command): Promise<void> {
     const started = performance.now();
     let ack;
     try {
@@ -289,20 +267,6 @@ export class ProjectsAdapter {
       await sleep(16);
     }
     this.deps.profile?.(name, performance.now() - started);
-  }
-
-  /**
-   * The old command called directly and its snapshot applied, as SettingsPage
-   * did before. `command` (`app.cmd`) drops any non-tab command while a tab
-   * switch is in flight, with no toast, which would lose a review-settings edit.
-   */
-  private async invokeAndIngest(name: string, args: Record<string, unknown>): Promise<void> {
-    try {
-      this.deps.ingest(await this.deps.invoke<AppSnapshot>(name, args));
-    } catch (e) {
-      // The old command rejects with a string; the toast reads as it did.
-      this.deps.report(name, { kind: "internal", message: String(e) });
-    }
   }
 
   private prs(remote: string): Prs | undefined {

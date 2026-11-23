@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { ThreadSnapshot } from "$lib/pageTypes";
-  import { app } from "$lib/stores/app.svelte";
+  import { pageView } from "$lib/stores/pageView.svelte";
   import { pendingReview } from "$lib/stores/pendingReview.svelte";
   import { reviewPage } from "$lib/stores/reviewPage.svelte";
   import { navigateToThread } from "$lib/dom";
@@ -26,7 +26,7 @@
   }
   const { prNumber, anchor }: Props = $props();
 
-  const snapshot = $derived(app.snapshot);
+  const snapshot = $derived(pageView.current);
   const github = $derived(snapshot?.github ?? null);
   const review = $derived(pendingReview.review);
   const comments = $derived(review?.comments ?? []);

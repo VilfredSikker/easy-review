@@ -2,6 +2,7 @@
   import { tick } from "svelte";
   import type { AiSnapshot, FlatFinding } from "$lib/pageTypes";
   import { app } from "$lib/stores/app.svelte";
+  import { pageView } from "$lib/stores/pageView.svelte";
   import { reviewPage } from "$lib/stores/reviewPage.svelte";
   import { findingsVisibility } from "$lib/stores/findingsVisibility.svelte";
   import { navigateToFinding } from "$lib/dom";
@@ -29,9 +30,9 @@
 
   const { ai: aiOverride, onPrView: prViewOverride }: Props = $props();
 
-  const ai = $derived(aiOverride !== undefined ? aiOverride : (app.snapshot?.ai ?? null));
+  const ai = $derived(aiOverride !== undefined ? aiOverride : (pageView.current?.ai ?? null));
   const onPrView = $derived(
-    prViewOverride ?? activeDiffSource(app.snapshot?.mode, app.snapshot?.tour?.scope) === "pr",
+    prViewOverride ?? activeDiffSource(pageView.current?.mode, pageView.current?.tour?.scope) === "pr",
   );
   // The Gate (CONTEXT.md) the right panel and the diff use, so the three lists
   // never disagree about which findings exist.
@@ -57,7 +58,6 @@
   // Resolve keeps the finding, dimmed, where Dismiss removes it (ADR 0047).
   function toggleResolved(finding: FlatFinding) {
     const command = finding.resolved ? "unresolve_finding" : "resolve_finding";
-    if (!app.canPaintOptimistic()) return app.explainPaintBlocked(command);
     void app.cmd(command, { findingId: finding.id });
   }
 
@@ -69,7 +69,6 @@
 
   async function submitPromote(body: string) {
     if (!promoting) return;
-    if (!app.canPaintOptimistic()) return app.explainPaintBlocked("promote_finding_to_comment");
     promoteError = null;
     try {
       await app.cmd(

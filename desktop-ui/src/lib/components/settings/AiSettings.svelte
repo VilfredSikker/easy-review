@@ -95,7 +95,7 @@
     }
     refreshing = true;
     try {
-      await settingsResource.refreshModels(provider.id, provider.label);
+      await settingsResource.refreshModels(provider.id);
     } catch (e) {
       app.showToast("error", `refresh_ai_models: ${e}`);
     } finally {

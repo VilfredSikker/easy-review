@@ -10,7 +10,7 @@ import type { AppSnapshot, DiffStaleSnapshot, FileSnapshot, ThreadSnapshot } fro
 import { joinedHunks, threadsOn } from "$lib/threadJoin";
 import type { ResourceStore } from "./resourceStore";
 
-/** The snapshot fields `diff(tab)` replaces with the flag on. */
+/** The view's fields that `diff(tab)` lays down. */
 export type DiffSlice = Pick<
   AppSnapshot,
   | "files"
@@ -60,16 +60,12 @@ const EMPTY: DiffSlice = {
   selected_commit_sha: null,
 };
 
-export function sliceFromSnapshot(snapshot: DiffSlice | null): DiffSlice {
-  return snapshot ?? EMPTY;
-}
-
 /** A file row as the list shows it, before its hunks are fetched by hash. */
 export function fileFromRow(row: FileRow): FileSnapshot {
   return { ...row, status: row.status as FileSnapshot["status"], hunks: [] } as FileSnapshot;
 }
 
-/** Where a file's hunks and threads come from with the flag on. */
+/** Where a file's hunks and threads come from. */
 export interface HunkSource {
   /** The hunks the page holds under a hash. */
   get: (hash: string) => Hunk[] | undefined;
@@ -78,7 +74,7 @@ export interface HunkSource {
 }
 
 /**
- * The App's snapshot with `slice` in place of its fields. Each file draws
+ * The view with `slice` in place of its fields. Each file draws
  * the hunks its hash names, with the threads that sit on them; a file whose
  * hunks the page does not hold yet is a stub, which the view fetches.
  */
@@ -224,10 +220,7 @@ export function wireDiffCommand(command: string, a: Args, tab: TabKey): Command 
 }
 
 interface DiffAdapterDeps {
-  /** Whether the backend serves resources (the `v1-service` build). */
-  flagOn: boolean;
   store: Pick<ResourceStore, "get" | "send" | "whenAt">;
-  snapshot: () => DiffSlice | null;
   /** The registry's active tab, whose diff the page shows. */
   activeKey: () => TabKey | null;
   /** The wire key of the strip's row at `idx`. */
@@ -238,36 +231,32 @@ interface DiffAdapterDeps {
   hunks?: HunkSource;
 }
 
-/**
- * The active tab's file list, mode, base, staleness and commits: from
- * `app.snapshot` with the flag off, and from `diff(tab)` with it on.
- */
+/** The active tab's file list, mode, base, staleness and commits, from `diff(tab)`. */
 export class DiffAdapter {
   constructor(private readonly deps: DiffAdapterDeps) {}
 
   read(): DiffSlice {
     const held = this.held();
-    if (!held) return sliceFromSnapshot(this.deps.snapshot());
+    if (!held) return EMPTY;
     return sliceFromResource(held, this.deps.prHead());
   }
 
-  /** `raw` with this adapter's fields in place of the App's. */
+  /** `raw` with this adapter's fields laid over it. */
   overlay(raw: AppSnapshot): AppSnapshot {
     const held = this.held();
     if (!held) return raw;
     return overlaySnapshot(raw, sliceFromResource(held, this.deps.prHead()), this.deps.hunks);
   }
 
-  /** The active tab's diff as the resource holds it; null with the flag off or before the first fetch. */
+  /** The active tab's diff as the resource holds it; null before the first fetch. */
   held(): TabDiff | null {
-    if (!this.deps.flagOn) return null;
     const key = this.deps.activeKey();
     if (key === null) return null;
     const value = this.deps.store.get(diffKey(key))?.value;
     return value?.kind === "diff" ? value : null;
   }
 
-  /** Whether the page draws the active tab's hunks by hash: the flag is on and its diff is held. */
+  /** Whether the page draws the active tab's hunks by hash: its diff is held. */
   hashed(): boolean {
     return this.held() !== null;
   }
@@ -293,12 +282,11 @@ export class DiffAdapter {
   }
 
   /**
-   * With the flag on, a diff command goes through `er_send` on the active
-   * tab and resolves once every key its `Ack` names is held; null for any
-   * other command and for every command with the flag off. A click painted on a tab that is no longer active does nothing.
+   * A diff command goes through `er_send` on the active tab and resolves
+   * once every key its `Ack` names is held; null for any other command. A
+   * click painted on a tab that is no longer active does nothing.
    */
   route(command: string, args: Args = {}): Promise<void> | null {
-    if (!this.deps.flagOn) return null;
     const active = this.deps.activeKey();
     if (active === null) return null;
     const wire = wireDiffCommand(command, args, active);

@@ -85,13 +85,11 @@ const KEY = 7;
 
 function adapter(
   store: ResourceStore,
-  opts: { flagOn?: boolean; snap?: DiffSlice | null; head?: string; hunks?: HunkSource } = {},
+  opts: { snap?: DiffSlice | null; head?: string; hunks?: HunkSource } = {},
 ) {
   return new DiffAdapter({
     hunks: opts.hunks,
-    flagOn: opts.flagOn ?? true,
     store,
-    snapshot: () => opts.snap ?? null,
     activeKey: () => KEY,
     keyAt: (idx) => (idx === 0 ? KEY : 99),
     prHead: () => (opts.head ? { head_oid: opts.head, head_ref: "feature", base_ref: "main" } : null),
@@ -99,15 +97,7 @@ function adapter(
 }
 
 describe("DiffAdapter", () => {
-  it("reads the snapshot with the flag off and never fetches", async () => {
-    const { calls, store } = backend([{ version: 1, value: { kind: "diff", ...tabDiff() } }]);
-    const diff = adapter(store, { flagOn: false, snap: snapshot({ mode: "branch" }) });
-    await settle();
-    expect(diff.files.map((f) => f.path)).toEqual(["history/commit.rs"]);
-    expect(calls).toEqual([]);
-  });
-
-  it("reads the file list, counts and scope stats from diff(tab) with the flag on", async () => {
+  it("reads the file list, counts and scope stats from diff(tab)", async () => {
     const { store } = backend([{ version: 4, value: { kind: "diff", ...tabDiff() } }]);
     store.show(diffKey(KEY));
     await settle();
@@ -222,7 +212,6 @@ describe("DiffAdapter", () => {
       { kind: "set_filter", tab: KEY, query: "" },
       { kind: "refresh_diff", tab: KEY, sync: true },
     ]);
-    expect(adapter(store, { flagOn: false }).route("refresh_diff")).toBeNull();
   });
 
   it("maps each of the ten commands", () => {
@@ -242,7 +231,7 @@ describe("DiffAdapter", () => {
   });
 });
 
-describe("the stale marks with the flag on", () => {
+describe("the stale marks", () => {
   it("reads no snapshot stale mark or divergence", () => {
     const source = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "diffAdapter.ts"), "utf8");
     const start = source.indexOf("export function sliceFromResource(");

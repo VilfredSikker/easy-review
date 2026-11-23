@@ -3,6 +3,7 @@
 // own provider picker and reviewer view.
 
 import { app } from "$lib/stores/app.svelte";
+import { pageView } from "$lib/stores/pageView.svelte";
 import { tabsResource } from "$lib/stores/tabsResource.svelte";
 import { arena } from "$lib/stores/arena.svelte";
 import { browser } from "$lib/stores/browser.svelte";
@@ -162,7 +163,7 @@ export function actionsMenu(snapshot: AppSnapshot | null, r: PaletteRunners): Co
       group: "Actions",
       kbd: "e",
       run: () => r.dismissAndRun(() =>
-        openSource("open_in_vscode", selectedSource(app.snapshot)).then((res) => {
+        openSource("open_in_vscode", selectedSource(pageView.current)).then((res) => {
           if (res.kind === "needs_checkout") app.showToast("info", res.target);
         }).catch((e) => app.showToast("error", `VS Code: ${asErError(e).message}`)),
       ),

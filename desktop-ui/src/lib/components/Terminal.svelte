@@ -2,7 +2,7 @@
   import { onDestroy } from "svelte";
   import { Terminal as XTerm } from "@xterm/xterm";
   import "@xterm/xterm/css/xterm.css";
-  import { app } from "$lib/stores/app.svelte";
+  import { pageView } from "$lib/stores/pageView.svelte";
   import { asErError } from "$lib/protocol/client";
   import { terminal } from "$lib/stores/terminal.svelte";
   import { terminalRepoName } from "$lib/stores/terminalTabs";
@@ -28,7 +28,7 @@
   /** After killSession, block remount until the drawer is hidden and reopened. */
   let sessionEnded = $state(false);
 
-  const branch = $derived(app.snapshot?.branch ?? "");
+  const branch = $derived(pageView.current?.branch ?? "");
 
   const xtermTheme = $derived(xtermThemeFor(themeByName(sessionResource.theme)));
   // Re-theme a live terminal when the app theme changes.

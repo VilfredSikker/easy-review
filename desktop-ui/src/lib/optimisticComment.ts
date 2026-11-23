@@ -1,4 +1,4 @@
-import { snapshotViewIdentity } from "./snapshotChrome";
+import { viewIdentity as identityOf } from "./viewIdentity";
 import type { AppSnapshot, FileSnapshot, ThreadSnapshot } from "./pageTypes";
 
 export const ADD_THREAD_COMMANDS = ["add_question", "add_note"] as const;
@@ -239,7 +239,7 @@ export function reapplyOptimisticThreads(
   snap: AppSnapshot,
   pending: OptimisticThread[],
 ): void {
-  const identity = snapshotViewIdentity(snap);
+  const identity = identityOf(snap);
   for (const p of pending) {
     if (p.viewIdentity !== identity) continue;
     if (snap.ai.threads.some((t) => t.id === p.id)) continue;

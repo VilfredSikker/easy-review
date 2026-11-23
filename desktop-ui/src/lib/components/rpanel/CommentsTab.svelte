@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { AiSnapshot } from "$lib/pageTypes";
   import { app } from "$lib/stores/app.svelte";
+  import { pageView } from "$lib/stores/pageView.svelte";
   import { commentThreadsFromDiff, hiddenGithubHint } from "$lib/commentVisibility";
   import { navigateToThread } from "$lib/dom";
   import { baseName } from "$lib/shortFileName";
@@ -46,12 +47,12 @@
     note: "shadow-[inset_2px_0_0_color-mix(in_srgb,var(--color-note)_70%,transparent)]",
   };
 
-  const files = $derived(app.snapshot?.files);
+  const files = $derived(pageView.current?.files);
   const fileOrder = $derived((files ?? []).map((f) => f.path));
 
   // Set from the Overview's reviewer popover. It narrows the counts too, so the
   // chips describe the list on screen.
-  const author = $derived(commentsAuthorFilter.authorFor(reviewPageTabKey(app.snapshot)));
+  const author = $derived(commentsAuthorFilter.authorFor(reviewPageTabKey(pageView.current)));
   const threads = $derived(threadsByAuthor(panelThreads(ai?.threads, app.commentVisibility, files), author));
   // Under an author filter the gap is that filter's doing, not resolved threads.
   const hiddenGithub = $derived(
@@ -62,7 +63,7 @@
   const counts = $derived(kindCounts(threads));
   const rows = $derived(commentRows(threads, rightPanelFilters.kind, fileOrder));
 
-  const pulling = $derived(app.snapshot?.bg_loading?.gh_comments ?? false);
+  const pulling = $derived(pageView.current?.bg_loading?.gh_comments ?? false);
   const freshness = $derived(pulling ? "pulling…" : "synced");
 
   let manualPulling = $state(false);

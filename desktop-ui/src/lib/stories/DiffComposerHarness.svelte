@@ -2,7 +2,7 @@
   import { untrack } from "svelte";
   import DiffComposer from "$lib/components/DiffComposer.svelte";
   import { diffSel } from "$lib/stores/diffSelection.svelte";
-  import { app } from "$lib/stores/app.svelte";
+  import { pageView } from "$lib/stores/pageView.svelte";
   import type { AppSnapshot } from "$lib/pageTypes";
 
   /**
@@ -30,7 +30,7 @@
   }: Props = $props();
 
   $effect(() => {
-    if (snapshot) app.snapshot = snapshot;
+    if (snapshot) pageView.current = snapshot;
   });
 
   $effect(() => {

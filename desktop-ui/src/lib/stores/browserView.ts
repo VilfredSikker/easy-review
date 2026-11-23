@@ -1,6 +1,6 @@
 import type { ResourceKey } from "$lib/protocol/generated/ResourceKey";
 import type { TabKey } from "$lib/protocol/generated/TabKey";
-import type { AppSnapshot, BrowserSnapshot } from "$lib/pageTypes";
+import type { BrowserSnapshot } from "$lib/pageTypes";
 import type { ResourceStore } from "./resourceStore";
 
 /** What the browser pane shows before a tab's browser state was ever written. */
@@ -17,10 +17,7 @@ export function viewKey(tab: TabKey): ResourceKey {
 }
 
 interface BrowserViewDeps {
-  /** Whether the backend serves resources (the `v1-service` build). */
-  flagOn: boolean;
   store: Pick<ResourceStore, "get" | "show">;
-  snapshot: () => Pick<AppSnapshot, "browser"> | null;
   /** The active tab's wire key, from the tabs adapter. */
   activeKey: () => TabKey | null;
   /**
@@ -31,9 +28,8 @@ interface BrowserViewDeps {
 }
 
 /**
- * The active tab's review browser, read from `app.snapshot.browser` with the
- * flag off and from that tab's `view` resource with it on. The read shows the
- * active tab's key and releases the one it showed before.
+ * The active tab's review browser, read from that tab's `view` resource. The
+ * read shows the active tab's key and releases the one it showed before.
  */
 export class BrowserViewAdapter {
   private shownTab: TabKey | null = null;
@@ -42,7 +38,6 @@ export class BrowserViewAdapter {
   constructor(private readonly deps: BrowserViewDeps) {}
 
   read(): BrowserSnapshot {
-    if (!this.deps.flagOn) return { ...NO_BROWSER, ...this.deps.snapshot()?.browser };
     const tab = this.deps.activeKey();
     if (tab === null) return NO_BROWSER;
     if (tab !== this.shownTab) this.follow(tab);

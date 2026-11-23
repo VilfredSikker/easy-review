@@ -5,7 +5,7 @@ import type { TabKey } from "$lib/protocol/generated/TabKey";
 import type { TabKind } from "$lib/protocol/generated/TabKind";
 import type { TabRow } from "$lib/protocol/generated/TabRow";
 import type { Tabs } from "$lib/protocol/generated/Tabs";
-import type { AppSnapshot, TabSummary } from "$lib/pageTypes";
+import type { TabSummary } from "$lib/pageTypes";
 import type { ResourceStore } from "./resourceStore";
 
 export const TABS_KEY: ResourceKey = { kind: "tabs" };
@@ -14,12 +14,6 @@ export const TABS_KEY: ResourceKey = { kind: "tabs" };
 export interface TabsView {
   tabs: TabSummary[];
   active: number;
-}
-
-type TabsSlice = Pick<AppSnapshot, "tabs" | "active_tab">;
-
-export function tabsFromSnapshot(snapshot: TabsSlice | null): TabsView {
-  return { tabs: snapshot?.tabs ?? [], active: snapshot?.active_tab ?? 0 };
 }
 
 /** The snapshot names a local PR tab by the branch view it opens. */
@@ -135,7 +129,7 @@ function tabCommand(command: string, a: Args, keyAt: (idx: number) => TabKey | n
 function openCommand(command: string, a: Args): Command | null | undefined {
   const replace = a.replace === true;
   switch (command) {
-    // A PR branch opens as the PR's review, as the flag-on command does.
+    // A PR branch opens as the PR's review, as the service's open does.
     case "open_pr_review":
     case "open_pr_branch":
       return { kind: "open_pr_review", projectId: String(a.projectId), prNumber: Number(a.prNumber), replace };
@@ -178,30 +172,29 @@ function prefetchCommand(a: Args): Command | null {
 }
 
 interface TabsAdapterDeps {
-  /** Whether the backend serves resources (the `v1-service` build). */
-  flagOn: boolean;
   store: Pick<ResourceStore, "get" | "show" | "send" | "whenAt">;
-  snapshot: () => TabsSlice | null;
-  /** A tab's staleness with the flag on. */
+  /** The rows that fill in what the registry does not hold yet. */
+  rows: () => readonly TabSummary[];
+  /** A tab's staleness. */
   stale?: TabStaleness;
 }
 
-/**
- * The open tabs, read from `app.snapshot` with the flag off and from the
- * `tabs` resource with it on, behind one read API.
- */
+/** The open tabs, read from the `tabs` resource. */
 export class TabsAdapter {
   constructor(private readonly deps: TabsAdapterDeps) {
-    if (deps.flagOn) deps.store.show(TABS_KEY);
+    deps.store.show(TABS_KEY);
   }
 
   read(): TabsView {
-    const snapshot = this.deps.snapshot();
-    if (!this.deps.flagOn) return tabsFromSnapshot(snapshot);
-    const held = this.deps.store.get(TABS_KEY)?.value;
+    const held = this.held();
     // Until the first fetch answers there are no rows to show.
-    if (held?.kind !== "tabs") return tabsFromSnapshot(snapshot);
-    return tabsFromResource(held, snapshot?.tabs ?? [], this.deps.stale);
+    if (held === null) return { tabs: [], active: 0 };
+    return tabsFromResource(held, this.deps.rows(), this.deps.stale);
+  }
+
+  /** Whether the first fetch has answered. */
+  get loaded(): boolean {
+    return this.held() !== null;
   }
 
   /** The PR tabs in the strip and their `owner/repo`, whose stale mark reads their diff and PR list. */
@@ -225,7 +218,7 @@ export class TabsAdapter {
     return view.tabs.find((tab) => tab.is_active) ?? view.tabs[view.active] ?? null;
   }
 
-  /** The active tab's wire key; null with the flag off or before the first fetch. */
+  /** The active tab's wire key; null before the first fetch. */
   get activeKey(): TabKey | null {
     return this.held()?.active ?? null;
   }
@@ -236,12 +229,10 @@ export class TabsAdapter {
   }
 
   /**
-   * With the flag on, a tab command or an open goes through `er_send` and
-   * resolves once every key its `Ack` names is held at that version; null for
-   * any other command, and for every command with the flag off.
+   * A tab command or an open goes through `er_send` and resolves once every
+   * key its `Ack` names is held at that version; null for any other command.
    */
   route(command: string, args: Args = {}): Promise<void> | null {
-    if (!this.deps.flagOn) return null;
     let wire: Command | null | undefined;
     try {
       wire = wireCommand(command, args, (idx) => this.keyAt(idx));
@@ -263,7 +254,6 @@ export class TabsAdapter {
   }
 
   private held(): Tabs | null {
-    if (!this.deps.flagOn) return null;
     const held = this.deps.store.get(TABS_KEY)?.value;
     return held?.kind === "tabs" ? held : null;
   }

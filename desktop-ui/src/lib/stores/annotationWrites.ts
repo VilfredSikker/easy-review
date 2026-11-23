@@ -52,7 +52,7 @@ export function withPending(ai: AiSnapshot, paints: readonly PendingPaint[]): Ai
 /** The id prefix each sidecar keeps; a client id with another prefix is replaced on the server. */
 const ID_PREFIX: Record<ThreadSnapshot["kind"], string> = { comment: "c", note: "n", question: "q" };
 
-/** The annotation writes `er_send` carries with the flag on. */
+/** The annotation writes `er_send` carries. */
 const ROUTED: ReadonlySet<string> = new Set([
   "add_question",
   "add_note",
@@ -332,8 +332,6 @@ function uiWrite(command: string, a: Args, tab: TabKey, view: PaintedView): Writ
 }
 
 interface AnnotationWritesDeps {
-  /** Whether the backend serves resources (the `v1-service` build). */
-  flagOn: boolean;
   store: Pick<ResourceStore, "get" | "send" | "whenAt">;
   /** The registry's active tab, the one the page paints. */
   activeKey: () => TabKey | null;
@@ -342,7 +340,7 @@ interface AnnotationWritesDeps {
 }
 
 /**
- * The annotation writes with the flag on: each goes through `er_send` keyed
+ * The annotation writes: each goes through `er_send` keyed
  * to the active tab and the view `annotations(tab)` named, so the server
  * refuses one painted on a view the tab left. A create shows its row at once
  * and keeps it pending until every key the `Ack` names is held; the other
@@ -360,7 +358,7 @@ export class AnnotationWrites {
   }
 
   route(command: string, args: Args = {}): Promise<void> | null {
-    if (!this.deps.flagOn || !ROUTED.has(command)) return null;
+    if (!ROUTED.has(command)) return null;
     if (command === "reply_to_finding" && pick(args, "aiAssist", "ai_assist") === true) return null;
     const tab = this.deps.activeKey();
     if (tab === null) return null;
