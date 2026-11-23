@@ -447,10 +447,7 @@ impl App {
     }
 
     pub fn arena_branch_ref(&self) -> String {
-        let tab = self.tab();
-        tab.local_branch_view
-            .clone()
-            .unwrap_or_else(|| tab.current_branch.clone())
+        self.tab().identity().branch_ref().to_string()
     }
 
     pub fn arena_list_summaries(

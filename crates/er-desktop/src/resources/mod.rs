@@ -11,6 +11,8 @@
 pub mod annotation_writes;
 #[cfg(feature = "v1-service")]
 pub mod annotations;
+#[cfg(feature = "v1-service")]
+pub mod arena;
 pub mod commands;
 #[cfg(feature = "v1-service")]
 pub mod diff;

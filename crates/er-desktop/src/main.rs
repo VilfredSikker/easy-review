@@ -1133,7 +1133,7 @@ fn main() {
     );
     #[cfg(feature = "v1-service")]
     if let Ok(app) = app_arc.lock() {
-        er_desktop::arena_service::attach(&app, Arc::clone(&service));
+        er_desktop::arena_commands::attach_live_runs(&app, Arc::clone(&service));
         er_desktop::flow_service::reconcile_on_load(&app, &service);
     }
     let desktop = er_desktop::state::DesktopState {
@@ -1167,6 +1167,7 @@ fn main() {
         auto_triage_in_flight: Arc::new(Mutex::new(std::collections::HashSet::new())),
         line_commits_cache: Arc::default(),
         session: session.clone(),
+        live_jobs: Default::default(),
     };
     let state = AppState::new(desktop.clone(), Arc::clone(&app_arc));
     #[cfg(feature = "v1-service")]

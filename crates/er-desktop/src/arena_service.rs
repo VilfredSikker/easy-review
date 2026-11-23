@@ -1,37 +1,138 @@
-//! The arena commands on the flag path. Each reads the tab and the App's
-//! settings here, where they live, and sends the command to the workspace
-//! actor, which runs the arena and its jobs. Reads never wait on the actor
-//! (ADR 0067): progress and live status come from its published view, and run
-//! records from the store.
+//! The arena on the flag path. Each command names a tab, or takes the
+//! registry's active one, and builds its context from that tab's published
+//! content and the settings actor's view, then sends the command to the tab's
+//! workspace actor, which runs the arena and its jobs. Reads never wait on the
+//! actor (ADR 0067): progress and live status come from its published view,
+//! and run records from the store. The App is out of reach here: every
+//! function takes `DesktopState`.
 //!
 //! Only compiled with `v1-service`.
 
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
-use er_engine::app::App;
 use er_engine::arena::{
-    ArenaBatchStartParams, ArenaDiffPreview, ArenaProgressState, ArenaStartParams,
+    ArenaBatchStartParams, ArenaDiffPreview, ArenaProgressState, ArenaRunSnapshot, ArenaRunSummary,
+    ArenaScope, ArenaStartParams, ReviewerRef, Verdict,
 };
-use er_service::{ArenaCommand, ArenaContext, Command, Reply, WorkspaceView};
+use er_engine::config::ErConfig;
+use er_protocol::{ErError, ErErrorKind};
+use er_service::{ArenaCommand, ArenaContext, Command, Reply, TabContent, TabEntry, WorkspaceView};
 
-use crate::arena_commands::{
-    parse_scope, parse_verdict, wire_groups, wire_reviewer, wire_reviewers, ArenaAcceptRequest,
-    ArenaBatchEstimateRequest, ArenaBatchStartRequest, ArenaEstimateRequest, ArenaOverrideRequest,
-    ArenaStartRequest,
-};
-use crate::commands::{tab_context, AppState};
-use crate::snapshot::{ArenaRunSnapshotWire, ArenaRunSummaryWire};
+use crate::service::actor_key;
+use crate::state::DesktopState;
 
-fn arena_context(app: &App) -> ArenaContext {
+/// The tab an arena command acts on, with the content it shows.
+pub struct ArenaTab {
+    pub entry: TabEntry,
+    pub content: Arc<TabContent>,
+}
+
+impl ArenaTab {
+    /// The actor that holds this tab's content.
+    pub fn workspace(&self) -> String {
+        actor_key(&self.entry.descriptor)
+    }
+}
+
+/// The tab `wire` names in the registry, else the registry's active one, with
+/// its published content. A key the registry does not list is `NotFound`; a
+/// listed tab nothing has loaded is sent a load and refused for now.
+pub fn tab(desktop: &DesktopState, wire: Option<er_protocol::TabKey>) -> Result<ArenaTab, ErError> {
+    loaded(desktop, wire)?.ok_or_else(|| error(ErErrorKind::Refused, "The tab has not loaded yet"))
+}
+
+/// Like [`tab`], with none for a listed tab nothing has loaded yet, which is
+/// sent a load, as a read of it answers before the push brings the content.
+pub fn loaded(
+    desktop: &DesktopState,
+    wire: Option<er_protocol::TabKey>,
+) -> Result<Option<ArenaTab>, ErError> {
+    let tabs = desktop.service.app_registry().tabs_view();
+    let key = match wire {
+        Some(wire) => er_service::resolve_tab_key(&tabs, wire)?,
+        None => tabs
+            .active
+            .ok_or_else(|| error(ErErrorKind::NotFound, "no tab is open"))?,
+    };
+    let entry = tabs
+        .tabs
+        .iter()
+        .find(|entry| entry.key == key)
+        .cloned()
+        .ok_or_else(|| error(ErErrorKind::NotFound, "no open tab has that key"))?;
+    let Some(content) = desktop.service.content(entry.key, &entry.descriptor) else {
+        desktop.service.request_load(entry.key, &entry.descriptor);
+        return Ok(None);
+    };
+    Ok(Some(ArenaTab { entry, content }))
+}
+
+/// A listed tab's bucket: its content's when it is loaded, since a loaded tab
+/// may have left the mode it was restored in, and otherwise the bucket its
+/// descriptor resolves to, read with no load.
+pub fn listed_bucket(desktop: &DesktopState, entry: &TabEntry) -> Option<String> {
+    match desktop.service.content(entry.key, &entry.descriptor) {
+        Some(content) => Some(content.context.er_dir.clone()),
+        None => er_service::descriptor_bucket(&*desktop.ports.git, &entry.descriptor).ok(),
+    }
+}
+
+/// `tab`'s bucket, then every other listed tab's, each once.
+fn buckets(desktop: &DesktopState, tab: &ArenaTab) -> Vec<String> {
+    let mut buckets = vec![tab.content.context.er_dir.clone()];
+    let tabs = desktop.service.app_registry().tabs_view();
+    for entry in tabs.tabs.iter().filter(|entry| entry.key != tab.entry.key) {
+        if let Some(bucket) = listed_bucket(desktop, entry) {
+            if !buckets.contains(&bucket) {
+                buckets.push(bucket);
+            }
+        }
+    }
+    buckets
+}
+
+/// The settings actor's config, which owns `config.toml` (ADR 0069).
+pub fn config(desktop: &DesktopState) -> Arc<ErConfig> {
+    Arc::clone(&desktop.service.settings().view().config)
+}
+
+/// The run's effort: the one asked for, else the saved selection's (A18),
+/// resolved the way the flag-off start resolves the App's pick.
+pub fn resolve_effort(config: &ErConfig, requested: Option<&str>) -> Option<String> {
+    let saved = config
+        .ai_hub
+        .resolve_default_selection(&config.agent)
+        .effort;
+    er_engine::config::resolve_effort(&config.ai_hub, &config.agent, saved.as_deref(), requested)
+}
+
+/// `context` with the tab's own bucket alone, for a read that looks no run
+/// up across tabs. It resolves no unloaded tab's bucket, which costs git
+/// calls a list refetched on every progress tick would repeat.
+fn own_context(tab: &ArenaTab, config: Arc<ErConfig>) -> ArenaContext {
+    let content = &tab.content;
     ArenaContext {
-        tab: tab_context(app),
-        branch_ref: app.arena_branch_ref(),
-        config: Arc::new(app.config.clone()),
-        buckets: app.tabs.iter().map(|tab| tab.er_dir()).collect(),
-        review_hash: app
-            .tab()
+        tab: content.context.clone(),
+        branch_ref: content.tab.identity().branch_ref().to_string(),
+        config,
+        buckets: vec![content.context.er_dir.clone()],
+        review_hash: String::new(),
+    }
+}
+
+/// What an arena effect reads from `tab`, from its content and the
+/// settings view.
+pub fn context(desktop: &DesktopState, tab: &ArenaTab, config: Arc<ErConfig>) -> ArenaContext {
+    let content = &tab.content;
+    ArenaContext {
+        tab: content.context.clone(),
+        branch_ref: content.tab.identity().branch_ref().to_string(),
+        config,
+        buckets: buckets(desktop, tab),
+        review_hash: content
             .ai
+            .state
             .review
             .as_ref()
             .map(|review| review.diff_hash.clone())
@@ -39,204 +140,210 @@ fn arena_context(app: &App) -> ArenaContext {
     }
 }
 
-/// The run's effort, resolved against the App's current pick the way the
-/// flag-off start does.
-fn resolve_effort(app: &App, requested: Option<&str>) -> Option<String> {
-    er_engine::config::resolve_effort(
-        &app.config.ai_hub,
-        &app.config.agent,
-        app.current_ai_effort.as_deref(),
-        requested,
-    )
-}
-
-/// The actor key and the arena context, read under the App lock. `prepare`
-/// sees the App too, for the inputs only it holds.
-fn resolve<T>(
-    state: &AppState,
-    prepare: impl FnOnce(&App, ArenaContext) -> T,
-) -> Result<(String, T), String> {
-    let app = state.app.lock().map_err(|error| error.to_string())?;
-    let arena = arena_context(&app);
-    let key = arena.tab.workspace_key();
-    Ok((key, prepare(&app, arena)))
-}
-
-/// Sends one arena command and waits for the actor's bounded reply.
-fn ask(
-    state: &AppState,
-    build: impl FnOnce(&App, ArenaContext) -> ArenaCommand,
-) -> Result<Reply, String> {
-    let (key, command) = resolve(state, build)?;
-    state
-        .service
-        .send(&key, Command::Arena(command))
-        .map_err(|error| error.to_string())
-}
-
-/// Sends one arena command that changes a run and bumps the desktop revision,
-/// as the flag-off commands do, so the front end re-reads.
-fn send(
-    state: &AppState,
-    build: impl FnOnce(&App, ArenaContext) -> ArenaCommand,
-) -> Result<Reply, String> {
-    let reply = ask(state, build)?;
-    state.desktop_revision.fetch_add(1, Ordering::Relaxed);
-    Ok(reply)
-}
-
-/// The actor's published view and the arena context, for a read. The App
-/// lock is released before the read touches the store.
-fn read_context(state: &AppState) -> Result<(Arc<WorkspaceView>, ArenaContext), String> {
-    let (key, arena) = resolve(state, |_, arena| arena)?;
-    Ok((state.service.view(&key), arena))
-}
-
-fn unexpected(answer: impl std::fmt::Debug) -> String {
-    format!("unexpected answer from the workspace: {answer:?}")
-}
-
-fn estimated(reply: Reply) -> Result<ArenaDiffPreview, String> {
-    match reply {
-        Reply::ArenaEstimate(preview) => Ok(preview),
-        other => Err(unexpected(other)),
+fn error(kind: ErErrorKind, message: impl Into<String>) -> ErError {
+    ErError {
+        kind,
+        message: message.into(),
     }
 }
 
-pub fn estimate(state: &AppState, req: ArenaEstimateRequest) -> Result<ArenaDiffPreview, String> {
-    estimated(ask(state, |_, arena| ArenaCommand::Estimate {
-        arena,
-        scope: parse_scope(&req.scope),
-        files: req.files,
-        reviewers: wire_reviewers(&req.reviewers),
-        rounds: req.rounds,
-        arbiter: req.arbiter.as_ref().map(wire_reviewer),
-    })?)
+fn failed(error: impl std::fmt::Display) -> ErError {
+    self::error(ErErrorKind::Refused, error.to_string())
+}
+
+fn unexpected(answer: impl std::fmt::Debug) -> ErError {
+    error(
+        ErErrorKind::Internal,
+        format!("unexpected answer from the workspace: {answer:?}"),
+    )
+}
+
+/// Sends one arena command to the tab's actor and waits for its bounded
+/// reply. A command that changes a run bumps the desktop revision, as the
+/// flag-off commands do, for the readers still on the snapshot.
+fn send(desktop: &DesktopState, key: &str, command: ArenaCommand) -> Result<Reply, ErError> {
+    let reply = desktop
+        .service
+        .send(key, Command::Arena(command))
+        .map_err(failed)?;
+    desktop.desktop_revision.fetch_add(1, Ordering::Relaxed);
+    Ok(reply)
+}
+
+/// The published view that holds `run_id` live, else the tab's actor's. A
+/// run keeps running on the actor that started it after the page moved to a
+/// tab of another project.
+fn live_view(desktop: &DesktopState, tab: &ArenaTab, run_id: &str) -> Arc<WorkspaceView> {
+    desktop
+        .service
+        .published_views()
+        .into_iter()
+        .find(|view| view.arena_run(run_id).is_some())
+        .unwrap_or_else(|| desktop.service.view(&tab.workspace()))
+}
+
+/// The actor running `run_id`, else the tab's.
+fn live_key(desktop: &DesktopState, tab: &ArenaTab, run_id: &str) -> String {
+    desktop
+        .service
+        .live_arena_key(run_id)
+        .unwrap_or_else(|| tab.workspace())
+}
+
+/// One run's reviewers and scope, as the launcher prices them.
+pub struct Plan {
+    pub scope: ArenaScope,
+    pub files: Option<Vec<String>>,
+    pub reviewers: Vec<ReviewerRef>,
+    pub rounds: Option<u8>,
+    pub arbiter: Option<ReviewerRef>,
+}
+
+/// What `plan` would cost on the tab's diff. The diff is read here, through
+/// the ports, so the estimate never waits on the actor's queue.
+pub fn estimate(
+    desktop: &DesktopState,
+    tab: &ArenaTab,
+    plan: &Plan,
+) -> Result<ArenaDiffPreview, ErError> {
+    let arena = own_context(tab, config(desktop));
+    let plan = er_service::arena::Estimate {
+        scope: plan.scope,
+        files: plan.files.as_deref(),
+        reviewers: &plan.reviewers,
+        rounds: plan.rounds,
+        arbiter: plan.arbiter.as_ref(),
+    };
+    er_service::arena::estimate(&desktop.ports, &arena, &plan).map_err(failed)
 }
 
 pub fn estimate_batch(
-    state: &AppState,
-    req: ArenaBatchEstimateRequest,
-) -> Result<ArenaDiffPreview, String> {
-    let params = ArenaBatchStartParams {
-        scope: parse_scope(&req.scope),
-        files: req.files,
-        rounds: req.rounds,
-        arbiter: req.arbiter.as_ref().map(wire_reviewer),
-        confirm: false,
-        groups: wire_groups(&req.groups),
-        effort: None,
-    };
-    estimated(ask(state, |_, arena| ArenaCommand::EstimateBatch {
-        arena,
-        params,
-    })?)
+    desktop: &DesktopState,
+    tab: &ArenaTab,
+    params: &ArenaBatchStartParams,
+) -> Result<ArenaDiffPreview, ErError> {
+    let arena = own_context(tab, config(desktop));
+    er_service::arena::estimate_batch(&desktop.ports, &arena, params).map_err(failed)
 }
 
-pub fn start(state: &AppState, req: ArenaStartRequest) -> Result<String, String> {
-    let reply = send(state, |app, arena| ArenaCommand::StartRun {
-        arena,
-        params: ArenaStartParams {
-            title: req.title,
-            reviewers: wire_reviewers(&req.reviewers),
-            scope: parse_scope(&req.scope),
-            files: req.files,
-            rounds: req.rounds,
-            arbiter: req.arbiter.as_ref().map(wire_reviewer),
-            confirm: req.confirm.unwrap_or(false),
-            agent_kind: req.agent_kind,
-            effort: resolve_effort(app, req.effort.as_deref()),
-        },
-    })?;
-    match reply {
+/// Starts one run. A run with no effort of its own takes the saved one.
+pub fn start(
+    desktop: &DesktopState,
+    tab: &ArenaTab,
+    mut params: ArenaStartParams,
+) -> Result<String, ErError> {
+    let config = config(desktop);
+    params.effort = resolve_effort(&config, params.effort.as_deref());
+    let arena = context(desktop, tab, config);
+    match send(
+        desktop,
+        &tab.workspace(),
+        ArenaCommand::StartRun { arena, params },
+    )? {
         Reply::ArenaStarted { mut run_ids } if run_ids.len() == 1 => Ok(run_ids.remove(0)),
         other => Err(unexpected(other)),
     }
 }
 
-pub fn start_batch(state: &AppState, req: ArenaBatchStartRequest) -> Result<Vec<String>, String> {
-    let reply = send(state, |app, arena| ArenaCommand::StartBatch {
-        arena,
-        params: ArenaBatchStartParams {
-            scope: parse_scope(&req.scope),
-            files: req.files,
-            rounds: req.rounds,
-            arbiter: req.arbiter.as_ref().map(wire_reviewer),
-            confirm: req.confirm.unwrap_or(false),
-            groups: wire_groups(&req.groups),
-            effort: resolve_effort(app, req.effort.as_deref()),
-        },
-    })?;
-    match reply {
+pub fn start_batch(
+    desktop: &DesktopState,
+    tab: &ArenaTab,
+    mut params: ArenaBatchStartParams,
+) -> Result<Vec<String>, ErError> {
+    let config = config(desktop);
+    params.effort = resolve_effort(&config, params.effort.as_deref());
+    let arena = context(desktop, tab, config);
+    match send(
+        desktop,
+        &tab.workspace(),
+        ArenaCommand::StartBatch { arena, params },
+    )? {
         Reply::ArenaStarted { run_ids } => Ok(run_ids),
         other => Err(unexpected(other)),
     }
 }
 
-pub fn validate_findings(state: &AppState) -> Result<Option<String>, String> {
-    match send(state, |_, arena| ArenaCommand::ValidateFindings { arena })? {
+pub fn validate_findings(
+    desktop: &DesktopState,
+    tab: &ArenaTab,
+) -> Result<Option<String>, ErError> {
+    let arena = context(desktop, tab, config(desktop));
+    match send(
+        desktop,
+        &tab.workspace(),
+        ArenaCommand::ValidateFindings { arena },
+    )? {
         Reply::ArenaValidating { run_id } => Ok(run_id),
         other => Err(unexpected(other)),
     }
 }
 
-pub fn accept_findings(state: &AppState, req: ArenaAcceptRequest) -> Result<usize, String> {
-    let reply = send(state, |_, arena| ArenaCommand::AcceptFindings {
+pub fn accept_findings(
+    desktop: &DesktopState,
+    tab: &ArenaTab,
+    run_id: String,
+    finding_ids: Option<Vec<String>>,
+) -> Result<usize, ErError> {
+    let arena = context(desktop, tab, config(desktop));
+    let command = ArenaCommand::AcceptFindings {
         arena,
-        run_id: req.run_id,
-        finding_ids: req.finding_ids,
-    })?;
-    match reply {
+        run_id,
+        finding_ids,
+    };
+    match send(desktop, &tab.workspace(), command)? {
         Reply::ArenaAccepted { accepted } => Ok(accepted),
         other => Err(unexpected(other)),
     }
 }
 
-pub fn progress(state: &AppState, run_id: String) -> Result<ArenaProgressState, String> {
-    let (view, _) = read_context(state)?;
-    Ok(er_service::arena::read_progress(&view, &run_id))
+pub fn progress(desktop: &DesktopState, tab: &ArenaTab, run_id: &str) -> ArenaProgressState {
+    er_service::arena::read_progress(&live_view(desktop, tab, run_id), run_id)
 }
 
-pub fn get(state: &AppState, run_id: String) -> Result<ArenaRunSnapshotWire, String> {
-    let (view, arena) = read_context(state)?;
-    er_service::arena::read_run(&view, &arena, &run_id).map_err(|error| error.to_string())
+pub fn get(
+    desktop: &DesktopState,
+    tab: &ArenaTab,
+    run_id: &str,
+) -> Result<ArenaRunSnapshot, ErError> {
+    let arena = context(desktop, tab, config(desktop));
+    er_service::arena::read_run(&live_view(desktop, tab, run_id), &arena, run_id).map_err(failed)
 }
 
-pub fn list(state: &AppState) -> Result<Vec<ArenaRunSummaryWire>, String> {
-    let (_, arena) = read_context(state)?;
-    er_service::arena::read_runs(&arena).map_err(|error| error.to_string())
+pub fn list(desktop: &DesktopState, tab: &ArenaTab) -> Result<Vec<ArenaRunSummary>, ErError> {
+    let arena = own_context(tab, config(desktop));
+    er_service::arena::read_runs(&arena).map_err(failed)
 }
 
-pub fn delete(state: &AppState, run_id: String) -> Result<(), String> {
-    send(state, |_, arena| ArenaCommand::Delete { arena, run_id }).map(|_| ())
+pub fn delete(desktop: &DesktopState, tab: &ArenaTab, run_id: String) -> Result<(), ErError> {
+    let arena = context(desktop, tab, config(desktop));
+    let key = live_key(desktop, tab, &run_id);
+    send(desktop, &key, ArenaCommand::Delete { arena, run_id }).map(|_| ())
 }
 
-pub fn cancel(state: &AppState, run_id: String) -> Result<(), String> {
-    send(state, |_, _| ArenaCommand::Cancel { run_id }).map(|_| ())
+pub fn cancel(desktop: &DesktopState, tab: &ArenaTab, run_id: String) -> Result<(), ErError> {
+    let key = live_key(desktop, tab, &run_id);
+    send(desktop, &key, ArenaCommand::Cancel { run_id }).map(|_| ())
 }
 
-/// Records the verdict, then reads the run back for the overlay, as the
-/// flag-off command answers with the updated snapshot.
+/// Records the verdict beside the arbiter's.
 pub fn override_finding(
-    state: &AppState,
-    req: ArenaOverrideRequest,
-) -> Result<ArenaRunSnapshotWire, String> {
-    let run_id = req.run_id.clone();
-    send(state, |_, arena| ArenaCommand::Override {
+    desktop: &DesktopState,
+    tab: &ArenaTab,
+    run_id: String,
+    finding_id: String,
+    verdict: Verdict,
+    note: String,
+) -> Result<(), ErError> {
+    let arena = context(desktop, tab, config(desktop));
+    let key = live_key(desktop, tab, &run_id);
+    let command = ArenaCommand::Override {
         arena,
-        run_id: req.run_id,
-        finding_id: req.finding_id,
-        verdict: parse_verdict(&req.verdict),
-        note: req.note,
-    })?;
-    get(state, run_id)
-}
-
-/// Tells the App's arena recovery which runs the actors own. Without it a tab
-/// switch marks an actor's running run stale, since the App's registry never
-/// holds it.
-pub fn attach(app: &App, service: Arc<crate::service::ServiceState>) {
-    app.set_arena_live_elsewhere(Arc::new(move |run_id| service.arena_run_live(run_id)));
+        run_id,
+        finding_id,
+        verdict,
+        note,
+    };
+    send(desktop, &key, command).map(|_| ())
 }
 
 /// The flag-on wiring between the desktop and an actor's live runs: progress
@@ -261,6 +368,7 @@ mod tests {
 
     use super::*;
     use crate::service::ServiceState;
+    use er_engine::app::App;
 
     const DEADLINE: Duration = Duration::from_secs(10);
     const KEY: &str = "/repo";
@@ -482,7 +590,7 @@ diff --git a/src/lib.rs b/src/lib.rs
             let mut tab = TabState::new_for_test(Vec::new());
             tab.er_root = ErRoot::managed(bucket.clone());
             app.tabs.push(tab);
-            attach(&app, Arc::clone(&service));
+            crate::arena_commands::attach_live_runs(&app, Arc::clone(&service));
             app.select_tab(1);
 
             let left = status(&bucket, &run_id);

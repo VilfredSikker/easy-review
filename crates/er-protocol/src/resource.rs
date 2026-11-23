@@ -2,10 +2,10 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::{
-    AnnotationScreenshot, Annotations, AvailableBranches, AvailablePrs, Branches, DiffPaths,
-    FileHunks, FilePreview, ImagePreview, Inbox, Jobs, Panels, PendingReview, PrStatus, Projects,
-    Prs, ReviewJson, ReviewRevisions, Risk, Session, Settings, TabDiff, TabPr, TabReviewed, TabRow,
-    TabView, UiAnnotations, Worktrees,
+    AnnotationScreenshot, Annotations, ArenaEstimate, ArenaPlan, ArenaRun, ArenaRuns,
+    AvailableBranches, AvailablePrs, Branches, DiffPaths, FileHunks, FilePreview, ImagePreview,
+    Inbox, Jobs, Panels, PendingReview, PrStatus, Projects, Prs, ReviewJson, ReviewRevisions, Risk,
+    Session, Settings, TabDiff, TabPr, TabReviewed, TabRow, TabView, UiAnnotations, Worktrees,
 };
 
 /// A tab as the wire names it. The engine's key has no public constructor, so
@@ -104,6 +104,15 @@ pub enum ResourceKey {
     /// A saved annotation screenshot by its path, read on each fetch and
     /// never pushed.
     AnnotationScreenshot { path: String },
+    /// What a plan would cost on a tab's diff, read on each fetch and never
+    /// pushed.
+    ArenaEstimate { tab: TabKey, plan: ArenaPlan },
+    /// The runs in a tab's bucket on the tab's branch, read on each fetch and
+    /// never pushed; `jobs` moves while a run there changes.
+    ArenaRuns { tab: TabKey },
+    /// One run, looked up from a tab's buckets, read on each fetch and never
+    /// pushed.
+    ArenaRun { tab: TabKey, run_id: String },
     /// One open tab's pull request card and stack, by its key.
     Pr { tab: TabKey },
     /// One pull request's GitHub status, by the `owner/repo` it lives in and
@@ -147,6 +156,9 @@ pub enum Resource {
     ReviewJson(ReviewJson),
     ReviewRevisions(ReviewRevisions),
     AnnotationScreenshot(AnnotationScreenshot),
+    ArenaEstimate(ArenaEstimate),
+    ArenaRuns(ArenaRuns),
+    ArenaRun(ArenaRun),
     Pr(Box<TabPr>),
     PrStatus(Box<PrStatus>),
     PendingReview(Box<PendingReview>),

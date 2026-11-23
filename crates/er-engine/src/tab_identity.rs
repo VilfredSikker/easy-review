@@ -300,9 +300,9 @@ impl<'a> TabIdentity<'a> {
         }
     }
 
-    /// The branch whose view buckets this tab uses: the viewed branch, else the
-    /// checkout's.
-    fn bucket_branch(&self) -> &'a str {
+    /// The branch whose view buckets this tab uses, and that its arena runs
+    /// are filed under: the viewed branch, else the checkout's.
+    pub fn branch_ref(&self) -> &'a str {
         self.local_branch_view.unwrap_or(self.current_branch)
     }
 
@@ -344,7 +344,7 @@ impl<'a> TabIdentity<'a> {
             );
         }
         // Local tabs (including local PR tabs) keep the tour with the branch.
-        let branch = self.bucket_branch();
+        let branch = self.branch_ref();
         if branch.is_empty() || self.repo_root.is_empty() {
             return None;
         }
@@ -416,7 +416,7 @@ impl<'a> TabIdentity<'a> {
         }
 
         // Local view buckets (branch/unstaged/staged/history)
-        let branch = self.bucket_branch();
+        let branch = self.branch_ref();
         if branch.is_empty() || self.repo_root.is_empty() {
             return None;
         }

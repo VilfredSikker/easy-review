@@ -6588,34 +6588,6 @@ pub(crate) fn service_open(
     content_routes::open(state, tab, replace.unwrap_or(false))
 }
 
-/// The tab a routed annotation command acts on, with every field its effect
-/// needs. The desktop reads these here, where the tab lives; the actor never
-/// reads the front end's state.
-#[cfg(feature = "v1-service")]
-pub(crate) fn tab_context(app: &er_engine::app::App) -> er_service::TabContext {
-    let tab = app.tab();
-    er_service::TabContext {
-        er_dir: tab.er_dir(),
-        comments_dir: tab.github_comments_dir(),
-        is_remote: tab.is_remote(),
-        repo_root: tab.repo_root.clone(),
-        base_branch: tab.base_branch.clone(),
-        scope: match tab.mode {
-            er_engine::app::DiffMode::Unstaged => "unstaged",
-            er_engine::app::DiffMode::Staged => "staged",
-            _ => "branch",
-        }
-        .to_string(),
-        remote_repo: tab.remote_repo.clone(),
-        pr_number: tab.pr_number,
-        pr_head_ref: tab.pr_head_ref.clone(),
-        local_branch_view: tab.local_branch_view.clone(),
-        checkout_root: tab.local_branch_checkout_root.clone(),
-        branch_diff_hash: tab.branch_diff_hash.clone(),
-        diff_hash: tab.diff_hash.clone(),
-    }
-}
-
 /// Sends one annotation command through the service and acknowledges it.
 ///
 /// The flag-on desktop does not render from the service yet (D21), so the
@@ -12318,6 +12290,10 @@ mod tests {
     #[cfg(feature = "v1-service")]
     mod annotations_resource_tests;
     #[cfg(feature = "v1-service")]
+    mod arena_resource_tests;
+    #[cfg(feature = "v1-service")]
+    mod arena_wire_tests;
+    #[cfg(feature = "v1-service")]
     mod content_route_tests;
     #[cfg(feature = "v1-service")]
     mod diff_command_tests;
@@ -12697,6 +12673,7 @@ mod tests {
             auto_triage_in_flight: Arc::new(Mutex::new(HashSet::new())),
             line_commits_cache: Arc::default(),
             session: Default::default(),
+            live_jobs: Default::default(),
         };
         #[cfg(feature = "v1-service")]
         crate::app_owner::startup::read_inbox_prefs_from_settings(&desktop);
