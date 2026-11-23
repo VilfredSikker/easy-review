@@ -6,7 +6,7 @@ import type { Resource } from "$lib/protocol/generated/Resource";
 import type { ResourceKey } from "$lib/protocol/generated/ResourceKey";
 import type { AppSnapshot, BackgroundTaskSnapshot } from "$lib/types";
 import { JOBS } from "./annotationsAdapter";
-import { runCommand, TasksAdapter } from "./tasksAdapter";
+import { runCommand, TasksAdapter, type Every } from "./tasksAdapter";
 
 const TAB = 4;
 const TASK = {
@@ -125,5 +125,30 @@ describe("TasksAdapter", () => {
     expect(shown.agent_log?.map((l) => l.text)).toEqual(["host"]);
     const elsewhere = tasks.overlay({ ...raw, review_bucket_er_dir: "/other" } as AppSnapshot);
     expect(elsewhere.agent_commands).toEqual([]);
+  });
+
+  it("reads an App task's log no sooner than before, and a host task's once on open", async () => {
+    const ticks: (() => void)[] = [];
+    const tick: Every = (fn) => {
+      ticks.push(fn);
+      return () => {};
+    };
+    const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+    const off = adapter(false);
+    off.tasks.follow("triage:9", false, () => {}, tick)();
+    off.tasks.follow("triage:9", true, () => {}, tick);
+    await settle();
+    expect(off.invoked).toEqual([]);
+    ticks[0]();
+    await settle();
+    expect(off.invoked).toEqual(["get_background_task_log"]);
+
+    const on = adapter(true);
+    const shown: string[] = [];
+    on.tasks.follow("review:1", false, (lines) => shown.push(...lines.map((l) => l.text)), tick);
+    await settle();
+    expect(on.fetched).toEqual([{ kind: "task_log", id: "review:1" }]);
+    expect(shown).toEqual(["host"]);
+    expect(ticks).toHaveLength(1);
   });
 });
