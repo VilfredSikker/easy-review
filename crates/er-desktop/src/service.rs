@@ -317,18 +317,6 @@ impl ServiceState {
         }
     }
 
-    /// Whether any actor this process started is running `run_id`, from the
-    /// published views. The App asks before it marks a run stale.
-    pub fn arena_run_live(&self, run_id: &str) -> bool {
-        let handles: Vec<WorkspaceHandle> = match self.handles.lock() {
-            Ok(handles) => handles.values().cloned().collect(),
-            Err(poisoned) => poisoned.into_inner().values().cloned().collect(),
-        };
-        handles
-            .iter()
-            .any(|handle| handle.view().arena_run(run_id).is_some())
-    }
-
     /// The key of the started actor whose published view holds `run_id`
     /// live. Starts no actor.
     pub fn live_arena_key(&self, run_id: &str) -> Option<String> {

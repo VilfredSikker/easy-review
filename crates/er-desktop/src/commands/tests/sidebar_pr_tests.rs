@@ -367,7 +367,10 @@ fn every_pr_command_reaches_the_sidebar_owner() {
         // The refresh fetches on its own thread, which writes the cache's
         // file: it finishes inside the test's storage root.
         let deadline = Instant::now() + Duration::from_secs(10);
-        while state.loading.lock().unwrap().pr_list {
+        while state
+            .pr_list_running
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
             assert!(Instant::now() < deadline, "the refresh never finished");
             std::thread::sleep(Duration::from_millis(5));
         }

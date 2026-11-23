@@ -9,14 +9,8 @@
 //! tab's whole AI state.
 
 use er_engine::ai::AiState;
-use er_engine::app::TabState;
 use er_engine::review_export::ExportOpts;
 use er_protocol::ExportOptions;
-
-/// The App's tab rendered with `options`: the path without the service.
-pub fn render_markdown(tab: &TabState, options: &ExportOptions) -> String {
-    er_engine::export::render_markdown(tab, &resolve_exclusions(&tab.ai, options))
-}
 
 /// A tab's published content rendered with `options`: its branch, its AI
 /// section, and the UI annotations in its view bucket, `context.er_dir`.
@@ -137,7 +131,7 @@ mod tests {
         }
     }
 
-    fn tab() -> TabState {
+    fn ai() -> AiState {
         let mut ai = AiState::default();
         ai.questions = Some(ErQuestions {
             version: 1,
@@ -148,9 +142,17 @@ mod tests {
                 question("q-done", "Already answered", true),
             ],
         });
-        let mut tab = TabState::new_for_test(Vec::new());
-        tab.ai = ai;
-        tab
+        ai
+    }
+
+    /// `ai` rendered with `options`, as `render_content` renders a tab's.
+    fn render_markdown(ai: &AiState, options: &ExportOptions) -> String {
+        let source = er_engine::review_export::ExportSource {
+            branch: "feature",
+            ai,
+            er_dir: "/nonexistent/er",
+        };
+        er_engine::review_export::render(&source, &resolve_exclusions(ai, options))
     }
 
     /// The snapshot never lists resolved questions, so the UI cannot name
@@ -160,7 +162,7 @@ mod tests {
         let opts: ExportOptions =
             serde_json::from_value(serde_json::json!({ "excludeQuestionIds": ["q-drop"] }))
                 .expect("opts parse");
-        let out = render_markdown(&tab(), &opts);
+        let out = render_markdown(&ai(), &opts);
 
         assert!(out.contains("Still open?"), "{out}");
         assert!(out.contains("Already answered"), "{out}");
@@ -178,7 +180,7 @@ mod tests {
             resolve_exclusions(&AiState::default(), &opts).include_questions,
             "missing toggles keep engine defaults"
         );
-        let out = render_markdown(&tab(), &opts);
+        let out = render_markdown(&ai(), &opts);
 
         assert!(out.contains("Still open?"), "{out}");
         assert!(!out.contains("Already answered"), "{out}");
@@ -192,7 +194,7 @@ mod tests {
             "excludeQuestionIds": ["q-drop"],
         }))
         .expect("opts parse");
-        let out = render_markdown(&tab(), &opts);
+        let out = render_markdown(&ai(), &opts);
 
         assert!(out.contains("Still open?"), "{out}");
         assert!(!out.contains("Already answered"), "{out}");
@@ -226,7 +228,7 @@ mod tests {
             "excludeNoteIds": [], "excludeFindingIds": []
         }))
         .expect("Export page");
-        let opts = resolve_exclusions(&tab().ai, &page);
+        let opts = resolve_exclusions(&ai(), &page);
         assert!(!opts.include_comments && !opts.include_annotations && opts.only_unresolved);
         let kept = Some(vec!["q-open".to_string(), "q-done".to_string()]);
         assert_eq!(opts.include_question_ids, kept);
@@ -238,7 +240,7 @@ mod tests {
     /// `### … — <Kind> (` heading per exported item. Pin the shape it reads.
     #[test]
     fn every_exported_item_gets_one_counted_heading() {
-        let out = render_markdown(&tab(), &ExportOptions::default());
+        let out = render_markdown(&ai(), &ExportOptions::default());
         let counted = out
             .lines()
             .filter(|l| {

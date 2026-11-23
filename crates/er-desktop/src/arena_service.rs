@@ -12,8 +12,8 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use er_engine::arena::{
-    ArenaBatchStartParams, ArenaDiffPreview, ArenaProgressState, ArenaRunSnapshot, ArenaRunSummary,
-    ArenaScope, ArenaStartParams, ReviewerRef, Verdict,
+    ArenaBatchStartParams, ArenaDiffPreview, ArenaRunSnapshot, ArenaRunSummary, ArenaScope,
+    ArenaStartParams, ReviewerRef, Verdict,
 };
 use er_engine::config::ErConfig;
 use er_protocol::{ErError, ErErrorKind};
@@ -296,10 +296,6 @@ pub fn accept_findings(
     }
 }
 
-pub fn progress(desktop: &DesktopState, tab: &ArenaTab, run_id: &str) -> ArenaProgressState {
-    er_service::arena::read_progress(&live_view(desktop, tab, run_id), run_id)
-}
-
 pub fn get(
     desktop: &DesktopState,
     tab: &ArenaTab,
@@ -357,18 +353,16 @@ mod tests {
     use std::sync::Mutex;
     use std::time::{Duration, Instant};
 
-    use er_engine::app::TabState;
     use er_engine::arena::{ArenaPaths, ArenaScope, ReviewerRef, RunStatus};
     use er_engine::config::{AiModelConfig, AiProviderConfig, ErConfig};
     use er_engine::jobs::{JobId, JobResult, JobSink, JobSubmission, JobTicket};
-    use er_engine::paths::ErRoot;
+
     use er_engine::ports::Ports;
     use er_git::FakeGit;
     use er_service::{TabContext, WorkspaceDeps};
 
     use super::*;
     use crate::service::ServiceState;
-    use er_engine::app::App;
 
     const DEADLINE: Duration = Duration::from_secs(10);
     const KEY: &str = "/repo";
@@ -559,51 +553,6 @@ diff --git a/src/lib.rs b/src/lib.rs
             wait_until("the run's record is terminal", || {
                 is_terminal(&status(&bucket, &run_id))
             });
-        });
-    }
-
-    /// A tab switch runs the App's arena recovery over the bucket. With the
-    /// predicate `main.rs` attaches, the actor's mid-round run stays
-    /// `Running` while an unowned one is still marked `Failed`.
-    #[test]
-    fn a_tab_switch_leaves_an_actor_run_running() {
-        let dir = tempfile::tempdir().unwrap();
-        let bucket = bucket_in(dir.path());
-        er_engine::storage::with_process_test_storage_root(dir.path(), || {
-            let sink = Arc::new(HoldingSink::default());
-            let service = service(Arc::clone(&sink), Arc::new(AtomicU64::new(0)));
-            let run_id = start_run(&service, &bucket);
-            wait_until("the run is live in the view", || {
-                service.view(KEY).arena_run(&run_id).is_some()
-            });
-            wait_until("the run's record is running", || {
-                matches!(status(&bucket, &run_id), RunStatus::Running { .. })
-            });
-            let orphan = ArenaPaths::for_run(Path::new(&bucket), "orphan-run");
-            let mut record =
-                er_engine::arena::load_run(&ArenaPaths::for_run(Path::new(&bucket), &run_id))
-                    .unwrap();
-            record.id = "orphan-run".to_string();
-            er_engine::arena::save_run(&orphan, &record).unwrap();
-
-            let mut app = App::new_for_test(Vec::new());
-            let mut tab = TabState::new_for_test(Vec::new());
-            tab.er_root = ErRoot::managed(bucket.clone());
-            app.tabs.push(tab);
-            crate::arena_commands::attach_live_runs(&app, Arc::clone(&service));
-            app.select_tab(1);
-
-            let left = status(&bucket, &run_id);
-            let orphaned = status(&bucket, "orphan-run");
-            sink.release();
-            wait_until("the run's record is terminal", || {
-                is_terminal(&status(&bucket, &run_id))
-            });
-            assert!(
-                matches!(left, RunStatus::Running { .. }),
-                "the actor's run is left alone: {left:?}"
-            );
-            assert_eq!(orphaned, RunStatus::Failed, "an unowned run is recovered");
         });
     }
 }

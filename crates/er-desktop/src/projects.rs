@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-pub use er_engine::projects_pins::{ProjectRecord, ProjectsFile, RecentPrEntry, SavedPrEntry};
+pub use er_engine::projects_pins::{ProjectRecord, ProjectsFile, SavedPrEntry};
 
 const MAX_PR_HISTORY: usize = 50;
 
@@ -11,32 +11,6 @@ fn now_epoch_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
-}
-
-pub fn record_recent_pr(project_id: &str, pr_number: u64, title: &str) -> anyhow::Result<()> {
-    update_file(|file| {
-        let proj = file
-            .projects
-            .iter_mut()
-            .find(|p| p.id == project_id)
-            .ok_or_else(|| anyhow::anyhow!("Project not found: {project_id}"))?;
-        record_recent_pr_on_project(proj, pr_number, title);
-        Ok(true)
-    })
-}
-
-fn record_recent_pr_on_project(proj: &mut ProjectRecord, pr_number: u64, title: &str) {
-    let now = now_epoch_ms();
-    proj.recent_prs.retain(|e| e.number != pr_number);
-    proj.recent_prs.insert(
-        0,
-        RecentPrEntry {
-            number: pr_number,
-            viewed_at_ms: now,
-            title: title.to_string(),
-        },
-    );
-    proj.recent_prs.truncate(MAX_PR_HISTORY);
 }
 
 /// Normalize a GitHub remote reference (URL or `owner/repo`) to a lowercase
@@ -235,14 +209,6 @@ pub fn invalidate_load_cache() {
     }
 }
 
-/// Monotonic generation bumped on every successful [`save`]. Snapshot caching
-///
-/// keys off this so in-process reorders are visible even when filesystem mtime
-/// resolution would otherwise keep the old cache entry.
-pub fn content_generation() -> u64 {
-    PROJECTS_CONTENT_GEN.load(Ordering::Relaxed)
-}
-
 pub fn load() -> ProjectsFile {
     // Skip the store read when mtime hasn't advanced since the last load. The
     // record is hit on every snapshot build; with multiple polls per second
@@ -400,13 +366,6 @@ pub struct TabProjectRef {
 }
 
 impl TabProjectRef {
-    pub fn from_tab(tab: &er_engine::app::TabState) -> Self {
-        Self {
-            repo_root: tab.repo_root.clone(),
-            remote: tab.remote_repo.clone(),
-        }
-    }
-
     /// A saved tab's root, and for a remote PR the remote it names.
     pub fn from_descriptor(tab: &er_engine::tabs_record::TabDescriptor) -> Self {
         let remote = match (&tab.pr_owner, &tab.pr_repo) {
@@ -488,15 +447,6 @@ fn sync_project_refs_in_file(file: &mut ProjectsFile, refs: &[TabProjectRef]) ->
         }
     }
     changed
-}
-
-/// Register every unique local repo and remote slug referenced by open tabs.
-pub fn sync_projects_from_tabs(tabs: &[er_engine::app::TabState]) {
-    let Some(first) = tabs.first() else {
-        return;
-    };
-    let refs: Vec<TabProjectRef> = tabs.iter().map(TabProjectRef::from_tab).collect();
-    sync_projects_from_refs(&*first.ports.github, &*first.ports.git, &refs);
 }
 
 /// Register every unique local repo and remote slug in `refs`.
@@ -989,23 +939,6 @@ mod tests {
         assert_eq!(project_id, "local");
         assert_eq!(file.projects.len(), 1);
         assert_eq!(file.projects[0].root_path, "/tmp/local");
-    }
-
-    #[test]
-    fn record_recent_pr_moves_duplicate_to_top() {
-        let mut project = local_project("remote-owner-repo", Some("owner/repo"));
-
-        record_recent_pr_on_project(&mut project, 1, "first");
-        record_recent_pr_on_project(&mut project, 2, "second");
-        record_recent_pr_on_project(&mut project, 1, "first updated");
-
-        let numbers: Vec<u64> = project
-            .recent_prs
-            .iter()
-            .map(|entry| entry.number)
-            .collect();
-        assert_eq!(numbers, vec![1, 2]);
-        assert_eq!(project.recent_prs[0].title, "first updated");
     }
 
     #[test]

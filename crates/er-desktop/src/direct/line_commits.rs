@@ -20,7 +20,7 @@ use er_protocol::{ErError, LineCommits};
 use tauri::State;
 
 use crate::line_commits_cache::CacheKey;
-pub use crate::line_commits_cache::{LineCommitsCache, LineCommitsLru};
+pub use crate::line_commits_cache::LineCommitsCache;
 
 /// Where the diff's lines come from, resolved from the tab under the lock so
 /// the git work after it never needs the lock.
