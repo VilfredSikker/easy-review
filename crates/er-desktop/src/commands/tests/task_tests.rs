@@ -147,6 +147,7 @@ fn launch(state: &AppState, dir: &Path, kind: &str, branch: &str) -> crate::task
             model_id,
             effort,
         },
+        quiet: false,
     }
 }
 
@@ -375,6 +376,42 @@ fn each_run_command_through_er_send_lists_its_kind_in_jobs() {
         }
         let listed = std::fs::read_to_string(Path::new(&bucket).join("review-files.txt"));
         assert_eq!(listed.ok().as_deref(), Some("src/f1.rs\n"));
+        open_gate(&agent.first);
+        open_gate(&agent.second);
+    });
+}
+
+/// A scoped run through `er_send` tells the person once, with its own
+/// message, as the App's scoped arm does; its tasks send no started notice
+/// of their own.
+#[test]
+fn a_scoped_run_sends_one_notice() {
+    with_storage(|dir| {
+        let (state, agent) = tasking(dir, 50);
+        let tab = open(&state, dir.path(), "a");
+        let _ = bucket(&state, &tab);
+        let command = Command::RunScopedReview {
+            tab: er_service::wire_tab_key(tab.0),
+            scope: "branch".into(),
+            paths: Vec::new(),
+            reviewers: vec!["triage".into(), "general".into()],
+            focus_prompt: None,
+        };
+        let told = super::while_the_app_is_locked(&state, "the scoped run", move |state| {
+            let effects = crate::resources::send::Effects {
+                notify: &|_, _| {},
+                follow_selection: &|_| {},
+                check_update: || panic!("no update check in this test"),
+                webviews: &crate::browser_webview::NoWebviews,
+                pick_folder: &|| None,
+            };
+            let _ = crate::resources::notice::told();
+            crate::resources::send::apply(&state.desktop, command, &effects).map(drop)?;
+            Ok::<_, er_protocol::ErError>(crate::resources::notice::told())
+        });
+        let told = told.unwrap_or_else(|e| panic!("{e:?}"));
+        assert_eq!(told.len(), 1, "{told:?}");
+        assert!(told[0].starts_with("Started 2 reviewer(s)"), "{told:?}");
         open_gate(&agent.first);
         open_gate(&agent.second);
     });

@@ -59,7 +59,6 @@ import {
 import { inboxReturnView } from "../inboxNav";
 import { v1ServiceRequested } from "../v1ServiceFlag";
 import { resources } from "./resourceStore";
-import { startToast } from "./tasksAdapter";
 import { errorText } from "./settingsAdapter";
 
 export type { CommentVisibility };
@@ -1321,9 +1320,21 @@ function successToastForCommand(command: string): string | null {
       return "GitHub status refreshed";
     case "pull_github_comments":
       return "Comments refreshed";
+    case "run_ai_review":
+      return "AI review started";
+    case "run_ai_review_files":
+      return null; // backend notify includes file count + review-files.txt hint
+    case "run_ai_expert_review":
+      return "Specialized review started";
+    case "run_ai_triage_review":
+    case "run_pr_triage":
+    case "run_branch_triage":
+      return "Triage scan started";
+    case "run_ai_professor_review":
+    case "run_ai_scoped_review":
+      return null;
     default:
-      // A run's start toast, shared with the flag-on route.
-      return startToast(command);
+      return null;
   }
 }
 

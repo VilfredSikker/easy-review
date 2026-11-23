@@ -29,8 +29,24 @@ pub fn tell(desktop: &crate::state::DesktopState, message: String, long: bool) {
         .and_then(|handle| handle.clone());
     match handle {
         Some(handle) => emit(&handle, &engine_notice(message, long)),
-        None => log::info!("{message}"),
+        None => {
+            #[cfg(test)]
+            TOLD.with(|told| told.borrow_mut().push(message.clone()));
+            log::info!("{message}");
+        }
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// What `tell` sent on this thread with no window up.
+    static TOLD: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// What `tell` sent on this thread with no window up, since the last call.
+#[cfg(test)]
+pub fn told() -> Vec<String> {
+    TOLD.with(|told| std::mem::take(&mut *told.borrow_mut()))
 }
 
 /// An engine notification as a notice, with the level the page gave it when
