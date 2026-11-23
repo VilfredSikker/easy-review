@@ -55,7 +55,7 @@ export default tseslint.config(
     // Written by `just protocol-gen` from the Rust wire types: a lint fix here
     // would be overwritten, and `just protocol-check` holds the files to the
     // generator's output. svelte-check still type-checks them.
-    ignores: ["src/lib/protocol/generated/**"],
+    ignores: ["src/lib/protocol/generated/**", "src/lib/types.ts"],
   },
   {
     linterOptions: {
