@@ -87,7 +87,10 @@ fn open_gate(gate: &Path) {
 /// the process's pool for a minute, and a later test at a cap of one would
 /// wait on it.
 fn release(state: &AppState, agent: &Agent) {
-    for row in tasks(state).into_iter().filter(|row| row.status == "queued") {
+    for row in tasks(state)
+        .into_iter()
+        .filter(|row| row.status == "queued")
+    {
         state.desktop.tasks.cancel_queued(&row.id);
     }
     open_gate(&agent.first);
