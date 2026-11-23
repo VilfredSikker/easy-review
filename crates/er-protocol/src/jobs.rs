@@ -10,6 +10,18 @@ pub struct Jobs {
     pub ai_replies: Vec<AiReplyJob>,
     /// The arena runs every started workspace is running, by run id.
     pub arena_runs: Vec<ArenaRunJob>,
+    /// The review flows every started workspace holds, by bucket.
+    pub review_flows: Vec<ReviewFlowJob>,
+}
+
+/// One bucket's review flow, as the page's `ReviewFlowSnapshot` describes
+/// it, in JSON text: its stage tasks are engine types the protocol does not
+/// carry.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct ReviewFlowJob {
+    /// The bucket the flow reviews into.
+    pub er_dir: String,
+    pub json: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]

@@ -22,6 +22,7 @@ const RUNNING: Resource = {
     },
     { run_id: "run-0", er_dir: "/bucket", status: "complete", progress: { round: 2, total_rounds: 2, phase: "", thinking: [], done: [] } },
   ],
+  review_flows: [],
 };
 
 /** An adapter over a backend that records what it was asked and answers `created`. */

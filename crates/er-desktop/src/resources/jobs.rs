@@ -1,18 +1,19 @@
 //! `jobs`: the work in flight the page shows while it runs. Its parts are
 //! the ask-AI replies being written, which `AiReplyJobs` holds and counts,
-//! and the arena runs the started workspaces are running, which their
-//! published views hold; the flow and AI runs join it later.
+//! and the arena runs and review flows the started workspaces hold, which
+//! their published views carry; the AI runs join it later.
 
-use er_protocol::{AiReplyJob, ArenaRunJob, Jobs, Resource};
+use er_protocol::{AiReplyJob, ArenaRunJob, Jobs, Resource, ReviewFlowJob};
 
 use crate::state::DesktopState;
 
-/// `jobs` at the count of its writes. The live runs are read once, so the
+/// `jobs` at the count of its writes. The live parts are read once, so the
 /// version names what the answer carries; a reply written during the read
 /// is pushed again under a newer version.
 pub fn jobs(desktop: &DesktopState) -> (u64, Resource) {
     let arena_runs = super::arena::live_runs(desktop);
-    let version = counted(desktop, &arena_runs);
+    let review_flows = super::flows::live_flows(desktop);
+    let version = counted(desktop, &arena_runs, &review_flows);
     let mut ai_replies: Vec<AiReplyJob> = desktop
         .pending_ai_replies
         .replies()
@@ -32,6 +33,7 @@ pub fn jobs(desktop: &DesktopState) -> (u64, Resource) {
     let jobs = Jobs {
         ai_replies,
         arena_runs,
+        review_flows,
     };
     (version, Resource::Jobs(jobs))
 }
@@ -39,12 +41,17 @@ pub fn jobs(desktop: &DesktopState) -> (u64, Resource) {
 /// The version `jobs` answers at now. A live part that moved since the last
 /// read moves it, so a progress tick is pushed and a diff publish is not.
 pub fn version(desktop: &DesktopState) -> u64 {
-    counted(desktop, &super::arena::live_runs(desktop))
+    counted(
+        desktop,
+        &super::arena::live_runs(desktop),
+        &super::flows::live_flows(desktop),
+    )
 }
 
-/// The replies' writes plus the times the live runs differed from the last
-/// ones seen. Every read of the version counts here, so a fetch and the
-/// relay never disagree.
-fn counted(desktop: &DesktopState, arena_runs: &[ArenaRunJob]) -> u64 {
-    desktop.pending_ai_replies.clock.revision() + desktop.live_jobs.observe(arena_runs)
+/// The replies' writes plus the times the live runs or flows differed from
+/// the last ones seen. Every read of the version counts here, so a fetch and
+/// the relay never disagree.
+fn counted(desktop: &DesktopState, arena_runs: &[ArenaRunJob], flows: &[ReviewFlowJob]) -> u64 {
+    desktop.live_jobs.observe(arena_runs);
+    desktop.pending_ai_replies.clock.revision() + desktop.live_jobs.observe_flows(flows)
 }

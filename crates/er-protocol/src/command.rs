@@ -632,6 +632,41 @@ pub enum Command {
         pr: PrTarget,
         action: PrAction,
     },
+    /// Controls the review flow on `er_dir`, the bucket the page painted for
+    /// `tab`. A control other than acceptance is refused when the tab's
+    /// content shows another bucket. Accepting answers in `created` how
+    /// many findings it took.
+    ReviewFlow {
+        tab: TabKey,
+        er_dir: String,
+        action: ReviewFlowAction,
+    },
+}
+
+/// What a `ReviewFlow` command does to the flow.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
+pub enum ReviewFlowAction {
+    /// Reviews `scope` (`current`, `pr` or a git scope) on the tab.
+    Start {
+        scope: String,
+    },
+    /// Starts the Deep plan the user approved.
+    Confirm,
+    Decline,
+    /// Re-runs an interrupted flow from its record.
+    Rerun,
+    Cancel,
+    /// Runs the lenses triage chose as Standard finders instead of Deep.
+    RunStandard,
+    AcceptFindings {
+        run_id: String,
+        finding_ids: Vec<String>,
+    },
 }
 
 /// A browser annotation as the page submits it.
