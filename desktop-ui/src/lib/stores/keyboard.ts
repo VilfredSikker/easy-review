@@ -1,4 +1,3 @@
-import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { app } from "./app.svelte";
 import { tabsResource } from "./tabsResource.svelte";
@@ -14,7 +13,7 @@ import { buildTree, flattenForNav } from "$lib/treeFromPaths";
 import { nextFile, prevFile } from "$lib/navigation";
 import { v1ServiceRequested } from "$lib/v1ServiceFlag";
 import type { AppSnapshot, FileSnapshot } from "$lib/types";
-import type { OpenSource } from "$lib/protocol/generated/OpenSource";
+import { openSource, selectedSource } from "$lib/tabCommands";
 import { asErError } from "$lib/protocol/client";
 import { fileTreeCollapse } from "$lib/stores/fileTreeCollapse.svelte";
 import { diffNav } from "$lib/stores/diffNav.svelte";
@@ -172,7 +171,7 @@ function toggleReviewedHere() {
 
 async function openInVsCode() {
   try {
-    const result = await invoke<OpenSource>("open_in_vscode");
+    const result = await openSource("open_in_vscode", selectedSource(app.snapshot));
     if (result.kind === "needs_checkout") {
       app.showToast("info", result.target);
     }

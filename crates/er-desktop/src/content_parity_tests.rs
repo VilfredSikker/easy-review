@@ -275,6 +275,20 @@ struct Observed {
     /// The snapshot's `pr` and `stack` on the App's side, `pr(tab)` on the
     /// other.
     card: Value,
+    /// The review export with `export_options`: the App path's renderer over
+    /// the tab on one side, the content's on the other.
+    export: String,
+    /// The view bucket and the GitHub-comment bucket.
+    buckets: (String, String),
+}
+
+/// An export that takes the checklist and leaves out the note.
+fn export_options() -> er_protocol::ExportOptions {
+    er_protocol::ExportOptions {
+        include_checklist: Some(true),
+        exclude_note_ids: Some(vec!["n-1".into()]),
+        ..Default::default()
+    }
 }
 
 /// The fields of a snapshot, or of a `diff(tab)`, that both must agree on.
@@ -377,6 +391,8 @@ struct Read<'a> {
     resource: Value,
     annotations: Value,
     card: Value,
+    export: String,
+    buckets: (String, String),
 }
 
 /// The keys the snapshot reads, given the key functions of one reader.
@@ -411,6 +427,8 @@ fn observe(read: Read<'_>, er_dir: &str) -> anyhow::Result<Observed> {
         resource: resource_fields(&read.resource),
         annotations: read.annotations,
         card: read.card,
+        export: read.export,
+        buckets: read.buckets,
         files: read
             .files
             .iter()
@@ -546,6 +564,12 @@ fn write_fixture(
         json!({ "version": 1, "diff_hash": "older", "kind": "flows", "title": "Flow",
                 "mermaid": "graph TD; a-->b" }),
     );
+    let pin = serde_json::from_value(json!({
+        "id": "ui-1", "url": "/settings", "selector": "main > button", "box_x": 4.0,
+        "box_y": 8.0, "box_w": 20.0, "box_h": 10.0, "viewport_w": 800, "viewport_h": 600,
+        "text": "Label is cut off"
+    }))?;
+    er_engine::ai::save_ui_annotations(&er_dir, &[pin])?;
     let promoted = [("f-1".to_string(), "77".to_string())]
         .into_iter()
         .collect();
@@ -761,6 +785,8 @@ fn through_tab_state(
         let preview_keys = preview_keys(&files, tab.preview_context_key(), |path| {
             tab.file_preview_key(path)
         });
+        let export = crate::export::render_markdown(tab, &export_options());
+        let buckets = (tab.er_dir(), tab.github_comments_dir());
         observe(
             Read {
                 files,
@@ -778,6 +804,8 @@ fn through_tab_state(
                 resource,
                 annotations,
                 card,
+                export,
+                buckets,
             },
             &er_dir,
         )
@@ -885,6 +913,11 @@ fn through_the_workspace(
                 resource,
                 annotations: serde_json::to_value(er_service::annotations_resource(content))?,
                 card: serde_json::to_value(er_service::pr_resource(content))?,
+                export: crate::export::render_content(content, &export_options()),
+                buckets: (
+                    content.context.er_dir.clone(),
+                    content.context.comments_dir.clone(),
+                ),
             },
             &er_dir,
         )
@@ -1097,6 +1130,7 @@ fn assert_parity(kind: TabKind, mode: DiffMode) -> anyhow::Result<()> {
             let app = through_tab_state((&kind, mode), refreshes, lazy, checkout, &[])?;
             let service = through_the_workspace((&kind, mode), refreshes, lazy, checkout, &[])?;
             assert_sections(&service, &app, &case);
+            assert_eq!(service.export, app.export, "{case}: the export");
             assert_filled(&app, (&kind, mode), lazy, &case);
         }
     }
@@ -1149,6 +1183,35 @@ fn a_local_pr_tab_loads_the_same_pr_diff() -> anyhow::Result<()> {
 #[test]
 fn a_local_pr_tab_loads_the_same_branch_view() -> anyhow::Result<()> {
     assert_parity(TabKind::LocalPr, DiffMode::Branch)
+}
+
+/// The export of a local PR tab's branch view, whose view bucket is not its
+/// PR bucket, renders from the content what the App path renders: the
+/// branch, the AI state, the UI annotations from the view bucket, and the
+/// note the options leave out left out.
+#[test]
+fn a_local_pr_branch_view_exports_what_the_app_path_exports() -> anyhow::Result<()> {
+    let (root, repo) = temp_repo()?;
+    let view = (&TabKind::LocalPr, DiffMode::Branch);
+    let checkout = (root.path(), repo.as_str());
+    let app = through_tab_state(view, 1, false, checkout, &[])?;
+    let service = through_the_workspace(view, 1, false, checkout, &[])?;
+    let (er_dir, comments_dir) = &service.buckets;
+    assert_ne!(er_dir, comments_dir, "the fixture's two buckets are one");
+    let export = &service.export;
+    let header = export.lines().next().unwrap_or_default();
+    assert!(
+        header.starts_with("# Review export — ") && !header.ends_with("(unknown)"),
+        "no branch in the header: {export}"
+    );
+    assert!(
+        export.contains("Label is cut off"),
+        "no UI annotation: {export}"
+    );
+    assert!(export.contains("Looks off"), "no GitHub comment: {export}");
+    assert!(!export.contains(" — Note ("), "the left-out note: {export}");
+    assert_eq!(service.export, app.export);
+    Ok(())
 }
 
 /// `observed` without what a view with its own diff does not share across

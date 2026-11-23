@@ -7,13 +7,19 @@
 //! resolved range oids, so a rebase that keeps a file's hunks byte-identical
 //! still re-attributes it.
 
+#[cfg(any(test, not(feature = "v1-service")))]
 use std::sync::Mutex;
 
-use er_engine::app::{DiffMode, TabState};
-use er_engine::git::{BlameEnd, BlameRequest, BlameSpan, FileStatus, GitError, LineAttribution};
+use er_engine::app::DiffMode;
+#[cfg(any(test, not(feature = "v1-service")))]
+use er_engine::app::TabState;
+use er_engine::git::{
+    BlameEnd, BlameRequest, BlameSpan, DiffFile, FileStatus, GitError, LineAttribution,
+};
 use er_protocol::{ErError, LineCommits};
 use tauri::State;
 
+#[cfg(not(feature = "v1-service"))]
 use crate::commands::AppState;
 use crate::line_commits_cache::CacheKey;
 pub use crate::line_commits_cache::{LineCommitsCache, LineCommitsLru};
@@ -44,82 +50,137 @@ const REMOTE_REASON: &str = "Remote PR tabs have no local commits to attribute l
 const UNCOMMITTED_REASON: &str =
     "Unstaged and staged changes are not committed yet. Switch to the branch view.";
 
+/// What blame reads of a tab: the App's tab, or a tab's published content.
+struct ShownTab<'a> {
+    remote: bool,
+    repo_root: &'a str,
+    mode: DiffMode,
+    /// The commit History shows.
+    history_sha: Option<&'a str>,
+    base_branch: &'a str,
+    local_branch_view: Option<&'a str>,
+    checkout_root: Option<&'a str>,
+    pr_number: Option<u64>,
+    pr_head_ref: Option<&'a str>,
+    /// The file's rename or copy source in the diff the view shows.
+    old_path: Option<String>,
+}
+
+fn rename_source<'a>(files: impl IntoIterator<Item = &'a DiffFile>, path: &str) -> Option<String> {
+    files
+        .into_iter()
+        .find(|f| f.path == path)
+        .and_then(|f| match &f.status {
+            FileStatus::Renamed(old) | FileStatus::Copied(old) => Some(old.clone()),
+            _ => None,
+        })
+}
+
+/// The App's active tab, as blame reads it.
+#[cfg(any(test, not(feature = "v1-service")))]
+fn resolve(tab: &TabState, path: &str) -> Result<Target, String> {
+    let history = tab.history.as_ref();
+    let files = match tab.mode {
+        DiffMode::History => history.map_or(&[][..], |h| &h.commit_files[..]),
+        _ => &tab.files[..],
+    };
+    resolve_view(ShownTab {
+        remote: tab.is_remote(),
+        repo_root: &tab.repo_root,
+        mode: tab.mode,
+        history_sha: history
+            .and_then(|h| h.commits.get(h.selected_commit))
+            .map(|c| c.hash.as_str()),
+        base_branch: &tab.base_branch,
+        local_branch_view: tab.local_branch_view.as_deref(),
+        checkout_root: tab.local_branch_checkout_root.as_deref(),
+        pr_number: tab.pr_number,
+        pr_head_ref: tab.pr_head_ref.as_deref(),
+        old_path: rename_source(files, path),
+    })
+}
+
+/// A tab's published content, as blame reads it. In History its diff section
+/// holds the selected commit's diff.
+#[cfg(feature = "v1-service")]
+fn resolve_content(content: &er_service::TabContent, path: &str) -> Result<Target, String> {
+    let tab = &content.tab;
+    resolve_view(ShownTab {
+        remote: tab.identity().is_remote(),
+        repo_root: &tab.repo_root,
+        mode: tab.mode,
+        history_sha: content.history.as_ref().and_then(|h| h.selected.as_deref()),
+        base_branch: &tab.base_branch,
+        local_branch_view: tab.local_branch_view.as_deref(),
+        checkout_root: tab.checkout_root.as_deref(),
+        pr_number: tab.pr_number,
+        pr_head_ref: tab.pr_head_ref.as_deref(),
+        old_path: rename_source(content.diff.files.iter().map(|f| &**f), path),
+    })
+}
+
 /// Mirror of how each view fetches its diff (`TabState::fetch_tab_raw_diff`
 /// and the branch-scope preload), so blame reads the same two trees the diff
 /// compared. `Err` is a reason to show the user, not a failure.
-fn resolve(tab: &TabState, path: &str) -> Result<Target, String> {
-    if tab.is_remote() {
+fn resolve_view(view: ShownTab<'_>) -> Result<Target, String> {
+    if view.remote {
         return Err(REMOTE_REASON.into());
     }
-    if tab.repo_root.trim().is_empty() {
+    if view.repo_root.trim().is_empty() {
         return Err("This tab has no local repository.".into());
     }
-    let source = match tab.mode {
+    let source = match view.mode {
         DiffMode::Unstaged | DiffMode::Staged => return Err(UNCOMMITTED_REASON.into()),
         DiffMode::Conflicts | DiffMode::Hidden => {
             return Err("This view does not show a commit range.".into())
         }
         DiffMode::History => {
-            let sha = tab
-                .history
-                .as_ref()
-                .and_then(|h| h.commits.get(h.selected_commit))
-                .map(|c| c.hash.clone())
+            let sha = view
+                .history_sha
                 .ok_or_else(|| "No commit is selected.".to_owned())?;
             Source::Commit {
-                root: tab.repo_root.clone(),
-                sha,
+                root: view.repo_root.to_owned(),
+                sha: sha.to_owned(),
             }
         }
-        DiffMode::Branch | DiffMode::PrDiff | DiffMode::Tour => branch_source(tab)?,
+        DiffMode::Branch | DiffMode::PrDiff | DiffMode::Tour => branch_source(&view)?,
     };
-    let files = match tab.mode {
-        DiffMode::History => tab
-            .history
-            .as_ref()
-            .map_or(&[][..], |h| &h.commit_files[..]),
-        _ => &tab.files[..],
-    };
-    let old_path = files
-        .iter()
-        .find(|f| f.path == path)
-        .and_then(|f| match &f.status {
-            FileStatus::Renamed(old) | FileStatus::Copied(old) => Some(old.clone()),
-            _ => None,
-        });
-    Ok(Target { source, old_path })
+    Ok(Target {
+        source,
+        old_path: view.old_path,
+    })
 }
 
-fn branch_source(tab: &TabState) -> Result<Source, String> {
-    let base = tab.base_branch.clone();
-    let Some(branch) = tab.local_branch_view.as_ref() else {
+fn branch_source(view: &ShownTab<'_>) -> Result<Source, String> {
+    let base = view.base_branch.to_owned();
+    let root = view.repo_root.to_owned();
+    let Some(branch) = view.local_branch_view else {
         return Ok(Source::Range {
-            root: tab.repo_root.clone(),
+            root,
             base,
-            head: tab.pr_head_ref.clone().unwrap_or_else(|| "HEAD".into()),
+            head: view.pr_head_ref.unwrap_or("HEAD").to_owned(),
         });
     };
-    let is_pr = tab.pr_number.is_some();
+    let is_pr = view.pr_number.is_some();
     // A PR tab compares refs (PR parity) in PR Diff and Tour, and whenever its
     // head is not checked out; a checked-out branch view diffs its working tree.
-    let parity = is_pr && matches!(tab.mode, DiffMode::PrDiff | DiffMode::Tour);
-    if let (false, Some(root)) = (parity, tab.local_branch_checkout_root.as_ref()) {
+    let parity = is_pr && matches!(view.mode, DiffMode::PrDiff | DiffMode::Tour);
+    if let (false, Some(checkout)) = (parity, view.checkout_root) {
         return Ok(Source::WorkingTree {
-            root: root.clone(),
+            root: checkout.to_owned(),
             base,
         });
     }
     let head = if is_pr {
-        tab.pr_head_ref
-            .clone()
+        view.pr_head_ref
             .ok_or_else(|| "The PR's commits are still being fetched.".to_owned())?
     } else {
-        branch.clone()
+        branch
     };
     Ok(Source::Range {
-        root: tab.repo_root.clone(),
+        root,
         base,
-        head,
+        head: head.to_owned(),
     })
 }
 
@@ -181,6 +242,7 @@ fn attribute(
     Ok(attribution)
 }
 
+#[cfg(any(test, not(feature = "v1-service")))]
 fn line_commits_for(
     ports: &er_engine::ports::Ports,
     app: &Mutex<er_engine::app::App>,
@@ -192,12 +254,38 @@ fn line_commits_for(
         let app = app.lock().map_err(|e| e.to_string())?;
         resolve(app.tab(), &path)
     };
+    Ok(answer(&*ports.git, cache, target, path, cache_key))
+}
+
+/// The attribution of `path` in the tab `wire` names, resolved from its
+/// published content.
+#[cfg(feature = "v1-service")]
+pub(crate) fn keyed_line_commits(
+    desktop: &crate::state::DesktopState,
+    wire: er_protocol::TabKey,
+    path: String,
+    cache_key: String,
+) -> Result<LineCommits, ErError> {
+    let content = super::content_of(desktop, wire)?;
+    let target = resolve_content(&content, &path);
+    let cache = &desktop.line_commits_cache;
+    Ok(answer(&*desktop.ports.git, cache, target, path, cache_key))
+}
+
+/// The reply for `target`: its attribution, or the reason it has none.
+fn answer(
+    git: &dyn er_engine::git::Git,
+    cache: &LineCommitsCache,
+    target: Result<Target, String>,
+    path: String,
+    cache_key: String,
+) -> LineCommits {
     let (unavailable, attribution) =
-        match target.and_then(|target| attribute(&*ports.git, cache, &target, &path, &cache_key)) {
+        match target.and_then(|target| attribute(git, cache, &target, &path, &cache_key)) {
             Ok(attribution) => (None, attribution),
             Err(reason) => (Some(reason), LineAttribution::default()),
         };
-    Ok(LineCommits {
+    LineCommits {
         path,
         cache_key,
         unavailable,
@@ -205,7 +293,7 @@ fn line_commits_for(
         added: wire_spans(attribution.added),
         deleted: wire_spans(attribution.deleted),
         deleted_attributed: attribution.deleted_attributed,
-    })
+    }
 }
 
 fn wire_spans(spans: Vec<BlameSpan>) -> Vec<er_protocol::BlameSpan> {
@@ -220,7 +308,24 @@ fn wire_spans(spans: Vec<BlameSpan>) -> Vec<er_protocol::BlameSpan> {
 }
 
 /// Which commit introduced (or removed) each changed line of `path` in the
+/// view the tab `tab` shows. `cache_key` is the file row's `cache_key`.
+#[cfg(feature = "v1-service")]
+#[tauri::command]
+pub async fn line_commits(
+    tab: er_protocol::TabKey,
+    path: String,
+    cache_key: String,
+    desktop: State<'_, crate::state::DesktopState>,
+) -> Result<LineCommits, ErError> {
+    let desktop = desktop.inner().clone();
+    crate::state::run_blocking(move || Ok(keyed_line_commits(&desktop, tab, path, cache_key)))
+        .await
+        .map_err(super::failed)?
+}
+
+/// Which commit introduced (or removed) each changed line of `path` in the
 /// active view. `cache_key` is the file's `FileSnapshot.cache_key`.
+#[cfg(not(feature = "v1-service"))]
 #[tauri::command]
 pub async fn line_commits(
     path: String,

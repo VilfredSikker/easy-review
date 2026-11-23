@@ -6,7 +6,6 @@
 // in memory: item ids belong to one review, so a remembered exclusion would
 // silently drop an item from a review nobody has looked at yet.
 
-import { invoke } from "@tauri-apps/api/core";
 import { copyToClipboard } from "$lib/clipboard";
 import {
   buildExportOpts,
@@ -20,6 +19,7 @@ import {
   type ExportOpts,
   type ExportPrefs,
 } from "$lib/exportOptions";
+import { exportReview } from "$lib/tabCommands";
 import { app } from "./app.svelte";
 
 export const EXPORT_PREFS_KEY = "exportOptions";
@@ -61,7 +61,7 @@ class ExportOptionsStore {
   /** Renders the export with the current choices and remembers it for the count. */
   async render(): Promise<string> {
     const key = this.renderKey;
-    const body = await invoke<string>("export_review", { opts: this.current });
+    const body = await exportReview(this.current);
     this.rendered = { key, body };
     return body;
   }

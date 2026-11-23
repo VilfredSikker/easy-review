@@ -1,14 +1,21 @@
 //! Markdown export of review annotations (comments, questions, AI findings)
 //! for handing off to a coding agent.
 //!
-//! See `.work/export-review/spec.md`. The renderer is pure: it walks the
-//! `TabState`'s AI data and produces a single markdown string. The Tauri
-//! commands in `commands.rs` wrap it and optionally write to disk.
+//! See `.work/export-review/spec.md`. The renderer reads only what an
+//! [`ExportSource`] names, no diff rows, so it renders the App's tab and a
+//! tab's published content alike, and it compiles without the App.
 
 use serde::Deserialize;
 
-use crate::ai::{Confidence, Finding, GithubComment, PrivateAnnotation, UiAnnotation};
-use crate::app::TabState;
+use crate::ai::{AiState, Confidence, Finding, GithubComment, PrivateAnnotation, UiAnnotation};
+
+/// What the export renders: the branch its header names, the tab's AI state,
+/// and the view bucket its UI annotations are read from.
+pub struct ExportSource<'a> {
+    pub branch: &'a str,
+    pub ai: &'a AiState,
+    pub er_dir: &'a str,
+}
 
 /// Toggles for which annotation kinds to include in the export.
 ///
@@ -83,13 +90,13 @@ fn allow_list_excludes(allow: Option<&[String]>, item_id: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Render the active tab's annotations as a single markdown document, grouped
-/// by file path. Returns a placeholder body when there is nothing to export.
-pub fn render_markdown(tab: &TabState, opts: &ExportOpts) -> String {
-    let branch = if tab.current_branch.is_empty() {
+/// Render the tab's annotations as a single markdown document, grouped by
+/// file path. Returns a placeholder body when there is nothing to export.
+pub fn render(source: &ExportSource<'_>, opts: &ExportOpts) -> String {
+    let branch = if source.branch.is_empty() {
         "(unknown)"
     } else {
-        tab.current_branch.as_str()
+        source.branch
     };
 
     // Group items by file path while preserving insertion order across kinds.
@@ -106,7 +113,7 @@ pub fn render_markdown(tab: &TabState, opts: &ExportOpts) -> String {
     }
 
     if opts.include_questions {
-        if let Some(qs) = tab.ai.questions.as_ref() {
+        if let Some(qs) = source.ai.questions.as_ref() {
             // Top-level only — replies are rendered nested under their parent.
             let top_level: Vec<&PrivateAnnotation> = qs
                 .questions
@@ -131,7 +138,7 @@ pub fn render_markdown(tab: &TabState, opts: &ExportOpts) -> String {
     }
 
     if opts.include_notes {
-        if let Some(ns) = tab.ai.notes.as_ref() {
+        if let Some(ns) = source.ai.notes.as_ref() {
             // Top-level only — replies are rendered nested under their parent.
             let top_level: Vec<&PrivateAnnotation> = ns
                 .notes
@@ -156,7 +163,7 @@ pub fn render_markdown(tab: &TabState, opts: &ExportOpts) -> String {
     }
 
     if opts.include_comments {
-        if let Some(gc) = tab.ai.github_comments.as_ref() {
+        if let Some(gc) = source.ai.github_comments.as_ref() {
             let top_level: Vec<&GithubComment> = gc
                 .comments
                 .iter()
@@ -180,7 +187,7 @@ pub fn render_markdown(tab: &TabState, opts: &ExportOpts) -> String {
     }
 
     if opts.include_findings {
-        if let Some(review) = tab.ai.review.as_ref() {
+        if let Some(review) = source.ai.review.as_ref() {
             // Stable order: sort file paths alphabetically. The HashMap iteration
             // order is otherwise undefined, which makes diffs of exports churn.
             let mut paths: Vec<&String> = review.files.keys().collect();
@@ -205,7 +212,7 @@ pub fn render_markdown(tab: &TabState, opts: &ExportOpts) -> String {
     // UI annotations are loaded from disk (read path matching the snapshot
     // pipeline). Filtered by `only_unresolved` (treating stale as resolved).
     let ui_annotations: Vec<UiAnnotation> = if opts.include_annotations {
-        crate::ai::load_ui_annotations(&tab.comments_dir())
+        crate::ai::load_ui_annotations(source.er_dir)
             .into_iter()
             .filter(|a| !(opts.only_unresolved && a.stale))
             .collect()
@@ -217,7 +224,7 @@ pub fn render_markdown(tab: &TabState, opts: &ExportOpts) -> String {
     // file, so it goes above the file groups: it is what you paste into a pull
     // request description.
     let checklist = if opts.include_checklist {
-        tab.ai.checklist.as_ref()
+        source.ai.checklist.as_ref()
     } else {
         None
     };
@@ -248,6 +255,18 @@ pub fn render_markdown(tab: &TabState, opts: &ExportOpts) -> String {
     }
 
     out
+}
+
+/// Render the App's tab: its branch, AI state and view bucket.
+#[cfg(feature = "ui")]
+pub fn render_markdown(tab: &crate::app::TabState, opts: &ExportOpts) -> String {
+    let er_dir = tab.er_dir();
+    let source = ExportSource {
+        branch: &tab.current_branch,
+        ai: &tab.ai,
+        er_dir: &er_dir,
+    };
+    render(&source, opts)
 }
 
 /// Render a `## Review checklist` section: the outcomes the review asked the
@@ -528,14 +547,15 @@ const fn ago_label(ts: &str) -> String {
     String::new()
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "ui"))]
 mod tests {
     use super::*;
     use crate::ai::{
-        AiState, ErFileReview, ErGithubComments, ErQuestions, ErReview, GithubComment,
-        PrivateAnnotation, RiskLevel,
+        ErFileReview, ErGithubComments, ErQuestions, ErReview, GithubComment, PrivateAnnotation,
+        RiskLevel,
     };
     use crate::app::TabState;
+    use crate::export::render_markdown;
     use std::collections::HashMap;
 
     fn tab_with_ai(ai: AiState) -> TabState {

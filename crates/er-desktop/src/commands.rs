@@ -11986,6 +11986,8 @@ mod tests {
     #[cfg(feature = "v1-service")]
     mod diff_resource_tests;
     #[cfg(feature = "v1-service")]
+    mod direct_tests;
+    #[cfg(feature = "v1-service")]
     mod finding_write_tests;
     #[cfg(feature = "v1-service")]
     mod github_sender_tests;

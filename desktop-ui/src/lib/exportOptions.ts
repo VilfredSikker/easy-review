@@ -2,11 +2,10 @@ import { asErError } from "./protocol/client";
 import type { AiSnapshot, AppSnapshot, TabSummary } from "./types";
 
 /**
- * The one TS mirror of the desktop `ExportOpts` in
- * `crates/er-desktop/src/export.rs` (camelCase over IPC): the engine's options
- * plus per-category exclusions. The `include*Ids` arrays are the engine's
- * allow-lists (undefined exports the whole category); the `exclude*Ids` arrays
- * drop single items and leave everything else alone.
+ * The Export page's whole choice, sent as er-protocol's `ExportOptions`: the
+ * engine's options plus per-category exclusions. The `include*Ids` arrays are
+ * the engine's allow-lists (undefined exports the whole category); the
+ * `exclude*Ids` arrays drop single items and leave everything else alone.
  */
 export type ExportOpts = {
   includeComments: boolean;
@@ -136,8 +135,8 @@ export function buildExportOpts(prefs: ExportPrefs, items: ExportItems, excluded
   };
 }
 
-// Item headings and UI annotation pins as `render_markdown` writes them in
-// `crates/er-engine/src/export.rs`. Item bodies are blockquoted and titles are
+// Item headings and UI annotation pins as `render` writes them in
+// `crates/er-engine/src/review_export.rs`. Item bodies are blockquoted and titles are
 // bold, so neither can start a line that matches.
 const ITEM_HEADING = /^### .* — (Question|Note|Comment|AI finding) \(/;
 const ANNOTATION_PIN = /^- \*\*Pin #\d+\*\*/;
