@@ -24,14 +24,18 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 
 use er_engine::config::InboxConfig;
 use er_protocol::{
-    Branch, Branches, Inbox, InboxItem, InboxTarget, PrRow, Project, ProjectPrs, Projects, Prs,
-    ResourceChanged, ResourceKey, ResourceVersion, Worktree, Worktrees,
+    Branch, Branches, CheckRun, GithubStatus, Inbox, InboxItem, InboxTarget, PrRow, PrStatus,
+    Project, ProjectPrs, Projects, Prs, RepoMerge, ResourceChanged, ResourceKey, ResourceVersion,
+    StatusComment, StatusReview, StatusReviewer, Worktree, Worktrees,
 };
 
 use crate::inbox::{InboxHandle, InboxState};
 use crate::pr_cache::{self, PrCacheFetchedAtMap, PrCacheMap};
 use crate::projects::{self, ProjectRecord, ProjectsFile};
-use crate::snapshot::{self, BranchInfo, GhUser, MetaCache, PrInfo, ProjectMeta, WorktreeSnapshot};
+use crate::snapshot::{
+    self, BranchInfo, GhStatusCache, GhUser, GithubStatusSnapshot, MetaCache, PrInfo, ProjectMeta,
+    WorktreeSnapshot,
+};
 
 pub mod startup;
 
@@ -56,6 +60,9 @@ pub trait SidebarOwner: Send + Sync {
     /// The inbox at its version; empty at version 0 until the owner reads
     /// the inbox prefs.
     fn inbox(&self) -> (u64, Inbox);
+    /// One PR's GitHub status at its version, by `owner/repo` and number; a
+    /// PR the status cache holds nothing for reads none at version 0.
+    fn pr_status(&self, remote: &str, number: u64) -> (u64, PrStatus);
     /// Every key the owner has published, with its version.
     fn versions(&self) -> Vec<(ResourceKey, u64)>;
 }
@@ -72,6 +79,9 @@ pub struct AppOwner {
     /// the default build's snapshot reads the App's prefs, and no reader of
     /// `inbox` exists there.
     inbox_prefs: OnceLock<InboxPrefs>,
+    /// Where `pr_status` comes from. Set on the flag path only, as
+    /// `inbox_prefs` is.
+    gh_status: OnceLock<GhStatusCache>,
     published: Mutex<Published>,
     /// Wakes the resource relay after a publish that moved a version.
     wake: Mutex<Option<Sender<()>>>,
@@ -88,6 +98,7 @@ struct Published {
     prs: BTreeMap<String, Stamped<Prs>>,
     worktrees: BTreeMap<String, Stamped<Worktrees>>,
     inbox: Option<Stamped<Inbox>>,
+    pr_status: BTreeMap<(String, u64), Stamped<PrStatus>>,
 }
 
 type InboxPrefs = Box<dyn Fn() -> Option<InboxConfig> + Send + Sync>;
@@ -115,6 +126,7 @@ impl AppOwner {
             worktrees: Mutex::default(),
             inbox,
             inbox_prefs: OnceLock::new(),
+            gh_status: OnceLock::new(),
             published: Mutex::default(),
             wake: Mutex::default(),
         }
@@ -132,6 +144,13 @@ impl AppOwner {
         prefs: impl Fn() -> Option<InboxConfig> + Send + Sync + 'static,
     ) {
         let _ = self.inbox_prefs.set(Box::new(prefs));
+    }
+
+    /// Builds `pr_status` from `cache` from here on. A fetch that stores a
+    /// status bumps the desktop revision, which wakes the tick that
+    /// publishes. The first call wins.
+    pub fn read_status_from(&self, cache: GhStatusCache) {
+        let _ = self.gh_status.set(cache);
     }
 
     /// Applies one write to the inbox and publishes, then saves the inbox.
@@ -256,7 +275,16 @@ impl AppOwner {
                 .get()
                 .and_then(|prefs| prefs())
                 .map(|prefs| build_inbox(&lock(&self.inbox), &prefs));
-            published.replace(build_projects(&file), branches, prs, worktrees, inbox)
+            let statuses = self
+                .gh_status
+                .get()
+                .map(|cache| build_statuses(&lock(cache), me.as_deref()));
+            let mut changed =
+                published.replace(build_projects(&file), branches, prs, worktrees, inbox);
+            if let Some(statuses) = statuses {
+                published.replace_statuses(statuses, &mut changed);
+            }
+            changed
         };
         if !changed.is_empty() {
             if let Some(wake) = lock(&self.wake).as_ref() {
@@ -308,8 +336,26 @@ impl SidebarOwner for AppOwner {
             .unwrap_or_default()
     }
 
+    fn pr_status(&self, remote: &str, number: u64) -> (u64, PrStatus) {
+        lock(&self.published)
+            .pr_status
+            .get(&(remote.to_string(), number))
+            .map(|stamped| (stamped.version, stamped.value.clone()))
+            .unwrap_or_default()
+    }
+
     fn versions(&self) -> Vec<(ResourceKey, u64)> {
         let published = lock(&self.published);
+        let statuses = published
+            .pr_status
+            .iter()
+            .map(|((remote, number), stamped)| {
+                let key = ResourceKey::PrStatus {
+                    remote: remote.clone(),
+                    number: *number,
+                };
+                (key, stamped.version)
+            });
         let projects = published
             .projects
             .as_ref()
@@ -340,6 +386,7 @@ impl SidebarOwner for AppOwner {
             .chain(prs)
             .chain(worktrees)
             .chain(inbox)
+            .chain(statuses)
             .collect()
     }
 }
@@ -394,6 +441,136 @@ impl Published {
             }
         }
         changed
+    }
+}
+
+impl Published {
+    /// Replaces each status that differs from the one held, under a new
+    /// version, and drops the PRs the cache no longer holds.
+    fn replace_statuses(
+        &mut self,
+        built: BTreeMap<(String, u64), PrStatus>,
+        changed: &mut Vec<ResourceChanged>,
+    ) {
+        self.pr_status.retain(|key, _| built.contains_key(key));
+        for ((remote, number), value) in built {
+            let key = (remote, number);
+            if self.pr_status.get(&key).map(|held| &held.value) == Some(&value) {
+                continue;
+            }
+            self.stamp += 1;
+            let version = self.stamp;
+            let (remote, number) = key.clone();
+            self.pr_status.insert(key, Stamped { version, value });
+            changed.push(moved(ResourceKey::PrStatus { remote, number }, version));
+        }
+    }
+}
+
+/// Each cached status under its `owner/repo` and number. `me` decides
+/// `is_authored_by_me` as the snapshot does: while no login is known the
+/// stored flag stands.
+fn build_statuses(
+    cache: &HashMap<(String, String, u64), GithubStatusSnapshot>,
+    me: Option<&str>,
+) -> BTreeMap<(String, u64), PrStatus> {
+    cache
+        .iter()
+        .map(|((owner, repo, number), status)| {
+            let status = PrStatus {
+                status: Some(github_status(status, me)),
+            };
+            ((format!("{owner}/{repo}"), *number), status)
+        })
+        .collect()
+}
+
+/// The wire twin of a cached status.
+pub fn github_status(status: &GithubStatusSnapshot, me: Option<&str>) -> GithubStatus {
+    let count = |n: usize| u64::try_from(n).unwrap_or(u64::MAX);
+    GithubStatus {
+        owner: status.owner.clone(),
+        repo: status.repo.clone(),
+        number: status.number,
+        url: status.url.clone(),
+        state: status.state.clone(),
+        is_draft: status.is_draft,
+        title: status.title.clone(),
+        body: status.body.clone(),
+        author: status.author.clone(),
+        head_ref: status.head_ref.clone(),
+        base_ref: status.base_ref.clone(),
+        review_decision: status.review_decision.clone(),
+        mergeable: status.mergeable.clone(),
+        labels: status.labels.clone(),
+        checks: status
+            .checks
+            .iter()
+            .map(|check| CheckRun {
+                name: check.name.clone(),
+                status: check.status.clone(),
+                conclusion: check.conclusion.clone(),
+                url: check.url.clone(),
+                started_at: check.started_at.clone(),
+                completed_at: check.completed_at.clone(),
+                duration_secs: check.duration_secs,
+                description: check.description.clone(),
+            })
+            .collect(),
+        comments_count: count(status.comments_count),
+        reviews_count: count(status.reviews_count),
+        recent_comments: status
+            .recent_comments
+            .iter()
+            .map(|c| StatusComment {
+                author: c.author.clone(),
+                body: c.body.clone(),
+                created_at: c.created_at.clone(),
+                url: c.url.clone(),
+            })
+            .collect(),
+        recent_reviews: status
+            .recent_reviews
+            .iter()
+            .map(|r| StatusReview {
+                author: r.author.clone(),
+                state: r.state.clone(),
+                body: r.body.clone(),
+                submitted_at: r.submitted_at.clone(),
+            })
+            .collect(),
+        last_updated: status.last_updated.clone(),
+        is_authored_by_me: me.map_or(status.is_authored_by_me, |login| {
+            status.author.eq_ignore_ascii_case(login)
+        }),
+        merge_state_status: status.merge_state_status.clone(),
+        head_oid: status.head_oid.clone(),
+        is_cross_repository: status.is_cross_repository,
+        auto_merge_method: status.auto_merge_method.clone(),
+        head_branch_exists: status.head_branch_exists,
+        repo_merge: status.repo_merge.as_ref().map(|m| RepoMerge {
+            merge_commit_allowed: m.merge_commit_allowed,
+            squash_merge_allowed: m.squash_merge_allowed,
+            rebase_merge_allowed: m.rebase_merge_allowed,
+            delete_branch_on_merge: m.delete_branch_on_merge,
+            auto_merge_allowed: m.auto_merge_allowed,
+            viewer_permission: m.viewer_permission.clone(),
+        }),
+        in_merge_queue: status.in_merge_queue,
+        base_has_merge_queue: status.base_has_merge_queue,
+        can_bypass_rules: status.can_bypass_rules,
+        created_at: status.created_at.clone(),
+        commit_count: count(status.commit_count),
+        reviewers: status
+            .reviewers
+            .iter()
+            .map(|r| StatusReviewer {
+                reviewer: r.reviewer.clone(),
+                is_team: r.is_team,
+                requested: r.requested,
+                state: r.state.clone(),
+            })
+            .collect(),
     }
 }
 

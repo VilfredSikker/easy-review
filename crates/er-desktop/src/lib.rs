@@ -8,6 +8,7 @@ pub mod auto_triage;
 pub mod browser_proxy;
 pub mod browser_webview;
 pub mod commands;
+pub mod comment_tick;
 pub mod config_commands;
 pub mod dev_log;
 pub mod export;
@@ -38,6 +39,7 @@ pub mod snapshot;
 #[cfg(feature = "v1-service")]
 pub mod snapshot_view;
 pub mod state;
+pub mod status_loop;
 pub mod store_registry;
 pub mod tabs;
 pub mod terminal;
