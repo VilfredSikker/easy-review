@@ -87,6 +87,9 @@ pub fn fetch(desktop: &DesktopState, key: ResourceKey) -> Result<Versioned<Resou
         ResourceKey::ArenaEstimate { tab, plan } => super::arena::estimate(desktop, *tab, plan)?,
         ResourceKey::ArenaRuns { tab } => super::arena::runs(desktop, *tab)?,
         ResourceKey::ArenaRun { tab, run_id } => super::arena::run(desktop, *tab, run_id)?,
+        ResourceKey::Pr { tab } => super::pr::pr(desktop, *tab)?,
+        ResourceKey::PrStatus { remote, number } => super::pr::pr_status(desktop, remote, *number),
+        ResourceKey::PendingReview { tab } => super::github_writes::pending_review(desktop, *tab)?,
     };
     Ok(Versioned {
         key,
@@ -124,7 +127,8 @@ pub fn version(desktop: &DesktopState, key: ResourceKey) -> Result<ResourceVersi
         | ResourceKey::AnnotationScreenshot { .. }
         | ResourceKey::ArenaEstimate { .. }
         | ResourceKey::ArenaRuns { .. }
-        | ResourceKey::ArenaRun { .. } => 0,
+        | ResourceKey::ArenaRun { .. }
+        | ResourceKey::PendingReview { .. } => 0,
         ResourceKey::Prs { remote } => sidebar(desktop).prs(remote).0,
         ResourceKey::Worktrees { root } => sidebar(desktop).worktrees(root).0,
         ResourceKey::Inbox => sidebar(desktop).inbox().0,
@@ -151,6 +155,10 @@ pub fn version(desktop: &DesktopState, key: ResourceKey) -> Result<ResourceVersi
         ResourceKey::Reviewed { tab } => {
             super::reviewed::published_version(desktop, &super::diff::listed(desktop, *tab)?)
         }
+        ResourceKey::Pr { tab } => {
+            super::pr::published_version(desktop, &super::diff::listed(desktop, *tab)?)
+        }
+        ResourceKey::PrStatus { remote, number } => sidebar(desktop).pr_status(remote, *number).0,
     };
     Ok(ResourceVersion(version))
 }
@@ -340,7 +348,18 @@ pub fn send(desktop: &DesktopState, command: Command) -> Result<Ack, ErError> {
         | Command::ArenaAcceptFindings { .. }
         | Command::ArenaDelete { .. }
         | Command::ArenaCancel { .. }
-        | Command::ArenaOverride { .. }) => {
+        | Command::ArenaOverride { .. }
+        | Command::RefreshStack { .. }
+        | Command::RefreshGithubStatus { .. }
+        | Command::ReplyToGithubThread { .. }
+        | Command::PullGithubComments { .. }
+        | Command::PostGithubPrComment { .. }
+        | Command::PostGithubLineComment { .. }
+        | Command::SubmitGithubPrDecision { .. }
+        | Command::AddPendingReviewComment { .. }
+        | Command::RemovePendingReviewComment { .. }
+        | Command::SubmitPendingReview { .. }
+        | Command::RunGithubPrAction { .. }) => {
             return Err(ErError {
                 kind: ErErrorKind::Internal,
                 message: format!("not a sidebar command: {other:?}"),
@@ -521,7 +540,11 @@ impl Watched {
             Self::TabReviewed(key) => Some(ResourceKey::Reviewed {
                 tab: er_service::wire_tab_key(*key),
             }),
-            Self::Diff(_) | Self::Reviewed(_) | Self::Ai(_) | Self::Pr(_) | Self::Mode(_) => None,
+            // `pr(tab)`'s version is its PR section's revision.
+            Self::Pr(key) => Some(ResourceKey::Pr {
+                tab: er_service::wire_tab_key(*key),
+            }),
+            Self::Diff(_) | Self::Reviewed(_) | Self::Ai(_) | Self::Mode(_) => None,
         }
     }
 }

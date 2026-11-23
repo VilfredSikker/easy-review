@@ -5,6 +5,7 @@
 //! loads; a sync (`force`) reads it again. Every read is best effort: a PR
 //! GitHub cannot describe still shows its diff.
 
+use er_engine::gh_stack::StackSource;
 use er_engine::git::CommitInfo;
 use er_engine::github::PrOverviewData;
 use er_engine::pr_open_entry::PR_COMMIT_CACHE_LIMIT;
@@ -27,6 +28,60 @@ pub(crate) struct PrLoad<'a> {
     pub preview_head_oid: Option<&'a str>,
     /// A head the caller has confirmed, which wins over every other source.
     pub adopt_head_oid: Option<String>,
+}
+
+/// Whether `read` still describes `tab`: the tab reads its stack from the
+/// same place, for the same branch.
+pub(crate) fn still_reads(
+    tab: &ResolvedTab,
+    overview: Option<&PrOverviewData>,
+    read: &crate::content::StackRead,
+) -> bool {
+    stack_source(tab, overview).as_ref() == Some(&read.source) && read.branch == viewed_branch(tab)
+}
+
+/// The branch the tab views.
+pub(crate) fn viewed_branch(tab: &ResolvedTab) -> String {
+    tab.local_branch_view
+        .clone()
+        .unwrap_or_else(|| tab.current_branch.clone())
+}
+
+/// Where `tab`'s stack is read from, as `TabState::stack_source` finds it:
+/// `gh stack view` in the checkout that holds the viewed branch, else the
+/// PR chain of a PR's head; none when the tab has neither.
+pub(crate) fn stack_source(
+    tab: &ResolvedTab,
+    overview: Option<&PrOverviewData>,
+) -> Option<StackSource> {
+    if !tab.identity().is_remote() {
+        let checkout = match tab.local_branch_view {
+            Some(_) => tab.checkout_root.as_deref(),
+            None => Some(tab.repo_root.as_str()),
+        };
+        if let Some(root) = checkout {
+            return Some(StackSource::Checkout(root.to_string()));
+        }
+    }
+    tab.pr_number?;
+    let repo = tab.remote_repo.clone().filter(|r| !r.is_empty())?;
+    let head = overview
+        .map(|pr| pr.head_branch.clone())
+        .filter(|head| !head.is_empty())
+        .or_else(|| {
+            tab.local_branch_view
+                .clone()
+                .filter(|b| !er_engine::storage::is_pr_placeholder_branch(b))
+        })?;
+    Some(StackSource::PrChain { repo, head })
+}
+
+/// One stack lookup from `source`, through the GitHub port. Blocking.
+pub(crate) fn read_stack(
+    deps: &WorkspaceDeps,
+    source: &StackSource,
+) -> er_engine::gh_stack::StackInfo {
+    er_engine::gh_stack::load_from_with(&*deps.ports().github, source)
 }
 
 /// The PR section of a load of `tab`.
@@ -77,6 +132,7 @@ pub(crate) fn load_pr(deps: &WorkspaceDeps, tab: &ResolvedTab, load: PrLoad<'_>)
         overview,
         commits,
         head_oid,
+        stack: None,
     }
 }
 
@@ -124,4 +180,42 @@ fn local_head(deps: &WorkspaceDeps, tab: &ResolvedTab, number: u64) -> Option<St
     }
     let ref_name = format!("refs/er/pr/{number}/head");
     er_engine::github::rev_parse_oid(&*deps.ports().git, &tab.repo_root, &ref_name)
+}
+
+#[cfg(test)]
+mod tests {
+    use er_engine::gh_stack::{StackInfo, StackSource};
+    use er_engine::tab_identity::{DiffMode, ResolvedTab};
+
+    use super::still_reads;
+    use crate::content::StackRead;
+
+    /// `gh stack view` reads the checked-out branch, so a lookup taken on one
+    /// branch no longer describes the checkout once another is checked out.
+    #[test]
+    fn a_stack_read_on_one_branch_does_not_describe_another() {
+        let tab = ResolvedTab {
+            repo_root: "/repo".into(),
+            current_branch: "feature".into(),
+            base_branch: "main".into(),
+            mode: DiffMode::Branch,
+            tour_is_pr: false,
+            remote_repo: None,
+            pr_number: None,
+            local_branch_view: None,
+            pr_head_ref: None,
+            checkout_root: None,
+        };
+        let read = StackRead {
+            source: StackSource::Checkout("/repo".into()),
+            branch: "feature".into(),
+            info: StackInfo::Unavailable(String::new()),
+        };
+        assert!(still_reads(&tab, None, &read));
+        let moved = ResolvedTab {
+            current_branch: "other".into(),
+            ..tab
+        };
+        assert!(!still_reads(&moved, None, &read));
+    }
 }

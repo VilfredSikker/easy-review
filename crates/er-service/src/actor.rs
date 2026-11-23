@@ -901,6 +901,33 @@ fn handle_command(
                 Ok(Effected::patched(Reply::Acknowledged, patch))
             });
         }
+        Command::RefreshStack { key } => {
+            let Some(content) = state.view().tabs.get(&key).cloned() else {
+                return refuse_unknown_tab(reply);
+            };
+            let Some(source) =
+                crate::tab_pr::stack_source(&content.tab, content.pr.overview.as_ref())
+            else {
+                let _ = reply.send(Err(WorkspaceError::Failed(
+                    "this tab has no stack to read".into(),
+                )));
+                return;
+            };
+            let deps = deps.clone();
+            spawn_effect(tx, reply, move || {
+                let info = crate::tab_pr::read_stack(&deps, &source);
+                let branch = crate::tab_pr::viewed_branch(&content.tab);
+                let stack = Box::new(crate::content::StackRead {
+                    source,
+                    branch,
+                    info,
+                });
+                Ok(Effected::patched(
+                    Reply::StackRead { key },
+                    ContentPatch::Stack { key, stack },
+                ))
+            });
+        }
         Command::SetDiffMode {
             key,
             mode,

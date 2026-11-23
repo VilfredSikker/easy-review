@@ -84,6 +84,14 @@ fn active_content(state: &DesktopState) -> Result<(Active, Arc<TabContent>), Str
     Ok((active, content))
 }
 
+/// The registry's active tab and its content, loaded on its first use.
+pub(crate) fn active_tab_content(
+    state: &DesktopState,
+) -> Result<(TabDescriptor, Arc<TabContent>), String> {
+    let (active, content) = active_content(state)?;
+    Ok((active.tab, content))
+}
+
 /// The tab the registry lists under `key`.
 fn listed(state: &DesktopState, key: TabKey) -> Result<Active, String> {
     let view = state.service.app_registry().tabs_view();

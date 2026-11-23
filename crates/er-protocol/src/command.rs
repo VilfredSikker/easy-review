@@ -4,7 +4,10 @@ use ts_rs::TS;
 use crate::settings::{
     ConfigFieldValue, ModelUpsert, ProviderUpsert, ReviewModelGroups, UninstallOptions,
 };
-use crate::{ArenaPlan, PaintedView, Panel, PrOpenHint, ResourceChanged, TabKey};
+use crate::{
+    ArenaPlan, PaintedView, Panel, PrAction, PrOpenHint, PrTarget, ResourceChanged, ReviewLine,
+    TabKey,
+};
 
 /// A command the frontend sends to the backend.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
@@ -559,6 +562,75 @@ pub enum Command {
         finding_id: String,
         verdict: String,
         note: String,
+    },
+
+    // ── The PR card ──
+    /// Reads the tab's `gh stack` again into `pr(tab)`.
+    RefreshStack {
+        tab: TabKey,
+    },
+    /// Fetches the GitHub status of the tab's PR in the background; the push
+    /// brings `pr_status`.
+    RefreshGithubStatus {
+        tab: TabKey,
+    },
+
+    // ── The GitHub senders ──
+    /// Replies on a thread that is on GitHub. Painted in `view`, so a tab
+    /// that shows another view since refuses it.
+    ReplyToGithubThread {
+        tab: TabKey,
+        view: PaintedView,
+        parent_id: String,
+        body: String,
+        client_id: Option<String>,
+    },
+    /// Pulls the tab's PR comments into its comments sidecar. `force` skips
+    /// the hover-prefetch bundle.
+    PullGithubComments {
+        tab: TabKey,
+        force: bool,
+    },
+    /// Posts a PR-wide comment on the tab's PR.
+    PostGithubPrComment {
+        tab: TabKey,
+        body: String,
+    },
+    /// Posts one line comment outside any review.
+    PostGithubLineComment {
+        tab: TabKey,
+        target: ReviewLine,
+        body: String,
+    },
+    /// Submits a bare decision (`APPROVE`, `REQUEST_CHANGES` or `COMMENT`).
+    SubmitGithubPrDecision {
+        tab: TabKey,
+        mode: String,
+        summary: String,
+    },
+    /// Adds a line comment to the viewer's pending review; the page reads
+    /// `pending_review(tab)` after.
+    AddPendingReviewComment {
+        tab: TabKey,
+        target: ReviewLine,
+        body: String,
+    },
+    RemovePendingReviewComment {
+        tab: TabKey,
+        comment_id: String,
+    },
+    /// Submits the viewer's pending review with a decision.
+    SubmitPendingReview {
+        tab: TabKey,
+        mode: String,
+        summary: String,
+    },
+    /// Runs a branch action on the PR the tab's card shows, when it is still
+    /// `pr`. The `Ack` names `pr_status` after the refresh it runs.
+    RunGithubPrAction {
+        tab: TabKey,
+        pr: PrTarget,
+        action: PrAction,
     },
 }
 

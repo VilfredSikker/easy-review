@@ -1,5 +1,5 @@
-import { invoke } from "@tauri-apps/api/core";
 import { app } from "./app.svelte";
+import { addPendingReviewComment, getPendingReview, removePendingReviewComment } from "./githubResource.svelte";
 import {
   addedToast,
   decisionEvent,
@@ -57,7 +57,7 @@ class PendingReviewStore {
     if (!key) return;
     this.loading = true;
     try {
-      const review = await invoke<PendingReview>("get_pending_review");
+      const review = await getPendingReview();
       if (this.key === key) {
         this.review = review;
         this.error = null;
@@ -85,7 +85,7 @@ class PendingReviewStore {
     const key = this.key;
     this.busy = true;
     try {
-      const review = await invoke<PendingReview>("add_pending_review_comment", { target, text });
+      const review = await addPendingReviewComment(target, text);
       if (this.key === key) this.review = review;
       app.showToast("success", addedToast(review.comments.length), undefined, {
         action: { label: "Review", onClick: () => this.show() },
@@ -120,7 +120,7 @@ class PendingReviewStore {
     const key = this.key;
     this.busy = true;
     try {
-      const review = await invoke<PendingReview>("remove_pending_review_comment", { commentId });
+      const review = await removePendingReviewComment(commentId);
       if (this.key === key) this.review = review;
       void app.cmd("pull_github_comments", { force: true });
     } catch (e) {
