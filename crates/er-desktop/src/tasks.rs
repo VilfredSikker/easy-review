@@ -250,7 +250,11 @@ pub fn hold_agent(
     launch: impl FnOnce(Sender<AgentLogEntry>) -> anyhow::Result<AgentPromptRun>,
 ) -> Result<String, String> {
     let host = &desktop.tasks;
-    let busy = host.lock().iter().any(|task| {
+    // One lock over the busy check, the launch and the push, so two sends at
+    // once start one agent. The launch only spawns: the runner waits for its
+    // slot on its own thread.
+    let mut tasks = host.lock();
+    let busy = tasks.iter().any(|task| {
         task.row.kind == name && task.target.er_dir == target.er_dir && task.run.is_some()
     });
     if busy {
@@ -278,7 +282,7 @@ pub fn hold_agent(
         started_at_ms: now_ms(),
         finished_at_ms: None,
     };
-    host.lock().push(Task {
+    tasks.push(Task {
         row,
         log: VecDeque::new(),
         run: Some(started.run),
@@ -286,6 +290,7 @@ pub fn hold_agent(
         target,
         agent: true,
     });
+    drop(tasks);
     host.clock.bump();
     let (desktop, task) = (desktop.clone(), id.clone());
     // Unnamed, like every thread that reaches the storage root. The lines

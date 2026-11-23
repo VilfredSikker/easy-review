@@ -343,12 +343,16 @@ pub fn send_note(
     let tab = crate::arena_service::tab(desktop, wire)?;
     let content = &tab.content;
     let resolved = &content.tab;
-    crate::commands::send_note_blocked(
-        content.context.is_remote,
-        resolved.checkout_root.as_deref(),
-        &resolved.repo_root,
-    )
-    .map_err(refused)?;
+    // A plain local tab is the main checkout, as `local_checkout_root` says
+    // on the App, even on a detached HEAD whose branch resolves no checkout.
+    // A PR or branch view is one only where its branch is checked out.
+    let checked_out = if resolved.pr_number.is_some() || resolved.local_branch_view.is_some() {
+        resolved.checkout_root.as_deref()
+    } else {
+        Some(resolved.repo_root.as_str())
+    };
+    crate::commands::send_note_blocked(content.context.is_remote, checked_out, &resolved.repo_root)
+        .map_err(refused)?;
     let name = crate::commands::SEND_NOTE_COMMAND;
     let er_dir = content.context.er_dir.clone();
     let running = desktop

@@ -80,12 +80,20 @@ fn open_gate(gate: &Path) {
 
 /// A state whose tasks run the gated agent, under `cap` running reviews.
 fn tasking(dir: &ReviewFlowTestDir, cap: usize) -> (AppState, Agent) {
+    tasking_on(dir, cap, local_ports())
+}
+
+/// `tasking` on the git `ports` give.
+fn tasking_on(
+    dir: &ReviewFlowTestDir,
+    cap: usize,
+    ports: er_engine::ports::Ports,
+) -> (AppState, Agent) {
     let agent = Agent::in_dir(dir.path());
     let path = dir.path().join("settings").join("config.toml");
     std::fs::create_dir_all(dir.path().join("settings")).unwrap_or_else(|e| panic!("{e}"));
     std::fs::write(&path, agent.config(cap)).unwrap_or_else(|e| panic!("config: {e}"));
     let mut state = review_flow_test_state(dir);
-    let ports = local_ports();
     state.desktop.ports = ports.clone();
     let deps = WorkspaceDeps::new(ports);
     state.service = Arc::new(ServiceState::with_deps(deps, |_| {}).with_config_path(path));
@@ -583,6 +591,50 @@ fn a_note_goes_to_the_agent_from_the_ai_section_with_the_app_locked() {
     });
 }
 
+/// A plain local tab on a detached HEAD reads no branch, so its branch
+/// resolves no checkout; it is still the main checkout, and a note goes to
+/// the agent there as it does with the flag off.
+#[test]
+fn a_note_goes_to_the_agent_on_a_detached_head() {
+    with_storage(|dir| {
+        let git: Arc<dyn er_git::Git> = Arc::new(
+            er_git::FakeGit::default()
+                .with_current_branch(Ok(String::new()))
+                .with_detect_base_branch(Ok("main".to_string()))
+                .with_diff_raw(Ok(raw_diff()))
+                .with_diff_shortstat((3, 3, 3))
+                .with_rev_parse_verify(Ok(Some("b".repeat(40))))
+                .with_is_merge_in_progress(false),
+        );
+        let (state, agent) = tasking_on(dir, 50, er_engine::ports::Ports::with_git(git));
+        let tab = open(&state, dir.path(), "a");
+        let id = note(&state, &tab);
+        let content = state
+            .service
+            .content(tab.0, &tab.1)
+            .unwrap_or_else(|| panic!("no content"));
+        assert_eq!(
+            content.tab.checkout_root, None,
+            "the fixture's detached HEAD"
+        );
+        let command = Command::SendNoteToAgent {
+            tab: er_service::wire_tab_key(tab.0),
+            note_id: id,
+        };
+        let sent = send(&state, "send_note_to_agent", command);
+        assert!(sent.is_ok(), "{sent:?}");
+        assert!(
+            tasks(&state)
+                .iter()
+                .any(|row| row.kind == crate::commands::SEND_NOTE_COMMAND),
+            "{:?}",
+            tasks(&state)
+        );
+        open_gate(&agent.first);
+        open_gate(&agent.second);
+    });
+}
+
 /// With the App locked, a validation through `er_send` starts its agent on
 /// the task host when the bucket holds a review.
 #[test]
@@ -645,6 +697,64 @@ fn two_clicks_at_once_queue_one_task() {
         }
         open_gate(&agent.first);
         open_gate(&agent.second);
+    });
+}
+
+/// Two sends of the same tab command on one bucket at once start one
+/// agent: the busy check, the launch and the record are one step.
+#[test]
+fn two_sends_at_once_start_one_agent() {
+    with_storage(|dir| {
+        let (state, _agent) = tasking(dir, 50);
+        let launches = std::sync::atomic::AtomicUsize::new(0);
+        // Held so each started agent stays running for the rest of the test.
+        let results = std::sync::Mutex::new(Vec::new());
+        for round in 0..60 {
+            let mut target = launch(&state, dir.path(), "validate", "feature").target;
+            target.er_dir = dir
+                .path()
+                .join(format!("bucket-{round}"))
+                .to_string_lossy()
+                .into_owned();
+            let before = launches.load(std::sync::atomic::Ordering::SeqCst);
+            let gate = std::sync::Barrier::new(2);
+            let accepted = std::thread::scope(|scope| {
+                let sends: Vec<_> = (0..2)
+                    .map(|_| {
+                        let (state, gate, target) = (&state, &gate, target.clone());
+                        let (launches, results) = (&launches, &results);
+                        scope.spawn(move || {
+                            gate.wait();
+                            crate::tasks::hold_agent(&state.desktop, target, "validate", |_| {
+                                launches.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                                std::thread::sleep(Duration::from_millis(2));
+                                let (tx, result) = std::sync::mpsc::channel();
+                                results
+                                    .lock()
+                                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                    .push(tx);
+                                Ok(er_engine::app::AgentPromptRun {
+                                    run: er_engine::jobs::AgentRunHandle::new(),
+                                    result,
+                                })
+                            })
+                            .is_ok()
+                        })
+                    })
+                    .collect();
+                sends
+                    .into_iter()
+                    .map(|send| send.join().unwrap_or(false))
+                    .filter(|accepted| *accepted)
+                    .count()
+            });
+            let started = launches.load(std::sync::atomic::Ordering::SeqCst) - before;
+            assert_eq!(
+                (accepted, started),
+                (1, 1),
+                "round {round} accepted {accepted} sends and started {started} agents"
+            );
+        }
     });
 }
 
