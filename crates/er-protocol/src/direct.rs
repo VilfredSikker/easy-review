@@ -47,3 +47,29 @@ pub struct BlameSpan {
     /// Index into `LineCommits.commits`.
     pub commit: u32,
 }
+
+/// What the review export includes. Every field may be left out: a category
+/// toggle left out is on, apart from `include_checklist` and
+/// `only_unresolved`, which are off. An `include_*_ids` list keeps only the
+/// items it names; an `exclude_*_ids` list drops the items it names, which
+/// lets the page leave out an item without listing the ones it never sees.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", default)]
+#[ts(optional_fields)]
+pub struct ExportOptions {
+    pub include_comments: Option<bool>,
+    pub include_questions: Option<bool>,
+    pub include_notes: Option<bool>,
+    pub include_findings: Option<bool>,
+    pub only_unresolved: Option<bool>,
+    pub include_annotations: Option<bool>,
+    pub include_checklist: Option<bool>,
+    pub include_comment_ids: Option<Vec<String>>,
+    pub include_question_ids: Option<Vec<String>>,
+    pub include_note_ids: Option<Vec<String>>,
+    pub include_finding_ids: Option<Vec<String>>,
+    pub exclude_comment_ids: Option<Vec<String>>,
+    pub exclude_question_ids: Option<Vec<String>>,
+    pub exclude_note_ids: Option<Vec<String>>,
+    pub exclude_finding_ids: Option<Vec<String>>,
+}

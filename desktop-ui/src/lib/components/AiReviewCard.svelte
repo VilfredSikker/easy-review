@@ -2,7 +2,7 @@
   import type { AiSnapshot, Confidence, FlatFinding } from "$lib/types";
   import { confidenceGlyph, findingPassesTrust, TRUST_RANK } from "$lib/diffAnnotations";
   import { findingsVisibility } from "$lib/stores/findingsVisibility.svelte";
-  import { invoke } from "@tauri-apps/api/core";
+  import { revealErFolder as reveal } from "$lib/tabCommands";
   import { readReviewJson } from "$lib/stores/annotationReads";
   import { app } from "$lib/stores/app.svelte";
   import { tabsResource } from "$lib/stores/tabsResource.svelte";
@@ -208,7 +208,7 @@
   ];
 
   function revealErFolder() {
-    invoke("reveal_er_folder").catch(() => {});
+    reveal().catch(() => {});
   }
 
   function validateFindings() {

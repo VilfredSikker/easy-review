@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { invoke } from "@tauri-apps/api/core";
+  import { revealErFolder } from "$lib/tabCommands";
   import { readReviewJson } from "$lib/stores/annotationReads";
   import type { AiSnapshot, Confidence, FlatFinding } from "$lib/types";
   import { app } from "$lib/stores/app.svelte";
@@ -389,7 +389,7 @@
     actions={[
       { glyph: "✓", label: "Validate findings", title: validateHint, disabled: !canValidate, run: validate },
       { glyph: "⧉", label: "Copy findings JSON", title: "Copy the projected findings for an agent prompt", disabled: view.openCount === 0, run: copyFindingsJson },
-      { glyph: "▢", label: "Reveal review files", title: "Open the review files folder", run: () => void invoke("reveal_er_folder").catch(() => {}) },
+      { glyph: "▢", label: "Reveal review files", title: "Open the review files folder", run: () => void revealErFolder().catch(() => {}) },
       { glyph: "×", label: "Clear review", title: "Delete this view's review: its findings and summary", run: () => void clearReview() },
     ]}
   />

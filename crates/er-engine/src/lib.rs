@@ -20,7 +20,7 @@ pub mod diff_fetch;
 pub mod diff_load;
 pub mod env_path;
 #[cfg(feature = "ui")]
-pub mod export;
+pub use review_export as export;
 pub mod file_rows;
 pub mod filter;
 pub use er_github::actions as gh_pr_actions;
@@ -53,6 +53,7 @@ pub mod projects_pins;
 pub mod release_install;
 pub mod release_update;
 pub mod remote_pr_open_cache;
+pub mod review_export;
 pub mod review_flow_driver;
 pub mod review_queue;
 pub mod session_store;

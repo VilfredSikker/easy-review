@@ -1,112 +1,255 @@
 //! OS launch and reveal: a file in the editor, a URL in the browser, a folder
-//! or a file in the file manager.
+//! or a file in the file manager. The page names the file and the line; with
+//! the service, the tab its key names supplies the checkout and the GitHub
+//! names, read from its published content.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
+use er_engine::git::Git;
 use er_protocol::{ErError, OpenSource, OpenSourceKind};
 use tauri::State;
 
 use super::failed;
+#[cfg(not(feature = "v1-service"))]
 use crate::commands::AppState;
+#[cfg(feature = "v1-service")]
+use crate::state::DesktopState;
 
-#[tauri::command]
-pub fn open_in_editor(state: State<AppState>) -> Result<OpenSource, ErError> {
-    open_source(state)
+/// What the open commands read of a tab: where a local edit can open, and
+/// what names the file on GitHub.
+pub(crate) struct SourceTab {
+    /// The checkout a local edit opens in; none for a remote PR, or a branch
+    /// view whose branch nobody checked out.
+    pub local_root: Option<String>,
+    /// The PR's head branch; none until the PR's overview has loaded.
+    pub pr_head: Option<String>,
+    pub pr_number: Option<u64>,
+    pub local_branch_view: Option<String>,
+    pub current_branch: String,
+    pub remote_repo: Option<String>,
+    pub repo_root: String,
+    pub git: Arc<dyn Git>,
 }
 
-/// Open the selected file in VS Code (`code -g path:line`) when a local checkout exists.
+/// Where an open lands.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Target {
+    Local {
+        root: String,
+        file: PathBuf,
+        line: usize,
+    },
+    Url(String),
+    NeedsCheckout(&'static str),
+}
+
+const NO_FILE: &str = "No selected file";
+
+#[cfg(feature = "v1-service")]
+#[tauri::command]
+pub fn open_in_editor(
+    tab: er_protocol::TabKey,
+    path: Option<String>,
+    line: Option<usize>,
+    desktop: State<DesktopState>,
+) -> Result<OpenSource, ErError> {
+    open_source(tab, path, line, desktop)
+}
+
+#[cfg(not(feature = "v1-service"))]
+#[tauri::command]
+pub fn open_in_editor(
+    path: Option<String>,
+    line: Option<usize>,
+    state: State<AppState>,
+) -> Result<OpenSource, ErError> {
+    open_source(path, line, state)
+}
+
+/// Open the file in VS Code (`code -g path:line`) when a local checkout exists.
 /// No GitHub/browser fallback — desktop `e` key uses this exclusively.
+#[cfg(feature = "v1-service")]
 #[tauri::command]
-pub fn open_in_vscode(state: State<AppState>) -> Result<OpenSource, ErError> {
-    let app = state.app.lock().map_err(failed)?;
-    let tab = app.tab();
-    let Some(file) = tab.selected_diff_file() else {
-        return Ok(needs_checkout("No selected file"));
-    };
-    let line_num = file
-        .hunks
-        .get(tab.current_hunk)
-        .map(|h| h.new_start)
-        .unwrap_or(1);
-
-    if let Some(local_root) = local_source_root(tab) {
-        let file_path = Path::new(local_root).join(&file.path);
-        if file_path.exists() {
-            crate::os_launch::open_vscode_at(local_root, &file_path, line_num).map_err(failed)?;
-            return Ok(opened(
-                OpenSourceKind::OpenedLocal,
-                &file_path.to_string_lossy(),
-            ));
-        }
-    }
-
-    Ok(needs_checkout(
-        "No local checkout found for this file. Check out the branch in a worktree first.",
-    ))
+pub fn open_in_vscode(
+    tab: er_protocol::TabKey,
+    path: Option<String>,
+    line: Option<usize>,
+    desktop: State<DesktopState>,
+) -> Result<OpenSource, ErError> {
+    let source = content_source(&desktop, tab)?;
+    launch(
+        target(&source, path.as_deref(), line, Editor::VsCode),
+        Editor::VsCode,
+    )
 }
 
+#[cfg(not(feature = "v1-service"))]
 #[tauri::command]
-pub fn open_source(state: State<AppState>) -> Result<OpenSource, ErError> {
+pub fn open_in_vscode(
+    path: Option<String>,
+    line: Option<usize>,
+    state: State<AppState>,
+) -> Result<OpenSource, ErError> {
+    let source = app_source(&state)?;
+    launch(
+        target(&source, path.as_deref(), line, Editor::VsCode),
+        Editor::VsCode,
+    )
+}
+
+/// Open the file in the editor when a local checkout holds it, else on GitHub.
+#[cfg(feature = "v1-service")]
+#[tauri::command]
+pub fn open_source(
+    tab: er_protocol::TabKey,
+    path: Option<String>,
+    line: Option<usize>,
+    desktop: State<DesktopState>,
+) -> Result<OpenSource, ErError> {
+    let source = content_source(&desktop, tab)?;
+    launch(
+        target(&source, path.as_deref(), line, Editor::Default),
+        Editor::Default,
+    )
+}
+
+#[cfg(not(feature = "v1-service"))]
+#[tauri::command]
+pub fn open_source(
+    path: Option<String>,
+    line: Option<usize>,
+    state: State<AppState>,
+) -> Result<OpenSource, ErError> {
+    let source = app_source(&state)?;
+    launch(
+        target(&source, path.as_deref(), line, Editor::Default),
+        Editor::Default,
+    )
+}
+
+/// The tab `wire` names, as its published content shows it.
+#[cfg(feature = "v1-service")]
+pub(crate) fn content_source(
+    desktop: &DesktopState,
+    wire: er_protocol::TabKey,
+) -> Result<SourceTab, ErError> {
+    let content = super::content_of(desktop, wire)?;
+    let tab = &content.tab;
+    // A local edit runs in the checkout of the branch the tab shows: its repo,
+    // or a branch view's checkout when one exists.
+    let local_root = if tab.identity().is_remote() {
+        None
+    } else if tab.local_branch_view.is_some() {
+        tab.checkout_root.clone()
+    } else {
+        Some(tab.repo_root.clone())
+    };
+    Ok(SourceTab {
+        local_root,
+        pr_head: content
+            .pr
+            .overview
+            .as_ref()
+            .map(|pr| pr.head_branch.clone()),
+        pr_number: tab.pr_number,
+        local_branch_view: tab.local_branch_view.clone(),
+        current_branch: tab.current_branch.clone(),
+        remote_repo: tab.remote_repo.clone(),
+        repo_root: tab.repo_root.clone(),
+        git: Arc::clone(&desktop.ports.git),
+    })
+}
+
+/// The App's active tab, read under its lock and released before any launch.
+#[cfg(not(feature = "v1-service"))]
+fn app_source(state: &AppState) -> Result<SourceTab, ErError> {
     let app = state.app.lock().map_err(failed)?;
     let tab = app.tab();
-    let Some(file) = tab.selected_diff_file() else {
-        return Ok(needs_checkout("No selected file"));
-    };
-    let line_num = file
-        .hunks
-        .get(tab.current_hunk)
-        .map(|h| h.new_start)
-        .unwrap_or(1);
+    Ok(SourceTab {
+        local_root: tab.local_checkout_root().map(str::to_owned),
+        pr_head: tab.pr_data.as_ref().map(|pr| pr.head_branch.clone()),
+        pr_number: tab.pr_number,
+        local_branch_view: tab.local_branch_view.clone(),
+        current_branch: tab.current_branch.clone(),
+        remote_repo: tab.remote_repo.clone(),
+        repo_root: tab.repo_root.clone(),
+        git: Arc::clone(&tab.ports.git),
+    })
+}
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Editor {
+    Default,
+    /// VS Code, with no GitHub fallback.
+    VsCode,
+}
+
+/// Where `path` at `line` opens: the local checkout when it holds the file,
+/// else GitHub (never for VS Code).
+pub(crate) fn target(
+    tab: &SourceTab,
+    path: Option<&str>,
+    line: Option<usize>,
+    editor: Editor,
+) -> Target {
+    let Some(path) = path else {
+        return Target::NeedsCheckout(NO_FILE);
+    };
+    let line = line.unwrap_or(1);
     // Local editable source is only valid when this tab represents a checked-out
     // local context (working tree, or local-branch view with checkout root).
-    if let Some(local_root) = local_source_root(tab) {
-        let file_path = Path::new(local_root).join(&file.path);
-        if file_path.exists() {
-            crate::os_launch::open_editor_at(local_root, &file_path, line_num).map_err(failed)?;
-            return Ok(opened(
-                OpenSourceKind::OpenedLocal,
-                &file_path.to_string_lossy(),
-            ));
+    if let Some(root) = &tab.local_root {
+        let file = Path::new(root).join(path);
+        if file.exists() {
+            return Target::Local {
+                root: root.clone(),
+                file,
+                line,
+            };
         }
     }
-
+    if editor == Editor::VsCode {
+        return Target::NeedsCheckout(
+            "No local checkout found for this file. Check out the branch in a worktree first.",
+        );
+    }
     // Fallback: open GitHub URL for PR/tab-backed sources.
-    if let Some(url) = github_file_url_for_tab(tab, &file.path, line_num) {
-        drop(app);
-        open_url_in_browser(url.clone())?;
-        return Ok(opened(OpenSourceKind::OpenedUrl, &url));
-    }
-
-    Ok(needs_checkout(
-        "No local checkout found for this source. Create editable worktree first.",
-    ))
-}
-
-fn opened(kind: OpenSourceKind, target: &str) -> OpenSource {
-    OpenSource {
-        kind,
-        target: target.to_owned(),
+    match github_file_url(tab, path, line) {
+        Some(url) => Target::Url(url),
+        None => Target::NeedsCheckout(
+            "No local checkout found for this source. Create editable worktree first.",
+        ),
     }
 }
 
-fn needs_checkout(reason: &str) -> OpenSource {
-    opened(OpenSourceKind::NeedsCheckout, reason)
+fn launch(target: Target, editor: Editor) -> Result<OpenSource, ErError> {
+    let (kind, target) = match target {
+        Target::Local { root, file, line } => {
+            match editor {
+                Editor::Default => crate::os_launch::open_editor_at(&root, &file, line),
+                Editor::VsCode => crate::os_launch::open_vscode_at(&root, &file, line),
+            }
+            .map_err(failed)?;
+            (
+                OpenSourceKind::OpenedLocal,
+                file.to_string_lossy().into_owned(),
+            )
+        }
+        Target::Url(url) => {
+            open_url_in_browser(url.clone())?;
+            (OpenSourceKind::OpenedUrl, url)
+        }
+        Target::NeedsCheckout(reason) => (OpenSourceKind::NeedsCheckout, reason.to_owned()),
+    };
+    Ok(OpenSource { kind, target })
 }
 
-fn local_source_root(tab: &er_engine::app::TabState) -> Option<&str> {
-    tab.local_checkout_root()
-}
-
-fn github_file_url_for_tab(
-    tab: &er_engine::app::TabState,
-    file_path: &str,
-    line_num: usize,
-) -> Option<String> {
+fn github_file_url(tab: &SourceTab, file_path: &str, line_num: usize) -> Option<String> {
     let pr_head = tab
-        .pr_data
+        .pr_head
         .as_ref()
-        .map(|pr| pr.head_branch.trim().to_string())
+        .map(|head| head.trim().to_string())
         .filter(|b| !b.is_empty());
 
     let mut branch_ref = pr_head
@@ -116,7 +259,7 @@ fn github_file_url_for_tab(
         .to_string();
 
     // PR tab whose overview hasn't loaded yet: synchronously ask gh for the head branch.
-    if tab.pr_data.is_none() {
+    if tab.pr_head.is_none() {
         if let Some(n) = tab.pr_number {
             if let Ok(name) = er_engine::github::gh_pr_head_branch_name(n, &tab.repo_root) {
                 let name = name.trim().to_string();
@@ -136,7 +279,7 @@ fn github_file_url_for_tab(
         ));
     }
 
-    let remote = tab.ports.git.remote_url(&tab.repo_root, "origin").ok()?;
+    let remote = tab.git.remote_url(&tab.repo_root, "origin").ok()?;
     let slug = parse_github_slug(&remote)?;
     Some(format!(
         "https://github.com/{slug}/blob/{branch_ref}/{file_path}#L{line_num}"
@@ -152,6 +295,16 @@ pub fn open_url_in_browser(url: String) -> Result<(), ErError> {
     crate::os_launch::open_external_url(&url).map_err(failed)
 }
 
+#[cfg(feature = "v1-service")]
+#[tauri::command]
+pub fn reveal_er_folder(
+    tab: er_protocol::TabKey,
+    desktop: State<DesktopState>,
+) -> Result<(), ErError> {
+    reveal_folder(&view_bucket(&desktop, tab)?)
+}
+
+#[cfg(not(feature = "v1-service"))]
 #[tauri::command]
 pub fn reveal_er_folder(state: State<AppState>) -> Result<(), ErError> {
     let er_dir = {
@@ -159,6 +312,15 @@ pub fn reveal_er_folder(state: State<AppState>) -> Result<(), ErError> {
         app.tab().er_dir()
     };
     reveal_folder(&er_dir)
+}
+
+/// The view bucket of the tab `wire` names: its content's `context.er_dir`.
+#[cfg(feature = "v1-service")]
+pub(crate) fn view_bucket(
+    desktop: &DesktopState,
+    wire: er_protocol::TabKey,
+) -> Result<String, ErError> {
+    Ok(super::content_of(desktop, wire)?.context.er_dir.clone())
 }
 
 /// Shows `dir` in the file manager, created first so reveal never fails on a
@@ -178,22 +340,68 @@ pub fn reveal_path(path: String) -> Result<(), ErError> {
 mod tests {
     use super::*;
 
+    fn tab(local_root: Option<&str>) -> SourceTab {
+        SourceTab {
+            local_root: local_root.map(str::to_owned),
+            pr_head: None,
+            pr_number: None,
+            local_branch_view: None,
+            current_branch: "feat".into(),
+            remote_repo: Some("o/r".into()),
+            repo_root: "/nowhere".into(),
+            git: er_engine::ports::Ports::for_test().git,
+        }
+    }
+
     #[test]
     fn open_source_policy_allows_only_checked_out_local_contexts() {
         // The policy itself lives on `TabState::local_checkout_root` (see the
         // engine's tests); this pins the two roots it resolves to.
         let mut working = er_engine::app::TabState::new_for_test(vec![]);
         working.repo_root = "/repo".into();
-        assert_eq!(local_source_root(&working), Some("/repo"));
+        assert_eq!(working.local_checkout_root(), Some("/repo"));
 
         let mut pr = er_engine::app::TabState::new_for_test(vec![]);
         pr.repo_root = "/repo".into();
         pr.remote_repo = Some("o/r".into());
         pr.local_branch_view = Some("feat/pr-head".into());
         pr.current_branch = "feat/pr-head".into();
-        assert_eq!(local_source_root(&pr), None);
+        assert_eq!(pr.local_checkout_root(), None);
         pr.local_branch_checkout_root = Some("/wt".into());
-        assert_eq!(local_source_root(&pr), Some("/wt"));
+        assert_eq!(pr.local_checkout_root(), Some("/wt"));
+    }
+
+    /// The page names the file and the line; a checkout that holds the file
+    /// opens it there, VS Code never falls back to GitHub, and a remote tab
+    /// opens the file at the line on GitHub.
+    #[test]
+    fn the_target_is_the_file_the_page_names() {
+        let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let root = dir.path().to_string_lossy().into_owned();
+        std::fs::write(dir.path().join("a.rs"), "").unwrap_or_else(|e| panic!("{e}"));
+
+        let local = tab(Some(&root));
+        assert_eq!(
+            target(&local, Some("a.rs"), Some(7), Editor::Default),
+            Target::Local {
+                root: root.clone(),
+                file: dir.path().join("a.rs"),
+                line: 7,
+            }
+        );
+        assert_eq!(
+            target(&local, None, Some(7), Editor::Default),
+            Target::NeedsCheckout(NO_FILE)
+        );
+        let remote = tab(None);
+        assert!(matches!(
+            target(&remote, Some("a.rs"), Some(7), Editor::VsCode),
+            Target::NeedsCheckout(_)
+        ));
+        assert_eq!(
+            target(&remote, Some("a.rs"), Some(7), Editor::Default),
+            Target::Url("https://github.com/o/r/blob/feat/a.rs#L7".into())
+        );
     }
 
     #[test]

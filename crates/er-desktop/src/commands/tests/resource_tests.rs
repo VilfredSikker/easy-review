@@ -314,19 +314,16 @@ fn the_tick_reloads_every_loaded_tab() {
     });
 }
 
-/// With the flag on, an outside question reaches the export after one tick.
-/// The export renders the App's tab until it renders from the content, and
-/// the tick's sidecar check is the only path into that tab.
+/// With the flag on, an outside question reaches the export after one tick:
+/// the export renders the tab's content, which the tick's `ReloadSidecars`
+/// reads again.
 #[test]
 fn an_outside_question_reaches_the_flag_on_export_after_one_tick() {
     with_storage(|dir| {
-        let state = review_flow_test_state(dir);
-        let (er_dir, diff_hash) = {
-            let mut app = state.app.lock().unwrap_or_else(|e| e.into_inner());
-            app.tab_mut().check_ai_files_changed();
-            (app.tab().er_dir(), app.tab().diff_hash.clone())
-        };
-        let dir = std::path::Path::new(&er_dir);
+        let (state, tabs) = fixture(dir, None, &["one"]);
+        let loaded = content(&state, &tabs[0]);
+        let (er_dir, diff_hash) = (&loaded.context.er_dir, &loaded.context.diff_hash);
+        let dir = std::path::Path::new(er_dir);
         er_engine::test_support::write_sidecar_json::<er_engine::ai::ErQuestions>(
             dir,
             serde_json::json!({
@@ -343,10 +340,12 @@ fn an_outside_question_reaches_the_flag_on_export_after_one_tick() {
 
         tick::run(&state.desktop, &state.app);
 
-        let app = state.app.lock().unwrap_or_else(|e| e.into_inner());
-        let export =
-            crate::export::render_markdown(app.tab(), &crate::export::ExportOpts::default());
-        assert!(export.contains("Asked from outside the app"), "{export}");
+        let wire = er_service::wire_tab_key(tabs[0].0);
+        let options = er_protocol::ExportOptions::default();
+        let export = || crate::direct::export::render_tab(&state, wire, &options);
+        wait_until("the question in the export", || {
+            export().is_ok_and(|body| body.contains("Asked from outside the app"))
+        });
     });
 }
 

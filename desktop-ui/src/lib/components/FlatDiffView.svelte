@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount, tick, untrack } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
-  import type { OpenSource } from "$lib/protocol/generated/OpenSource";
+  import { openSource as openFile, selectedSource } from "$lib/tabCommands";
   import { devHeightProbeOn } from "$lib/dev/heightProbe";
   import { app, type DiffViewMode } from "$lib/stores/app.svelte";
   import { sessionResource } from "$lib/stores/sessionResource.svelte";
@@ -2142,7 +2142,7 @@
         <button type="button"
           class="px-2 py-1 text-xs text-fg-3 hover:bg-hover rounded"
           onclick={async () => {
-            const res = await invoke<OpenSource>("open_source");
+            const res = await openFile("open_source", selectedSource(snapshot));
             if (res.kind === "needs_checkout") app.showToast("info", "Create editable worktree to open locally");
           }}
         >
