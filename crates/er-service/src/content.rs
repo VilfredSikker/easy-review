@@ -313,6 +313,9 @@ pub struct DiffMeta {
     pub risk_artifact: Option<er_engine::config::RiskRuleTable>,
     /// The commit scroller's rows, read with the diff in every view.
     pub commits: Vec<ScrollerCommit>,
+    /// Staged just after a commit: the view shows the last commit until new
+    /// changes are staged, so a run on Staged reads that commit too.
+    pub committed_unpushed: bool,
 }
 
 /// The commits History lists and the one it shows.

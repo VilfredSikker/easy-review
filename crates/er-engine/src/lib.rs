@@ -23,6 +23,7 @@ pub mod diagram_upload;
 pub mod diff_fetch;
 pub mod diff_load;
 pub mod env_path;
+pub mod shell_command;
 #[cfg(feature = "ui")]
 pub use review_export as export;
 pub mod file_rows;

@@ -11,7 +11,9 @@
 //! which answers the reply receiver at once; the caller drains it when it
 //! next looks. Events from every actor, the settings actor, the registry and
 //! the task host reach one sender, so a front end's loop can wake on any of
-//! them.
+//! them. A run or a flow command goes out the same way, through
+//! [`ServiceHost::run`] and [`ServiceHost::flow`]: the host plans it on its
+//! worker, since planning reads git (ADR 0074).
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -26,6 +28,7 @@ use crate::app_registry::AppRegistry;
 use crate::content::TabContent;
 use crate::handle::{WorkspaceError, WorkspaceHandle};
 use crate::protocol::{Command, Event, Reply};
+use crate::run_worker::{self, FlowInputs, FlowRequest, RunReceiver, RunRequest, Worker};
 use crate::settings::{spawn_settings, SettingsHandle};
 use crate::tasks::{TaskHooks, TaskHost};
 use crate::workspace::WorkspaceView;
@@ -42,6 +45,7 @@ pub struct ServiceHost {
     settings_path: PathBuf,
     events: Option<Sender<Event>>,
     tasks: OnceLock<TaskHost>,
+    worker: OnceLock<Worker>,
 }
 
 impl ServiceHost {
@@ -64,6 +68,7 @@ impl ServiceHost {
             settings_path,
             events: None,
             tasks: OnceLock::new(),
+            worker: OnceLock::new(),
         }
     }
 
@@ -169,6 +174,65 @@ impl ServiceHost {
             finished: Arc::new(|_| {}),
         }
     }
+
+    /// Plans `request` on the content `key`'s tab shows now and queues it on
+    /// the task host. Answers at once; the receiver says whether it queued.
+    /// The tab is the one named here, whatever is active when it plans.
+    pub fn run(&self, key: TabKey, request: RunRequest) -> RunReceiver {
+        let Some(content) = self.listed_content(key) else {
+            return run_worker::refused_now("The tab has not loaded yet");
+        };
+        run_worker::plan(
+            self.worker(),
+            self.tasks().clone(),
+            self.task_hooks(),
+            content,
+            request,
+        )
+    }
+
+    /// Builds `request`'s flow command for `key`'s tab and sends it to the
+    /// actor that runs the flow. Answers at once with the reply receiver.
+    pub fn flow(&self, key: TabKey, request: FlowRequest) -> ReplyReceiver {
+        let tabs = self.registry.tabs_view();
+        let Some(entry) = tabs.tabs.iter().find(|entry| entry.key == key) else {
+            return failed_now("no open tab has that key");
+        };
+        let workspace_key = entry.descriptor.workspace_key();
+        let Some(content) = self.content(&workspace_key, key) else {
+            return failed_now("The tab has not loaded yet");
+        };
+        let contents = tabs
+            .tabs
+            .iter()
+            .filter_map(|entry| self.content(&entry.descriptor.workspace_key(), entry.key))
+            .collect();
+        let inputs = FlowInputs {
+            ports: self.deps.ports().clone(),
+            config: Arc::clone(&self.settings().view().config),
+            content,
+            handle: self.handle_for(&workspace_key),
+            contents,
+        };
+        run_worker::flow(self.worker(), inputs, request)
+    }
+
+    fn worker(&self) -> &Worker {
+        self.worker.get_or_init(Worker::start)
+    }
+
+    /// The published content of a tab the registry lists.
+    fn listed_content(&self, key: TabKey) -> Option<Arc<TabContent>> {
+        let tabs = self.registry.tabs_view();
+        let entry = tabs.tabs.iter().find(|entry| entry.key == key)?;
+        self.content(&entry.descriptor.workspace_key(), key)
+    }
+}
+
+fn failed_now(message: &str) -> ReplyReceiver {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let _ = tx.send(Err(WorkspaceError::Failed(message.to_string())));
+    rx
 }
 
 /// One thread per subscription, alive until the subscription ends or nothing

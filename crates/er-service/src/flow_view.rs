@@ -4,6 +4,8 @@
 //! them off the actor before it sends a flow command, so a flow never waits
 //! on the App.
 
+use std::sync::Arc;
+
 use anyhow::{Context, Result};
 use er_engine::ai::change_facts::OwnedRepoRules;
 use er_engine::ai::review_md::ReviewMdSource;
@@ -14,6 +16,7 @@ use er_engine::tab_identity::TabIdentity;
 use er_engine::task_target::BackgroundTaskTarget;
 
 use crate::content::TabContent;
+use crate::protocol::FlowContext;
 
 /// A tab's content as the flow rules read it.
 struct ContentTab<'a> {
@@ -72,7 +75,7 @@ pub fn review_raw_diff(ports: &Ports, content: &TabContent, scope: &str) -> Resu
     {
         return Ok(meta.raw.clone());
     }
-    er_engine::diff_load::fetch_raw(ports, &id, scope, false)
+    er_engine::diff_load::fetch_raw(ports, &id, scope, meta.committed_unpushed)
 }
 
 /// The view a flow on `content`'s tab reviews for `scope`, or why it cannot
@@ -89,6 +92,32 @@ pub fn review_flow_inputs(
         config,
     };
     review_flow_driver::review_flow_inputs(&tab, scope)
+}
+
+/// What a flow command on `content`'s tab carries: the settings view's
+/// config and the saved selection's effort (A18), and the view `scope` names
+/// when the command reviews one.
+pub fn flow_context(
+    ports: &Ports,
+    content: &TabContent,
+    config: Arc<ErConfig>,
+    scope: Option<&str>,
+) -> FlowContext {
+    let effort = config
+        .ai_hub
+        .resolve_default_selection(&config.agent)
+        .effort;
+    let view = match scope {
+        Some(scope) => {
+            review_flow_inputs(ports, content, &config, scope).map_err(|error| error.to_string())
+        }
+        None => Err("this command reviews no view".into()),
+    };
+    FlowContext {
+        config,
+        effort,
+        view,
+    }
 }
 
 /// The filtered diff the first of `contents` that shows `target` has now,

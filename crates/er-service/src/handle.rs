@@ -155,11 +155,13 @@ impl WorkspaceHandle {
     /// Sends a command and returns the reply channel immediately.
     pub fn send(&self, command: Command) -> Receiver<Result<Reply, WorkspaceError>> {
         let (reply_tx, reply_rx) = mpsc::channel();
-        let _ = self.tx.send(ActorMsg::Command {
-            command,
-            reply: reply_tx,
-        });
+        self.send_to(command, reply_tx);
         reply_rx
+    }
+
+    /// Sends a command whose reply lands on `reply`.
+    pub(crate) fn send_to(&self, command: Command, reply: Sender<Result<Reply, WorkspaceError>>) {
+        let _ = self.tx.send(ActorMsg::Command { command, reply });
     }
 
     /// Sends a command and waits up to [`REPLY_TIMEOUT`]. Callers that own a

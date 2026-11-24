@@ -582,6 +582,7 @@ pub(crate) fn load_tab(
                 rules_key,
                 risk_artifact,
                 commits,
+                committed_unpushed: false,
             },
             expanded,
         },
