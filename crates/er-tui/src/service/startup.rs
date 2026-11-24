@@ -33,18 +33,20 @@ pub struct StartTab {
 pub struct Start {
     pub tabs: Vec<StartTab>,
     pub notices: Vec<String>,
+    /// `--filter`, which the first tab applies before its session restores.
+    pub filter: Option<String>,
 }
 
 /// Turns the arguments into tabs. Paths resolve to their repo roots; a PR
 /// URL opens a remote PR with `--remote`, or this clone's PR without;
 /// `--pr` makes the first tab that PR. Reads the repo roots and nothing else.
 pub fn plan(args: &Args, git: &dyn er_git::Git) -> anyhow::Result<Start> {
-    let mut start = Start::default();
+    let mut start = Start {
+        filter: args.filter.clone(),
+        ..Start::default()
+    };
     if args.target.is_some() {
         start.notices.push(format!("--target is {UNPORTED}"));
-    }
-    if args.filter.is_some() {
-        start.notices.push(format!("--filter is {UNPORTED}"));
     }
     if args.remote {
         for url in args

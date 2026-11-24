@@ -199,6 +199,8 @@ pub struct SectionData<'a> {
     pub ai: &'a AiState,
     /// Reviewed and total files, from the reviewed builder.
     pub reviewed_count: (usize, usize),
+    /// The same among the files the filter keeps; `None` with no filter.
+    pub filtered_reviewed_count: Option<(usize, usize)>,
 }
 
 /// What an area the service path does not draw yet shows instead.
@@ -266,7 +268,7 @@ impl<'a> TabData<'a> {
         match self {
             Self::App(data) => data.filtered_reviewed_count,
             #[cfg(feature = "v1-service")]
-            Self::Sections(_) => None,
+            Self::Sections(data) => data.filtered_reviewed_count,
         }
     }
 
@@ -337,6 +339,7 @@ mod tests {
             pr: None,
             ai: &app.tab().ai,
             reviewed_count: (1, 2),
+            filtered_reviewed_count: None,
         });
         let mut terminal = Terminal::new(TestBackend::new(120, 12)).unwrap();
         let mut hl = crate::ui::highlight::Highlighter::new();
@@ -374,6 +377,7 @@ mod tests {
             pr: None,
             ai: &app.tab().ai,
             reviewed_count: (0, 0),
+            filtered_reviewed_count: None,
         });
         let mut terminal = Terminal::new(TestBackend::new(140, 12)).unwrap();
         let mut hl = crate::ui::highlight::Highlighter::new();

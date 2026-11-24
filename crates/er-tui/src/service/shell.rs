@@ -23,6 +23,7 @@ use ratatui::Terminal;
 
 use super::ai_picker;
 use super::config_hub::{self, ConfigHub, Step};
+use super::filter::{self, Done};
 use super::layers::{self, Layer};
 use super::reviewed::ReviewedCache;
 use super::settings::{SettingsBridge, Side, Then};
@@ -112,11 +113,14 @@ impl Shell {
         git: Arc<dyn er_git::Git>,
     ) -> anyhow::Result<Self> {
         let (keys, pending) = startup::open(&host, start)?;
+        let mut view = TuiView::default();
+        view.settings = Some(host.settings().view());
+        view.start_filter = keys.first().copied().zip(start.filter.clone());
         let starts = keys.into_iter().zip(start.tabs.iter().cloned()).collect();
         let mut shell = Self {
             host,
             events,
-            view: TuiView::default(),
+            view,
             starts,
             pending,
             settings: SettingsBridge::default(),
@@ -265,6 +269,7 @@ impl Shell {
             self.failure(Side::Reply, message);
         }
         let view = self.host.settings().view();
+        self.view.settings = Some(Arc::clone(&view));
         let picked = landed.picked.then(|| {
             let label = self.settings.ai_label(&view);
             format!("AI target: {label}")
@@ -483,6 +488,7 @@ impl Shell {
         read: impl FnOnce(&crate::screen::Screen) -> R,
     ) -> Option<R> {
         let settings = self.host.settings().view();
+        self.view.settings = Some(Arc::clone(&settings));
         let ai_selection_label = self.settings.ai_label(&settings);
         if let Some(overlay) = self.view.overlay.as_mut() {
             overlay.sync(&settings, &ai_selection_label);
@@ -514,7 +520,24 @@ impl Shell {
             TuiAction::Overlay(action) if matches!(self.view.overlay, Some(Overlay::GitHub(_))) => {
                 return self.git_hub_key(action, key, workspace, content)
             }
+            TuiAction::Overlay(action)
+                if matches!(self.view.overlay, Some(Overlay::FilterHistory { .. })) =>
+            {
+                let shown = self.watched_shown(key, content);
+                let done = filter::history(&mut self.view, key, content, shown, action);
+                return self.filtered(key, workspace, content, done);
+            }
             TuiAction::Overlay(action) => return self.overlay_key(action),
+            TuiAction::Search(edit) => {
+                let shown = self.watched_shown(key, content);
+                let done = filter::search(&mut self.view, key, content, shown, edit);
+                return self.filtered(key, workspace, content, done);
+            }
+            TuiAction::Filter(edit) => {
+                let shown = self.watched_shown(key, content);
+                let done = filter::filter(&mut self.view, key, content, shown, edit);
+                return self.filtered(key, workspace, content, done);
+            }
             TuiAction::Commit(edit) => return self.commit_key(edit, key, workspace, content),
             TuiAction::Comment(action) => return self.comment_key(action, key, workspace, content),
             TuiAction::Write(Write::Push) => {
@@ -536,6 +559,11 @@ impl Shell {
             }
             _ => return self.unported(),
         };
+        let shown = self.watched_shown(key, content);
+        let done = filter::normal(&mut self.view, key, content, shown, action.clone());
+        if let Some(done) = done {
+            return self.filtered(key, workspace, content, done);
+        }
         let config = self.host.settings().view().config.watched.clone();
         let state = self.view.tab_mut(key, content);
         let file = content
@@ -608,7 +636,7 @@ impl Shell {
             A::ToggleUnreviewedOnly => {
                 state.show_unreviewed_only = !state.show_unreviewed_only;
                 let showing = state.show_unreviewed_only;
-                let selected = state.snap(content);
+                let selected = state.snap(content, shown);
                 self.notify(if showing {
                     "Showing unreviewed only".into()
                 } else {
@@ -718,6 +746,23 @@ impl Shell {
             _ => return self.unported(),
         };
         if let Some(index) = selected {
+            self.parse_if_stub(key, workspace, content, index);
+        }
+    }
+
+    /// Whether `key`'s tab shows its watched files.
+    fn watched_shown(&mut self, key: TabKey, content: &TabContent) -> bool {
+        let config = self.host.settings().view().config.watched.clone();
+        self.view.tab_mut(key, content).watched.is_shown(&config)
+    }
+
+    /// Shows a filter or search key's message, and parses the file its snap
+    /// selected when that is a stub.
+    fn filtered(&mut self, key: TabKey, workspace: &str, content: &TabContent, done: Done) {
+        if let Some(notice) = done.notice {
+            self.notify(notice);
+        }
+        if let Some(index) = done.selected {
             self.parse_if_stub(key, workspace, content, index);
         }
     }

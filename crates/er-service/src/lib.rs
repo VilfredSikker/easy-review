@@ -68,7 +68,9 @@ pub use content::{
     AiSection, DiffMeta, DiffSection, FreshnessSection, HistorySection, PrSection, ReviewedSection,
     ScopeStats, SidecarStamp, StackRead, TabContent,
 };
-pub use diff_resource::{diff_load_error, diff_resource, diff_version, DiffInputs};
+pub use diff_resource::{
+    diff_load_error, diff_resource, diff_version, file_rule_tables, DiffInputs,
+};
 pub use effect::{descriptor_bucket, tab_bucket};
 pub use flow_view::{
     current_review_diff, flow_context, review_flow_inputs, review_raw_diff, review_rules,

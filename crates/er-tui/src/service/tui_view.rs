@@ -8,16 +8,18 @@
 //! unported message until the entry that ports it.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::SystemTime;
 
 use er_engine::ai::{CommentType, InlineLayers, PanelContent, ReviewFocus};
 use er_engine::config::{ErConfig, FileKindRepoConfig, RiskRules};
+use er_engine::filter::{parse_filter_expr, FilterRule, FILTER_PRESETS};
 use er_engine::git::{DiffFile, DiffHunk, LineType, ProdDiffStats};
 use er_engine::navigation::{self, FileMove, LineCursor, LineMove};
 use er_engine::tab_identity::DiffMode;
-use er_engine::visible_files::{visible_files, FileListView};
+use er_engine::visible_files::{filtered_reviewed_count, visible_files, FileListView};
 use er_engine::TabKey;
-use er_service::TabContent;
+use er_service::{SettingsView, TabContent};
 use tui_textarea::TextArea;
 
 use super::ai_picker::Picker;
@@ -37,6 +39,11 @@ pub struct TuiView {
     pub input_mode: Mode,
     pub overlay: Option<Overlay>,
     pub notification: Option<String>,
+    /// The settings the rule tables come from; a new tab reads them before
+    /// its session restores a filter.
+    pub settings: Option<Arc<SettingsView>>,
+    /// `--filter`, for the first tab's view state once it is made.
+    pub start_filter: Option<(TabKey, String)>,
 }
 
 /// The overlays the flag-on path holds; each entry that ports an overlay's
@@ -46,6 +53,11 @@ pub enum Overlay {
     /// The AI hub and its provider, model and effort pickers.
     Picker(Picker),
     GitHub(GitHub),
+    /// The filter presets, then the tab's recent filters.
+    FilterHistory {
+        history: Vec<String>,
+        selected: usize,
+    },
     #[cfg_attr(
         not(test),
         expect(dead_code, reason = "no key opens the export picker on this path yet")
@@ -65,7 +77,7 @@ impl Overlay {
         match self {
             Self::ConfigHub(hub) => hub.sync(view),
             Self::Picker(picker) => picker.sync(view, ai_label),
-            Self::ExportPicker { .. } | Self::GitHub(_) => {}
+            Self::ExportPicker { .. } | Self::GitHub(_) | Self::FilterHistory { .. } => {}
         }
     }
 
@@ -92,6 +104,14 @@ impl Overlay {
                 items: &hub.rows,
                 selected: hub.selected,
             },
+            Self::FilterHistory {
+                ref history,
+                selected,
+            } => OverlayData::FilterHistory {
+                history,
+                selected,
+                preset_count: FILTER_PRESETS.len(),
+            },
             Self::ExportPicker {
                 include_comments,
                 include_findings,
@@ -115,6 +135,8 @@ impl Overlay {
 pub enum Mode {
     #[default]
     Normal,
+    Search,
+    Filter,
     Commit,
     /// The composer: the active tab's draft takes the keys.
     Comment,
@@ -129,17 +151,25 @@ pub enum Ask {
 }
 
 impl TuiView {
-    /// The view state of `key`'s tab. Made on its first frame, scrolled to
-    /// the first hunk as a load leaves it.
+    /// The view state of `key`'s tab, its rule tables current. Made on its
+    /// first frame, scrolled to the first hunk as a load leaves it; then
+    /// `--filter` applies, then the session, in the App's order.
     pub fn tab_mut(&mut self, key: TabKey, content: &TabContent) -> &mut TabViewState {
-        self.tabs.entry(key).or_insert_with(|| {
+        let settings = self.settings.as_deref();
+        let state = self.tabs.entry(key).or_insert_with(|| {
             let mut state = TabViewState::default();
+            state.sync_rules(content, settings);
             state.scroll_to_cursor(content.diff.files.first().map(|file| &**file));
+            if let Some((_, expr)) = self.start_filter.take_if(|(first, _)| *first == key) {
+                state.apply_filter(content, &expr, false);
+            }
             if let Some(session) = super::session::load(content) {
                 super::session::restore(&mut state, session, content);
             }
             state
-        })
+        });
+        state.sync_rules(content, settings);
+        state
     }
 
     /// The view state of `key`'s tab, once it has drawn.
@@ -167,6 +197,13 @@ pub struct TabViewState {
     /// The layer toggles and the Gate.
     pub layers: InlineLayers,
     pub filter_expr: String,
+    /// `filter_expr`, parsed.
+    pub filter: Vec<FilterRule>,
+    /// Recent filters, newest first.
+    pub filter_history: Vec<String>,
+    /// The repo's rule tables, and the settings and diff revisions they were
+    /// read at.
+    tables: (Option<(u64, u64)>, FileKindRepoConfig, RiskRules),
     pub search_query: String,
     pub show_unreviewed_only: bool,
     pub sort_by_mtime: bool,
@@ -184,9 +221,6 @@ pub struct TabViewState {
     /// A J or K landed on a stub: once it parses, the diff scrolls to the
     /// hint's hunk, as the App's in-place parse lets it.
     pub scroll_on_parse: bool,
-    /// The filter the session file holds, saved back as it came until the
-    /// flag path applies filters.
-    pub saved_filter: SavedFilter,
     pub filter_input: String,
     pub commit_input: String,
     pub watched: TabWatched,
@@ -209,6 +243,9 @@ impl Default for TabViewState {
             panel_scroll: 0,
             layers: InlineLayers::default(),
             filter_expr: String::new(),
+            filter: Vec::new(),
+            filter_history: Vec::new(),
+            tables: Default::default(),
             search_query: String::new(),
             show_unreviewed_only: false,
             sort_by_mtime: false,
@@ -219,7 +256,6 @@ impl Default for TabViewState {
             gate_followed: None,
             sent: None,
             scroll_on_parse: false,
-            saved_filter: SavedFilter::default(),
             filter_input: String::new(),
             commit_input: String::new(),
             watched: TabWatched::default(),
@@ -227,13 +263,6 @@ impl Default for TabViewState {
             mtime_cache: HashMap::new(),
         }
     }
-}
-
-/// A session's filter and its history.
-#[derive(Default)]
-pub struct SavedFilter {
-    pub expr: String,
-    pub history: Vec<String>,
 }
 
 /// The comment being written, and where it lands.
@@ -297,32 +326,68 @@ pub fn is_stub(file: &DiffFile) -> bool {
 }
 
 impl TabViewState {
-    /// The files the tree lists, with their index in `files`.
-    pub fn visible<'f>(
-        &self,
-        files: &'f [std::sync::Arc<DiffFile>],
-        reviewed: &HashMap<String, String>,
-    ) -> Vec<(usize, &'f DiffFile)> {
+    /// Reads the repo's rule tables again when the settings or the diff
+    /// moved since they were read.
+    fn sync_rules(&mut self, content: &TabContent, settings: Option<&SettingsView>) {
+        let Some(settings) = settings else { return };
+        let at = Some((settings.revision, content.diff.revision));
+        if self.tables.0 != at {
+            let (kinds, risk) = er_service::file_rule_tables(content, &settings.config);
+            self.tables = (at, kinds, risk);
+        }
+    }
+
+    fn list_view<'a>(&'a self, content: &'a TabContent, search: &'a str) -> FileListView<'a> {
+        FileListView {
+            rules: &self.filter,
+            review: content.ai.state.review.as_ref(),
+            risk_rules: &self.tables.2,
+            file_kinds: &self.tables.1,
+            search_lower: search,
+            unreviewed_only: self.show_unreviewed_only,
+            reviewed: &content.reviewed.marks,
+        }
+    }
+
+    /// The files the tree lists, with their index in the diff: the filter,
+    /// then the search, then unreviewed-only.
+    pub fn visible<'f>(&self, content: &'f TabContent) -> Vec<(usize, &'f DiffFile)> {
         let search = self.search_query.to_lowercase();
-        visible_files(
-            files.iter().map(|file| &**file),
-            &FileListView {
-                rules: &[],
-                review: None,
-                risk_rules: &RiskRules::default(),
-                file_kinds: &FileKindRepoConfig::default(),
-                search_lower: &search,
-                unreviewed_only: self.show_unreviewed_only,
-                reviewed,
-            },
-        )
+        let files = content.diff.files.iter().map(|file| &**file);
+        visible_files(files, &self.list_view(content, &search))
+    }
+
+    /// Reviewed and total files among those the filter keeps, or `None`
+    /// with no filter, from the engine's count as the App's.
+    pub fn filtered_reviewed_count(&self, content: &TabContent) -> Option<(usize, usize)> {
+        let files = content.diff.files.iter().map(|file| &**file);
+        filtered_reviewed_count(files, &self.list_view(content, ""))
+    }
+
+    /// Applies a filter expression, keeps it at the top of the history (20
+    /// at most), and snaps; an empty one clears the filter. Answers the file
+    /// the snap selected.
+    pub fn apply_filter(&mut self, content: &TabContent, expr: &str, shown: bool) -> Option<usize> {
+        let expr = expr.trim();
+        if expr.is_empty() {
+            return self.clear_filter(content, shown);
+        }
+        self.filter_expr = expr.to_string();
+        self.filter = parse_filter_expr(expr);
+        self.filter_history.retain(|old| old != expr);
+        self.filter_history.insert(0, expr.to_string());
+        self.filter_history.truncate(20);
+        self.snap(content, shown)
+    }
+
+    pub fn clear_filter(&mut self, content: &TabContent, shown: bool) -> Option<usize> {
+        self.filter_expr.clear();
+        self.filter.clear();
+        self.snap(content, shown)
     }
 
     fn visible_indices(&self, content: &TabContent) -> Vec<usize> {
-        self.visible(&content.diff.files, &content.reviewed.marks)
-            .iter()
-            .map(|(idx, _)| *idx)
-            .collect()
+        self.visible(content).iter().map(|(idx, _)| *idx).collect()
     }
 
     /// The selected file's place among the visible files, or the first.
@@ -335,11 +400,24 @@ impl TabViewState {
     }
 
     /// Selects the first visible file when the list hides the selected one,
-    /// as the App's snap does. Answers the file it selected.
-    pub fn snap(&mut self, content: &TabContent) -> Option<usize> {
-        // Unreviewed-only hides no watched file, so a watched selection stays.
-        if self.watched.selected.is_some() {
-            return None;
+    /// as the App's snap does: a hidden watched file moves to the first
+    /// watched file shown, else to the first diff file. Answers the diff file
+    /// it selected.
+    pub fn snap(&mut self, content: &TabContent, watched_shown: bool) -> Option<usize> {
+        if let Some(at) = self.watched.selected {
+            let watched = self.watched.visible(watched_shown, &self.search_query);
+            if watched.iter().any(|(idx, _)| *idx == at) {
+                return None;
+            }
+            let first_watched = watched.first().map(|(idx, _)| *idx);
+            if first_watched.is_some() {
+                self.watched.selected = first_watched;
+                return None;
+            }
+            self.watched.selected = None;
+            let first = *self.visible_indices(content).first()?;
+            self.select_file_cursor(first);
+            return Some(first);
         }
         let visible = self.visible_indices(content);
         let first = *visible.first()?;
@@ -424,7 +502,7 @@ impl TabViewState {
     pub fn next_unreviewed(&mut self, content: &TabContent) -> Jump {
         let marks = &content.reviewed.marks;
         let visible: Vec<(usize, bool)> = self
-            .visible(&content.diff.files, marks)
+            .visible(content)
             .iter()
             .map(|(idx, file)| (*idx, marks.contains_key(&file.path)))
             .collect();
@@ -556,7 +634,7 @@ pub fn screen<'a>(view: &'a TuiView, state: &'a TabViewState, frame: Frame<'a>) 
     let files = &content.diff.files;
     let reviewed = &content.reviewed.marks;
     let is_remote = tab.identity().is_remote();
-    let file_kinds = FileKindRepoConfig::default();
+    let file_kinds = &state.tables.1;
     let watched = &state.watched;
     let watched_shown = watched.is_shown(&frame.config.watched);
     let selected_watched = watched.selected_file();
@@ -572,6 +650,8 @@ pub fn screen<'a>(view: &'a TuiView, state: &'a TabViewState, frame: Frame<'a>) 
             watching: false,
             input_mode: match view.input_mode {
                 Mode::Normal => InputMode::Normal,
+                Mode::Search => InputMode::Search,
+                Mode::Filter => InputMode::Filter,
                 Mode::Commit => InputMode::Commit,
                 Mode::Comment => InputMode::Comment,
                 Mode::Confirm(Ask::Push) => InputMode::Confirm(ConfirmAction::Push),
@@ -631,7 +711,7 @@ pub fn screen<'a>(view: &'a TuiView, state: &'a TabViewState, frame: Frame<'a>) 
             comment_textarea: &state.draft.textarea,
             filter_input: &state.filter_input,
             commit_input: &state.commit_input,
-            visible_files: state.visible(files, reviewed),
+            visible_files: state.visible(content),
             selected_diff_file: files
                 .get(state.selected_file)
                 .filter(|_| selected_watched.is_none())
@@ -663,6 +743,7 @@ pub fn screen<'a>(view: &'a TuiView, state: &'a TabViewState, frame: Frame<'a>) 
             pr: content.pr.overview.as_ref(),
             ai: &content.ai.state,
             reviewed_count: frame.reviewed_count,
+            filtered_reviewed_count: state.filtered_reviewed_count(content),
         }),
     }
 }
