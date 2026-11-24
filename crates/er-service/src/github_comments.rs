@@ -246,10 +246,12 @@ pub(crate) fn delete_github_comment(
         }
         match refused {
             Some(error) if deleted == 0 => return Err(error.into()),
-            Some(error) => return Err(WorkspaceError::Failed(format!(
+            Some(error) => {
+                return Err(WorkspaceError::Failed(format!(
                 "Deleted {deleted} of {} replies on GitHub; the comment and the rest stay: {error}",
                 ids.len() - 1
-            ))),
+            )))
+            }
             None => {}
         }
     }
