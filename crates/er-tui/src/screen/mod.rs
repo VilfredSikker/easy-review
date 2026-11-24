@@ -113,13 +113,6 @@ pub struct TabView<'a> {
 
 /// The active tab's content, one variant per path. A renderer that reads the
 /// AI state or the reviewed count matches on it.
-#[cfg_attr(
-    feature = "v1-service",
-    expect(
-        clippy::large_enum_variant,
-        reason = "one lives per frame, on the stack; a box would allocate every frame"
-    )
-)]
 pub enum TabData<'a> {
     App(AppData<'a>),
     #[cfg(feature = "v1-service")]
