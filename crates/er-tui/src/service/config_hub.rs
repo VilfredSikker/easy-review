@@ -27,6 +27,8 @@ pub enum Step {
     Notify(String),
     /// Closes the overlay: the row's action has no service route yet.
     Unported,
+    /// Closes the overlay and runs an AI hub layer row on the tab's view.
+    Layer(super::layers::HubRow),
 }
 
 pub struct ConfigHub {

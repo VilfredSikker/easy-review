@@ -23,41 +23,41 @@ use super::tests::{
 use super::tui_view::{Mode, TabViewState};
 use crate::ui::highlight::Highlighter;
 
-fn args(paths: Vec<String>) -> Args {
+pub(super) fn args(paths: Vec<String>) -> Args {
     Args {
         paths,
         ..Args::default()
     }
 }
 
-fn active_key(shell: &Shell) -> TabKey {
+pub(super) fn active_key(shell: &Shell) -> TabKey {
     let tabs = shell.host().registry().tabs_view();
     tabs.active.unwrap_or_else(|| panic!("no active tab"))
 }
 
-fn state(shell: &Shell, key: TabKey) -> &TabViewState {
+pub(super) fn state(shell: &Shell, key: TabKey) -> &TabViewState {
     shell
         .view()
         .tab(key)
         .unwrap_or_else(|| panic!("no view state"))
 }
 
-fn draft_text(shell: &Shell, key: TabKey) -> String {
+pub(super) fn draft_text(shell: &Shell, key: TabKey) -> String {
     state(shell, key).draft.textarea.lines().join("\n")
 }
 
-fn er_dir(shell: &Shell) -> String {
+pub(super) fn er_dir(shell: &Shell) -> String {
     let content = shell
         .active_content()
         .unwrap_or_else(|| panic!("no content"));
     content.context.er_dir.clone()
 }
 
-fn settle_replies(shell: &mut Shell) {
+pub(super) fn settle_replies(shell: &mut Shell) {
     settle(shell, |shell| shell.in_flight() == 0);
 }
 
-fn type_text(shell: &mut Shell, text: &str) {
+pub(super) fn type_text(shell: &mut Shell, text: &str) {
     for c in text.chars() {
         shell.handle_key(key(KeyCode::Char(c)));
     }
@@ -258,7 +258,12 @@ fn comparable(row: &PrivateAnnotation) -> serde_json::Value {
 
 /// Presses `event` on both paths, the last message gone first, and compares
 /// the frames once the flag path's replies have landed.
-fn step(app: &mut er_engine::app::App, shell: &mut Shell, hl: &mut Highlighter, event: KeyEvent) {
+pub(super) fn step(
+    app: &mut er_engine::app::App,
+    shell: &mut Shell,
+    hl: &mut Highlighter,
+    event: KeyEvent,
+) {
     app.clear_notification();
     shell.tick(Instant::now() + Duration::from_secs(60));
     let (tx, _rx) = std::sync::mpsc::channel();
@@ -272,7 +277,7 @@ fn step(app: &mut er_engine::app::App, shell: &mut Shell, hl: &mut Highlighter, 
 
 /// Waits for the start of a wall-clock second, so two writes a step apart
 /// draw the same seconds in their time stamps.
-fn early_in_a_second() {
+pub(super) fn early_in_a_second() {
     let millis = || {
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -285,7 +290,7 @@ fn early_in_a_second() {
 }
 
 /// The App and the flag path, each on its own clone of one fixture.
-fn both_on(
+pub(super) fn both_on(
     app_repo: &tempfile::TempDir,
     flag_repo: &tempfile::TempDir,
     config_dir: &Path,
@@ -392,7 +397,12 @@ fn seed(dir: &str, hash: &str, graded: bool, note: &str) {
 
 /// Seeds both paths' buckets; the App reads them at once, and the flag path
 /// on its reload tick.
-fn seed_both(app: &mut er_engine::app::App, shell: &mut Shell, graded: bool, note: &str) {
+pub(super) fn seed_both(
+    app: &mut er_engine::app::App,
+    shell: &mut Shell,
+    graded: bool,
+    note: &str,
+) {
     let hash = app.tab().branch_diff_hash.clone();
     seed(&app.tab().er_dir(), &hash, graded, note);
     app.tab_mut().reload_ai_state();

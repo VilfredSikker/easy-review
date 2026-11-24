@@ -212,6 +212,18 @@ impl Shell {
         self.pending.len()
     }
 
+    /// A write on `key` whose worker died before it answered.
+    #[cfg(test)]
+    pub fn lose_write(&mut self, key: TabKey, workspace: String, after: After) {
+        let (_, replies) = std::sync::mpsc::channel();
+        self.pending.push(Pending {
+            key,
+            workspace,
+            replies,
+            after,
+        });
+    }
+
     /// The active tab's content, once its load has published.
     #[cfg(test)]
     pub fn active_content(&self) -> Option<Arc<TabContent>> {
@@ -385,9 +397,11 @@ impl Shell {
                     false
                 }
                 Err(TryRecvError::Empty) => true,
-                // A create whose worker died answers as a refusal, so its
-                // composer takes edits again.
-                Err(TryRecvError::Disconnected) if pending.after == After::Composed => {
+                // A thread write whose worker died answers as a refusal, so
+                // its composer takes edits again and a delete says so.
+                Err(TryRecvError::Disconnected)
+                    if matches!(pending.after, After::Composed | After::Deleted) =>
+                {
                     let lost = er_service::WorkspaceError::Failed(
                         "The write stopped before it answered".into(),
                     );
@@ -433,8 +447,13 @@ impl Shell {
                         state.watched.reread();
                     }
                 }
-                Ok(Reply::AnnotationWritten { .. }) if after == After::Composed => {
+                Ok(Reply::AnnotationWritten { .. } | Reply::ThreadChanged { .. })
+                    if after == After::Composed =>
+                {
                     self.composed(key);
+                }
+                Ok(Reply::ThreadChanged { .. }) if after == After::Deleted => {
+                    self.notify("Comment deleted".into());
                 }
                 Err(error) if after == After::Composed => {
                     if let Some(state) = self.view.tab_mut_if_open(key) {
@@ -541,7 +560,7 @@ impl Shell {
                 let done = filter::history(&mut self.view, key, content, shown, action);
                 return self.filtered(key, workspace, content, done);
             }
-            TuiAction::Overlay(action) => return self.overlay_key(action),
+            TuiAction::Overlay(action) => return self.overlay_key(action, key, content),
             TuiAction::Search(edit) => {
                 let shown = self.watched_shown(key, content);
                 let done = filter::search(&mut self.view, key, content, shown, edit);
@@ -564,6 +583,16 @@ impl Shell {
                 if let Some(path) = state.watched.deleting.take() {
                     let command = Command::DeleteWatchedFile { key, path };
                     self.post(key, workspace, command, After::Watched);
+                }
+                return;
+            }
+            TuiAction::Write(Write::DeleteComment) => {
+                self.view.input_mode = Mode::Normal;
+                let state = self.view.tab_mut(key, content);
+                if let Some(id) = state.deleting_comment.take() {
+                    let context = content.context.clone();
+                    let command = Command::DeleteThread { context, id };
+                    self.post(key, workspace, command, After::Deleted);
                 }
                 return;
             }
@@ -643,7 +672,8 @@ impl Shell {
             A::OpenAiHub => {
                 let view = self.host.settings().view();
                 let label = self.settings.ai_label(&view);
-                return self.run_step(ai_picker::open_ai_hub(&view, &label));
+                let has_ai = content.ai.state.has_data();
+                return self.run_step(ai_picker::open_ai_hub(&view, &label, has_ai));
             }
             A::ToggleStaged => return self.toggle_staged(key, workspace, content),
             A::ToggleReviewed => return self.toggle_reviewed(key, workspace, content),
@@ -719,6 +749,14 @@ impl Shell {
                 self.view.input_mode = Mode::Comment;
                 return;
             }
+            A::Reply | A::Edit | A::AskDeleteComment => {
+                let focus = match action {
+                    A::Reply => threads::start_reply(state, content),
+                    A::Edit => threads::start_edit(state, content),
+                    _ => threads::ask_delete(state, content),
+                };
+                return self.focus(focus);
+            }
             A::NextHint | A::PrevHint => threads::jump_hint(state, content, action == A::NextHint),
             A::TogglePanel | A::TogglePanelReverse => {
                 layers::cycle_panel(state, content, action == A::TogglePanel);
@@ -792,7 +830,7 @@ impl Shell {
         });
     }
 
-    /// Runs a composer key on the tab's draft, and sends the create Submit
+    /// Runs a composer key on the tab's draft, and sends the write Submit
     /// builds; the draft keeps its text until the reply lands.
     fn comment_key(
         &mut self,
@@ -812,7 +850,19 @@ impl Shell {
         }
     }
 
-    /// A create landed on `key`'s tab: its draft clears, and the composer
+    /// Runs what a thread key on the focused comment asks.
+    fn focus(&mut self, focus: threads::Focus) {
+        match focus {
+            threads::Focus::Nothing => {}
+            threads::Focus::Opened => self.view.input_mode = Mode::Comment,
+            threads::Focus::AskDelete => {
+                self.view.input_mode = Mode::Confirm(Ask::DeleteComment);
+            }
+            threads::Focus::Unported => self.unported(),
+        }
+    }
+
+    /// A write landed on `key`'s tab: its draft clears, and the composer
     /// closes if that tab is still the one composing.
     fn composed(&mut self, key: TabKey) {
         let active = self.active().map(|(active, ..)| active);
@@ -1001,7 +1051,7 @@ impl Shell {
     }
 
     /// Runs a key on the open overlay, against the latest settings view.
-    fn overlay_key(&mut self, action: OverlayAction) {
+    fn overlay_key(&mut self, action: OverlayAction, key: TabKey, content: &TabContent) {
         let view = self.host.settings().view();
         let label = self.settings.ai_label(&view);
         let step = match self.view.overlay.as_mut() {
@@ -1015,6 +1065,12 @@ impl Shell {
             }
             _ => Step::Unported,
         };
+        if let Step::Layer(row) = step {
+            self.view.overlay = None;
+            let state = self.view.tab_mut(key, content);
+            let message = layers::hub_row(state, row);
+            return self.notify(message);
+        }
         self.run_step(step);
     }
 
@@ -1022,7 +1078,7 @@ impl Shell {
         let settings = self.host.settings();
         let (close, send) = match step {
             Step::Stay => (false, None),
-            Step::Close => (true, None),
+            Step::Close | Step::Layer(_) => (true, None),
             Step::Send(command) => (false, Some((command, Then::Nothing))),
             Step::Leave(command) => (true, Some((command, Then::Nothing))),
             Step::Pick(command) => (true, Some((command, Then::AnnouncePick))),
