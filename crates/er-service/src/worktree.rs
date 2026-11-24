@@ -115,7 +115,7 @@ pub(crate) fn step(
         Ok(loaded) => {
             let key = written.key;
             let since = Some(since);
-            match state.apply_patch(ContentPatch::Loaded { key, since, loaded }) {
+            match state.apply_patch(ContentPatch::loaded(key, since, loaded)) {
                 Ok((revision, _)) => {
                     publish(view, state);
                     broadcast(subscribers, Event::ViewPublished { revision });

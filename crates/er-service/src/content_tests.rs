@@ -591,6 +591,7 @@ fn loaded_tab(repo: &str) -> Box<LoadedTab> {
         freshness: Default::default(),
         history: None,
         cleared: 0,
+        marks_seq: None,
     })
 }
 

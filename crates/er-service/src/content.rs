@@ -548,6 +548,8 @@ pub(crate) struct LoadedTab {
     pub history: Option<Arc<HistorySection>>,
     /// How many reviewed marks the load cleared.
     pub cleared: usize,
+    /// The sequence the clear's save took, when it saved.
+    pub marks_seq: Option<u64>,
 }
 
 pub(crate) struct LoadedDiff {
@@ -653,6 +655,22 @@ pub(crate) enum ContentPatch {
 }
 
 impl ContentPatch {
+    /// A load, with the marks its clear saved beside it: the sequence orders
+    /// it against the reviewed writes, and the other tabs on the bucket take
+    /// the saved marks.
+    pub(crate) fn loaded(key: TabKey, since: Option<u64>, loaded: Box<LoadedTab>) -> Self {
+        let saved = loaded.marks_seq.map(|seq| Self::Reviewed {
+            er_dir: loaded.context.er_dir.clone(),
+            marks: loaded.marks.clone(),
+            seq,
+        });
+        let load = Self::Loaded { key, since, loaded };
+        match saved {
+            Some(saved) => Self::Several(vec![load, saved]),
+            None => load,
+        }
+    }
+
     /// The patch for a sidecar just stored in `dir`, with the file's mtime
     /// as the store left it. Built on the effect thread that wrote it.
     pub(crate) fn stored_sidecar(dir: &str, payload: WrittenPayload) -> Self {

@@ -503,13 +503,14 @@ impl Shell {
             } = landing;
             self.redraw = true;
             match reply {
-                reply if after == After::Context => {
+                reply if matches!(after, After::Context { .. }) => {
                     let content = self.host.content(&workspace, key);
                     let state = self.view.tab_mut_if_open(key);
                     if let (Some(state), Some(content)) = (state, content) {
-                        context::landed(state, &content, reply.is_ok());
+                        let sent = retry.as_ref().map(|(command, _)| command);
+                        context::landed(state, &content, reply.is_ok(), sent);
                     }
-                    if let Err(error) = reply {
+                    if let (Err(error), After::Context { auto: false }) = (reply, after) {
                         self.failure(Side::Reply, error.to_string());
                     }
                 }
@@ -787,7 +788,7 @@ impl Shell {
                 let at = state.selected_file;
                 let auto = context::auto(key, state, content, at, threshold);
                 if let Some(command) = auto {
-                    self.post(key, workspace, command, After::Context);
+                    self.post(key, workspace, command, After::Context { auto: true });
                 }
                 moved
             }
@@ -797,7 +798,9 @@ impl Shell {
                     Ok(Some(command @ Command::ParseFiles { .. })) => {
                         self.post(key, workspace, command, After::Nothing);
                     }
-                    Ok(Some(command)) => self.post(key, workspace, command, After::Context),
+                    Ok(Some(command)) => {
+                        self.post(key, workspace, command, After::Context { auto: false });
+                    }
                     Ok(None) => {}
                     Err(message) => self.notify(message),
                 };
@@ -1047,7 +1050,8 @@ impl Shell {
 
     /// Sends a command for `key`'s tab; its reply lands on a later tick.
     fn post(&mut self, key: TabKey, workspace: &str, command: Command, after: After) {
-        let retry = after.follows().then(|| (command.clone(), 0));
+        let kept = after.follows() || matches!(after, After::Context { .. });
+        let retry = kept.then(|| (command.clone(), 0));
         let replies = self.send_reload(workspace, command, after);
         self.pending.push(Pending {
             key,

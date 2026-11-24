@@ -304,11 +304,7 @@ fn spawn_load(
                 key,
                 reviewed_cleared,
             },
-            ContentPatch::Loaded {
-                key,
-                since,
-                loaded: Box::new(loaded),
-            },
+            ContentPatch::loaded(key, since, Box::new(loaded)),
         ))
     });
 }

@@ -537,7 +537,7 @@ pub(crate) fn load_tab(
         }
     }
 
-    let cleared = if input.auto_unmark && !own_view {
+    let (cleared, marks_seq) = if input.auto_unmark && !own_view {
         clear_moved_marks(
             &mut marks,
             &raw,
@@ -547,7 +547,7 @@ pub(crate) fn load_tab(
             &scope,
         )
     } else {
-        0
+        (0, None)
     };
     let file_hashes = diff_load::reviewed_file_hashes(&raw, &marks);
 
@@ -628,6 +628,7 @@ pub(crate) fn load_tab(
         freshness,
         history,
         cleared,
+        marks_seq,
     })
 }
 
@@ -702,7 +703,7 @@ fn stamped_dirs(
 /// stays; `marks` becomes what was saved. Only a mark still as the load read
 /// it is judged: one toggled since was hashed against a newer diff than
 /// `raw`. When `marks` itself clears nothing, nothing is locked or saved.
-/// Answers how many were dropped.
+/// Answers how many were dropped, and the sequence a save took under the lock.
 pub(crate) fn clear_moved_marks(
     marks: &mut HashMap<String, String>,
     raw: &str,
@@ -710,7 +711,7 @@ pub(crate) fn clear_moved_marks(
     persists: bool,
     store: &er_store::ArtifactStore,
     scope: &er_store::Scope,
-) -> usize {
+) -> (usize, Option<u64>) {
     let read = marks.clone();
     let clear = |marks: &mut HashMap<String, String>| {
         let mut judged: HashMap<String, String> = marks
@@ -734,15 +735,15 @@ pub(crate) fn clear_moved_marks(
         gone.len()
     };
     if clear(&mut read.clone()) == 0 {
-        return 0;
+        return (0, None);
     }
     if persists {
-        if let Ok((cleared, saved)) = session_store::update_reviewed(store, scope, clear) {
-            *marks = saved;
-            return cleared;
+        if let Ok(saved) = crate::annotations::update_marks(store, scope, clear) {
+            *marks = saved.map;
+            return (saved.changed, (saved.changed > 0).then_some(saved.seq));
         }
     }
-    clear(marks)
+    (clear(marks), None)
 }
 
 /// Fetches each listed file again with its count, as the App's `+` does;

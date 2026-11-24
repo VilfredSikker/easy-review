@@ -19,6 +19,7 @@ diff --git a/src/a.rs b/src/a.rs
 fn fake() -> Arc<FakeGit> {
     Arc::new(
         FakeGit::default()
+            .with_is_merge_in_progress(false)
             .with_current_branch(Ok("feature".to_string()))
             .with_diff_shortstat((0, 0, 0))
             .with_diff_raw(Ok(RAW.to_string()))
@@ -81,4 +82,24 @@ fn a_count_back_at_the_default_leaves_the_map() -> anyhow::Result<()> {
         );
         Ok(())
     })
+}
+
+/// A remote PR has no clone to fetch from, and History's files are one
+/// commit's: both refuse a count, with the git port scripted to answer.
+#[test]
+fn a_count_is_refused_for_a_remote_tab_and_in_history() {
+    let deps = WorkspaceDeps::new(Ports {
+        git: fake(),
+        github: Arc::new(FakeGitHub::default()),
+    });
+    let history: fn(&mut ResolvedTab) = |tab| tab.mode = DiffMode::History;
+    let remote: fn(&mut ResolvedTab) = |tab| tab.remote_repo = Some("o/r".to_string());
+    for (name, edit) in [("History", history), ("a remote tab", remote)] {
+        let mut loaded = loaded_tab("/repo");
+        loaded.diff.files = er_engine::git::parse_diff(RAW);
+        edit(&mut loaded.tab);
+        let content = crate::TabContent::from_loaded(TabKey::next(), *loaded, 1);
+        let fetched = crate::effect::refetch_context(&deps, &content, "src/a.rs", 20);
+        assert!(fetched.is_err(), "{name} fetched a count");
+    }
 }

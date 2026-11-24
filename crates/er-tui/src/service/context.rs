@@ -74,10 +74,17 @@ pub fn auto(
 }
 
 /// A count's reply landed: what the content shows is no longer in flight,
-/// and a refusal lets go of every send.
-pub fn landed(state: &mut TabViewState, content: &TabContent, landed: bool) {
+/// and a refusal lets go of the send it answers.
+pub fn landed(
+    state: &mut TabViewState,
+    content: &TabContent,
+    landed: bool,
+    sent: Option<&Command>,
+) {
     if !landed {
-        state.context_sent.clear();
+        if let Some(Command::SetFileContext { path, .. }) = sent {
+            state.context_sent.remove(path);
+        }
         return;
     }
     let shown = &content.diff.context;

@@ -132,3 +132,45 @@ fn a_reviewed_write_finishing_late_drops_behind_the_newer_one() -> anyhow::Resul
     assert_eq!(content_of(state.view(), key)?.reviewed.marks, saved);
     Ok(())
 }
+
+/// A load whose clear saved after a toggle saved: the load publishes first,
+/// and the toggle's older marks, landing after it, are dropped.
+#[test]
+fn a_load_that_cleared_marks_drops_an_older_toggle_behind_it() -> anyhow::Result<()> {
+    use crate::annotations::{marks_patch, update_marks};
+    use er_engine::session_store;
+    let tmp = tempfile::tempdir()?;
+    let store = er_store::ArtifactStore::new(tmp.path());
+    let scope = er_store::Scope::dir(tmp.path())?;
+    let stale = HashMap::from([("src/a.rs".to_string(), "stale".to_string())]);
+    session_store::save_reviewed(&store, &scope, &stale)?;
+    let mut read_by_the_load = session_store::load_reviewed(&store, &scope)?;
+    let toggle = update_marks(&store, &scope, |map| {
+        map.insert("src/b.rs".to_string(), "h".to_string());
+        1
+    })?;
+    let files = er_engine::git::parse_diff(RAW);
+    let (cleared, marks_seq) =
+        crate::effect::clear_moved_marks(&mut read_by_the_load, RAW, &files, true, &store, &scope);
+    assert_eq!(cleared, 1, "the stale mark was not cleared");
+
+    let mut state = WorkspaceState::new();
+    let key = TabKey::next();
+    let mut loaded = loaded_tab("/repo");
+    loaded.marks = read_by_the_load.clone();
+    loaded.marks_seq = marks_seq;
+    let ctx = loaded.context.clone();
+    for patch in [
+        ContentPatch::loaded(key, None, loaded),
+        marks_patch(&ctx, toggle)?.1,
+    ] {
+        state
+            .apply_patch(patch)
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+    }
+    assert_eq!(
+        content_of(state.view(), key)?.reviewed.marks,
+        read_by_the_load
+    );
+    Ok(())
+}
