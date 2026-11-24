@@ -542,9 +542,10 @@ fn select(picker: &Picker, view: &SettingsView, label: &str) -> Step {
     if row.is_header {
         return Step::Close;
     }
+    // A disabled row says why, as the App's, whatever it would run.
     match choice {
-        Pick::Unported => Step::Unported,
         _ if !row.enabled => Step::Notify(row.description.clone()),
+        Pick::Unported => Step::Unported,
         Pick::Layer(layer) => Step::Layer(*layer),
         Pick::Clear(clear) => Step::Clear(*clear),
         Pick::CopyContext => Step::Copy(super::copy::Pick::Context),

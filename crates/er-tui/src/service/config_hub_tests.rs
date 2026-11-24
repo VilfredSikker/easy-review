@@ -338,3 +338,62 @@ fn a_model_refresh_shows_in_the_open_picker() {
         assert_eq!(read(&runs).lines().count(), 2, "opening forced a listing");
     });
 }
+
+/// The hub's tab keys, a cancelled edit with its cursor keys, Left on a
+/// cycle row and the close key leave the frame and the files the App's
+/// keys leave.
+#[test]
+fn tab_cancel_back_and_close_keys_match_the_apps() {
+    let repo = fixture(1);
+    let (storage, config_dir) = (temp(), temp());
+    let path = path_of(&repo);
+    er_engine::storage::with_process_test_storage_root(storage.path(), || {
+        let mut app = app_on(&path);
+        let mut shell = start(&path, config_dir.path());
+        patch(
+            &mut shell,
+            "display.auto_context",
+            ConfigFieldValue::Bool(false),
+        );
+        let mut hl = Highlighter::new();
+        let mut keys = vec![
+            KeyCode::Char(','),
+            KeyCode::Char('2'),
+            KeyCode::Char(']'),
+            KeyCode::Char('['),
+            KeyCode::Char('1'),
+            J,
+            KeyCode::Char('k'),
+            KeyCode::Enter,
+        ];
+        keys.extend(typed("xy"));
+        keys.extend([
+            KeyCode::Backspace,
+            KeyCode::Left,
+            KeyCode::Right,
+            KeyCode::Esc,
+        ]);
+        keys.extend([J; 7]);
+        for code in keys {
+            press_app(&mut app, code);
+            shell.handle_key(key(code));
+            shell.tick(Instant::now());
+            let step = format!("{code:?}");
+            assert_parity(&app, &shell_frame(&mut shell, &mut hl), &mut hl, &step);
+        }
+        let agents = config_dir.path().join("agents.toml");
+        let app_agents = storage.path().join("agents.toml");
+        for code in [KeyCode::Left, KeyCode::Left] {
+            press_app(&mut app, code);
+            shell.handle_key(key(code));
+            settle_quietly(&mut shell, || read(&agents) == read(&app_agents));
+            assert_eq!(read(&agents), read(&app_agents), "Left");
+        }
+        for code in [KeyCode::Char('s')] {
+            press_app(&mut app, code);
+            shell.handle_key(key(code));
+        }
+        assert!(shell.view().overlay.is_none(), "s left the hub open");
+        assert_parity(&app, &shell_frame(&mut shell, &mut hl), &mut hl, "closed");
+    });
+}

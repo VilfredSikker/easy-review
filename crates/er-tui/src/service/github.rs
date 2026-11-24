@@ -14,6 +14,7 @@ use tui_textarea::TextArea;
 
 use super::threads;
 use super::tui_view::{PrKnown, TabViewState};
+use crate::screen::view::SplitSide;
 
 /// `c`: the composer on the cursor's line as a GitHub comment, refused on a
 /// tab known to have no PR, as the App's held state refuses it. Answers
@@ -22,11 +23,17 @@ pub fn start_line(
     state: &mut TabViewState,
     content: &TabContent,
     known: PrKnown,
+    split: Option<SplitSide>,
 ) -> Result<bool, String> {
     if known == PrKnown::Absent {
         return Err(NO_PR_FOR_COMMENT.to_string());
     }
-    Ok(threads::start(state, content, CommentType::GitHubComment))
+    Ok(threads::start(
+        state,
+        content,
+        CommentType::GitHubComment,
+        split,
+    ))
 }
 
 /// The Git hub's "Comment on PR": a draft on no file, which posts PR-wide,

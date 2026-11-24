@@ -9,6 +9,7 @@
 mod agent_log;
 mod ai_picker;
 mod ai_runs;
+mod chrome;
 mod clears;
 mod config_hub;
 mod context;
@@ -46,6 +47,8 @@ pub const RUNS_ON_SERVICE: bool = true;
 
 #[cfg(test)]
 mod ai_runs_tests;
+#[cfg(test)]
+mod chrome_tests;
 #[cfg(test)]
 mod clears_tests;
 #[cfg(test)]
