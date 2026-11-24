@@ -483,11 +483,25 @@ fn handle_command(
             if !context_matches(state, &context) {
                 return refuse_stale(reply);
             }
+            // The tour the tab shows, which `resolve_view_tour` may have taken
+            // from the other tour bucket; the bucket's own file with no tab.
+            let shown = crate::sidecar_reload::readers(state, &context.er_dir)
+                .iter()
+                .find_map(|content| content.ai.state.tour.clone());
             let deps = deps.clone();
             spawn_effect(tx, reply, move || {
-                crate::annotations::bulk_review_pillar(&deps, &context, &pillar_id, reviewed).map(
-                    |(changed, patch)| Effected::patched(Reply::ReviewedChanged { changed }, patch),
+                let tour = shown
+                    .or_else(|| er_engine::ai::load_tour_sidecar(&context.er_dir, "tour.json"));
+                crate::annotations::bulk_review_pillar(
+                    &deps,
+                    &context,
+                    tour.as_ref(),
+                    &pillar_id,
+                    reviewed,
                 )
+                .map(|(changed, patch)| {
+                    Effected::patched(Reply::ReviewedChanged { changed }, patch)
+                })
             });
         }
         Command::AddQuestion {

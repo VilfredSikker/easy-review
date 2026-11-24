@@ -882,15 +882,16 @@ fn reviewed_paths(diff_paths: &HashSet<String>, pillar_paths: Vec<String>) -> Ve
 pub(crate) fn bulk_review_pillar(
     deps: &WorkspaceDeps,
     ctx: &TabContext,
+    tour: Option<&ai::ErTour>,
     pillar_id: &str,
     reviewed: bool,
 ) -> Written<usize> {
+    let Some(tour) = tour else {
+        return Ok((0, ContentPatch::Several(Vec::new())));
+    };
     let raw = fetch_raw(deps, ctx)?;
     let headers = parse_diff_headers(&raw);
     let diff_paths: HashSet<String> = headers.iter().map(|header| header.path.clone()).collect();
-    let Some(tour) = ai::load_tour_sidecar(&ctx.er_dir, "tour.json") else {
-        return Ok((0, ContentPatch::Several(Vec::new())));
-    };
     let ownership = tour.pillar_ownership(|path| diff_paths.contains(path));
     let paths = if pillar_id == "__other__" {
         let assigned: HashSet<&str> = ownership
