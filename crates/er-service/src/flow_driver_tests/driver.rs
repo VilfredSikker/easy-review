@@ -445,6 +445,16 @@ fn gated_verification(bucket: &str, gate: &Path) -> ErConfig {
     with_script(er_engine::test_support::staged_script(&script, bucket))
 }
 
+/// Opens the gate when the test ends, so a failed assertion leaves no
+/// provider waiting on it.
+struct OpenGate(std::path::PathBuf);
+
+impl Drop for OpenGate {
+    fn drop(&mut self) {
+        let _ = std::fs::write(&self.0, "");
+    }
+}
+
 /// The arbiter run's live status turns Complete before its supervisor
 /// returns and saves the final record; only that record ends verification,
 /// and the lease is held until then.
@@ -453,6 +463,7 @@ fn verifying_waits_for_drained_supervisor_and_final_persisted_run() {
     let _serial = er_agent::agent_slots::test_serial();
     let dir = tempfile::tempdir().unwrap();
     let gate = dir.path().join("gate");
+    let _open_on_exit = OpenGate(gate.clone());
     let config = gated_verification(&dirs(dir.path()).bucket, &gate);
     flow_in(dir.path(), &config, |harness, dirs| {
         harness.start("branch").unwrap();
