@@ -45,7 +45,7 @@ fn shell_on(repos: &[&tempfile::TempDir], agent: &Agent) -> Shell {
 
 /// Opens the hub key `hub` opens, or the picker already open for `' '`, and
 /// chooses the row labelled `label`.
-fn choose(shell: &mut Shell, hub: char, label: &str) {
+pub(super) fn choose(shell: &mut Shell, hub: char, label: &str) {
     if hub != ' ' {
         shell.handle_key(key(KeyCode::Char(hub)));
     }
@@ -57,7 +57,7 @@ fn choose(shell: &mut Shell, hub: char, label: &str) {
     shell.handle_key(key(KeyCode::Enter));
 }
 
-fn kinds(shell: &Shell) -> Vec<String> {
+pub(super) fn kinds(shell: &Shell) -> Vec<String> {
     let rows = shell.host().tasks().rows();
     rows.into_iter().map(|row| row.kind).collect()
 }
@@ -368,7 +368,7 @@ fn seed_review(shell: &mut Shell, dir: &str) {
     });
 }
 
-fn notice(shell: &Shell) -> String {
+pub(super) fn notice(shell: &Shell) -> String {
     shell.view().notification.clone().unwrap_or_default()
 }
 
@@ -447,5 +447,90 @@ fn a_test_build_never_starts_a_real_provider_cli() {
         let seen = settle_within(&mut shell, Duration::from_secs(20), refused);
         assert!(seen, "the spawn was not refused");
         settle(&mut shell, |shell| notice(shell).contains("summary failed"));
+    });
+}
+
+/// Writes `kind`'s sidecar (`questions` or `notes`) with one open row and,
+/// with `answered`, Claude's reply to it.
+fn seed_rows(shell: &mut Shell, kind: &str, answered: bool) {
+    let dir = er_dir(shell);
+    let row = |id: &str, reply: Option<&str>, author: &str| {
+        serde_json::json!({"id": id, "file": "src/f000.rs", "hunk_index": 0,
+            "line_start": 4, "text": id, "in_reply_to": reply, "author": author})
+    };
+    let mut rows = vec![row("open-1", None, "You")];
+    if answered {
+        rows.extend([
+            row("done-1", None, "You"),
+            row("reply-1", Some("done-1"), "Claude"),
+        ]);
+    }
+    let value = serde_json::json!({"version": 1, "diff_hash": "h", kind: rows});
+    std::fs::create_dir_all(&dir).unwrap_or_else(|e| panic!("{e}"));
+    match kind {
+        "notes" => er_engine::test_support::write_sidecar_json::<er_engine::ai::ErNotes>(
+            Path::new(&dir),
+            value,
+        ),
+        _ => er_engine::test_support::write_sidecar_json::<er_engine::ai::ErQuestions>(
+            Path::new(&dir),
+            value,
+        ),
+    }
+    settle(shell, |shell| {
+        let content = shell.active_content();
+        content.is_some_and(|c| {
+            let ai = &c.ai.state;
+            if kind == "notes" {
+                ai.has_unaddressed_notes()
+            } else {
+                ai.has_unanswered_questions()
+            }
+        })
+    });
+}
+
+/// Validate review runs `validate` over a review and says it started; a
+/// question with no answer of Claude's runs at once, with no prompt; and
+/// the notes rerun clears Claude's reply before it runs.
+#[test]
+fn validate_questions_and_notes_run_their_kinds() {
+    let repo = fixture(1);
+    let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+    er_engine::storage::with_process_test_storage_root(storage.path(), || {
+        let agent = agent_with(storage.path(), "true", "");
+        let mut shell = shell_on(&[&repo], &agent);
+        let dir = er_dir(&shell);
+        let listed =
+            |kind: &'static str| move |shell: &Shell| kinds(shell).iter().any(|k| k == kind);
+        seed_review(&mut shell, &dir);
+        choose(&mut shell, 'a', "Validate review");
+        settle(&mut shell, listed("validate"));
+        assert_eq!(notice(&shell), "Validation started (review)");
+
+        seed_rows(&mut shell, "questions", false);
+        choose(&mut shell, 'a', "Answer questions");
+        assert_eq!(
+            shell.view().input_mode,
+            Mode::Normal,
+            "a fresh question asked"
+        );
+        settle(&mut shell, listed("questions"));
+
+        seed_rows(&mut shell, "notes", true);
+        choose(&mut shell, 'a', "Address notes");
+        let asked = Mode::Confirm(Ask::Rerun(Rerun::Notes));
+        assert_eq!(shell.view().input_mode, asked);
+        shell.handle_key(key(KeyCode::Char('y')));
+        settle(&mut shell, listed("notes"));
+        let notes =
+            er_engine::test_support::read_sidecar::<er_engine::ai::ErNotes>(Path::new(&dir));
+        let replies: Vec<_> = notes
+            .notes
+            .iter()
+            .filter(|n| n.in_reply_to.is_some())
+            .collect();
+        assert!(replies.is_empty(), "Claude's reply stayed: {replies:?}");
+        release(&mut shell, &agent);
     });
 }

@@ -14,12 +14,13 @@ use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use er_engine::github::BranchPrProbe;
+use er_engine::review_flow_driver::ReviewFlowResults;
 use er_engine::tab_identity::DiffMode;
 use er_engine::tabs_record::TabKind;
 use er_engine::TabKey;
 use er_service::{
     Command, Event, Reply, ReplyReceiver, RunReceiver, RunRequest, ServiceHost, SettingsCommand,
-    TabContent,
+    TabContent, WorkspaceError,
 };
 use ratatui::backend::{Backend, CrosstermBackend};
 use ratatui::text::Line;
@@ -34,6 +35,7 @@ use super::config_hub::{self, ConfigHub, Step};
 use super::context;
 use super::filter::{self, Done};
 use super::findings::{self, Summary};
+use super::flows::{self, Act, Then as FlowThen};
 use super::github;
 use super::history;
 use super::layers::{self, Layer};
@@ -154,6 +156,12 @@ pub struct Shell {
     /// The bucket each tab that ran something showed, so a closed tab's log
     /// goes.
     run_buckets: HashMap<TabKey, String>,
+    /// The flow requests the host is building or the actor is running.
+    flow_replies: Vec<(flows::Ask, ReplyReceiver)>,
+    /// The flow results being read, which open the results overlay.
+    flow_reads: Vec<Receiver<Result<ReviewFlowResults, WorkspaceError>>>,
+    /// The buckets whose dead owners' flows were asked for.
+    reconciled: HashSet<String>,
     pub should_quit: bool,
     /// The refusal every reload gets in a test, and the reloads it refused.
     #[cfg(test)]
@@ -216,6 +224,9 @@ impl Shell {
             stacks_reading: HashSet::new(),
             runs: Vec::new(),
             run_buckets: HashMap::new(),
+            flow_replies: Vec::new(),
+            flow_reads: Vec::new(),
+            reconciled: HashSet::new(),
             should_quit: false,
             #[cfg(test)]
             refuse_reloads: None,
@@ -410,6 +421,9 @@ impl Shell {
         }
         self.drain_replies();
         self.drain_runs();
+        self.drain_flows();
+        flows::reconcile(&self.host, &mut self.reconciled);
+        self.refresh_progress();
         self.sync_tasks();
         self.sync_watch(now);
         self.sync_probe();
@@ -500,6 +514,94 @@ impl Shell {
         });
         for message in said {
             self.notify(message);
+        }
+    }
+
+    /// Asks the host for a Review row's request, or opens its overlay.
+    fn flow_act(&mut self, key: TabKey, act: Act) {
+        match act {
+            Act::Progress(er_dir) => {
+                let live = self.live_flow(&er_dir);
+                if let Some(flow) = live {
+                    let progress = flows::Progress::new(er_dir, flow);
+                    self.view.overlay = Some(Overlay::FlowProgress(Box::new(progress)));
+                }
+            }
+            Act::Results { er_dir, run_id } => {
+                self.flow_reads
+                    .push(self.host.flow_results(&er_dir, &run_id));
+            }
+            act => {
+                if let Some((request, ask)) = act.request() {
+                    self.flow_replies.push((ask, self.host.flow(key, request)));
+                }
+            }
+        }
+    }
+
+    /// The active tab's actor's flow on `er_dir`.
+    fn live_flow(&self, er_dir: &str) -> Option<er_engine::ai::review_flow::ReviewFlow> {
+        let (_, workspace, _) = self.active()?;
+        let view = self.host.published_view(&workspace)?;
+        view.review_flow(er_dir).map(|live| live.flow.clone())
+    }
+
+    /// The progress overlay follows the published flow.
+    fn refresh_progress(&mut self) {
+        let Some(Overlay::FlowProgress(progress)) = &self.view.overlay else {
+            return;
+        };
+        if let Some(latest) = self.live_flow(&progress.er_dir) {
+            if let Some(Overlay::FlowProgress(progress)) = self.view.overlay.as_mut() {
+                progress.refresh(&latest);
+            }
+        }
+    }
+
+    /// Says what each landed flow answer says, and opens the results read.
+    fn drain_flows(&mut self) {
+        let mut landed = Vec::new();
+        self.flow_replies
+            .retain(|(ask, replies)| match replies.try_recv() {
+                Ok(reply) => {
+                    landed.push(ask.landed(reply));
+                    false
+                }
+                Err(TryRecvError::Empty) => true,
+                Err(TryRecvError::Disconnected) => {
+                    landed.push(ask.landed(Err(WorkspaceError::Disconnected)));
+                    false
+                }
+            });
+        for (said, reread) in landed {
+            if let Some(message) = said {
+                self.notify(message);
+            }
+            if let Some((er_dir, run_id)) = reread {
+                self.flow_reads
+                    .push(self.host.flow_results(&er_dir, &run_id));
+            }
+        }
+        let mut read = Vec::new();
+        self.flow_reads.retain(|reads| match reads.try_recv() {
+            Ok(results) => {
+                read.push(results);
+                false
+            }
+            Err(TryRecvError::Empty) => true,
+            Err(TryRecvError::Disconnected) => false,
+        });
+        for results in read {
+            let free = matches!(self.view.overlay, None | Some(Overlay::FlowResults(_)));
+            match results {
+                Ok(results) if free => {
+                    let results = flows::Results::new(results);
+                    self.view.overlay = Some(Overlay::FlowResults(Box::new(results)));
+                    self.redraw = true;
+                }
+                Ok(_) => {}
+                Err(error) => self.notify(format!("Review results: {error}")),
+            }
         }
     }
 
@@ -1145,7 +1247,12 @@ impl Shell {
                 let view = self.host.settings().view();
                 let label = self.settings.ai_label(&view);
                 let has_diff = !content.diff.files.is_empty();
-                let facts = ai_picker::HubFacts::of(&content.ai.state, has_diff);
+                let published = self.host.published_view(workspace);
+                let live = published
+                    .as_ref()
+                    .and_then(|view| view.review_flow(&content.context.er_dir));
+                let flow = flows::FlowFacts::of(content, live);
+                let facts = ai_picker::HubFacts::of(&content.ai.state, has_diff, flow);
                 return self.run_step(ai_picker::open_ai_hub(&view, &label, facts));
             }
             A::OpenVerifyHub => {
@@ -2237,8 +2344,20 @@ impl Shell {
                 picker.sync(&view, &label);
                 ai_picker::act(picker, action, &view, &label)
             }
+            Some(Overlay::FlowProgress(progress)) => {
+                let then = flows::progress_key(progress, action);
+                return self.flow_then(key, then);
+            }
+            Some(Overlay::FlowResults(results)) => {
+                let then = flows::results_key(results, action);
+                return self.flow_then(key, then);
+            }
             _ => Step::Unported,
         };
+        if let Step::Flow(act) = step {
+            self.view.overlay = None;
+            return self.flow_act(key, act);
+        }
         if let Step::Layer(row) = step {
             self.view.overlay = None;
             let state = self.view.tab_mut(key, content);
@@ -2262,11 +2381,31 @@ impl Shell {
         self.run_step(step);
     }
 
+    fn flow_then(&mut self, key: TabKey, then: FlowThen) {
+        match then {
+            FlowThen::Stay => {}
+            FlowThen::Close => self.view.overlay = None,
+            FlowThen::Notify(message) => self.notify(message.into()),
+            FlowThen::Send {
+                request,
+                ask,
+                close,
+            } => {
+                if close {
+                    self.view.overlay = None;
+                }
+                self.flow_replies.push((ask, self.host.flow(key, request)));
+            }
+        }
+    }
+
     fn run_step(&mut self, step: Step) {
         let settings = self.host.settings();
         let (close, send) = match step {
             Step::Stay => (false, None),
-            Step::Close | Step::Layer(_) | Step::Clear(_) | Step::Run(_) => (true, None),
+            Step::Close | Step::Layer(_) | Step::Clear(_) | Step::Run(_) | Step::Flow(_) => {
+                (true, None)
+            }
             Step::Send(command) => (false, Some((command, Then::Nothing))),
             Step::Leave(command) => (true, Some((command, Then::Nothing))),
             Step::Pick(command) => (true, Some((command, Then::AnnouncePick))),

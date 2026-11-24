@@ -3,9 +3,9 @@
 //! default selection through the settings actor (decision 11), and a model
 //! refresh is the actor's `RefreshAiModels`.
 //!
-//! The run rows plan on the service (P74.2); the Review row, the arbiter's
-//! drops and the context copy have no service route on this path yet. The
-//! Specialized review and the Verify hubs are pickers here too.
+//! The run rows plan on the service (P74.2) and the Review rows send flow
+//! requests (P74.3); the context copy has no service route on this path yet.
+//! The Specialized review and the Verify hubs are pickers here too.
 
 use er_engine::ai::AiState;
 use er_engine::config::{effort_display_label, AiHubConfig, ErConfig};
@@ -14,6 +14,7 @@ use er_service::{SettingsCommand, SettingsView};
 use super::ai_runs::{self, Choice, Start};
 use super::clears::Clear;
 use super::config_hub::Step;
+use super::flows::{self, Act, FlowFacts};
 use super::layers::{HubRow, Layer};
 use super::tui_view::Overlay;
 use crate::input::keys::OverlayAction;
@@ -54,7 +55,7 @@ const CLEANUP_DRAFTS: &str = "Cleanup questions & notes";
 const CLEANUP_REVIEWS: &str = "Cleanup reviews";
 
 /// What the AI hub's rows read from the tab, as the App's hub reads it.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct HubFacts {
     has_ai: bool,
     pub(super) has_review: bool,
@@ -66,10 +67,11 @@ pub struct HubFacts {
     pub(super) has_unaddressed: bool,
     /// The GitHub comments a validation re-anchors.
     pub(super) comment_count: usize,
+    flow: FlowFacts,
 }
 
 impl HubFacts {
-    pub fn of(ai: &AiState, has_diff: bool) -> Self {
+    pub fn of(ai: &AiState, has_diff: bool, flow: FlowFacts) -> Self {
         let has_questions = ai
             .questions
             .as_ref()
@@ -86,13 +88,14 @@ impl HubFacts {
                 .github_comments
                 .as_ref()
                 .map_or(0, er_engine::ai::count_eligible_github_comments),
+            flow,
         }
     }
 }
 
 /// The layer rows the App's hub lists: label, description and row. Toggle
 /// AI findings is live only with AI data, as on the App.
-const LAYER_ROWS: [(&str, &str, HubRow); 5] = [
+const LAYER_ROWS: [(&str, &str, HubRow); 6] = [
     (
         "Toggle AI findings",
         "Show/hide inline AI findings",
@@ -118,6 +121,11 @@ const LAYER_ROWS: [(&str, &str, HubRow); 5] = [
         "Cycle which grades show: all, tentative+, confirmed only",
         HubRow::Gate,
     ),
+    (
+        "Show arbiter's drops",
+        "List the findings the arbiter ruled out",
+        HubRow::Layer(Layer::Dropped),
+    ),
 ];
 
 /// Which list a picker shows, so it can be built again from a newer view.
@@ -139,6 +147,7 @@ enum Pick {
     Unported,
     Layer(HubRow),
     Run(Start),
+    Flow(Act),
     Experts,
     Package(String),
     ChangeSelection,
@@ -258,15 +267,21 @@ fn build(of: Of, view: &SettingsView, ai_label: &str) -> Option<Picker> {
             let unported = format!("That action is {UNPORTED}");
             AI_HUB_ROWS
                 .iter()
-                .map(|entry| match entry {
-                    None => (
+                .flat_map(|entry| match entry {
+                    Some(("Review", _)) => flows::rows(&facts.flow)
+                        .into_iter()
+                        .map(|(label, description, enabled, act)| {
+                            (row(label.into(), "", description, enabled), Pick::Flow(act))
+                        })
+                        .collect(),
+                    None => vec![(
                         HubItem {
                             is_header: true,
                             ..row("── Advanced ──".into(), "", String::new(), false)
                         },
                         Pick::Unported,
-                    ),
-                    Some((CHANGE_SELECTION, hint)) => (
+                    )],
+                    Some((CHANGE_SELECTION, hint)) => vec![(
                         row(
                             CHANGE_SELECTION.into(),
                             hint,
@@ -274,8 +289,8 @@ fn build(of: Of, view: &SettingsView, ai_label: &str) -> Option<Picker> {
                             hub.has_presets(),
                         ),
                         Pick::ChangeSelection,
-                    ),
-                    Some((CLEANUP_DRAFTS, hint)) => (
+                    )],
+                    Some((CLEANUP_DRAFTS, hint)) => vec![(
                         row(
                             CLEANUP_DRAFTS.into(),
                             hint,
@@ -288,8 +303,8 @@ fn build(of: Of, view: &SettingsView, ai_label: &str) -> Option<Picker> {
                             facts.has_drafts,
                         ),
                         Pick::Clear(Clear::QuestionsAndNotes),
-                    ),
-                    Some((CLEANUP_REVIEWS, hint)) => (
+                    )],
+                    Some((CLEANUP_REVIEWS, hint)) => vec![(
                         row(
                             CLEANUP_REVIEWS.into(),
                             hint,
@@ -302,18 +317,18 @@ fn build(of: Of, view: &SettingsView, ai_label: &str) -> Option<Picker> {
                             facts.has_review,
                         ),
                         Pick::Clear(Clear::Reviews),
-                    ),
-                    Some((SPECIALIZED, hint)) => (
+                    )],
+                    Some((SPECIALIZED, hint)) => vec![(
                         row(SPECIALIZED.into(), hint, SPECIALIZED_ABOUT.into(), true),
                         Pick::Experts,
-                    ),
-                    Some((label, hint)) => match ai_runs::hub_row(label, facts, ai_label) {
+                    )],
+                    Some((label, hint)) => vec![match ai_runs::hub_row(label, facts, ai_label) {
                         Some((description, enabled, start)) => (
                             row((*label).into(), hint, description, enabled),
                             Pick::Run(start),
                         ),
                         None => layer_or_unported(label, hint, facts, &unported),
-                    },
+                    }],
                 })
                 .unzip()
         }
@@ -536,6 +551,7 @@ fn select(picker: &Picker, view: &SettingsView, label: &str) -> Step {
         Pick::Layer(layer) => Step::Layer(*layer),
         Pick::Clear(clear) => Step::Clear(*clear),
         Pick::Run(start) => Step::Run(start.clone()),
+        Pick::Flow(act) => Step::Flow(act.clone()),
         Pick::Experts => opened(Of::Experts, view, label, None),
         Pick::Package(id) => match ai_runs::package_rows(&view.config, id) {
             Some(_) => opened(Of::Package(id.clone()), view, label, None),

@@ -253,6 +253,14 @@ pub fn validate(run: &RunTab<'_>, scope: &str) -> Result<(), ErError> {
     let review_md = er_engine::ai::review_md::collect(ports, &source, &raw);
     er_engine::ai::review_md::write_review_md(&er_dir, review_md.as_deref()).map_err(refused)?;
     let target = target(content, er_dir.clone(), scope.clone());
+    // Told before the launch, so a validation that fails at once tells its
+    // failure after it, never under it.
+    let message = match (has_review, comment_count) {
+        (true, n) if n > 0 => format!("Validation started (review + {n} comments)"),
+        (true, _) => "Validation started (review)".to_string(),
+        (false, n) => format!("Validation started ({n} comments)"),
+    };
+    (run.hooks.notify)(message, false);
     if has_review {
         let prompt = prompts::build_validate_prompt_prepared_diff(&scope, &er_dir, &diff_hash);
         agent(run, target.clone(), "validate", &prompt)?;
@@ -262,12 +270,6 @@ pub fn validate(run: &RunTab<'_>, scope: &str) -> Result<(), ErError> {
             prompts::build_validate_github_comments_prompt_prepared_diff(&er_dir, &diff_hash);
         agent(run, target, "validate-comments", &prompt)?;
     }
-    let message = match (has_review, comment_count) {
-        (true, n) if n > 0 => format!("Validation started (review + {n} comments)"),
-        (true, _) => "Validation started (review)".to_string(),
-        (false, n) => format!("Validation started ({n} comments)"),
-    };
-    (run.hooks.notify)(message, false);
     Ok(())
 }
 
