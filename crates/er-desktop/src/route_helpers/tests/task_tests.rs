@@ -3,13 +3,14 @@
 //! `task_log` reads; a stop reaches the runner; a queued task can be
 //! removed.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use er_engine::task_target::BackgroundTaskTarget;
 use er_engine::TabKey;
 use er_protocol::{Command, Resource, ResourceKey, TaskJob};
+use er_service::test_support::{open_gate, Agent};
 use er_service::WorkspaceDeps;
 
 use super::ai_ask_tests::jobs;
@@ -19,68 +20,6 @@ use super::diff_resource_tests::{fake_ports, opened, raw_diff, with_storage};
 use super::{review_flow_test_state, ReviewFlowTestDir};
 use crate::service::ServiceState;
 use crate::state::DesktopState;
-
-/// The files a gated agent reads and writes.
-struct Agent {
-    pid: PathBuf,
-    first: PathBuf,
-    second: PathBuf,
-    settings: PathBuf,
-}
-
-impl Agent {
-    fn in_dir(dir: &Path) -> Self {
-        Self {
-            pid: dir.join("agent.pid"),
-            first: dir.join("gate-1"),
-            second: dir.join("gate-2"),
-            settings: dir.join("settings"),
-        }
-    }
-
-    /// Prints its pid to a file and `line-a`, waits for the first gate,
-    /// prints `line-b`, waits for the second. Each wait gives up after
-    /// about thirty seconds, or once the test's settings are gone, so a
-    /// failed test leaves no shell behind holding a slot.
-    fn config(&self, cap: usize) -> String {
-        let pid = self.pid.display();
-        // The settings directory, not the test's own: a shell that starts as
-        // the directory is removed writes its pid file into it, so the
-        // removal fails and the directory stays, without its gates.
-        let settings = self.settings.display();
-        let wait = |gate: &Path| {
-            let gate = gate.display();
-            format!(
-                r#"n=0; while [ ! -e "{gate}" ] && [ -d "{settings}" ] && [ $n -lt 1500 ]; do sleep 0.02; n=$((n+1)); done"#
-            )
-        };
-        let script = format!(
-            r#"echo $$ > "{pid}"; printf 'line-a\n'; {}; printf 'line-b\n'; {}"#,
-            wait(&self.first),
-            wait(&self.second)
-        );
-        format!(
-            r#"
-[ai_hub]
-default_provider = "gated"
-default_model = "one"
-max_concurrent_reviews = {cap}
-
-[ai_hub.providers.gated]
-label = "Gated"
-command = "/bin/sh"
-args = ["-c", '''{script}''', "gated-agent", "{{prompt}}"]
-
-[[ai_hub.providers.gated.models]]
-id = "one"
-"#
-        )
-    }
-}
-
-fn open_gate(gate: &Path) {
-    std::fs::write(gate, "").unwrap_or_else(|e| panic!("gate: {e}"));
-}
 
 /// Drops the queued tasks, opens both gates and waits for every task to
 /// end, so no agent outlives the test. One that did would hold a slot of
@@ -145,18 +84,18 @@ fn log(state: &DesktopState, id: &str) -> Vec<String> {
 fn queued(state: &DesktopState, dir: &Path, kind: &str) -> String {
     let launch = launch(state, dir, kind, "feature");
     super::on_a_thread(state, "the enqueue", move |state| {
-        crate::tasks::enqueue(state, launch)
+        crate::task_hooks::enqueue(state, launch)
     })
     .unwrap_or_else(|e| panic!("{e}"))
 }
 
 /// A task of `kind` on `branch`, on a bucket under `dir`.
-fn launch(state: &DesktopState, dir: &Path, kind: &str, branch: &str) -> crate::tasks::Launch {
+fn launch(state: &DesktopState, dir: &Path, kind: &str, branch: &str) -> er_service::Launch {
     let config = crate::arena_service::config(state);
     let (provider_id, model_id, effort) = crate::ai_ask::selection(&config);
     let bucket = dir.join("bucket");
     std::fs::create_dir_all(&bucket).unwrap_or_else(|e| panic!("bucket: {e}"));
-    crate::tasks::Launch {
+    er_service::Launch {
         kind: kind.to_string(),
         command_name: kind.to_string(),
         target: BackgroundTaskTarget {
@@ -299,7 +238,7 @@ fn a_finished_importance_run_refilters_the_loaded_tabs_on_its_repo() {
         );
         importance.target.repo_root.clone_from(&tab.repo_root);
         let importance = super::on_a_thread(&state, "the enqueue", move |state| {
-            crate::tasks::enqueue(state, importance)
+            crate::task_hooks::enqueue(state, importance)
         })
         .unwrap_or_else(|e| panic!("{e}"));
         let tier = || {
@@ -322,7 +261,7 @@ fn a_finished_importance_run_refilters_the_loaded_tabs_on_its_repo() {
         let store = er_engine::store_registry::store();
         assert!(committed.commit_to_store("widgets", &store).is_ok());
 
-        crate::tasks::finish(&state, &importance, Ok(()));
+        crate::task_hooks::finish(&state, &importance, Ok(()));
 
         let view = state.service.settings().view();
         assert!(
@@ -343,7 +282,10 @@ fn a_finished_importance_run_refilters_the_loaded_tabs_on_its_repo() {
 #[test]
 fn the_task_host_names_no_app() {
     for (name, text) in [
-        ("tasks.rs", include_str!("../../tasks.rs")),
+        (
+            "tasks.rs",
+            include_str!("../../../../er-service/src/tasks.rs"),
+        ),
         ("resources/runs.rs", include_str!("../../resources/runs.rs")),
     ] {
         for word in [
@@ -528,7 +470,7 @@ fn a_queued_scoped_reviewer_tells_its_start_once() {
         // hold the one slot; the tick's poll starts the queue once it frees.
         let deadline = Instant::now() + Duration::from_secs(60);
         loop {
-            crate::tasks::poll(&state);
+            crate::task_hooks::poll(&state);
             told.extend(crate::resources::notice::told(&state));
             let done = tasks(&state).into_iter().any(|row| {
                 row.kind == "review" && !matches!(row.status.as_str(), "queued" | "running")
@@ -856,7 +798,7 @@ fn two_clicks_at_once_queue_one_task() {
                         let (state, gate) = (&state, &gate);
                         scope.spawn(move || {
                             gate.wait();
-                            crate::tasks::enqueue(state, one).is_ok()
+                            crate::task_hooks::enqueue(state, one).is_ok()
                         })
                     })
                     .collect();
@@ -910,7 +852,7 @@ fn send_at_gate(
     launches: &Launches,
 ) -> bool {
     gate.wait();
-    crate::tasks::hold_agent(state, target, "validate", |_| launches.launch()).is_ok()
+    crate::task_hooks::hold_agent(state, target, "validate", |_| launches.launch()).is_ok()
 }
 
 /// Two sends of the same tab command on one bucket at once start one

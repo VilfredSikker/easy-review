@@ -69,7 +69,7 @@ pub fn follow_revisions(
 /// the tick bumps no desktop revision and never wakes itself.
 pub fn run(desktop: &DesktopState) {
     reload_loaded_tabs(desktop);
-    crate::tasks::poll(desktop);
+    crate::task_hooks::poll(desktop);
     if let Some((root, base)) = warm_target(desktop) {
         hold_worktrees(desktop, &root, &base);
     }

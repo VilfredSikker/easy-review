@@ -400,7 +400,7 @@ fn no_resource_module_names_the_app() {
 #[test]
 fn no_flag_on_host_module_names_the_engine_app() {
     let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-    for file in ["ai_ask.rs", "ask_context.rs", "runs.rs", "tasks.rs"] {
+    for file in ["ai_ask.rs", "ask_context.rs", "runs.rs", "task_hooks.rs"] {
         let source = std::fs::read_to_string(src.join(file)).unwrap_or_else(|e| panic!("{e}"));
         assert!(
             !source.contains("er_engine::app"),

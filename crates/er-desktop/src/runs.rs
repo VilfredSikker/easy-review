@@ -11,7 +11,8 @@ use er_protocol::ErError;
 use er_service::TabContent;
 
 use crate::state::DesktopState;
-use crate::tasks::{self, refused, Launch};
+use crate::task_hooks::{self as tasks, refused};
+use er_service::Launch;
 
 /// Runs the general review lens on `scope`.
 pub fn review(

@@ -857,4 +857,13 @@ pub enum Event {
     TabsChanged {
         revision: u64,
     },
+    /// A row of the host's task list moved; readers fetch the rows.
+    TasksChanged {
+        revision: u64,
+    },
+    /// A task's message for the person, `long` for one that should stay up.
+    TaskNotice {
+        message: String,
+        long: bool,
+    },
 }
