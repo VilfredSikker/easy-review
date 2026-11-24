@@ -156,6 +156,11 @@ pub enum After {
     /// A base change: the registry keeps the new base, and the status line
     /// says so.
     BaseChanged,
+    /// A History commit `k` or `j` picked: once it lands, the next press
+    /// moves on from the commit shown.
+    CommitSelected,
+    /// History's next page: once it lands, `k` moves on into it.
+    MoreHistory,
 }
 
 impl After {

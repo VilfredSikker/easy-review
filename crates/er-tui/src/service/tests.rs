@@ -26,10 +26,11 @@ const WIDTH: u16 = 120;
 const HEIGHT: u16 = 30;
 
 /// The flag-on modules, as text.
-pub(super) const SOURCES: [(&str, &str); 17] = [
+pub(super) const SOURCES: [(&str, &str); 18] = [
     ("ai_picker.rs", include_str!("ai_picker.rs")),
     ("config_hub.rs", include_str!("config_hub.rs")),
     ("filter.rs", include_str!("filter.rs")),
+    ("history.rs", include_str!("history.rs")),
     ("layers.rs", include_str!("layers.rs")),
     ("mod.rs", include_str!("mod.rs")),
     ("modes.rs", include_str!("modes.rs")),

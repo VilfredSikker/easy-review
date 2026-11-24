@@ -573,6 +573,8 @@ fn loaded_tab(repo: &str) -> Box<LoadedTab> {
                 risk_artifact: None,
                 commits: Vec::new(),
                 committed_unpushed: false,
+                merge_active: false,
+                unresolved: 0,
             },
             expanded: Default::default(),
         },

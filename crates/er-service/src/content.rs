@@ -317,6 +317,11 @@ pub struct DiffMeta {
     /// commit, and cleared by a push, a mode switch, new staged changes, or a
     /// `HEAD~1` that cannot be read, as the App clears it.
     pub committed_unpushed: bool,
+    /// Whether a merge is in progress, read on every load, as the App reads
+    /// it on every refresh; the mode bar lists Conflicts while it holds.
+    pub merge_active: bool,
+    /// How many files still have conflict markers; Conflicts counts them.
+    pub unresolved: usize,
 }
 
 /// The commits History lists and the one it shows.
@@ -585,6 +590,12 @@ pub(crate) enum ContentPatch {
         key: TabKey,
         stack: Box<StackRead>,
     },
+    /// History's next page, read after the first `since` commits.
+    History {
+        key: TabKey,
+        since: usize,
+        more: Vec<CommitInfo>,
+    },
     /// The tab closed: its content leaves the view.
     Dropped {
         key: TabKey,
@@ -641,6 +652,7 @@ pub(crate) fn lifecycle_keys(
         | ContentPatch::Ai { .. }
         | ContentPatch::Freshness { .. }
         | ContentPatch::Stack { .. }
+        | ContentPatch::History { .. }
         | ContentPatch::Sidecar { .. }
         | ContentPatch::Reviewed { .. } => {}
     }
@@ -662,6 +674,13 @@ pub(crate) fn check(
         ContentPatch::Parsed { key, since, .. } | ContentPatch::Compacted { key, since, .. } => {
             match tabs.get(key) {
                 Some(content) if content.diff.revision == *since => Ok(()),
+                _ => Err(PatchRefused::Moved),
+            }
+        }
+        ContentPatch::History { key, since, .. } => {
+            let held = tabs.get(key).and_then(|content| content.history.as_ref());
+            match held {
+                Some(history) if history.commits.len() == *since => Ok(()),
                 _ => Err(PatchRefused::Moved),
             }
         }
@@ -763,6 +782,24 @@ pub(crate) fn apply(
                     next.pr = Arc::new(next.pr.with_stack(*stack, revision));
                     *content = Arc::new(next);
                 }
+            }
+            0
+        }
+        ContentPatch::History { key, more, .. } => {
+            if let Some(content) = tabs.get_mut(&key) {
+                let mut next = TabContent::clone(content);
+                if let Some(held) = next.history.as_deref() {
+                    let mut commits = held.commits.clone();
+                    let all_loaded = more.is_empty();
+                    commits.extend(more);
+                    next.history = Some(Arc::new(HistorySection {
+                        commits,
+                        all_loaded,
+                        selected: held.selected.clone(),
+                        return_mode: held.return_mode,
+                    }));
+                }
+                *content = Arc::new(next);
             }
             0
         }

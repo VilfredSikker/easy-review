@@ -81,9 +81,7 @@ pub struct Restore {
 }
 
 /// The view a saved session asks for, as the App maps it: a PR diff, Hidden
-/// and Tour come back in Branch. History and Conflicts wait for P71.2, which
-/// ports them; until then their sessions come back in the view the tab
-/// opened in, with no position.
+/// and Tour come back in Branch.
 fn saved_mode(session: &SessionState) -> DiffMode {
     match session.diff_mode.as_str() {
         "unstaged" => DiffMode::Unstaged,
@@ -107,11 +105,7 @@ pub fn restore(state: &mut TabViewState, session: SessionState, content: &TabCon
     }
     restore_draft(state, &session);
     let mode = saved_mode(&session);
-    let ported = matches!(
-        mode,
-        DiffMode::Branch | DiffMode::Unstaged | DiffMode::Staged
-    );
-    if mode != content.tab.mode && ported {
+    if mode != content.tab.mode {
         state.restore = Some(Restore {
             mode,
             session,
@@ -119,15 +113,21 @@ pub fn restore(state: &mut TabViewState, session: SessionState, content: &TabCon
         });
         return;
     }
-    if mode == content.tab.mode {
-        restore_position(state, &session, content);
-    }
-    restore_filter(state, session, content);
+    restore_in_mode(state, session, content);
 }
 
-/// The rest of a session once the tab shows the view it was saved in.
+/// The rest of a session once the tab shows the view it was saved in. In
+/// History the position is the diff view's, whose files History does not
+/// hold: it comes back by place once History is left, as the App's does.
 pub fn restore_in_mode(state: &mut TabViewState, session: SessionState, content: &TabContent) {
-    restore_position(state, &session, content);
+    if content.tab.mode == DiffMode::History {
+        state.selected_file = session.selected_file;
+        state.current_hunk = session.current_hunk;
+        state.current_line = session.current_line;
+        (state.diff_scroll, state.h_scroll) = (session.diff_scroll, session.h_scroll);
+    } else {
+        restore_position(state, &session, content);
+    }
     restore_filter(state, session, content);
 }
 

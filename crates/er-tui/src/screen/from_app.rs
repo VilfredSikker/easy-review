@@ -218,7 +218,7 @@ pub fn from_app<'a>(app: &'a App, cache: &'a mut ViewCache) -> Screen<'a> {
                 commits: &history.commits,
                 visible_commits: tab.visible_commits(),
                 selected_commit: history.selected_commit,
-                commit_files: &history.commit_files,
+                commit_files: history.commit_files.iter().collect(),
                 selected_file: history.selected_file,
                 current_hunk: history.current_hunk,
                 current_line: history.current_line,

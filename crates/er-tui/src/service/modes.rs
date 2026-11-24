@@ -1,4 +1,5 @@
-//! The flag-on mode keys, `R`, the mtime sort and the base change (P71.1).
+//! The flag-on mode keys, `R`, the mtime sort and the base change (P71.1);
+//! History, Conflicts and Hidden through the same keys (P71.2).
 //! Each sends its service command at the press; when the reply lands the
 //! selection follows the App's rule for that step.
 
@@ -11,18 +12,30 @@ use crate::input::keys::Edit;
 use crate::screen::UNPORTED;
 
 /// Where the selection stood when a mode switch or a refresh went out.
+#[derive(Clone)]
 pub struct Follow {
     path: Option<String>,
+    /// The file by place, for a session restored in History, whose diff the
+    /// flag path holds no files of.
+    index: Option<usize>,
     hunk: usize,
     line: Option<usize>,
     scroll: u16,
 }
 
 impl Follow {
+    /// In History the selection is the one History was entered from.
     pub fn of(state: &TabViewState, content: &TabContent) -> Self {
+        if content.tab.mode == DiffMode::History {
+            if let Some(left) = &state.history.left {
+                return left.clone();
+            }
+        }
         let path = content.diff.files.get(state.selected_file);
+        let in_history = content.tab.mode == DiffMode::History;
         Self {
-            path: path.map(|file| file.path.clone()),
+            path: path.map(|file| file.path.clone()).filter(|_| !in_history),
+            index: in_history.then_some(state.selected_file),
             hunk: state.current_hunk,
             line: state.current_line,
             scroll: state.diff_scroll,
@@ -40,9 +53,7 @@ pub fn switch(
     let tab = &content.tab;
     match mode {
         _ if mode == tab.mode => Ok(None),
-        DiffMode::History | DiffMode::Conflicts | DiffMode::Hidden | DiffMode::Tour => {
-            Err(format!("That view is {UNPORTED}"))
-        }
+        DiffMode::Tour => Err(format!("That view is {UNPORTED}")),
         _ => Ok(Some(Command::SetDiffMode {
             key,
             mode,
@@ -61,20 +72,44 @@ fn hunks(content: &TabContent, index: usize) -> usize {
         .map_or(0, |file| file.hunks.len())
 }
 
-/// A mode switch landed: the file selected before it stays selected when the
-/// new view lists it, with its hunk and line while it still has that hunk,
-/// else the first file; then the snap, then the scroll to the hunk, as the
-/// App's `set_mode`. Answers the file it selected.
+/// A mode switch landed, and the selection moves as the App's `set_mode`
+/// moves it. History keeps the diff view's selection for its return.
+/// Conflicts selects its first file. Hidden shows the watched files, and
+/// the shell selects the first. Any other view keeps the file selected
+/// before when it lists it, with its hunk and line while it still has that
+/// hunk, else the first file; then the snap, then the scroll to the hunk.
+/// Answers the file it selected.
 pub fn switched(state: &mut TabViewState, content: &TabContent, shown: bool) -> Option<usize> {
     let follow = state.follow.take()?;
-    state.current_hunk = 0;
-    state.current_line = None;
-    state.watched.selected = None;
-    state.diff_scroll = 0;
+    let mode = content.tab.mode;
+    if mode != DiffMode::History {
+        state.history.left = None;
+        state.current_hunk = 0;
+        state.current_line = None;
+        state.watched.selected = None;
+        state.diff_scroll = 0;
+    }
+    match mode {
+        DiffMode::History => {}
+        DiffMode::Conflicts => {
+            state.selected_file = 0;
+            state.h_scroll = 0;
+        }
+        DiffMode::Hidden => state.watched.shown = Some(true),
+        _ => follow_file(state, content, follow, shown),
+    }
+    if let Some(saved) = state.restore.take_if(|saved| saved.mode == mode) {
+        super::session::restore_in_mode(state, saved.session, content);
+    }
+    (!matches!(mode, DiffMode::History | DiffMode::Hidden)).then_some(state.selected_file)
+}
+
+fn follow_file(state: &mut TabViewState, content: &TabContent, follow: Follow, shown: bool) {
     let files = &content.diff.files;
-    let at = follow
-        .path
-        .and_then(|path| files.iter().position(|file| file.path == path));
+    let at = match follow.path {
+        Some(path) => files.iter().position(|file| file.path == path),
+        None => follow.index.filter(|index| *index < files.len()),
+    };
     state.selected_file = at.unwrap_or(0);
     if at.is_some() && follow.hunk < hunks(content, state.selected_file) {
         state.current_hunk = follow.hunk;
@@ -82,13 +117,6 @@ pub fn switched(state: &mut TabViewState, content: &TabContent, shown: bool) -> 
     }
     state.snap(content, shown);
     state.scroll_to_cursor(files.get(state.selected_file).map(|file| &**file));
-    if let Some(saved) = state
-        .restore
-        .take_if(|saved| saved.mode == content.tab.mode)
-    {
-        super::session::restore_in_mode(state, saved.session, content);
-    }
-    Some(state.selected_file)
 }
 
 /// A refresh landed: the file selected before it stays selected, at its hunk,
@@ -96,6 +124,10 @@ pub fn switched(state: &mut TabViewState, content: &TabContent, shown: bool) -> 
 /// as the App's refresh.
 pub fn refreshed(state: &mut TabViewState, content: &TabContent) -> Option<usize> {
     let follow = state.follow.take()?;
+    // History's position follows its commit; the diff view's waits.
+    if content.tab.mode == DiffMode::History {
+        return None;
+    }
     let files = &content.diff.files;
     let had_file = follow.path.is_some();
     let at = follow

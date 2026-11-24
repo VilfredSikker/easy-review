@@ -24,6 +24,7 @@ use ratatui::Terminal;
 use super::ai_picker;
 use super::config_hub::{self, ConfigHub, Step};
 use super::filter::{self, Done};
+use super::history::{self, Ask as HistoryAsk};
 use super::layers::{self, Layer};
 use super::modes::{self, BaseStep, Follow};
 use super::open_hub::{OpenHub, OpenStep};
@@ -36,7 +37,8 @@ use super::watched::{Landed, Reader};
 use super::watcher::Watch;
 use super::worktree::{self, GitHub, GitPick, HubStep};
 use crate::input::keys::{
-    key_action, CommentAction, ConfirmKey, Edit, NormalAction, OverlayAction, TuiAction, Write,
+    key_action, CommentAction, ConfirmKey, Edit, HistoryAction, NormalAction, OverlayAction,
+    TuiAction, Write,
 };
 use crate::screen::UNPORTED;
 use crate::ui::highlight::Highlighter;
@@ -431,6 +433,19 @@ impl Shell {
         for (key, workspace, after, reply) in landed {
             self.redraw = true;
             match reply {
+                _ if after == After::CommitSelected => {
+                    if let Some(state) = self.view.tab_mut_if_open(key) {
+                        state.history.sent = None;
+                    }
+                    if let Err(error) = reply {
+                        self.failure(Side::Reply, error.to_string());
+                    }
+                }
+                Ok(Reply::HistoryExtended { added, .. }) if added > 0 => {
+                    if let Some(content) = self.host.content(&workspace, key) {
+                        self.history_key(HistoryAction::NextCommit, key, &workspace, &content);
+                    }
+                }
                 Ok(Reply::ContentLoaded { .. }) if after == After::FetchPrRefs => {
                     let replies = self.host.post(
                         &workspace,
@@ -560,6 +575,7 @@ impl Shell {
         self.reviewed.keep_open(&open);
         let reviewed_count = self.reviewed.count(key, content);
         let state = self.view.tab_mut(key, content);
+        state.history.follow(content);
         layers::follow(state, content);
         threads::scroll_if_parsed(state, content);
         let state = self.view.tab(key)?;
@@ -607,6 +623,7 @@ impl Shell {
                 return self.filtered(key, workspace, content, done);
             }
             TuiAction::Commit(edit) => return self.commit_key(edit, key, workspace, content),
+            TuiAction::History(action) => return self.history_key(action, key, workspace, content),
             TuiAction::Comment(action) => return self.comment_key(action, key, workspace, content),
             TuiAction::Write(Write::Push) => {
                 self.view.input_mode = Mode::Normal;
@@ -797,6 +814,9 @@ impl Shell {
                 match modes::switch(key, content, mode) {
                     Ok(Some(command)) => {
                         state.follow = Some(Follow::of(state, content));
+                        if mode == DiffMode::History && content.tab.mode != DiffMode::History {
+                            state.history.left = Some(Follow::of(state, content));
+                        }
                         let pr_diff = mode == DiffMode::PrDiff;
                         self.post(key, workspace, command, After::ModeSwitched { pr_diff });
                     }
@@ -1065,6 +1085,10 @@ impl Shell {
             _ => modes::refreshed(state, &content),
         };
         let sent = state.base_sent.take();
+        // Hidden lists the watched files at once, as the App's switch does.
+        if content.tab.mode == DiffMode::Hidden && matches!(after, After::ModeSwitched { .. }) {
+            self.watched.rescan = true;
+        }
         match after {
             After::Refreshed(Refresh::Key) => self.notify("Refreshed".into()),
             After::Refreshed(Refresh::Watched { files }) => {
@@ -1087,6 +1111,26 @@ impl Shell {
         if let Some(index) = selected {
             self.parse_if_stub(key, workspace, &content, index);
         }
+    }
+
+    /// A History key; a commit move goes to the service.
+    fn history_key(
+        &mut self,
+        action: HistoryAction,
+        key: TabKey,
+        workspace: &str,
+        content: &TabContent,
+    ) {
+        let state = self.view.tab_mut(key, content);
+        let HistoryAsk::Send(command) = history::key(&mut state.history, key, content, action)
+        else {
+            return;
+        };
+        let after = match command {
+            Command::LoadMoreHistory { .. } => After::MoreHistory,
+            _ => After::CommitSelected,
+        };
+        self.post(key, workspace, command, after);
     }
 
     /// One key in the base input; Enter sends the base change.
