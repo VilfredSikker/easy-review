@@ -704,6 +704,17 @@ impl TabViewState {
         self.scroll_to_cursor(file);
     }
 
+    /// The file `e` and "Copy context" read: History's commit file in
+    /// History, else the selected diff file unless a watched file is.
+    pub fn shown_file<'c>(&self, content: &'c TabContent) -> Option<&'c DiffFile> {
+        let at = match content.tab.mode {
+            DiffMode::History => self.history.selected_file,
+            _ if self.watched.selected.is_some() => return None,
+            _ => self.selected_file,
+        };
+        content.diff.files.get(at).map(|file| &**file)
+    }
+
     /// The selected line range in the current hunk, from shift+arrow.
     pub fn selected_range(&self) -> Option<std::ops::RangeInclusive<usize>> {
         let (file, anchor) = self.selection_anchor?;

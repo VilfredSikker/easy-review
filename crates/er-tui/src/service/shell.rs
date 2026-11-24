@@ -759,8 +759,16 @@ impl Shell {
         };
         self.unsaved.insert(tab);
         self.save_due = Some(Instant::now() + SESSION_SAVE_DELAY);
-        if let Some(action) = self.with_screen(tab, &content, |screen| key_action(key, screen)) {
-            self.execute(action, tab, &workspace, &content);
+        let Some(action) = self.with_screen(tab, &content, |screen| key_action(key, screen)) else {
+            return;
+        };
+        let before = self.view.tab(tab).map(|state| state.selected_file);
+        self.execute(action, tab, &workspace, &content);
+        // The App clears the selection on every move to another file.
+        if let Some(state) = self.view.tab_mut_if_open(tab) {
+            if Some(state.selected_file) != before {
+                state.selection_anchor = None;
+            }
         }
     }
 
@@ -1134,7 +1142,7 @@ impl Shell {
             }
             A::Edit => match threads::start_edit(state, content) {
                 threads::Focus::Editor => {
-                    let hunk = state.current_hunk;
+                    let (file, hunk) = (state.shown_file(content), state.current_hunk);
                     return self.edit_file(content, file, hunk);
                 }
                 focus => return self.focus(focus),

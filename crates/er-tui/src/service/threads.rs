@@ -100,14 +100,18 @@ pub fn start_reply(state: &mut TabViewState, content: &TabContent) -> Focus {
 /// its text, as the App's `start_edit_comment` does. Anything else opens the
 /// editor.
 pub fn start_edit(state: &mut TabViewState, content: &TabContent) -> Focus {
+    let own = state
+        .focused_comment_id
+        .as_deref()
+        .and_then(|id| content.ai.state.find_comment(id))
+        .filter(|comment| comment.author() == "You" && comment.can_reply());
+    let Some(comment) = own else {
+        return Focus::Editor;
+    };
+    // The draft's write is in flight: an edit draft would replace it.
     if state.sent.is_some() {
         return Focus::Nothing;
     }
-    let comment = match focused(state, content) {
-        Ok(comment) if comment.author() == "You" && comment.can_reply() => comment,
-        Err(Focus::Nothing) | Ok(_) => return Focus::Editor,
-        Err(focus) => return focus,
-    };
     let Some(file) = selected(state, content) else {
         return Focus::Nothing;
     };

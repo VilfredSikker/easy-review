@@ -104,14 +104,10 @@ impl CopyHub {
 /// not landed has no hunks to copy yet.
 pub fn build(pick: Pick, state: &TabViewState, content: &TabContent) -> Built {
     let files = &content.diff.files;
-    let shown = files
-        .get(state.selected_file)
-        .filter(|_| state.watched.selected.is_none())
-        .map(|file| &**file);
     // The App's hunk copy reads the selected index even on a watched file.
     let file = match pick {
         Pick::Hunk => files.get(state.selected_file).map(|file| &**file),
-        _ => shown,
+        _ => state.shown_file(content),
     };
     if pick != Pick::Path && file.is_some_and(is_stub) {
         return Err("File is still loading".into());

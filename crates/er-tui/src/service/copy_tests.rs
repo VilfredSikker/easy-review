@@ -11,12 +11,15 @@ use er_engine::ai::ErReview;
 use er_engine::copy_text::{self, Built};
 use er_engine::ports::Ports;
 use er_engine::review_export::{render_markdown, ExportOpts};
+use er_engine::tab_identity::DiffMode;
 use er_engine::test_support::write_sidecar_json;
 
 use super::findings_tests::seed_both;
 use super::handoff::Launched;
 use super::shell::Shell;
-use super::tests::{fixture, git, key, loaded, path_of, plan, settle, shell, shell_on, SOURCES};
+use super::tests::{
+    app_on, fixture, git, key, loaded, path_of, plan, press_app, settle, shell, shell_on, SOURCES,
+};
 use super::threads_tests::{args, both_on, er_dir, settle_replies, step, type_text};
 use super::tui_view::Overlay;
 use crate::ui::highlight::Highlighter;
@@ -356,6 +359,12 @@ fn the_sidecar_rows_copy_the_stored_bytes() {
 #[test]
 fn the_editor_opens_at_the_hunk_and_a_failure_shows() {
     let repo = fixture(2);
+    // A line added on top, so the second hunk starts a line later in the
+    // new file than in the old.
+    let first = repo.path().join("src/f000.rs");
+    let text = std::fs::read_to_string(&first).unwrap_or_else(|e| panic!("{e}"));
+    std::fs::write(&first, format!("// added\n{text}")).unwrap_or_else(|e| panic!("{e}"));
+    git(repo.path(), &["commit", "-q", "-am", "added"]);
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
         let mut shell = shell(&args(vec![path_of(&repo)]), storage.path());
@@ -369,12 +378,24 @@ fn the_editor_opens_at_the_hunk_and_a_failure_shows() {
         let hunks = &content.diff.files[0].hunks;
         let line = hunks[1].new_start;
         assert_ne!(line, hunks[0].new_start);
+        assert_ne!(line, hunks[1].old_start);
         let opened = Launched::Editor {
             path: Path::new(&root).join("src/f000.rs"),
             repo_root: root,
             line,
         };
-        assert_eq!(shell.recorder.taken(), [opened]);
+        assert_eq!(shell.recorder.taken(), [opened.clone()]);
+
+        // A draft's write in flight leaves the editor to open.
+        let sent = |shell: &mut Shell, sent: Option<String>| {
+            if let Some(state) = shell.view_mut().tab_mut_if_open(content.key) {
+                state.sent = sent;
+            }
+        };
+        sent(&mut shell, Some("Adding question…".into()));
+        shell.handle_key(key(KeyCode::Char('e')));
+        assert_eq!(shell.recorder.taken(), [opened], "a write in flight");
+        sent(&mut shell, None);
 
         if let Ok(mut fail) = shell.recorder.fail.lock() {
             *fail = Some("Failed to open editor".into());
@@ -404,5 +425,85 @@ fn the_editor_opens_at_the_hunk_and_a_failure_shows() {
         shell.handle_key(key(KeyCode::Char('e')));
         assert_eq!(notice(&shell), "Editor not available in remote mode");
         assert!(shell.recorder.taken().is_empty(), "a remote tab launched");
+    });
+}
+
+/// A finding seeded on the second file, for a jump that changes file.
+fn seed_second(dir: &str, hash: &str) {
+    let finding = serde_json::json!({
+        "id": "f2", "severity": "medium", "title": "Second file",
+        "suggestion": "", "hunk_index": 0, "line_start": 4,
+        "confidence": "informational"
+    });
+    std::fs::create_dir_all(dir).unwrap_or_else(|e| panic!("{e}"));
+    write_sidecar_json::<ErReview>(
+        Path::new(dir),
+        serde_json::json!({"version": 1, "diff_hash": hash, "files": {
+            "src/f001.rs": {"risk": "high", "findings": [finding]}
+        }}),
+    );
+}
+
+/// A finding jump to another file drops the selection, as the App's does,
+/// so Shift+Down there starts a new one.
+#[test]
+fn a_jump_to_another_file_drops_the_selection() {
+    let (app_repo, flag_repo) = (fixture(2), fixture(2));
+    let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+    er_engine::storage::with_process_test_storage_root(storage.path(), || {
+        let (mut app, mut shell) = both_on(&app_repo, &flag_repo, storage.path());
+        seed_both(&mut app, &mut shell, seed_second);
+        let mut hl = Highlighter::new();
+        let keys = [
+            key(KeyCode::Down),
+            shift(KeyCode::Down),
+            KeyEvent::new(KeyCode::Char('k'), KeyModifiers::CONTROL),
+            shift(KeyCode::Down),
+            shift(KeyCode::Down),
+        ];
+        for event in keys {
+            step(&mut app, &mut shell, &mut hl, event);
+        }
+        let want = app_copy(&app, 4);
+        let head = want
+            .clone()
+            .map(|c| (c.text.contains("Lines 4-6"), c.notice));
+        assert_eq!(head, Ok((true, "Copied selection (3 lines)".to_string())));
+        copy_context(&mut shell);
+        assert_copied(&shell, want, "selection after the jump");
+    });
+}
+
+/// In History, `e` and "Copy context" read the commit's selected file, as
+/// the App's do.
+#[test]
+fn history_copies_and_edits_the_commit_file() {
+    let repo = fixture(2);
+    let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+    er_engine::storage::with_process_test_storage_root(storage.path(), || {
+        let mut app = app_on(&path_of(&repo));
+        let mut shell = shell(&args(vec![path_of(&repo)]), storage.path());
+        settle(&mut shell, loaded);
+        for code in [KeyCode::Char('4'), KeyCode::Char('n')] {
+            press_app(&mut app, code);
+            shell.handle_key(key(code));
+            settle(&mut shell, |shell| {
+                shell.in_flight() == 0
+                    && shell
+                        .active_content()
+                        .is_some_and(|c| c.tab.mode == DiffMode::History)
+            });
+        }
+        let path = app.tab().selected_diff_file().map(|f| f.path.clone());
+        assert_eq!(path.as_deref(), Some("src/f001.rs"));
+        shell.handle_key(key(KeyCode::Char('e')));
+        let opened = shell.recorder.taken();
+        let opened_path = match opened.as_slice() {
+            [Launched::Editor { path, .. }] => path.clone(),
+            other => panic!("expected the editor, got {other:?}"),
+        };
+        assert!(opened_path.ends_with("src/f001.rs"), "{opened_path:?}");
+        copy_context(&mut shell);
+        assert_copied(&shell, app_copy(&app, 4), "history context");
     });
 }
