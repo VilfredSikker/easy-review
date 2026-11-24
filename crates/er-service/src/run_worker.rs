@@ -1,7 +1,4 @@
-//! The thread a host plans runs and builds flow commands on. Planning reads
-//! git and writes the bucket, so a front end whose loop must never wait asks
-//! the host, which answers a receiver at once and does the work here
-//! (ADR 0074).
+//! The thread a host plans runs and builds flow commands on (ADR 0074).
 
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
@@ -18,36 +15,22 @@ use crate::runs::{self, RunTab};
 use crate::tab_commands;
 use crate::tasks::{refused, TaskHooks, TaskHost};
 
-/// A run a front end asks for on one tab.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RunRequest {
-    Review {
-        scope: String,
-    },
-    Expert {
-        scope: String,
-        expert_id: String,
-    },
-    Validate {
-        scope: String,
-    },
+    Review { scope: String },
+    Expert { scope: String, expert_id: String },
+    Validate { scope: String },
     Tour,
     Importance,
     Questions,
     Notes,
     Summary,
-    /// A named `[commands]` entry, with the text the config gives it.
-    Command {
-        name: String,
-        shell_cmd: String,
-    },
+    Command { name: String, shell_cmd: String },
 }
 
-/// What a run answers on, once it is queued or refused.
 pub type RunReceiver = Receiver<Result<(), ErError>>;
 
-/// A flow command a front end asks for on one tab. The host builds the
-/// context or the acceptance diff the command carries.
+/// The host builds the context or the acceptance diff the command carries.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FlowRequest {
     /// `scope` resolved as a review resolves it on the tab's view.
@@ -77,9 +60,7 @@ pub enum FlowRequest {
 }
 
 impl FlowRequest {
-    /// The bucket a control names, which must still be the tab's; none for
-    /// a start, which takes the tab's, or an acceptance, which goes to the
-    /// actor holding the flow.
+    /// The bucket a control names, which must still be the tab's.
     pub(crate) fn controlled_bucket(&self) -> Option<&str> {
         match self {
             Self::Confirm { er_dir }
@@ -109,7 +90,6 @@ impl Worker {
         Self(tx)
     }
 
-    /// Answers whether the worker took the job.
     fn run(&self, job: Job) -> bool {
         self.0.send(job).is_ok()
     }
@@ -140,7 +120,6 @@ fn submit<T: Send + 'static>(
     }
 }
 
-/// Plans `request` on `content`'s tab on the worker and queues it on `host`.
 pub(crate) fn plan(
     worker: &Worker,
     host: TaskHost,
@@ -175,7 +154,6 @@ fn planned(run: &RunTab<'_>, request: RunRequest) -> Result<(), ErError> {
     }
 }
 
-/// What a flow command reads besides its tab.
 pub(crate) struct FlowInputs {
     pub ports: Ports,
     pub config: Arc<ErConfig>,
@@ -186,8 +164,6 @@ pub(crate) struct FlowInputs {
     pub contents: Vec<Arc<TabContent>>,
 }
 
-/// Builds `request`'s command on the worker and sends it to the flow's actor,
-/// whose reply lands on the receiver answered here.
 pub(crate) fn flow(
     worker: &Worker,
     inputs: FlowInputs,
@@ -264,7 +240,6 @@ fn flow_command(inputs: &FlowInputs, request: FlowRequest) -> Result<FlowCommand
     })
 }
 
-/// Refused before any work: the tab is not listed or has not loaded.
 pub(crate) fn refused_now(message: &str) -> RunReceiver {
     let (tx, rx) = mpsc::channel();
     let _ = tx.send(Err(refused(message)));

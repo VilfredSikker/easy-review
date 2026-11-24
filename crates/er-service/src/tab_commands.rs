@@ -1,6 +1,5 @@
-//! The tab commands a front end runs through the agent launcher on one
-//! tab: questions, notes and the summary, whose agent reads the bucket's
-//! sidecars and the diff itself, and the named `[commands]` entries.
+//! The tab commands run through the agent launcher: questions, notes, the
+//! summary and the named `[commands]` entries.
 
 use er_engine::ai::prompts;
 use er_engine::tab_identity::DiffMode;
@@ -10,23 +9,19 @@ use crate::content::TabContent;
 use crate::runs::{agent, target, RunTab};
 use crate::tasks::{self, refused};
 
-/// Has the agent answer the open questions in the tab's bucket.
 pub fn questions(run: &RunTab<'_>) -> Result<(), ErError> {
     tab_command(run, TabCommand::Questions)
 }
 
-/// Has the agent address the open notes in the tab's bucket.
 pub fn notes(run: &RunTab<'_>) -> Result<(), ErError> {
     tab_command(run, TabCommand::Notes)
 }
 
-/// Has the agent write the tab's summary.
 pub fn summary(run: &RunTab<'_>) -> Result<(), ErError> {
     tab_command(run, TabCommand::Summary)
 }
 
-/// A tab command whose agent reads the bucket's sidecars and the diff
-/// itself, so its prompt names the bucket and the view, not a prepared diff.
+/// Its agent reads the bucket's sidecars and the diff itself.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TabCommand {
     Questions,
@@ -55,9 +50,7 @@ fn tab_command(run: &RunTab<'_>, command: TabCommand) -> Result<(), ErError> {
     agent(run, target, command.name(), &prompt)
 }
 
-/// The prompt `command` runs on `content`'s tab, by the App's rules: a
-/// remote tab names its PR, a local tab its git view; the other views are
-/// refused. Either way the agent reads and writes the tab's bucket.
+/// By the App's rules: a remote tab names its PR, a local tab its git view.
 pub fn tab_command_prompt(content: &TabContent, command: TabCommand) -> Result<String, ErError> {
     let tab = &content.tab;
     let output_dir = &content.context.er_dir;
@@ -93,9 +86,7 @@ pub fn tab_command_prompt(content: &TabContent, command: TabCommand) -> Result<S
     Ok(local(&tab.base_branch, tab.mode.git_mode(), output_dir))
 }
 
-/// Runs the named command `name`, whose config text is `shell_cmd`, in the
-/// tab's repo root as a task on the host, so it shows in the rows and the
-/// bucket's log and holds an agent slot.
+/// Held on the host, so it shows in the rows and the bucket's log.
 pub fn command(run: &RunTab<'_>, name: &str, shell_cmd: &str) -> Result<(), ErError> {
     let content = run.content;
     let tab = &content.tab;

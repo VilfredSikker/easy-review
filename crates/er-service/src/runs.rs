@@ -1,10 +1,6 @@
-//! The run planners: review lenses, the tour, the importance ranking,
-//! validation, the tab commands and the named commands. Each reads its
-//! inputs from one tab's published content and the settings view, prepares
-//! what the agent reads, and queues the agent on the task host, so no run
-//! waits on the App. The bucket a review flow owns is refused, as on the App
-//! (`check_bucket_admission`). Planning runs git and writes the bucket, so a
-//! front end calls these off its own loop (ADR 0074).
+//! The run planners. Each reads one tab's published content and the settings
+//! view, prepares the bucket and queues the agent on the task host. Planning
+//! runs git, so a front end calls these off its loop (ADR 0074).
 
 use er_engine::ai::{prompts, ReviewerKind, ScopedRunStamp};
 use std::sync::Arc;
@@ -25,7 +21,6 @@ pub struct RunTab<'a> {
     pub content: &'a TabContent,
 }
 
-/// Runs the general review lens on `scope`.
 pub fn review(run: &RunTab<'_>, scope: &str) -> Result<(), ErError> {
     let content = run.content;
     let scope = review_scope(content, scope)?;
@@ -56,7 +51,7 @@ pub fn review(run: &RunTab<'_>, scope: &str) -> Result<(), ErError> {
     queue(run, "review", "review", target, prompt, None)
 }
 
-/// Generates the guided tour into the tour bucket of the view the tab shows.
+/// Writes into the tour bucket of the view the tab shows.
 pub fn tour(run: &RunTab<'_>) -> Result<(), ErError> {
     let content = run.content;
     let id = content.tab.identity();
@@ -90,8 +85,7 @@ pub fn tour(run: &RunTab<'_>) -> Result<(), ErError> {
     queue(run, "tour", "tour", target, prompt, None)
 }
 
-/// Has the agent propose the repo's importance rules. The prompt names the
-/// repo, not a diff.
+/// The prompt names the repo, not a diff.
 pub fn importance(run: &RunTab<'_>) -> Result<(), ErError> {
     let content = run.content;
     if content.tab.identity().is_remote() {
@@ -119,7 +113,6 @@ pub fn importance(run: &RunTab<'_>) -> Result<(), ErError> {
     )
 }
 
-/// Runs one expert lens on `scope`.
 pub fn expert(run: &RunTab<'_>, scope: &str, expert_id: &str) -> Result<(), ErError> {
     if er_engine::ai::expert_by_id(expert_id).is_none() {
         return Err(refused(format!("Unknown expert: {expert_id}")));
@@ -158,9 +151,8 @@ pub fn expert(run: &RunTab<'_>, scope: &str, expert_id: &str) -> Result<(), ErEr
     .map_err(refused)
 }
 
-/// Validates the review's findings and the eligible GitHub comments on
-/// `scope`, each through the agent launcher as the App's tab commands run.
-/// The comments are the tab's own: its actor relocated them at its last load.
+/// Through the agent launcher, as the App's tab commands run. The comments
+/// are the tab's own: its actor relocated them at its last load.
 pub fn validate(run: &RunTab<'_>, scope: &str) -> Result<(), ErError> {
     let content = run.content;
     let scope = review_scope(content, scope)?;
@@ -233,8 +225,7 @@ pub fn selection(config: &ErConfig) -> AiSelection {
     }
 }
 
-/// Starts tab command `name` through the agent launcher on the settings
-/// view's config and saved selection (A18), held on the task host.
+/// Starts tab command `name` through the agent launcher, held on the host.
 pub fn agent(
     run: &RunTab<'_>,
     target: BackgroundTaskTarget,
@@ -366,8 +357,6 @@ pub fn admit(er_dir: &str) -> Result<(), ErError> {
     er_engine::arena::check_bucket_admission(er_dir).map_err(|e| refused(e.to_string()))
 }
 
-/// The diff a review of `scope` reads, by the rule the App reads its own
-/// tab's by.
 pub fn review_raw(ports: &Ports, content: &TabContent, scope: &str) -> Result<String, ErError> {
     crate::flow_view::review_raw_diff(ports, content, scope).map_err(|e| refused(e.to_string()))
 }
@@ -384,8 +373,7 @@ pub fn filtered(raw: String, content: &TabContent) -> String {
     }
 }
 
-/// Writes the prepared diff, the change facts and the base branch's
-/// `REVIEW.md` files into `er_dir`; answers the diff's hash.
+/// Writes the prepared diff, the change facts and `REVIEW.md` into `er_dir`.
 pub fn review_inputs(
     ports: &Ports,
     content: &TabContent,
@@ -435,8 +423,7 @@ pub fn resolve_review_scope_in(scope: &str, mode: DiffMode) -> Result<String, St
     Ok(resolved)
 }
 
-/// The GitHub comments a validation checks: from the loaded sidecar, else
-/// read from `comments_dir`.
+/// From the loaded sidecar, else read from `comments_dir`.
 fn github_comment_count(
     loaded: Option<&er_engine::ai::ErGithubComments>,
     comments_dir: &str,

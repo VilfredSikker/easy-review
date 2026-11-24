@@ -174,9 +174,8 @@ impl ServiceHost {
         }
     }
 
-    /// Plans `request` on the content `key`'s tab shows now and queues it on
-    /// the task host. Answers at once; the receiver says whether it queued.
-    /// The tab is the one named here, whatever is active when it plans.
+    /// Plans on the worker; the content is the tab's when asked, whatever is
+    /// active when it plans.
     pub fn run(&self, key: TabKey, request: RunRequest) -> RunReceiver {
         let Some(content) = self.listed_content(key) else {
             return run_worker::refused_now("The tab has not loaded yet");
@@ -190,8 +189,6 @@ impl ServiceHost {
         )
     }
 
-    /// Builds `request`'s flow command for `key`'s tab and sends it to the
-    /// actor that runs the flow. Answers at once with the reply receiver.
     pub fn flow(&self, key: TabKey, request: FlowRequest) -> ReplyReceiver {
         let tabs = self.registry.tabs_view();
         let Some(entry) = tabs.tabs.iter().find(|entry| entry.key == key) else {
@@ -225,9 +222,8 @@ impl ServiceHost {
         run_worker::flow(self.worker(), inputs, request)
     }
 
-    /// The actor a flow request goes to: for an acceptance, the started
-    /// actor whose view holds the flow, since the user may have switched to a
-    /// tab of another project; otherwise, and when none holds it, the tab's.
+    /// An acceptance goes to the actor holding the flow, since the user may
+    /// have switched to another project's tab.
     pub(crate) fn flow_actor(&self, workspace_key: &str, request: &FlowRequest) -> String {
         let FlowRequest::Accept { er_dir, .. } = request else {
             return workspace_key.to_string();
@@ -242,7 +238,6 @@ impl ServiceHost {
         self.worker.get_or_init(Worker::start)
     }
 
-    /// The published content of a tab the registry lists.
     fn listed_content(&self, key: TabKey) -> Option<Arc<TabContent>> {
         let tabs = self.registry.tabs_view();
         let entry = tabs.tabs.iter().find(|entry| entry.key == key)?;

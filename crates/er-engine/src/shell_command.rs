@@ -8,10 +8,8 @@ use anyhow::{Context, Result};
 use er_agent::job::{JobError, JobProgress, JobRun, JobRunner, JobSpec, OutputContract};
 use er_agent::provider::ProviderSpec;
 
-/// What a named command runs on.
 pub struct ShellCommandRequest<'a> {
     pub name: &'a str,
-    /// The command as the config gives it, with its placeholders.
     pub shell_cmd: &'a str,
     pub repo_root: String,
     pub base_branch: &'a str,
@@ -21,8 +19,7 @@ pub struct ShellCommandRequest<'a> {
     pub log_tx: std::sync::mpsc::Sender<AgentLogEntry>,
 }
 
-/// `shell_cmd` with `{base}`, `{branch}`, `{repo}` and `{output}` replaced,
-/// each quoted for the shell. `{output}` is the bucket's `summary.md`.
+/// Each placeholder is quoted for the shell; `{output}` is `summary.md`.
 #[expect(
     clippy::literal_string_with_formatting_args,
     reason = "{base}/{branch}/{repo}/{output} are template placeholders, not format args"
@@ -38,10 +35,7 @@ pub fn substitute(shell_cmd: &str, base: &str, branch: &str, repo: &str, er_dir:
         )
 }
 
-/// Runs the command through `sh -c` in the repo root on its own thread, as a
-/// job that holds an agent slot and a stop control, since it may launch a
-/// provider CLI. Answers the run's stop handle and the receiver its outcome
-/// arrives on.
+/// A job with an agent slot and a stop control: it may launch a provider CLI.
 pub fn launch_shell_command(request: ShellCommandRequest<'_>) -> Result<AgentPromptRun> {
     let ShellCommandRequest {
         name,
