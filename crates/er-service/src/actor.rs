@@ -1047,6 +1047,25 @@ fn handle_command(
                 Ok(mode_input(content, back, None))
             });
         }
+        Command::LoadMoreHistory { key } => {
+            let Some(content) = state.view().tabs.get(&key).cloned() else {
+                return refuse_unknown_tab(reply);
+            };
+            let Some(held) = content.history.clone().filter(|held| !held.all_loaded) else {
+                let _ = reply.send(Ok(Reply::HistoryExtended { key, added: 0 }));
+                return;
+            };
+            let deps = deps.clone();
+            spawn_effect(tx, reply, move || {
+                let more = crate::history::more(&deps, &content.tab, &held);
+                let added = more.len();
+                let since = held.commits.len();
+                Ok(Effected::patched(
+                    Reply::HistoryExtended { key, added },
+                    ContentPatch::History { key, since, more },
+                ))
+            });
+        }
         Command::ChangeBase { key, base } => {
             let Some(current) = state
                 .view()

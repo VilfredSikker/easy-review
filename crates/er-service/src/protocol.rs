@@ -330,6 +330,9 @@ pub enum Command {
     /// Show a loaded tab in the view its History was entered from. A tab not
     /// in History answers at once.
     ExitHistory { key: TabKey },
+    /// List History's next page of commits after those it holds, as the
+    /// App's `k` past the last commit does. A list already whole adds none.
+    LoadMoreHistory { key: TabKey },
     /// Diff a loaded tab against `base`, resolved to a local ref as the App's
     /// base change resolves it, and reload. A PR with no clone has no base to
     /// change: its diff comes from GitHub.
@@ -807,6 +810,11 @@ pub enum Reply {
     /// A stack lookup landed in the tab's PR section.
     StackRead {
         key: TabKey,
+    },
+    /// History listed `added` more commits; none means the list is whole.
+    HistoryExtended {
+        key: TabKey,
+        added: usize,
     },
     /// A working-tree write landed and the tab reloaded; `notice` is what the
     /// status line says.

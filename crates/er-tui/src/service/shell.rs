@@ -27,6 +27,7 @@ use super::ai_picker;
 use super::config_hub::{self, ConfigHub, Step};
 use super::filter::{self, Done};
 use super::github;
+use super::history;
 use super::layers::{self, Layer};
 use super::modes::{self, BaseStep, Follow};
 use super::open_hub::{OpenHub, OpenStep};
@@ -40,7 +41,8 @@ use super::watched::{Landed, Reader};
 use super::watcher::Watch;
 use super::worktree::{self, GitHub, GitPick, HubStep};
 use crate::input::keys::{
-    key_action, CommentAction, ConfirmKey, Edit, NormalAction, OverlayAction, TuiAction, Write,
+    key_action, CommentAction, ConfirmKey, Edit, HistoryAction, NormalAction, OverlayAction,
+    TuiAction, Write,
 };
 use crate::screen::UNPORTED;
 use crate::ui::highlight::Highlighter;
@@ -485,6 +487,9 @@ impl Shell {
             } = landing;
             self.redraw = true;
             match reply {
+                _ if matches!(after, After::CommitSelected | After::MoreHistory) => {
+                    self.history_landed(key, &workspace, after, reply);
+                }
                 Ok(Reply::ContentLoaded { .. }) if after == After::FetchPrRefs => {
                     let replies = self.host.post(
                         &workspace,
@@ -647,6 +652,7 @@ impl Shell {
         self.reviewed.keep_open(&open);
         let reviewed_count = self.reviewed.count(key, content);
         let state = self.view.tab_mut(key, content);
+        state.history.follow(content);
         layers::follow(state, content);
         threads::scroll_if_parsed(state, content);
         let state = self.view.tab(key)?;
@@ -694,6 +700,7 @@ impl Shell {
                 return self.filtered(key, workspace, content, done);
             }
             TuiAction::Commit(edit) => return self.commit_key(edit, key, workspace, content),
+            TuiAction::History(action) => return self.history_key(action, key, workspace, content),
             TuiAction::Comment(action) => return self.comment_key(action, key, workspace, content),
             TuiAction::Write(Write::Push) => {
                 self.view.input_mode = Mode::Normal;
@@ -899,6 +906,12 @@ impl Shell {
                 match modes::switch(key, content, mode) {
                     Ok(Some(command)) => {
                         state.follow = Some(Follow::of(state, content));
+                        // Queued commit moves would each move the tab under
+                        // the switch; the switch drops them.
+                        state.history.queued.clear();
+                        if mode == DiffMode::History && content.tab.mode != DiffMode::History {
+                            state.history.left = Some(Follow::of(state, content));
+                        }
                         let pr_diff = mode == DiffMode::PrDiff;
                         self.post(key, workspace, command, After::ModeSwitched { pr_diff });
                     }
@@ -1003,7 +1016,11 @@ impl Shell {
     /// Posts a command; a test may refuse every reload as moved here.
     fn send_reload(&mut self, workspace: &str, command: Command, after: After) -> ReplyReceiver {
         #[cfg(test)]
-        if let Some(moved) = self.refuse_reloads.clone().filter(|_| after.follows()) {
+        if let Some(moved) = self
+            .refuse_reloads
+            .clone()
+            .filter(|_| after.follows() || after == After::CommitSelected)
+        {
             self.reload_sends += 1;
             let (tx, rx) = std::sync::mpsc::channel();
             let _ = tx.send(Err(er_service::WorkspaceError::Failed(moved)));
@@ -1250,6 +1267,21 @@ impl Shell {
 
     /// A refresh with auto-unmark; the selection stays on its file.
     fn refresh(&mut self, key: TabKey, workspace: &str, content: &TabContent, why: Refresh) {
+        // The App's refresh leaves History alone: its notice, and no reload.
+        if content.tab.mode == DiffMode::History {
+            let notice = match why {
+                Refresh::Key => Some("Refreshed".to_string()),
+                Refresh::Watched { files } => {
+                    self.watch.landed(key);
+                    modes::watch_notice(0, files)
+                }
+                Refresh::Sort => None,
+            };
+            if let Some(notice) = notice {
+                self.notify(notice);
+            }
+            return;
+        }
         let state = self.view.tab_mut(key, content);
         state.refresh_follow = Some(Follow::of(state, content));
         let command = Command::RefreshDiff {
@@ -1285,6 +1317,10 @@ impl Shell {
                 .and_then(|follow| modes::refreshed(state, follow, &content)),
         };
         let sent = state.base_sent.take();
+        // Hidden lists the watched files at once, as the App's switch does.
+        if content.tab.mode == DiffMode::Hidden && matches!(after, After::ModeSwitched { .. }) {
+            self.watched.rescan = true;
+        }
         match after {
             After::Refreshed(Refresh::Key) => self.notify("Refreshed".into()),
             After::Refreshed(Refresh::Watched { files }) => {
@@ -1309,6 +1345,78 @@ impl Shell {
         if let Some(index) = selected {
             self.parse_if_stub(key, workspace, &content, index);
         }
+    }
+
+    /// A History key; a commit move goes to the service.
+    fn history_key(
+        &mut self,
+        action: HistoryAction,
+        key: TabKey,
+        workspace: &str,
+        content: &TabContent,
+    ) {
+        let state = self.view.tab_mut(key, content);
+        let command = history::key(&mut state.history, key, content, action);
+        self.send_history(key, workspace, command);
+    }
+
+    fn send_history(&mut self, key: TabKey, workspace: &str, command: Option<Command>) {
+        let Some(command) = command else {
+            return;
+        };
+        let after = match command {
+            Command::LoadMoreHistory { .. } => After::MoreHistory,
+            _ => After::CommitSelected,
+        };
+        let replies = self.send_reload(workspace, command, after);
+        self.pending.push(Pending {
+            key,
+            workspace: workspace.to_string(),
+            replies,
+            after,
+            retry: None,
+        });
+    }
+
+    /// A commit load or page landed: a commit shown takes its press off the
+    /// queue, a tab moved meanwhile sends it again up to `RELOAD_TRIES`
+    /// times, any other refusal drops the rest, and the next press goes out.
+    fn history_landed(
+        &mut self,
+        key: TabKey,
+        workspace: &str,
+        after: After,
+        reply: Result<Reply, er_service::WorkspaceError>,
+    ) {
+        let content = self.host.content(workspace, key);
+        let (Some(content), Some(state)) = (content, self.view.tab_mut_if_open(key)) else {
+            return;
+        };
+        let pos = &mut state.history;
+        pos.in_flight = false;
+        let refused = match reply {
+            Err(error) => {
+                let moved = er_service::refused_as_moved(&error.to_string());
+                pos.moved_tries = pos.moved_tries.saturating_add(u8::from(moved));
+                (!moved || pos.moved_tries > RELOAD_TRIES).then(|| error.to_string())
+            }
+            Ok(_) => {
+                pos.moved_tries = 0;
+                if after == After::CommitSelected {
+                    pos.queued.pop_front();
+                }
+                None
+            }
+        };
+        if refused.is_some() {
+            pos.queued.clear();
+            pos.moved_tries = 0;
+        }
+        let command = history::pump(pos, key, &content);
+        if let Some(message) = refused {
+            self.failure(Side::Reply, message);
+        }
+        self.send_history(key, workspace, command);
     }
 
     /// A reload was refused: its own waits let go, and a restore keeps its filter.
@@ -1352,6 +1460,7 @@ impl Shell {
         self.view.input_mode = Mode::Normal;
         let state = self.view.tab_mut(key, content);
         state.follow = Some(Follow::of(state, content));
+        state.history.queued.clear();
         state.base_sent = Some(base.clone());
         self.post(
             key,

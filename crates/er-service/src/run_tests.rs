@@ -33,6 +33,7 @@ diff --git a/src/a.rs b/src/a.rs
 /// `REVIEW.md` with, waits while `closed` is set.
 fn gated_ports(closed: Arc<AtomicBool>) -> Ports {
     let git = FakeGit::default()
+        .with_is_merge_in_progress(false)
         .with_current_branch(Ok("feature".to_string()))
         .with_diff_shortstat((0, 0, 0))
         .with_diff_raw(Ok(RAW.to_string()))
