@@ -684,7 +684,10 @@ fn stamped_dirs(
 /// Drops the marks whose file left the diff or changed since it was marked.
 /// A tab that persists its marks drops them from the saved marks, read and
 /// saved under the scope lock, so a toggle saved since the load read `marks`
-/// stays; `marks` becomes what was saved. Answers how many were dropped.
+/// stays; `marks` becomes what was saved. Only a mark still as the load read
+/// it is judged: one toggled since was hashed against a newer diff than
+/// `raw`. When `marks` itself clears nothing, nothing is locked or saved.
+/// Answers how many were dropped.
 pub(crate) fn clear_moved_marks(
     marks: &mut HashMap<String, String>,
     raw: &str,
@@ -693,22 +696,31 @@ pub(crate) fn clear_moved_marks(
     store: &er_store::ArtifactStore,
     scope: &er_store::Scope,
 ) -> usize {
+    let read = marks.clone();
     let clear = |marks: &mut HashMap<String, String>| {
-        let orphans = if files.is_empty() {
+        let mut judged: HashMap<String, String> = marks
+            .iter()
+            .filter(|(path, hash)| read.get(*path) == Some(*hash))
+            .map(|(path, hash)| (path.clone(), hash.clone()))
+            .collect();
+        let mut gone = if files.is_empty() {
             Vec::new()
         } else {
-            diff_load::orphaned_reviewed(marks, files)
+            diff_load::orphaned_reviewed(&judged, files)
         };
-        for path in &orphans {
+        for path in &gone {
+            judged.remove(path);
+        }
+        let hashes = diff_load::reviewed_file_hashes(raw, &judged);
+        gone.extend(diff_load::changed_reviewed(&judged, &hashes));
+        for path in &gone {
             marks.remove(path);
         }
-        let moved =
-            diff_load::changed_reviewed(marks, &diff_load::reviewed_file_hashes(raw, marks));
-        for path in &moved {
-            marks.remove(path);
-        }
-        orphans.len() + moved.len()
+        gone.len()
     };
+    if clear(&mut read.clone()) == 0 {
+        return 0;
+    }
     if persists {
         if let Ok((cleared, saved)) = session_store::update_reviewed(store, scope, clear) {
             *marks = saved;
