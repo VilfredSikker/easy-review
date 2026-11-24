@@ -927,6 +927,7 @@ impl Shell {
                 self.view.input_mode = Mode::Confirm(Ask::DeleteComment);
             }
             threads::Focus::Unported => self.unported(),
+            threads::Focus::Refused(message) => self.notify(message.into()),
         }
     }
 

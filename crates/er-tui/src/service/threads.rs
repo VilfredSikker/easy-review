@@ -57,7 +57,13 @@ pub enum Focus {
     AskDelete,
     /// The key's write is another entry's.
     Unported,
+    /// The key does not act on this comment here, and says why.
+    Refused(&'static str),
 }
+
+/// What `e` says on a comment posted on GitHub: the App edits it there
+/// first, and that command is P68.2's.
+pub const POSTED_EDIT_REFUSED: &str = "Editing a posted comment is not on this build yet";
 
 /// The focused question, note or comment, unless a write of the draft is in
 /// flight. A comment posted on GitHub takes the same keys: its writes go to
@@ -104,6 +110,9 @@ pub fn start_edit(state: &mut TabViewState, content: &TabContent) -> Focus {
         Err(Focus::Nothing) | Ok(_) => return Focus::Unported,
         Err(focus) => return focus,
     };
+    if matches!(comment, CommentRef::GithubComment(row) if row.github_id.is_some()) {
+        return Focus::Refused(POSTED_EDIT_REFUSED);
+    }
     let Some(file) = selected(state, content) else {
         return Focus::Nothing;
     };

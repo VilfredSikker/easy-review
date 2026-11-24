@@ -155,7 +155,8 @@ fn a_decision_error_crosses_the_service_typed() {
     assert_eq!(reply, Err(WorkspaceError::Github(refused)));
 }
 
-/// A bucket holding a posted comment and its posted reply on acme/widgets#7.
+/// A bucket holding a posted comment and its two posted replies on
+/// acme/widgets#7.
 fn posted_thread() -> anyhow::Result<(tempfile::TempDir, String)> {
     let dir = tempfile::tempdir()?;
     let bucket = dir.path().join("bucket");
@@ -173,7 +174,11 @@ fn posted_thread() -> anyhow::Result<(tempfile::TempDir, String)> {
         serde_json::json!({
             "version": 1, "diff_hash": "",
             "github": {"pr_number": 7, "owner": "acme", "repo": "widgets"},
-            "comments": [row("gh-11", 11, None), row("gh-12", 12, Some("gh-11"))]
+            "comments": [
+                row("gh-11", 11, None),
+                row("gh-12", 12, Some("gh-11")),
+                row("gh-13", 13, Some("gh-11"))
+            ]
         }),
     );
     Ok((dir, bucket.to_string_lossy().into_owned()))
@@ -190,20 +195,32 @@ fn stored_ids(bucket: &str) -> anyhow::Result<Vec<String>> {
     Ok(stored.value.comments.into_iter().map(|c| c.id).collect())
 }
 
-/// A posted delete reaches GitHub for the reply, then the root, before the
-/// rows go. A refused delete keeps both rows; one refused after the reply
-/// went keeps the root on GitHub, says what went, and drops the cache.
+/// A posted delete reaches GitHub for the replies, then the root, before
+/// the rows go. A refusal keeps every row, drops the cache once anything
+/// went, and says how far it got and what to do next.
 #[test]
 fn a_posted_delete_removes_its_rows_only_once_github_has() -> anyhow::Result<()> {
-    let refusal = || GhError::Forbidden {
-        message: "not yours".to_string(),
+    let no = || {
+        Err(GhError::Forbidden {
+            message: "not yours".to_string(),
+        })
     };
     let cases = [
-        (vec![Err(refusal())], false),
-        (vec![Ok(()), Err(refusal())], false),
-        (vec![Ok(()), Ok(())], true),
+        (
+            vec![no()],
+            Some("Deleted 0 of 2 replies on GitHub; GitHub refused the next one"),
+        ),
+        (
+            vec![Ok(()), no()],
+            Some("Deleted 1 of 2 replies on GitHub; GitHub refused the next one"),
+        ),
+        (
+            vec![Ok(()), Ok(()), no()],
+            Some("Deleted 2 of 2 replies on GitHub; GitHub refused the comment itself"),
+        ),
+        (vec![Ok(()), Ok(()), Ok(())], None),
     ];
-    for (answers, gone) in cases {
+    for (answers, said) in cases {
         let (dir, bucket) = posted_thread()?;
         let tried = answers.len();
         let github = Arc::new(FakeGitHub::default().with_delete_comment_answers(answers));
@@ -214,7 +231,6 @@ fn a_posted_delete_removes_its_rows_only_once_github_has() -> anyhow::Result<()>
                 id: "gh-11".to_string(),
             };
             let reply = handle.send_and_wait_with(delete, WAIT);
-            assert_eq!(reply.is_ok(), gone, "{reply:?}");
             let left = stored_ids(&bucket)?;
             let calls = github.calls();
             let deletes: Vec<&String> = calls
@@ -230,17 +246,23 @@ fn a_posted_delete_removes_its_rows_only_once_github_has() -> anyhow::Result<()>
                 .iter()
                 .any(|call| call.starts_with("invalidate_comments"));
             assert_eq!(dropped, tried > 1, "{calls:?}");
-            if gone {
-                assert!(left.is_empty(), "{left:?}");
-            } else {
-                assert_eq!(left, ["gh-11", "gh-12"], "a refused delete lost rows");
-            }
-            if tried == 2 && !gone {
-                let said = reply
-                    .err()
-                    .map(|error| error.to_string())
-                    .unwrap_or_default();
-                assert!(said.starts_with("Deleted 1 of 1 replies"), "{said}");
+            match said {
+                None => assert!(left.is_empty() && reply.is_ok(), "{left:?} {reply:?}"),
+                Some(prefix) => {
+                    assert_eq!(
+                        left,
+                        ["gh-11", "gh-12", "gh-13"],
+                        "a refused delete lost rows"
+                    );
+                    let message = reply.err().map(|e| e.to_string()).unwrap_or_default();
+                    assert!(message.starts_with(prefix), "{message}");
+                    let next = if tried == 3 {
+                        "retry"
+                    } else {
+                        "Delete that reply on GitHub"
+                    };
+                    assert!(message.contains(next), "{message}");
+                }
             }
             Ok::<_, anyhow::Error>(())
         })?;

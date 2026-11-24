@@ -244,13 +244,19 @@ pub(crate) fn delete_github_comment(
         if deleted > 0 {
             github.invalidate_comments();
         }
+        let replies = ids.len() - 1;
         match refused {
-            Some(error) if deleted == 0 => return Err(error.into()),
+            // Only the comment was posted, so its refusal says enough.
+            Some(error) if replies == 0 => return Err(error.into()),
+            Some(error) if deleted == replies => {
+                return Err(WorkspaceError::Failed(format!(
+                    "Deleted {deleted} of {replies} replies on GitHub; GitHub refused the comment itself: {error}. Send the delete again to retry it."
+                )))
+            }
             Some(error) => {
                 return Err(WorkspaceError::Failed(format!(
-                "Deleted {deleted} of {} replies on GitHub; the comment and the rest stay: {error}",
-                ids.len() - 1
-            )))
+                    "Deleted {deleted} of {replies} replies on GitHub; GitHub refused the next one, so it and the comment stay: {error}. Delete that reply on GitHub, then send the delete again."
+                )))
             }
             None => {}
         }

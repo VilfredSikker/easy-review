@@ -543,30 +543,31 @@ fn r_on_a_posted_comment_replies_in_its_thread() {
     });
 }
 
-/// `e` on your posted comment edits its local row, as the App does, and
-/// sends nothing to GitHub.
+/// `e` on your posted comment says it is not on this build yet: the App
+/// edits it on GitHub first, which is P68.2's. Nothing is written.
 #[test]
-fn e_on_a_posted_comment_edits_its_row() {
+fn e_on_a_posted_comment_is_refused() {
     let repo = fixture(1);
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     let github = Arc::new(on_pr_7());
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
         let mut shell = working(&repo, &github, storage.path());
         let dir = seed_posted(&mut shell, "You");
+        let file = Path::new(&dir).join("github-comments.json");
+        let stored = std::fs::read(&file).unwrap_or_else(|e| panic!("{e}"));
         shell.handle_key(key(KeyCode::Char('e')));
-        assert_eq!(shell.view().input_mode, Mode::Comment);
-        type_text(&mut shell, "Edited: ");
-        shell.handle_key(key(KeyCode::Enter));
+        assert_eq!(shell.view().input_mode, Mode::Normal);
+        assert_eq!(notice(&shell), super::threads::POSTED_EDIT_REFUSED);
         settle_replies(&mut shell);
-        let rows = read_sidecar::<ErGithubComments>(Path::new(&dir)).comments;
-        assert_eq!(rows[0].comment, "Edited: posted", "{rows:?}");
-        assert_eq!(rows.len(), 2);
+        let after = std::fs::read(&file).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(after, stored, "the comments file changed");
         assert!(calls(&github, "update_review_comment").is_empty());
     });
 }
 
 /// `x`, `y` on your posted comment deletes its reply and it on GitHub, then the
-/// rows; a refused delete keeps both rows and says why.
+/// rows; a refused delete keeps both rows and says why, and a second `x`,
+/// `y` while it is in flight sends nothing.
 #[test]
 fn x_on_a_posted_comment_deletes_it_on_github_first() {
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
@@ -583,8 +584,11 @@ fn x_on_a_posted_comment_deletes_it_on_github_first() {
             let github = Arc::new(on_pr_7().with_delete_comment(answer));
             let mut shell = working(&repo, &github, storage.path());
             let dir = seed_posted(&mut shell, "You");
-            shell.handle_key(key(KeyCode::Char('x')));
-            shell.handle_key(key(KeyCode::Char('y')));
+            let presses = if refused { 2 } else { 1 };
+            for _ in 0..presses {
+                shell.handle_key(key(KeyCode::Char('x')));
+                shell.handle_key(key(KeyCode::Char('y')));
+            }
             settle_replies(&mut shell);
             let deletes = calls(&github, "delete_comment");
             if refused {
