@@ -8257,72 +8257,20 @@ impl App {
 // `crate::app::chrono_now` / `super::chrono_now` paths keep working.
 pub use crate::sync::chrono_now;
 
-/// Delete personal questions sidecar files. Errors are ignored (files may not exist).
-///
-/// Remove the private local-draft sidecars: questions and notes. Both are
-/// user-authored, never-pushed drafts, so the `z` cleanup clears them together.
+/// The App's `z`, which reports nothing: the cleared message shows whatever
+/// the store answered. P77 deletes these wrappers with the App.
 pub fn cleanup_questions_and_notes(er_dir: &str) {
-    let store = crate::store_registry::store();
-    if let Ok(scope) = er_store::Scope::dir(er_dir) {
-        let _ = crate::ai::annotation_store::delete::<crate::ai::ErQuestions>(&store, &scope);
-        let _ = crate::ai::annotation_store::delete::<crate::ai::ErNotes>(&store, &scope);
-    }
-    // The `.prev.json` backups stay plain files.
-    let base = std::path::Path::new(er_dir);
-    let _ = std::fs::remove_file(base.join("questions.prev.json"));
-    let _ = std::fs::remove_file(base.join("notes.prev.json"));
+    let _ = crate::ai::annotation_cleanup::cleanup_questions_and_notes(er_dir);
 }
 
-/// Strip Claude-authored replies from a local draft thread list and un-resolve parents.
-fn cleanup_claude_replies(items: &mut Vec<crate::ai::PrivateAnnotation>) {
-    let reply_ids: std::collections::HashSet<String> = items
-        .iter()
-        .filter(|q| q.author == "Claude")
-        .map(|q| q.id.clone())
-        .collect();
-    let parent_ids: std::collections::HashSet<String> = items
-        .iter()
-        .filter(|q| q.author == "Claude")
-        .filter_map(|q| q.in_reply_to.clone())
-        .collect();
-
-    items.retain(|q| !reply_ids.contains(&q.id));
-
-    for q in items.iter_mut() {
-        if parent_ids.contains(&q.id) {
-            q.resolved = false;
-        }
-    }
-}
-
-/// Remove AI-generated replies from the notes file, keeping human notes intact.
-/// Unmarks resolved status on notes whose replies are removed.
+/// The App's replies clear before a notes run; errors are dropped as before.
 pub fn cleanup_note_replies(er_dir: &str) {
-    let store = crate::store_registry::store();
-    let Ok(scope) = er_store::Scope::dir(er_dir) else {
-        return;
-    };
-    let _ = crate::ai::annotation_store::update_notes(&store, &scope, |current| {
-        let mut ns =
-            current.ok_or_else(|| anyhow::anyhow!("the notes file is missing or unreadable"))?;
-        cleanup_claude_replies(&mut ns.notes);
-        Ok::<_, anyhow::Error>(ns)
-    });
+    let _ = crate::ai::annotation_cleanup::cleanup_note_replies(er_dir);
 }
 
-/// Remove AI-generated answers from the questions file, keeping human questions intact.
-/// Unmarks resolved status on questions whose answers are removed.
+/// The App's answers clear before a questions run; errors are dropped as before.
 pub fn cleanup_question_answers(er_dir: &str) {
-    let store = crate::store_registry::store();
-    let Ok(scope) = er_store::Scope::dir(er_dir) else {
-        return;
-    };
-    let _ = crate::ai::annotation_store::update_questions(&store, &scope, |current| {
-        let mut qs = current
-            .ok_or_else(|| anyhow::anyhow!("the questions file is missing or unreadable"))?;
-        cleanup_claude_replies(&mut qs.questions);
-        Ok::<_, anyhow::Error>(qs)
-    });
+    let _ = crate::ai::annotation_cleanup::cleanup_question_answers(er_dir);
 }
 
 pub use crate::ai::review_cleanup::{cleanup_review_artifacts, cleanup_reviews, cleanup_triage};
@@ -15846,6 +15794,76 @@ mod tests {
                 er.join("questions.json").exists(),
                 "private annotations stay"
             );
+        });
+    }
+
+    fn draft(id: &str, author: &str, reply_to: Option<&str>) -> serde_json::Value {
+        serde_json::json!({
+            "id": id, "file": "src/a.rs", "hunk_index": 0, "line_start": 1,
+            "text": id, "author": author, "in_reply_to": reply_to, "resolved": true
+        })
+    }
+
+    /// A bucket with a human thread answered by Claude and a lone human
+    /// draft, in both the questions and the notes, and both backups.
+    fn seed_drafts(er: &std::path::Path) {
+        let rows = |prefix: &str| {
+            let id = |n: &str| format!("{prefix}{n}");
+            vec![
+                draft(&id("1"), "You", None),
+                draft(&id("2"), "Claude", Some(&id("1"))),
+                draft(&id("3"), "You", None),
+            ]
+        };
+        crate::test_support::write_sidecar_json::<crate::ai::ErQuestions>(
+            er,
+            serde_json::json!({"version": 1, "diff_hash": "h", "questions": rows("q")}),
+        );
+        crate::test_support::write_sidecar_json::<crate::ai::ErNotes>(
+            er,
+            serde_json::json!({"version": 1, "diff_hash": "h", "notes": rows("n")}),
+        );
+        std::fs::write(er.join("questions.prev.json"), "{}").unwrap();
+        std::fs::write(er.join("notes.prev.json"), "{}").unwrap();
+    }
+
+    /// Each kept row's id and whether it is resolved.
+    fn kept(rows: &[crate::ai::PrivateAnnotation]) -> Vec<(String, bool)> {
+        rows.iter().map(|q| (q.id.clone(), q.resolved)).collect()
+    }
+
+    /// What the flag-off `z` and the two clear-then-run confirms delete,
+    /// through the App's names: `z` takes both files and both backups; the
+    /// answers and replies clears take only Claude's rows and reopen what
+    /// they answered, keeping every human row and the other file.
+    #[test]
+    fn the_draft_clears_delete_what_the_app_deletes() {
+        let dir = tempfile::tempdir().unwrap();
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let er = dir.path();
+            let at = er.to_str().unwrap();
+            seed_drafts(er);
+            cleanup_question_answers(at);
+            let questions = crate::test_support::read_sidecar::<crate::ai::ErQuestions>(er);
+            let open = |p: &str| vec![(format!("{p}1"), false), (format!("{p}3"), true)];
+            assert_eq!(kept(&questions.questions), open("q"));
+            let notes = crate::test_support::read_sidecar::<crate::ai::ErNotes>(er);
+            assert_eq!(notes.notes.len(), 3, "the answers clear keeps the notes");
+
+            cleanup_note_replies(at);
+            let notes = crate::test_support::read_sidecar::<crate::ai::ErNotes>(er);
+            assert_eq!(kept(&notes.notes), open("n"));
+            assert!(er.join("questions.prev.json").exists());
+
+            cleanup_questions_and_notes(at);
+            for file in [
+                "questions.json",
+                "notes.json",
+                "questions.prev.json",
+                "notes.prev.json",
+            ] {
+                assert!(!er.join(file).exists(), "{file} stayed");
+            }
         });
     }
 

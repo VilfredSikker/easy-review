@@ -24,6 +24,7 @@ use ratatui::widgets::Paragraph;
 use ratatui::Terminal;
 
 use super::ai_picker;
+use super::clears::{self, Clear};
 use super::config_hub::{self, ConfigHub, Step};
 use super::context;
 use super::filter::{self, Done};
@@ -504,6 +505,7 @@ impl Shell {
                                 | After::ReviewEdit
                                 | After::ReviewSubmit
                                 | After::Checklist { .. }
+                                | After::Cleared(_)
                                 | After::StackRead
                                 | After::PrRefreshed { .. }
                         ) =>
@@ -646,6 +648,16 @@ impl Shell {
                 Ok(Reply::AiWritten) if matches!(after, After::Checklist { .. }) => {
                     if let After::Checklist { checked } = after {
                         self.notify(findings::checklist_notice(checked).into());
+                    }
+                }
+                Ok(Reply::AiWritten) if matches!(after, After::Cleared(_)) => {
+                    if let After::Cleared(clear) = after {
+                        self.notify(clears::landed(clear).into());
+                    }
+                }
+                Err(error) if matches!(after, After::Cleared(_)) => {
+                    if let After::Cleared(clear) = after {
+                        self.notify(clears::refused(clear, &error.to_string()));
                     }
                 }
                 Ok(Reply::ReviewSubmitted { .. }) if after == After::Approved => {
@@ -875,6 +887,15 @@ impl Shell {
                 }
                 return;
             }
+            TuiAction::Write(write @ (Write::ClearQuestionsAndNotes | Write::ClearReviews)) => {
+                self.view.input_mode = Mode::Normal;
+                let clear = match write {
+                    Write::ClearQuestionsAndNotes => Clear::QuestionsAndNotes,
+                    _ => Clear::Reviews,
+                };
+                let command = clears::command(clear, content);
+                return self.post(key, workspace, command, After::Cleared(clear));
+            }
             TuiAction::Confirm(ConfirmKey::Cancel) => {
                 if self.view.input_mode == Mode::Confirm(Ask::RemoveReviewComment) {
                     self.view.overlay = Some(Overlay::Review);
@@ -975,8 +996,18 @@ impl Shell {
             A::OpenAiHub => {
                 let view = self.host.settings().view();
                 let label = self.settings.ai_label(&view);
-                let has_ai = content.ai.state.has_data();
-                return self.run_step(ai_picker::open_ai_hub(&view, &label, has_ai));
+                let facts = ai_picker::HubFacts::of(&content.ai.state);
+                return self.run_step(ai_picker::open_ai_hub(&view, &label, facts));
+            }
+            A::AskClearQuestions | A::AskClearReviews => {
+                let clear = match action {
+                    A::AskClearQuestions => Clear::QuestionsAndNotes,
+                    _ => Clear::Reviews,
+                };
+                if let Some(ask) = clears::ask(clear, content, true) {
+                    self.view.input_mode = Mode::Confirm(ask);
+                }
+                return;
             }
             A::ToggleStaged => return self.toggle_staged(key, workspace, content),
             A::ToggleReviewed => return self.toggle_reviewed(key, workspace, content),
@@ -2060,6 +2091,13 @@ impl Shell {
             let message = layers::hub_row(state, row);
             return self.notify(message);
         }
+        if let Step::Clear(clear) = step {
+            self.view.overlay = None;
+            if let Some(ask) = clears::ask(clear, content, false) {
+                self.view.input_mode = Mode::Confirm(ask);
+            }
+            return;
+        }
         self.run_step(step);
     }
 
@@ -2067,7 +2105,7 @@ impl Shell {
         let settings = self.host.settings();
         let (close, send) = match step {
             Step::Stay => (false, None),
-            Step::Close | Step::Layer(_) => (true, None),
+            Step::Close | Step::Layer(_) | Step::Clear(_) => (true, None),
             Step::Send(command) => (false, Some((command, Then::Nothing))),
             Step::Leave(command) => (true, Some((command, Then::Nothing))),
             Step::Pick(command) => (true, Some((command, Then::AnnouncePick))),

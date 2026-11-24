@@ -7,6 +7,7 @@
 //! action no service route covers yet says so on the status line.
 
 mod ai_picker;
+mod clears;
 mod config_hub;
 mod context;
 mod filter;
@@ -38,6 +39,8 @@ pub use startup::Args;
 /// stays reachable and compiled in this build until the flag is removed.
 pub const RUNS_ON_SERVICE: bool = true;
 
+#[cfg(test)]
+mod clears_tests;
 #[cfg(test)]
 mod config_hub_tests;
 #[cfg(test)]

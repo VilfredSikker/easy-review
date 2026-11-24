@@ -197,6 +197,14 @@ pub enum Ask {
     ApprovePr,
     DeleteComment,
     RemoveReviewComment,
+    /// `z`, with the App's count of drafts.
+    CleanupQuestions {
+        count: usize,
+    },
+    /// `Z`, with the App's count of reviewed files.
+    CleanupReviews {
+        count: usize,
+    },
 }
 
 impl TuiView {
@@ -761,6 +769,12 @@ pub fn screen<'a>(view: &'a TuiView, state: &'a TabViewState, frame: Frame<'a>) 
                 Mode::Confirm(Ask::ApprovePr) => InputMode::Confirm(ConfirmAction::ApprovePR),
                 Mode::Confirm(Ask::DeleteComment) => {
                     InputMode::Confirm(ConfirmAction::DeleteComment)
+                }
+                Mode::Confirm(Ask::CleanupQuestions { count }) => {
+                    InputMode::Confirm(ConfirmAction::CleanupQuestions { count })
+                }
+                Mode::Confirm(Ask::CleanupReviews { count }) => {
+                    InputMode::Confirm(ConfirmAction::CleanupReviews { count })
                 }
                 Mode::Confirm(Ask::DeleteWatchedFile) => {
                     InputMode::Confirm(ConfirmAction::DeleteWatchedFile {
