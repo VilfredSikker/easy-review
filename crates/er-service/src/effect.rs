@@ -324,6 +324,7 @@ pub(crate) fn load_tab(
     // History, Conflicts and Hidden diff no scope: each loads its own files,
     // and History's list reads the PR section, so that loads first.
     let mut own = None;
+    let mut conflicts = None;
     if own_diff(tab.mode) {
         let preview = input
             .prev_meta
@@ -342,6 +343,7 @@ pub(crate) fn load_tab(
             },
         );
         let mut view = crate::history::load(git, &tab, &input.history, &pr.commits);
+        conflicts = view.conflicts;
         if let Some(head) = view.fetched_head.take() {
             tab.pr_head_ref = Some(head);
             pr_refs_fetched = true;
@@ -565,6 +567,12 @@ pub(crate) fn load_tab(
         ),
     };
     let commits = crate::history::scroller(git, &tab, history.as_deref(), &pr.commits);
+    let (merge_active, unresolved) = conflicts.unwrap_or_else(|| {
+        (
+            !id.is_remote() && git.is_merge_in_progress(&tab.repo_root),
+            0,
+        )
+    });
     let freshness = crate::freshness::measure(git, &tab, input.tips, scope_stats.unstaged.0);
     let context = TabContext {
         er_dir,
@@ -605,6 +613,8 @@ pub(crate) fn load_tab(
                 risk_artifact,
                 commits,
                 committed_unpushed,
+                merge_active,
+                unresolved,
             },
             expanded,
             context: context_lines,

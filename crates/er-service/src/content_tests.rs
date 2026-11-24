@@ -52,6 +52,7 @@ const WAIT: Duration = Duration::from_secs(5);
 fn git(raw: &str) -> Arc<FakeGit> {
     Arc::new(
         FakeGit::default()
+            .with_is_merge_in_progress(false)
             .with_current_branch(Ok("feature".to_string()))
             .with_diff_shortstat((0, 0, 0))
             .with_diff_raw(Ok(raw.to_string())),
@@ -379,6 +380,7 @@ fn a_mode_switch_seeds_the_detected_pr_only_onto_a_tab_without_one() -> anyhow::
     with_root(|repo| {
         let git = Arc::new(
             FakeGit::default()
+                .with_is_merge_in_progress(false)
                 .with_current_branch(Ok("feature".to_string()))
                 .with_diff_shortstat((0, 0, 0))
                 .with_diff_raw(Ok(RAW.to_string()))
@@ -574,6 +576,8 @@ fn loaded_tab(repo: &str) -> Box<LoadedTab> {
                 risk_artifact: None,
                 commits: Vec::new(),
                 committed_unpushed: false,
+                merge_active: false,
+                unresolved: 0,
             },
             expanded: Default::default(),
             context: HashMap::new(),
@@ -905,6 +909,7 @@ fn a_run_on_staged_after_a_commit_reads_the_last_commit() -> anyhow::Result<()> 
         .map_err(|refused| anyhow::anyhow!("{refused}"))?;
     let content = content_of(state.view(), key)?;
     let git = FakeGit::default()
+        .with_is_merge_in_progress(false)
         .with_diff_raw(Ok(String::new()))
         .with_diff_raw_range(Ok(RAW.to_string()));
     let ports = Ports {

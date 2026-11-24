@@ -11,6 +11,7 @@ mod config_hub;
 mod context;
 mod filter;
 mod github;
+mod history;
 mod layers;
 mod modes;
 mod open_hub;
@@ -41,6 +42,8 @@ mod context_tests;
 mod filter_tests;
 #[cfg(test)]
 mod github_tests;
+#[cfg(test)]
+mod history_tests;
 #[cfg(test)]
 mod loop_tests;
 #[cfg(test)]

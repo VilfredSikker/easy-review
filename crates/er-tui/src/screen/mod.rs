@@ -148,7 +148,7 @@ pub struct HistoryView<'a> {
     /// The commits the search leaves, with their index in `commits`.
     pub visible_commits: Vec<(usize, &'a CommitInfo)>,
     pub selected_commit: usize,
-    pub commit_files: &'a [DiffFile],
+    pub commit_files: Vec<&'a DiffFile>,
     pub selected_file: usize,
     pub current_hunk: usize,
     pub current_line: Option<usize>,
@@ -201,6 +201,8 @@ pub struct SectionData<'a> {
     pub reviewed_count: (usize, usize),
     /// The same among the files the filter keeps; `None` with no filter.
     pub filtered_reviewed_count: Option<(usize, usize)>,
+    /// History's commits and the selected commit's files, in History only.
+    pub history: Option<HistoryView<'a>>,
 }
 
 /// What an area the service path does not draw yet shows instead.
@@ -284,7 +286,7 @@ impl<'a> TabData<'a> {
         match self {
             Self::App(data) => data.history.as_ref(),
             #[cfg(feature = "v1-service")]
-            Self::Sections(_) => None,
+            Self::Sections(data) => data.history.as_ref(),
         }
     }
 
@@ -340,6 +342,7 @@ mod tests {
             ai: &app.tab().ai,
             reviewed_count: (1, 2),
             filtered_reviewed_count: None,
+            history: None,
         });
         let mut terminal = Terminal::new(TestBackend::new(120, 12)).unwrap();
         let mut hl = crate::ui::highlight::Highlighter::new();
@@ -378,6 +381,7 @@ mod tests {
             ai: &app.tab().ai,
             reviewed_count: (0, 0),
             filtered_reviewed_count: None,
+            history: None,
         });
         let mut terminal = Terminal::new(TestBackend::new(140, 12)).unwrap();
         let mut hl = crate::ui::highlight::Highlighter::new();

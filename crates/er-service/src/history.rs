@@ -9,6 +9,7 @@ use er_engine::git::{self, CommitInfo};
 use er_engine::history::{self, HistorySource};
 use er_engine::tab_identity::{DiffMode, ResolvedTab};
 
+use crate::actor::WorkspaceDeps;
 use crate::content::HistorySection;
 
 /// Whether `mode` shows a diff the tab's scope does not fetch.
@@ -63,6 +64,8 @@ pub(crate) struct OwnDiff {
     pub history: Option<Arc<HistorySection>>,
     /// The PR head ref a missing commit made History fetch.
     pub fetched_head: Option<String>,
+    /// Conflicts' merge flag and unresolved count.
+    pub conflicts: Option<(bool, usize)>,
 }
 
 /// Loads the view `tab.mode` shows, which [`own_diff`] names. History lists
@@ -77,6 +80,7 @@ pub(crate) fn load(
     input: &HistoryInput,
     pr_commits: &[CommitInfo],
 ) -> OwnDiff {
+    let mut conflicts = None;
     let (raw, files, section, fetched_head) = match tab.mode {
         DiffMode::History => {
             let section = section(git, tab, input, pr_commits);
@@ -94,8 +98,9 @@ pub(crate) fn load(
             )
         }
         DiffMode::Conflicts => {
-            let conflicts = diff_load::conflict_files(git, &tab.repo_root);
-            (conflicts.raw, conflicts.files, input.prev.clone(), None)
+            let merge = diff_load::conflict_files(git, &tab.repo_root);
+            conflicts = Some((merge.merge_active, merge.unresolved));
+            (merge.raw, merge.files, input.prev.clone(), None)
         }
         _ => (String::new(), Vec::new(), input.prev.clone(), None),
     };
@@ -108,6 +113,7 @@ pub(crate) fn load(
         raw,
         history: section,
         fetched_head,
+        conflicts,
     }
 }
 
@@ -121,6 +127,7 @@ fn section(
         .prev
         .as_deref()
         .filter(|prev| prev.return_mode == input.return_mode);
+    let revision = kept.map_or(0, |prev| prev.revision);
     let (commits, all_loaded, selected) = match kept {
         Some(prev) => (prev.commits.clone(), prev.all_loaded, prev.selected.clone()),
         None => {
@@ -139,7 +146,22 @@ fn section(
         all_loaded,
         selected: picked.or(selected),
         return_mode: input.return_mode,
+        revision,
     }
+}
+
+/// History's next page after the commits `held` lists, by the App's rule: a
+/// PR branch view lists its PR's commits whole, so it adds none.
+pub(crate) fn more(
+    deps: &WorkspaceDeps,
+    tab: &ResolvedTab,
+    held: &HistorySection,
+) -> Vec<CommitInfo> {
+    if tab.pr_number.is_some() && tab.local_branch_view.is_some() {
+        return Vec::new();
+    }
+    let source = source(tab, held.return_mode);
+    history::more_commits(&*deps.ports().git, &source, held.commits.len())
 }
 
 /// The commit scroller's rows for `tab`, read in every view.

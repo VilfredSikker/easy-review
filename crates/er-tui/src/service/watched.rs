@@ -173,8 +173,8 @@ pub struct TabWatched {
 }
 
 impl TabWatched {
-    /// Whether the section shows. The App's switch to Hidden shows it; that
-    /// switch is P71's, so here it follows `W` and the config.
+    /// Whether the section shows: `W` sets it, as does a switch to Hidden,
+    /// and until then it follows the config.
     pub fn is_shown(&self, config: &WatchedConfig) -> bool {
         self.shown.unwrap_or(!config.paths.is_empty())
     }
