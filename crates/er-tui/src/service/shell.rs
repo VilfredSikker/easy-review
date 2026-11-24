@@ -588,9 +588,9 @@ impl Shell {
                                 | After::ReviewEdit
                                 | After::ReviewSubmit
                                 | After::Checklist { .. }
+                                | After::Cleared(_)
                                 | After::StackRead
                                 | After::PrRefreshed { .. }
-                                | After::Cleared(_)
                                 | After::Rerun(_)
                         ) =>
                 {

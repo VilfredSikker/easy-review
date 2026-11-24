@@ -196,6 +196,8 @@ pub enum After {
     CommitSelected,
     /// History's next page: once it lands, the waiting `k` moves into it.
     MoreHistory,
+    /// A clear: once it lands, the status line says so; a refusal says why.
+    Cleared(super::clears::Clear),
     /// A stack lookup the Open hub asked for: once it lands, its rows follow.
     StackRead,
     /// The PR section's forced refresh after a pull: once it lands, the
@@ -204,8 +206,6 @@ pub enum After {
         github_count: usize,
         local_count: usize,
     },
-    /// A clear: once it lands, the status line says so; a refusal says why.
-    Cleared(super::clears::Clear),
     /// A rerun's clear: once it lands, the run is planned; a refusal says
     /// why and nothing runs.
     Rerun(super::ai_runs::Rerun),
