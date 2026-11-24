@@ -38,6 +38,8 @@ pub fn start(state: &mut TabViewState, content: &TabContent, kind: CommentType) 
     draft.line = line.and_then(|line| line.new_num.or(line.old_num));
     draft.reply_to = None;
     draft.finding_ref = None;
+    // A paused or emptied edit must not turn this new draft into its edit.
+    draft.edit_id = None;
     draft.kind = kind;
     draft.client_id = None;
     let deleted = line.is_some_and(|line| line.new_num.is_none());

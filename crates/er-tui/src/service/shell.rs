@@ -212,6 +212,18 @@ impl Shell {
         self.pending.len()
     }
 
+    /// A write on `key` whose worker died before it answered.
+    #[cfg(test)]
+    pub fn lose_write(&mut self, key: TabKey, workspace: String, after: After) {
+        let (_, replies) = std::sync::mpsc::channel();
+        self.pending.push(Pending {
+            key,
+            workspace,
+            replies,
+            after,
+        });
+    }
+
     /// The active tab's content, once its load has published.
     #[cfg(test)]
     pub fn active_content(&self) -> Option<Arc<TabContent>> {

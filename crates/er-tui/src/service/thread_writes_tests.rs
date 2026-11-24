@@ -15,12 +15,13 @@ use er_engine::ports::Ports;
 
 use super::loop_tests::{Gate, GatedGit};
 use super::shell::Shell;
+use super::startup::After;
 use super::tests::{
     fixture, key, loaded, path_of, plan, press_app, settle, settle_within, shell, shell_on, SOURCES,
 };
 use super::threads_tests::{
-    active_key, args, both_on, draft_text, er_dir, seed_both, settle_replies, state, step,
-    type_text,
+    active_key, args, both_on, draft_text, early_in_a_second, er_dir, seed_both, settle_replies,
+    state, step, type_text,
 };
 use super::tui_view::{Mode, Overlay};
 use crate::screen::UNPORTED;
@@ -76,6 +77,9 @@ fn reply_and_delete_write_and_draw_like_the_app() {
         keys.extend(typed("Because"));
         keys.push(key(KeyCode::Enter));
         for event in keys {
+            if event.code == KeyCode::Enter {
+                early_in_a_second();
+            }
             step(&mut app, &mut shell, &mut hl, event);
         }
         let replied = rows(&er_dir(&shell));
@@ -169,6 +173,28 @@ fn a_reply_that_never_answers_frees_the_composer() {
     });
 }
 
+/// A delete whose worker dies answers as a refusal, so the status line
+/// says the write was lost.
+#[test]
+fn a_delete_that_never_answers_says_so() {
+    let repo = fixture(1);
+    let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+    er_engine::storage::with_process_test_storage_root(storage.path(), || {
+        let mut shell = shell(&args(vec![path_of(&repo)]), storage.path());
+        settle(&mut shell, loaded);
+        let tab = active_key(&shell);
+        let tabs = shell.host().registry().tabs_view();
+        let workspace = tabs
+            .active_entry()
+            .map(|entry| entry.descriptor.workspace_key())
+            .unwrap_or_else(|| panic!("no active tab"));
+        shell.lose_write(tab, workspace, After::Deleted);
+        settle_replies(&mut shell);
+        let notice = shell.view().notification.clone().unwrap_or_default();
+        assert!(notice.contains("stopped"), "{notice:?}");
+    });
+}
+
 /// `e` on your own question opens it prefilled; Enter changes its text in
 /// place, under the same id and on the same anchor (ruling 5 on #653).
 #[test]
@@ -210,6 +236,38 @@ fn an_edit_changes_the_text_and_keeps_the_row_and_its_anchor() {
         assert_eq!(state(&shell, tab).draft.edit_id, None);
         let notice = shell.view().notification.clone().unwrap_or_default();
         assert!(notice.starts_with("Comment updated"), "{notice}");
+    });
+}
+
+/// A paused edit does not take over the next `q`: the question is a new
+/// row, and the edited one keeps its text.
+#[test]
+fn a_paused_edit_leaves_the_next_question_new() {
+    let repo = fixture(2);
+    let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+    er_engine::storage::with_process_test_storage_root(storage.path(), || {
+        let mut shell = shell(&args(vec![path_of(&repo)]), storage.path());
+        settle(&mut shell, loaded);
+        shell.handle_key(key(KeyCode::Char('q')));
+        type_text(&mut shell, "First");
+        shell.handle_key(key(KeyCode::Enter));
+        settle_replies(&mut shell);
+        for code in [KeyCode::Char('J'), KeyCode::Down, KeyCode::Char('e')] {
+            shell.handle_key(key(code));
+        }
+        shell.handle_key(key(KeyCode::Tab));
+        shell.handle_key(key(KeyCode::Down));
+        shell.handle_key(key(KeyCode::Char('q')));
+        type_text(&mut shell, "Second");
+        shell.handle_key(key(KeyCode::Enter));
+        settle_replies(&mut shell);
+        let texts: Vec<String> = rows(&er_dir(&shell))
+            .iter()
+            .map(|row| row["text"].as_str().unwrap_or_default().to_string())
+            .collect();
+        assert_eq!(texts, ["First", "Second"]);
+        let notice = shell.view().notification.clone().unwrap_or_default();
+        assert_eq!(notice, "Question added: Second");
     });
 }
 

@@ -277,7 +277,7 @@ pub(super) fn step(
 
 /// Waits for the start of a wall-clock second, so two writes a step apart
 /// draw the same seconds in their time stamps.
-fn early_in_a_second() {
+pub(super) fn early_in_a_second() {
     let millis = || {
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
