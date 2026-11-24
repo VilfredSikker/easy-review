@@ -1303,23 +1303,7 @@ fn gh_review_submit_err(e: anyhow::Error) -> String {
         e.downcast_ref::<er_engine::github::GhError>(),
         Some(er_engine::github::GhError::Unprocessable { .. })
     );
-    with_review_hints(raw, unprocessable)
-}
-
-/// A failed review write, with the likely causes of an unprocessable one.
-fn with_review_hints(raw: String, unprocessable: bool) -> String {
-    if !unprocessable {
-        return format!("GitHub review submission failed: {raw}");
-    }
-    let hints = [
-        "blank review payload",
-        "invalid or stale line anchor",
-        "comment position no longer matches PR head",
-    ];
-    format!(
-        "GitHub review submission failed: {raw}\nLikely causes: {}",
-        hints.join("; ")
-    )
+    er_service::with_review_hints(raw, unprocessable)
 }
 
 // ── Pending review ───────────────────────────────────────────────────────────
@@ -1936,18 +1920,6 @@ pub(crate) fn service_open(
     if let er_service::Reply::TargetOpened(_) = reply {}
     // The PR becomes a registry tab whose content the actor loads.
     content_routes::open(state, tab, replace.unwrap_or(false))
-}
-
-/// The wording for a failed review write. GitHub's classification
-/// picks the hints; no error text is read.
-pub(crate) fn review_write_message(error: er_service::WorkspaceError) -> String {
-    match error {
-        er_service::WorkspaceError::Github(gh) => {
-            let unprocessable = matches!(gh, er_engine::github::GhError::Unprocessable { .. });
-            with_review_hints(gh.to_string(), unprocessable)
-        }
-        other => other.to_string(),
-    }
 }
 
 pub(crate) fn service_open_pr_url(

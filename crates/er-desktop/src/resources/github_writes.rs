@@ -169,7 +169,11 @@ fn post_pr_comment(
         return Err(refused("Comment body cannot be empty".into()));
     }
     let (reply, _) = send(desktop, wire, |context| {
-        er_service::Command::PostGithubPrComment { context, body }
+        er_service::Command::PostGithubPrComment {
+            context,
+            body,
+            client_id: None,
+        }
     })
     .map_err(|sent| worded(sent, |error| format!("Failed to post comment: {error}")))?;
     posted(desktop, reply)
@@ -216,7 +220,7 @@ fn submit_decision(
             summary,
         }
     })
-    .map_err(|sent| worded(sent, route_helpers::review_write_message))?;
+    .map_err(|sent| worded(sent, er_service::review_write_message))?;
     posted(desktop, reply)
 }
 
@@ -235,7 +239,7 @@ fn add_pending(
             body,
         }
     })
-    .map_err(|sent| worded(sent, route_helpers::review_write_message))?;
+    .map_err(|sent| worded(sent, er_service::review_write_message))?;
     match reply {
         Reply::PendingReview { pr, .. } => {
             route_helpers::after_github_write(desktop, pr.owner, pr.repo, pr.number);
@@ -259,7 +263,7 @@ fn submit_pending(
             summary,
         }
     })
-    .map_err(|sent| worded(sent, route_helpers::review_write_message))?;
+    .map_err(|sent| worded(sent, er_service::review_write_message))?;
     posted(desktop, reply)
 }
 

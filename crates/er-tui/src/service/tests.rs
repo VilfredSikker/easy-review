@@ -27,12 +27,14 @@ const WIDTH: u16 = 120;
 const HEIGHT: u16 = 30;
 
 /// The flag-on modules, as text.
-pub(super) const SOURCES: [(&str, &str); 14] = [
+pub(super) const SOURCES: [(&str, &str); 16] = [
     ("ai_picker.rs", include_str!("ai_picker.rs")),
     ("config_hub.rs", include_str!("config_hub.rs")),
     ("filter.rs", include_str!("filter.rs")),
+    ("github.rs", include_str!("github.rs")),
     ("layers.rs", include_str!("layers.rs")),
     ("mod.rs", include_str!("mod.rs")),
+    ("pr_probe.rs", include_str!("pr_probe.rs")),
     ("reviewed.rs", include_str!("reviewed.rs")),
     ("session.rs", include_str!("session.rs")),
     ("settings.rs", include_str!("settings.rs")),
@@ -47,9 +49,10 @@ pub(super) const SOURCES: [(&str, &str); 14] = [
 /// No flag-on module reaches the App, fetches a PR's refs itself, writes or
 /// discovers settings itself, writes the working tree itself, starts a
 /// thread, or waits on an actor: the service owns the domain, and a key never
-/// blocks the loop. The one thread a module may start is the watched-file
-/// reader's, which only reads: it makes none of the calls a write takes, and
-/// every er-git name it uses is a read.
+/// blocks the loop. Two modules may start a thread, and both only read: the
+/// watched-file reader makes none of the calls a write takes, and every er-git
+/// name it uses is a read; the PR probe's calls are checked in
+/// `github_tests`.
 #[test]
 fn flag_on_modules_name_no_app_and_never_wait() {
     let banned = [
@@ -95,7 +98,7 @@ fn flag_on_modules_name_no_app_and_never_wait() {
                     "{name} names er-git's {named}"
                 );
             }
-        } else {
+        } else if name != "pr_probe.rs" {
             for spawn in ["thread::spawn", "thread::Builder"] {
                 assert!(!flat.contains(spawn), "{name} names {spawn}");
             }

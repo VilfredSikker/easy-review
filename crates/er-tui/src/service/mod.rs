@@ -9,7 +9,9 @@
 mod ai_picker;
 mod config_hub;
 mod filter;
+mod github;
 mod layers;
+mod pr_probe;
 mod reviewed;
 mod session;
 mod settings;
@@ -31,6 +33,8 @@ pub const RUNS_ON_SERVICE: bool = true;
 mod config_hub_tests;
 #[cfg(test)]
 mod filter_tests;
+#[cfg(test)]
+mod github_tests;
 #[cfg(test)]
 mod loop_tests;
 #[cfg(test)]

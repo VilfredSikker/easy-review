@@ -50,6 +50,7 @@ fn the_pr_level_posts_round_trip() -> anyhow::Result<()> {
         let general = Command::PostGithubPrComment {
             context: pr_tab(&bucket),
             body: "ship it".to_string(),
+            client_id: None,
         };
         assert_eq!(handle.send_and_wait_with(general, WAIT)?, posted);
         let line = Command::PostGithubLineComment {
@@ -152,4 +153,76 @@ fn a_decision_error_crosses_the_service_typed() {
     let github = Arc::new(FakeGitHub::default().with_submit_review_remote(Err(refused.clone())));
     let reply = actor(&github).send_and_wait_with(decision(ReviewEvent::RequestChanges), WAIT);
     assert_eq!(reply, Err(WorkspaceError::Github(refused)));
+}
+
+/// A bucket holding a posted comment and its posted reply on acme/widgets#7.
+fn posted_thread() -> anyhow::Result<(tempfile::TempDir, String)> {
+    let dir = tempfile::tempdir()?;
+    let bucket = dir.path().join("bucket");
+    std::fs::create_dir_all(&bucket)?;
+    let row = |id: &str, github_id: u64, parent: Option<&str>| {
+        serde_json::json!({
+            "id": id, "timestamp": "2026-01-01T00:00:00Z", "file": "src/b.rs",
+            "hunk_index": 0, "line_start": 1, "line_content": "b-one",
+            "comment": "posted", "author": "You", "source": "github",
+            "github_id": github_id, "in_reply_to": parent, "side": "RIGHT"
+        })
+    };
+    er_engine::test_support::write_sidecar_json::<er_engine::ai::ErGithubComments>(
+        &bucket,
+        serde_json::json!({
+            "version": 1, "diff_hash": "",
+            "github": {"pr_number": 7, "owner": "acme", "repo": "widgets"},
+            "comments": [row("gh-11", 11, None), row("gh-12", 12, Some("gh-11"))]
+        }),
+    );
+    Ok((dir, bucket.to_string_lossy().into_owned()))
+}
+
+fn stored_ids(bucket: &str) -> anyhow::Result<Vec<String>> {
+    let store = er_engine::store_registry::store();
+    let scope = er_store::Scope::dir(bucket)?;
+    let er_store::Loaded::Found(stored) =
+        er_engine::ai::annotation_store::load_github_comments(&store, &scope)?
+    else {
+        anyhow::bail!("the comments file is gone");
+    };
+    Ok(stored.value.comments.into_iter().map(|c| c.id).collect())
+}
+
+/// A posted delete reaches GitHub for the root and its reply before the
+/// rows go, and a refused one keeps both rows.
+#[test]
+fn a_posted_delete_removes_its_rows_only_once_github_has() -> anyhow::Result<()> {
+    for refused in [true, false] {
+        let (dir, bucket) = posted_thread()?;
+        let answer = if refused {
+            Err(GhError::Forbidden {
+                message: "not yours".to_string(),
+            })
+        } else {
+            Ok(())
+        };
+        let github = Arc::new(FakeGitHub::default().with_delete_comment(answer));
+        er_engine::storage::with_process_test_storage_root(dir.path(), || {
+            let handle = actor(&github);
+            let delete = Command::DeleteGithubComment {
+                context: pr_tab(&bucket),
+                id: "gh-11".to_string(),
+            };
+            let reply = handle.send_and_wait_with(delete, WAIT);
+            assert_eq!(reply.is_err(), refused, "{reply:?}");
+            let left = stored_ids(&bucket)?;
+            let calls = calls_named(&github, &["delete_comment"]).len();
+            if refused {
+                assert_eq!(left, ["gh-11", "gh-12"], "a refused delete lost rows");
+                assert_eq!(calls, 1);
+            } else {
+                assert!(left.is_empty(), "{left:?}");
+                assert_eq!(calls, 2, "{:?}", github.calls());
+            }
+            Ok::<_, anyhow::Error>(())
+        })?;
+    }
+    Ok(())
 }

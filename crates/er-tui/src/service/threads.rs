@@ -52,6 +52,8 @@ pub fn start(state: &mut TabViewState, content: &TabContent, kind: CommentType) 
 pub enum Composed {
     Stay,
     Send(Box<Command>),
+    /// A GitHub post, whose reply the GitHub writes take.
+    Posted(Box<Command>),
     Unported,
 }
 
@@ -106,9 +108,15 @@ fn submit(state: &mut TabViewState, mode: &mut Mode, content: &TabContent) -> Co
         *mode = Mode::Normal;
         return Composed::Stay;
     }
-    // Edits and replies are P67.2's, and a GitHub comment is P68's.
+    let github = draft.kind == CommentType::GitHubComment;
+    if github && draft.edit_id.is_none() && draft.finding_ref.is_none() {
+        return super::github::submit(state, content, body).map_or(Composed::Unported, |command| {
+            Composed::Posted(Box::new(command))
+        });
+    }
+    // Edits and replies are P67.2's.
     let new_thread = draft.edit_id.is_none() && draft.reply_to.is_none();
-    if !new_thread || draft.finding_ref.is_some() || draft.kind == CommentType::GitHubComment {
+    if !new_thread || draft.finding_ref.is_some() {
         return Composed::Unported;
     }
     let prefix = if draft.kind == CommentType::Note {

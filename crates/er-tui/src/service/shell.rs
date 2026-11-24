@@ -13,7 +13,9 @@ use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
+use er_engine::github::BranchPrProbe;
 use er_engine::tab_identity::DiffMode;
+use er_engine::tabs_record::TabKind;
 use er_engine::TabKey;
 use er_service::{Command, Event, Reply, ReplyReceiver, ServiceHost, SettingsCommand, TabContent};
 use ratatui::backend::{Backend, CrosstermBackend};
@@ -24,12 +26,14 @@ use ratatui::Terminal;
 use super::ai_picker;
 use super::config_hub::{self, ConfigHub, Step};
 use super::filter::{self, Done};
+use super::github;
 use super::layers::{self, Layer};
+use super::pr_probe::Probe;
 use super::reviewed::ReviewedCache;
 use super::settings::{SettingsBridge, Side, Then};
 use super::startup::{self, After, Args, Pending, Start, StartTab};
 use super::threads::{self, Composed};
-use super::tui_view::{self, Ask, Mode, Overlay, TuiView};
+use super::tui_view::{self, Ask, Mode, Overlay, PrKnown, TuiView};
 use super::watched::{Landed, Reader};
 use super::worktree::{self, GitHub, GitPick, HubStep};
 use crate::input::keys::{
@@ -98,8 +102,12 @@ pub struct Shell {
     unsaved: HashSet<TabKey>,
     save_due: Option<Instant>,
     reviewed: ReviewedCache,
-    /// The watched files' reader, the one worker thread this path starts.
+    /// The watched files' reader, a worker thread that only reads.
     watched: Reader,
+    /// The start's PR probe, the other one, until it answers; then its
+    /// answer, until the tab it probed has content.
+    probe: Option<Probe>,
+    probed: Option<(TabKey, BranchPrProbe)>,
     pub should_quit: bool,
 }
 
@@ -116,6 +124,14 @@ impl Shell {
         let mut view = TuiView::default();
         view.settings = Some(host.settings().view());
         view.start_filter = keys.first().copied().zip(start.filter.clone());
+        // As the App's start: the first tab is probed unless a tab is a PR.
+        let first = keys.first().copied().zip(start.tabs.first());
+        let probe = first
+            .filter(|_| start.tabs.iter().all(|t| t.tab.kind == TabKind::Working))
+            .map(|(key, first)| {
+                let github = Arc::clone(&host.ports().github);
+                Probe::spawn(github, key, first.tab.repo_root.clone())
+            });
         let starts = keys.into_iter().zip(start.tabs.iter().cloned()).collect();
         let mut shell = Self {
             host,
@@ -136,6 +152,8 @@ impl Shell {
             save_due: None,
             reviewed: ReviewedCache::default(),
             watched: Reader::spawn(git),
+            probe,
+            probed: None,
             should_quit: false,
         };
         if !start.notices.is_empty() {
@@ -262,6 +280,7 @@ impl Shell {
             }
         }
         self.drain_replies();
+        self.sync_probe();
         self.sync_watched(now);
         self.drain_reloads();
         let landed = self.settings.drain();
@@ -387,7 +406,9 @@ impl Shell {
                 Err(TryRecvError::Empty) => true,
                 // A create whose worker died answers as a refusal, so its
                 // composer takes edits again.
-                Err(TryRecvError::Disconnected) if pending.after == After::Composed => {
+                Err(TryRecvError::Disconnected)
+                    if matches!(pending.after, After::Composed | After::Posted) =>
+                {
                     let lost = er_service::WorkspaceError::Failed(
                         "The write stopped before it answered".into(),
                     );
@@ -436,6 +457,36 @@ impl Shell {
                 Ok(Reply::AnnotationWritten { .. }) if after == After::Composed => {
                     self.composed(key);
                 }
+                Ok(Reply::AnnotationWritten { .. } | Reply::CommentPosted { .. })
+                    if after == After::Posted =>
+                {
+                    self.posted(key);
+                }
+                Err(error) if after == After::Posted => {
+                    let message = error.to_string();
+                    if let Some(state) = self.view.tab_mut_if_open(key) {
+                        github::refused(state, &message);
+                    }
+                    self.failure(Side::Reply, message);
+                }
+                Ok(Reply::CommentsSynced {
+                    github_count,
+                    local_count,
+                }) if after == After::Synced => {
+                    self.view.learn_pr(key, PrKnown::Present);
+                    self.notify(github::synced(github_count, local_count));
+                }
+                Err(error) if after == After::Synced => {
+                    let message = error.to_string();
+                    if let Some(known) = github::known_after_refusal(&message) {
+                        self.view.learn_pr(key, known);
+                    }
+                    self.failure(Side::Reply, message);
+                }
+                Ok(Reply::ReviewSubmitted { .. }) if after == After::Approved => {
+                    self.notify("PR approved".into());
+                }
+                Err(error) if after == After::Approved => self.review_failure(error),
                 Err(error) if after == After::Composed => {
                     if let Some(state) = self.view.tab_mut_if_open(key) {
                         state.sent = None;
@@ -564,6 +615,14 @@ impl Shell {
                 if let Some(path) = state.watched.deleting.take() {
                     let command = Command::DeleteWatchedFile { key, path };
                     self.post(key, workspace, command, After::Watched);
+                }
+                return;
+            }
+            TuiAction::Write(Write::ApprovePr) => {
+                self.view.input_mode = Mode::Normal;
+                if !self.writing(key, After::Approved) {
+                    let command = github::approve(content);
+                    self.post(key, workspace, command, After::Approved);
                 }
                 return;
             }
@@ -715,6 +774,13 @@ impl Shell {
                 }
                 return;
             }
+            A::StartGithubComment => {
+                let known = self.view.pr_known(key, content);
+                let state = self.view.tab_mut(key, content);
+                let started = github::start_line(state, content, known);
+                return self.compose(started);
+            }
+            A::SyncGithubComments => return self.pull_comments(key, workspace, content),
             A::ResumeComment => {
                 self.view.input_mode = Mode::Comment;
                 return;
@@ -808,6 +874,7 @@ impl Shell {
         match composed {
             Composed::Stay => {}
             Composed::Send(command) => self.post(key, workspace, *command, After::Composed),
+            Composed::Posted(command) => self.post(key, workspace, *command, After::Posted),
             Composed::Unported => self.unported(),
         }
     }
@@ -823,6 +890,88 @@ impl Shell {
             self.view.input_mode = Mode::Normal;
         }
         self.notify(message);
+    }
+
+    /// A GitHub post landed on `key`'s tab: its draft clears, and the
+    /// composer closes if that tab is still the one composing.
+    fn posted(&mut self, key: TabKey) {
+        let active = self.active().map(|(active, ..)| active);
+        let Some(message) = self.view.tab_mut_if_open(key).and_then(github::landed) else {
+            return;
+        };
+        if active == Some(key) && self.view.input_mode == Mode::Comment {
+            self.view.input_mode = Mode::Normal;
+        }
+        self.notify(message.into());
+    }
+
+    /// Opens the composer a GitHub start allowed, or says why it refused.
+    fn compose(&mut self, started: Result<bool, String>) {
+        match started {
+            Ok(true) => self.view.input_mode = Mode::Comment,
+            Ok(false) => {}
+            Err(message) => self.notify(message),
+        }
+    }
+
+    /// Whether `key`'s tab has a write of this kind in flight. The service
+    /// makes every write it is sent, so a second one waits for the first.
+    fn writing(&self, key: TabKey, after: After) -> bool {
+        self.pending
+            .iter()
+            .any(|pending| pending.key == key && pending.after == after)
+    }
+
+    fn pull_comments(&mut self, key: TabKey, workspace: &str, content: &TabContent) {
+        if !self.writing(key, After::Synced) {
+            self.post(key, workspace, github::sync(content), After::Synced);
+        }
+    }
+
+    /// A refused review write, in the review wording the desktop shows. The
+    /// actor's event carries the plain text, so the reply takes its twin.
+    fn review_failure(&mut self, error: er_service::WorkspaceError) {
+        let plain = error.to_string();
+        let worded = er_service::review_write_message(error);
+        if worded == plain {
+            return self.failure(Side::Reply, plain);
+        }
+        self.settings.absorb_reply(&plain);
+        self.settings.admit_message(&worded);
+        self.notify(worded);
+    }
+
+    /// The start's probe landed: once its tab has content, what it found
+    /// goes in the view, and a PR on another base says how to open it, as
+    /// the App's hint does.
+    fn sync_probe(&mut self) {
+        if let Some(landed) = self.probe.as_ref().and_then(Probe::try_landed) {
+            self.probe = None;
+            self.probed = Some(landed);
+        }
+        let Some(key) = self.probed.as_ref().map(|(key, _)| *key) else {
+            return;
+        };
+        let workspace = self.workspace_of(key);
+        let Some(content) = workspace.and_then(|workspace| self.host.content(&workspace, key))
+        else {
+            return;
+        };
+        let Some((_, probe)) = self.probed.take() else {
+            return;
+        };
+        match probe {
+            BranchPrProbe::Present { number, base } => {
+                self.view.learn_pr(key, PrKnown::Present);
+                if base != content.tab.base_branch {
+                    self.notify(format!(
+                        "PR #{number} targets {base} — run: er --pr {number}"
+                    ));
+                }
+            }
+            BranchPrProbe::Absent => self.view.learn_pr(key, PrKnown::Absent),
+            BranchPrProbe::Unknown => {}
+        }
     }
 
     fn toggle_staged(&mut self, key: TabKey, workspace: &str, content: &TabContent) {
@@ -917,6 +1066,16 @@ impl Shell {
             HubStep::Run(GitPick::StageFile) => self.toggle_staged(key, workspace, content),
             HubStep::Run(GitPick::StageAll) => {
                 self.post(key, workspace, Command::StageAll { key }, After::Nothing);
+            }
+            HubStep::Run(GitPick::PullComments) => self.pull_comments(key, workspace, content),
+            HubStep::Run(GitPick::CommentOnPr) => {
+                let known = self.view.pr_known(key, content);
+                let state = self.view.tab_mut(key, content);
+                let started = github::start_general(state, known);
+                self.compose(started);
+            }
+            HubStep::Run(GitPick::ApprovePr) => {
+                self.view.input_mode = Mode::Confirm(Ask::ApprovePr);
             }
             HubStep::Run(GitPick::Unported) => self.unported(),
         }

@@ -228,6 +228,9 @@ pub enum Command {
         body: String,
         client_id: Option<String>,
     },
+    /// Delete a posted comment and its posted replies on GitHub, then their
+    /// local rows. A refused delete keeps every row.
+    DeleteGithubComment { context: TabContext, id: String },
     /// Promote a question or note to a GitHub comment, then remove the source.
     PromoteToComment {
         context: TabContext,
@@ -269,8 +272,13 @@ pub enum Command {
     },
 
     // ── PR-level posts ──
-    /// Post a PR-wide comment.
-    PostGithubPrComment { context: TabContext, body: String },
+    /// Post a PR-wide comment. A resend with the same `client_id` finds the
+    /// comment an unknown outcome may have made, as a line comment's does.
+    PostGithubPrComment {
+        context: TabContext,
+        body: String,
+        client_id: Option<String>,
+    },
     /// Post one line comment outside any review. Refused while the viewer
     /// has a pending review, which GitHub would attach it to.
     PostGithubLineComment {
