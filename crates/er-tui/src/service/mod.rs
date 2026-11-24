@@ -6,6 +6,7 @@
 //! domain state goes to the service as a command, sent without waiting. An
 //! action no service route covers yet says so on the status line.
 
+mod session;
 mod shell;
 mod startup;
 mod tui_view;
@@ -17,5 +18,7 @@ pub use startup::Args;
 /// stays reachable and compiled in this build until the flag is removed.
 pub const RUNS_ON_SERVICE: bool = true;
 
+#[cfg(test)]
+mod loop_tests;
 #[cfg(test)]
 mod tests;

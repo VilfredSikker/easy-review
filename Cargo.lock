@@ -1528,6 +1528,7 @@ dependencies = [
  "er-git",
  "er-github",
  "er-service",
+ "er-store",
  "ratatui",
  "serde",
  "serde_json",

@@ -84,6 +84,9 @@ impl TuiView {
         self.tabs.entry(key).or_insert_with(|| {
             let mut state = TabViewState::default();
             state.scroll_to_cursor(content.diff.files.first().map(|file| &**file));
+            if let Some(session) = super::session::load(content) {
+                super::session::restore(&mut state, session, content);
+            }
             state
         })
     }
@@ -114,6 +117,9 @@ pub struct TabViewState {
     pub file_tree_width: u16,
     pub panel_width: u16,
     pub draft: Draft,
+    /// The filter the session file holds, saved back as it came until the
+    /// flag path applies filters.
+    pub saved_filter: SavedFilter,
     pub filter_input: String,
     pub commit_input: String,
     context_overrides: HashMap<String, usize>,
@@ -141,12 +147,20 @@ impl Default for TabViewState {
             file_tree_width: 32,
             panel_width: 40,
             draft: Draft::default(),
+            saved_filter: SavedFilter::default(),
             filter_input: String::new(),
             commit_input: String::new(),
             context_overrides: HashMap::new(),
             mtime_cache: HashMap::new(),
         }
     }
+}
+
+/// A session's filter and its history.
+#[derive(Default)]
+pub struct SavedFilter {
+    pub expr: String,
+    pub history: Vec<String>,
 }
 
 /// The comment being written, and where it lands.
@@ -158,6 +172,13 @@ pub struct Draft {
     pub kind: CommentType,
     pub reply_to: Option<String>,
     pub finding_ref: Option<String>,
+    pub edit_id: Option<String>,
+    /// The review side, `LEFT` or `RIGHT`.
+    pub side: Option<String>,
+    pub line_end: Option<usize>,
+    /// The id a retried GitHub post carries, so it finds the comment it
+    /// already made (ADR 0053).
+    pub client_id: Option<String>,
 }
 
 impl Default for Draft {
@@ -170,6 +191,10 @@ impl Default for Draft {
             kind: CommentType::GitHubComment,
             reply_to: None,
             finding_ref: None,
+            edit_id: None,
+            side: None,
+            line_end: None,
+            client_id: None,
         }
     }
 }

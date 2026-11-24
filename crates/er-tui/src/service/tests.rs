@@ -22,13 +22,14 @@ use super::tui_view::Overlay;
 use crate::screen::UNPORTED;
 use crate::ui::highlight::Highlighter;
 
-const WAIT: Duration = Duration::from_secs(20);
+pub(super) const WAIT: Duration = Duration::from_secs(20);
 const WIDTH: u16 = 120;
 const HEIGHT: u16 = 30;
 
 /// The flag-on modules, as text.
-const SOURCES: [(&str, &str); 4] = [
+const SOURCES: [(&str, &str); 5] = [
     ("mod.rs", include_str!("mod.rs")),
+    ("session.rs", include_str!("session.rs")),
     ("shell.rs", include_str!("shell.rs")),
     ("startup.rs", include_str!("startup.rs")),
     ("tui_view.rs", include_str!("tui_view.rs")),
@@ -67,7 +68,7 @@ fn flag_on_modules_name_no_app_and_never_wait() {
 
 // The lint gate reads this file alone, without the module's `cfg(test)`.
 #[cfg(test)]
-fn git(dir: &Path, args: &[&str]) {
+pub(super) fn git(dir: &Path, args: &[&str]) {
     let out = Git::new("git")
         .args([
             "-c",
@@ -90,7 +91,7 @@ fn git(dir: &Path, args: &[&str]) {
 
 /// A repo on `feature` over `main`, where each of `files` files changes in
 /// two hunks. Past 500 files a diff this size loads with stubs.
-fn fixture(files: usize) -> tempfile::TempDir {
+pub(super) fn fixture(files: usize) -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
     let root = dir.path();
     git(root, &["init", "-q", "-b", "main"]);
@@ -118,32 +119,36 @@ fn fixture(files: usize) -> tempfile::TempDir {
     dir
 }
 
-fn path_of(dir: &tempfile::TempDir) -> String {
+pub(super) fn path_of(dir: &tempfile::TempDir) -> String {
     let canonical: PathBuf = std::fs::canonicalize(dir.path()).unwrap_or_else(|e| panic!("{e}"));
     canonical.to_string_lossy().into_owned()
 }
 
-fn plan(args: &Args) -> Start {
+pub(super) fn plan(args: &Args) -> Start {
     startup::plan(args, &*Ports::cli().git).unwrap_or_else(|e| panic!("{e:#}"))
 }
 
-fn shell(args: &Args, config_dir: &Path) -> Shell {
+pub(super) fn shell(args: &Args, config_dir: &Path) -> Shell {
     shell_on(Ports::cli(), &plan(args), config_dir)
 }
 
-fn shell_on(ports: Ports, start: &Start, config_dir: &Path) -> Shell {
+pub(super) fn shell_on(ports: Ports, start: &Start, config_dir: &Path) -> Shell {
     let (tx, events) = mpsc::channel();
     let host = ServiceHost::new(ports, config_dir.join("config.toml")).with_events(tx);
     Shell::start(host, events, start).unwrap_or_else(|e| panic!("{e:#}"))
 }
 
 /// Ticks the loop until `ready` holds.
-fn settle(shell: &mut Shell, ready: impl Fn(&Shell) -> bool) {
+pub(super) fn settle(shell: &mut Shell, ready: impl Fn(&Shell) -> bool) {
     assert!(settle_within(shell, WAIT, ready), "the shell never settled");
 }
 
 /// Ticks the loop until `ready` holds or `wait` passes; answers which.
-fn settle_within(shell: &mut Shell, wait: Duration, ready: impl Fn(&Shell) -> bool) -> bool {
+pub(super) fn settle_within(
+    shell: &mut Shell,
+    wait: Duration,
+    ready: impl Fn(&Shell) -> bool,
+) -> bool {
     let deadline = Instant::now() + wait;
     while !ready(shell) && Instant::now() < deadline {
         shell.tick(Instant::now());
@@ -153,11 +158,11 @@ fn settle_within(shell: &mut Shell, wait: Duration, ready: impl Fn(&Shell) -> bo
     ready(shell)
 }
 
-fn key(code: KeyCode) -> KeyEvent {
+pub(super) fn key(code: KeyCode) -> KeyEvent {
     KeyEvent::new(code, KeyModifiers::NONE)
 }
 
-fn shell_frame(shell: &mut Shell, highlighter: &mut Highlighter) -> Buffer {
+pub(super) fn shell_frame(shell: &mut Shell, highlighter: &mut Highlighter) -> Buffer {
     let mut terminal =
         Terminal::new(TestBackend::new(WIDTH, HEIGHT)).unwrap_or_else(|e| panic!("{e}"));
     terminal
@@ -176,7 +181,7 @@ fn app_frame(app: &er_engine::app::App, highlighter: &mut Highlighter) -> Buffer
     terminal.backend().buffer().clone()
 }
 
-fn rows(buffer: &Buffer) -> Vec<String> {
+pub(super) fn rows(buffer: &Buffer) -> Vec<String> {
     buffer
         .content
         .chunks(usize::from(WIDTH))
@@ -242,7 +247,7 @@ fn press_app(app: &mut er_engine::app::App, code: KeyCode) {
     crate::handle_key(app, key(code), &tx, &mut None, &mut cache).unwrap_or_else(|e| panic!("{e}"));
 }
 
-fn loaded(shell: &Shell) -> bool {
+pub(super) fn loaded(shell: &Shell) -> bool {
     shell.active_content().is_some()
 }
 

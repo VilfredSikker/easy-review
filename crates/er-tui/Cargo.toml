@@ -15,6 +15,8 @@ er-agent = { path = "../er-agent" }
 er-engine = { path = "../er-engine" }
 er-git = { path = "../er-git" }
 er-service = { path = "../er-service", optional = true }
+# The flag path saves its view file through the store.
+er-store = { path = "../er-store", optional = true }
 
 # TUI
 ratatui = "0.30"
@@ -37,7 +39,7 @@ tempfile = "3"
 [features]
 default = []
 # Compiles the v1 service path beside the App path. Off by default.
-v1-service = ["dep:er-service"]
+v1-service = ["dep:er-service", "dep:er-store"]
 
 [dev-dependencies]
 # Thread-scoped ER_STORAGE_ROOT override for tests that seed the projects record.

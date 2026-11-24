@@ -30,6 +30,11 @@ use crate::ui::highlight::Highlighter;
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
 /// How long a status-line message stays up.
 const NOTIFICATION_DWELL: Duration = Duration::from_secs(3);
+/// How often each loaded tab's sidecars are read again, for writes made
+/// outside this process.
+const RELOAD_INTERVAL: Duration = Duration::from_secs(1);
+/// How long after the last key a tab's session is saved.
+const SESSION_SAVE_DELAY: Duration = Duration::from_secs(2);
 
 /// Opens the arguments' tabs on an in-process service and runs the loop
 /// until the user quits.
@@ -68,6 +73,11 @@ pub struct Shell {
     start_notice: Option<String>,
     redraw: bool,
     notified_at: Option<Instant>,
+    reloaded_at: Option<Instant>,
+    /// The tabs a key changed since their session was saved, and when the
+    /// save is due.
+    unsaved: HashSet<TabKey>,
+    save_due: Option<Instant>,
     pub should_quit: bool,
 }
 
@@ -92,6 +102,9 @@ impl Shell {
             start_notice: None,
             redraw: true,
             notified_at: None,
+            reloaded_at: None,
+            unsaved: HashSet::new(),
+            save_due: None,
             should_quit: false,
         };
         if !start.notices.is_empty() {
@@ -163,9 +176,10 @@ impl Shell {
 
     /// The loop's duties, none of which waits: an event from an actor or the
     /// registry asks for a draw, landed replies are applied, a selected stub
-    /// is sent to parse, and an old status-line message is cleared. A message
-    /// holds while the active tab loads, so its dwell runs on frames that
-    /// show the tab.
+    /// is sent to parse, the sidecars are read again each second, a session
+    /// is saved once its keys stop, and an old status-line message is
+    /// cleared. A message holds while the active tab loads, so its dwell runs
+    /// on frames that show the tab.
     pub fn tick(&mut self, now: Instant) {
         loop {
             match self.events.try_recv() {
@@ -175,6 +189,16 @@ impl Shell {
             }
         }
         self.drain_replies();
+        if self
+            .reloaded_at
+            .is_none_or(|at| now.duration_since(at) >= RELOAD_INTERVAL)
+        {
+            self.reloaded_at = Some(now);
+            self.reload_sidecars();
+        }
+        if self.save_due.is_some_and(|due| now >= due) {
+            self.save_sessions();
+        }
         let loaded = self.parse_selected_stub();
         if !loaded && self.notified_at.is_some() {
             self.notified_at = Some(now);
@@ -186,6 +210,54 @@ impl Shell {
             self.view.notification = None;
             self.redraw = true;
         }
+    }
+
+    /// Asks the actor of every loaded tab to read its sidecars again. The
+    /// reply is dropped: a reload that read something publishes, and that
+    /// event asks for the draw.
+    fn reload_sidecars(&self) {
+        let tabs = self.host.registry().tabs_view();
+        for entry in &tabs.tabs {
+            let workspace = entry.descriptor.workspace_key();
+            if self.host.content(&workspace, entry.key).is_some() {
+                drop(
+                    self.host
+                        .post(&workspace, Command::ReloadSidecars { key: entry.key }),
+                );
+            }
+        }
+    }
+
+    /// Saves the session of every tab a key changed. A failed save says so
+    /// on the status line.
+    fn save_sessions(&mut self) {
+        self.save_due = None;
+        let tabs = self.host.registry().tabs_view();
+        let mut failed = None;
+        for key in std::mem::take(&mut self.unsaved) {
+            let Some(entry) = tabs.tabs.iter().find(|entry| entry.key == key) else {
+                continue;
+            };
+            let content = self.host.content(&entry.descriptor.workspace_key(), key);
+            let (Some(content), Some(state)) = (content, self.view.tab(key)) else {
+                continue;
+            };
+            if let Err(error) = super::session::save(&content, state) {
+                failed = Some(format!("Session not saved: {error}"));
+            }
+        }
+        if let Some(message) = failed {
+            self.notify(message);
+        }
+    }
+
+    /// Saves the sessions before the loop ends, the active tab's included.
+    fn quit(&mut self) {
+        if let Some((key, _, Some(_))) = self.active() {
+            self.unsaved.insert(key);
+        }
+        self.save_sessions();
+        self.should_quit = true;
     }
 
     fn drain_replies(&mut self) {
@@ -245,7 +317,7 @@ impl Shell {
         let Some((tab, workspace, Some(content))) = self.active() else {
             match key.code {
                 KeyCode::Char('q') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    self.should_quit = true;
+                    self.quit();
                 }
                 KeyCode::Char(']') => self.step_tab(true),
                 KeyCode::Char('[') => self.step_tab(false),
@@ -253,6 +325,8 @@ impl Shell {
             }
             return;
         };
+        self.unsaved.insert(tab);
+        self.save_due = Some(Instant::now() + SESSION_SAVE_DELAY);
         if let Some(action) = self.with_screen(tab, &content, |screen| key_action(key, screen)) {
             self.execute(action, tab, &workspace, &content);
         }
@@ -292,10 +366,7 @@ impl Shell {
             .get(state.selected_file)
             .map(|file| &**file);
         let selected = match action {
-            A::Quit => {
-                self.should_quit = true;
-                return;
-            }
+            A::Quit => return self.quit(),
             A::NextFile => state.move_file(content, true),
             A::PrevFile => state.move_file(content, false),
             A::NextUnreviewedFile => match state.next_unreviewed(content) {
