@@ -14,7 +14,7 @@ use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use er_engine::TabKey;
-use er_service::{Command, Event, Reply, ServiceHost, SettingsCommand, TabContent};
+use er_service::{Command, Event, Reply, ReplyReceiver, ServiceHost, SettingsCommand, TabContent};
 use ratatui::backend::{Backend, CrosstermBackend};
 use ratatui::text::Line;
 use ratatui::widgets::Paragraph;
@@ -33,6 +33,8 @@ use crate::ui::highlight::Highlighter;
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
 /// How long a status-line message stays up.
 const NOTIFICATION_DWELL: Duration = Duration::from_secs(3);
+/// How long a message worth a longer read stays up, as the App's long notice.
+const NOTIFICATION_DWELL_LONG: Duration = Duration::from_secs(5);
 /// How often each loaded tab's sidecars are read again, for writes made
 /// outside this process.
 const RELOAD_INTERVAL: Duration = Duration::from_secs(1);
@@ -77,6 +79,9 @@ pub struct Shell {
     start_notice: Option<String>,
     redraw: bool,
     notified_at: Option<Instant>,
+    dwell: Duration,
+    /// The sidecar reloads in flight, whose failures pair with their events.
+    reloads: Vec<ReplyReceiver>,
     reloaded_at: Option<Instant>,
     /// The tabs a key changed since their session was saved, and when the
     /// save is due.
@@ -107,6 +112,8 @@ impl Shell {
             start_notice: None,
             redraw: true,
             notified_at: None,
+            dwell: NOTIFICATION_DWELL,
+            reloads: Vec::new(),
             reloaded_at: None,
             unsaved: HashSet::new(),
             save_due: None,
@@ -121,6 +128,7 @@ impl Shell {
             let revision = shell.host.settings().view().revision;
             if shell.settings.admit_once(revision, &error) {
                 shell.notify(error);
+                shell.dwell = NOTIFICATION_DWELL_LONG;
             }
         }
         Ok(shell)
@@ -189,7 +197,14 @@ impl Shell {
     fn notify(&mut self, message: String) {
         self.view.notification = Some(message);
         self.notified_at = Some(Instant::now());
+        self.dwell = NOTIFICATION_DWELL;
         self.redraw = true;
+    }
+
+    /// Runs a failed reply through the same path a landed one takes.
+    #[cfg(test)]
+    pub fn land_failed_reply(&mut self, message: String) {
+        self.failure(Side::Reply, message);
     }
 
     /// Shows an actor's failure, once for its event and its reply together.
@@ -218,6 +233,7 @@ impl Shell {
             }
         }
         self.drain_replies();
+        self.drain_reloads();
         let landed = self.settings.drain();
         for message in landed.failures {
             self.failure(Side::Reply, message);
@@ -231,14 +247,15 @@ impl Shell {
         if let Some(overlay) = self.view.overlay.as_mut() {
             overlay.sync(&view, &self.settings.ai_label(&view));
         }
-        for message in landed
-            .messages
-            .into_iter()
-            .chain(picked)
-            .chain(still_failed)
-        {
+        for message in landed.messages.into_iter().chain(picked) {
             self.settings.admit_message(&message);
             self.notify(message);
+        }
+        // A reload that still fails says why for longer, as the App's does.
+        if let Some(error) = still_failed {
+            self.settings.admit_message(&error);
+            self.notify(error);
+            self.dwell = NOTIFICATION_DWELL_LONG;
         }
         if self
             .reloaded_at
@@ -255,7 +272,7 @@ impl Shell {
             self.notified_at = Some(now);
         } else if self
             .notified_at
-            .is_some_and(|at| now.duration_since(at) >= NOTIFICATION_DWELL)
+            .is_some_and(|at| now.duration_since(at) >= self.dwell)
         {
             self.notified_at = None;
             self.view.notification = None;
@@ -263,19 +280,36 @@ impl Shell {
         }
     }
 
-    /// Asks the actor of every loaded tab to read its sidecars again. The
-    /// reply is dropped: a reload that read something publishes, and that
-    /// event asks for the draw.
-    fn reload_sidecars(&self) {
+    /// Asks the actor of every loaded tab to read its sidecars again. A
+    /// reload that read something publishes, and that event asks for the
+    /// draw; only a failed reply is looked at.
+    fn reload_sidecars(&mut self) {
         let tabs = self.host.registry().tabs_view();
         for entry in &tabs.tabs {
             let workspace = entry.descriptor.workspace_key();
             if self.host.content(&workspace, entry.key).is_some() {
-                drop(
-                    self.host
-                        .post(&workspace, Command::ReloadSidecars { key: entry.key }),
-                );
+                let replies = self
+                    .host
+                    .post(&workspace, Command::ReloadSidecars { key: entry.key });
+                self.reloads.push(replies);
             }
+        }
+    }
+
+    fn drain_reloads(&mut self) {
+        let mut failures = Vec::new();
+        self.reloads.retain(|replies| match replies.try_recv() {
+            Ok(reply) => {
+                if let Err(error) = reply {
+                    failures.push(error.to_string());
+                }
+                false
+            }
+            Err(TryRecvError::Empty) => true,
+            Err(TryRecvError::Disconnected) => false,
+        });
+        for message in failures {
+            self.failure(Side::Reply, message);
         }
     }
 
@@ -343,6 +377,7 @@ impl Shell {
                 }
                 Ok(_) => {}
                 Err(error) if self.host.content(&workspace, key).is_none() => {
+                    self.settings.absorb_reply(&error.to_string());
                     self.load_errors.insert(key, error.to_string());
                 }
                 Err(error) => self.failure(Side::Reply, error.to_string()),

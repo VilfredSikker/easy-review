@@ -4,7 +4,9 @@
 //! A failed command answers twice, as a `CommandFailed` event and as an `Err`
 //! reply, and the event names no command. So a failure shown from one side
 //! waits briefly for its twin from the other, and the pair shows once; the
-//! same failure from a second command shows again.
+//! same failure from a second command shows again. A reply the loop keeps for
+//! itself still meets its event here, so that event never waits on as an
+//! unpaired entry another command's failure could pair with.
 
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::time::{Duration, Instant};
@@ -49,8 +51,8 @@ pub struct SettingsBridge {
     replies: Vec<(Then, SettingsReceiver)>,
     /// The start notices shown, with the settings revision they came at.
     start_log: Vec<(u64, String)>,
-    /// Failures shown that still wait for their twin.
-    unpaired: Vec<(Side, String, Instant)>,
+    /// Failures that still wait for their twin, and whether that twin shows.
+    unpaired: Vec<(Side, String, Instant, bool)>,
     /// Every notice shown through the bridge.
     #[cfg(test)]
     shown: Vec<String>,
@@ -106,20 +108,40 @@ impl SettingsBridge {
     /// Whether a failure shows: it does unless it is the twin of one shown
     /// from the other side within the window.
     pub fn admit_failure(&mut self, side: Side, message: &str) -> bool {
+        let show = match self.take_twin(side, message) {
+            Some(twin_shows) => twin_shows,
+            None => {
+                self.unpaired
+                    .push((side, message.to_string(), Instant::now(), false));
+                true
+            }
+        };
+        if show {
+            self.record(message);
+        }
+        show
+    }
+
+    /// Takes a reply the loop shows its own way (a first load's error): it
+    /// pairs with its event, and that event shows as it would alone.
+    pub fn absorb_reply(&mut self, message: &str) {
+        if self.take_twin(Side::Reply, message).is_none() {
+            self.unpaired
+                .push((Side::Reply, message.to_string(), Instant::now(), true));
+        }
+    }
+
+    /// Removes the unpaired failure from the other side with this text, and
+    /// answers whether `side`'s report of it is to show.
+    fn take_twin(&mut self, side: Side, message: &str) -> Option<bool> {
         let now = Instant::now();
         self.unpaired
-            .retain(|(_, _, at)| now.duration_since(*at) < PAIR_WINDOW);
-        let twin = self
+            .retain(|(_, _, at, _)| now.duration_since(*at) < PAIR_WINDOW);
+        let at = self
             .unpaired
             .iter()
-            .position(|(from, shown, _)| *from != side && shown == message);
-        if let Some(at) = twin {
-            self.unpaired.remove(at);
-            return false;
-        }
-        self.unpaired.push((side, message.to_string(), now));
-        self.record(message);
-        true
+            .position(|(from, shown, _, _)| *from != side && shown == message)?;
+        Some(self.unpaired.remove(at).3)
     }
 
     /// Records a notice that has no twin to wait for.
