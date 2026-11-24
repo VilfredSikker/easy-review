@@ -1,8 +1,6 @@
-//! The flag-on Open hub (`o`). Its rows are the App's, in the App's order;
-//! "Change compare base" is the one live row. Each section is built by one
-//! function, so the entry that ports a section replaces one body: the
-//! Navigate rows go to P75, the Stack section to P73, and the Current PR row
-//! to P75. Until then their rows answer the unported message.
+//! The flag-on Open hub (`o`): the App's rows, with "Change compare base"
+//! live. One function per section, for P75 (Navigate, Current PR) and P73
+//! (Stack) to replace; until then those rows answer unported.
 
 use er_service::TabContent;
 
@@ -55,8 +53,7 @@ fn header(label: &str) -> Row {
     (item, pick)
 }
 
-/// The Navigate section. P75 makes Browse folders and Switch worktree live;
-/// the worktree count is not read here, since that read waits on git.
+/// The Navigate section; no worktree count, since that read waits on git.
 fn navigate_rows(content: &TabContent) -> Vec<Row> {
     let tab = &content.tab;
     let remote = tab.identity().is_remote();
@@ -92,15 +89,13 @@ fn navigate_rows(content: &TabContent) -> Vec<Row> {
     ]
 }
 
-/// The Stack section's rows. P73 replaces this body with the stack read
-/// from the PR section.
+/// The Stack section (P73).
 fn stack_rows(_content: &TabContent) -> Vec<Row> {
     let description = format!("Stacked PRs are {UNPORTED}");
     vec![row("Stacked PRs", &description, true, OpenPick::Unported)]
 }
 
-/// The Current PR section, shown when the tab has a PR, as the App's. P75
-/// makes its browser row live.
+/// The Current PR section (P75).
 fn current_pr_rows(content: &TabContent) -> Vec<Row> {
     if content.tab.pr_number.is_none() {
         return Vec::new();
@@ -135,8 +130,7 @@ impl OpenHub {
         }
     }
 
-    /// Runs one key, as the App's modal hub does: moves skip headers, and
-    /// Enter closes the hub, a disabled row saying why.
+    /// One key, as the App's modal hub.
     pub fn act(&mut self, action: OverlayAction) -> OpenStep {
         let selectable = (0..self.rows.len()).filter(|&at| !self.rows[at].is_header);
         match action {

@@ -52,8 +52,7 @@ const NOTIFICATION_DWELL_LONG: Duration = Duration::from_secs(5);
 const RELOAD_INTERVAL: Duration = Duration::from_secs(1);
 /// How long after the last key a tab's session is saved.
 const SESSION_SAVE_DELAY: Duration = Duration::from_secs(2);
-/// How many times a reload refused because its tab moved is sent again, as
-/// the service's worktree writes resend theirs.
+/// Resends of a reload refused as moved, as the service's worktree writes.
 const RELOAD_TRIES: u8 = 3;
 
 /// Opens the arguments' tabs on an in-process service and runs the loop
@@ -302,8 +301,7 @@ impl Shell {
     pub fn tick(&mut self, now: Instant) {
         loop {
             match self.events.try_recv() {
-                // A load refused because its tab moved is sent again, or
-                // its reply says so; its event says nothing.
+                // A moved load is resent or its reply says so.
                 Ok(Event::CommandFailed { message }) if er_service::refused_as_moved(&message) => {}
                 Ok(Event::CommandFailed { message }) => self.failure(Side::Event, message),
                 Ok(_) => self.redraw = true,
@@ -436,9 +434,7 @@ impl Shell {
                     false
                 }
                 Err(TryRecvError::Empty) => true,
-                // A write or reload whose worker died answers as a refusal,
-                // so its composer takes edits again, a delete says so, and a
-                // reload lets go of what waited on it.
+                // A dead write or reload answers as a refusal.
                 Err(TryRecvError::Disconnected)
                     if pending.after.follows()
                         || matches!(pending.after, After::Composed | After::Deleted) =>
@@ -1073,8 +1069,7 @@ impl Shell {
         }
     }
 
-    /// Sends a refresh of `key`'s tab, auto-unmark included; once it lands
-    /// the selection stays on its file.
+    /// A refresh with auto-unmark; the selection stays on its file.
     fn refresh(&mut self, key: TabKey, workspace: &str, content: &TabContent, why: Refresh) {
         let state = self.view.tab_mut(key, content);
         state.refresh_follow = Some(Follow::of(state, content));
@@ -1086,8 +1081,7 @@ impl Shell {
         self.post(key, workspace, command, After::Refreshed(why));
     }
 
-    /// A mode switch, refresh or base change landed: the selection follows
-    /// the App's rule for it, and the status line says what it did.
+    /// A reload landed: the App's selection rule, and its notice.
     fn reloaded(&mut self, key: TabKey, workspace: &str, after: After, cleared: usize) {
         if matches!(after, After::Refreshed(Refresh::Watched { .. })) {
             self.watch.landed(key);
@@ -1138,9 +1132,7 @@ impl Shell {
         }
     }
 
-    /// A mode switch, refresh or base change was refused: what waited on it
-    /// lets go, and the status line says why. A session that waited on a
-    /// refused switch restores its filter and toggles in the view shown.
+    /// A reload was refused: its own waits let go, and a restore keeps its filter.
     fn reload_refused(&mut self, key: TabKey, after: After, error: &er_service::WorkspaceError) {
         if matches!(after, After::Refreshed(Refresh::Watched { .. })) {
             self.watch.landed(key);
@@ -1211,8 +1203,7 @@ impl Shell {
         }
     }
 
-    /// The watcher follows the active tab, and a change that has settled
-    /// refreshes the tab it was watching.
+    /// The watcher follows the active tab and refreshes settled changes.
     fn sync_watch(&mut self, now: Instant) {
         let active = self.active();
         let shown = active
@@ -1236,8 +1227,7 @@ impl Shell {
         }
     }
 
-    /// Sends the switch a restored session waits for, once, on the active
-    /// tab; the position comes back when it lands.
+    /// Sends a waiting session's switch once.
     fn send_restore(&mut self) {
         let Some((key, workspace, Some(content))) = self.active() else {
             return;

@@ -246,8 +246,7 @@ pub struct TabViewState {
     context_overrides: HashMap<String, usize>,
     /// Where the selection stood when a mode switch or base change went out.
     pub follow: Option<Follow>,
-    /// Where it stood when a refresh went out; a refresh keeps its own, so
-    /// one that lands or is refused leaves a switch's alone.
+    /// The same for a refresh, kept apart so one leaves a switch's alone.
     pub refresh_follow: Option<Follow>,
     /// A session saved in another view, waiting for its switch.
     pub restore: Option<Restore>,
@@ -811,9 +810,7 @@ pub fn tab_name(content: &TabContent) -> String {
         )
 }
 
-/// The views the mode bar offers, as the App lists them, so each number key
-/// picks the same view on both paths. A PR tab with no checkout offers its PR
-/// diff alone. Conflicts joins once the load publishes a merge (P71.2).
+/// The App's mode list, so number keys match; Conflicts waits for P71.2.
 fn modes(content: &TabContent, config: &ErConfig) -> Vec<DiffMode> {
     let tab = &content.tab;
     if tab.identity().is_remote() || (tab.pr_number.is_some() && tab.checkout_root.is_none()) {

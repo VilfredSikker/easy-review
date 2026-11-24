@@ -1,6 +1,4 @@
-//! P71.1 on the flag path: the mode keys, the mtime sort, the watcher, the
-//! base change, `--target`, a session saved in another view, and the rule
-//! tables read again after a refresh.
+//! P71.1 on the flag path.
 
 use std::time::{Duration, Instant, SystemTime};
 
@@ -43,8 +41,7 @@ fn idle(shell: &Shell) -> bool {
     shell.in_flight() == 0
 }
 
-/// Presses `code` on both paths, the last step's message gone first, and
-/// compares the frames once the flag path's replies have landed.
+/// One key on both paths, then frame parity.
 fn step(app: &mut App, shell: &mut Shell, hl: &mut Highlighter, code: KeyCode) {
     app.clear_notification();
     shell.tick(Instant::now() + Duration::from_secs(60));
@@ -59,9 +56,7 @@ fn write(root: &std::path::Path, file: &str, text: &str) {
     std::fs::write(root.join(file), text).unwrap_or_else(|e| panic!("{e}"));
 }
 
-/// The three-file fixture with `f001` and `f002` edited in the working tree
-/// and `stage` staged, a branch `other` at the tip, and mtimes that put
-/// `f001`, then `f002`, then `f000` first.
+/// `f001` and `f002` edited, `stage` staged, `other` at the tip, set mtimes.
 fn worktree_fixture(stage: &[&str]) -> tempfile::TempDir {
     let repo = fixture(3);
     let root = repo.path();
@@ -84,9 +79,7 @@ fn worktree_fixture(stage: &[&str]) -> tempfile::TempDir {
     repo
 }
 
-/// Each mode key shows the view the App shows, and the selection follows
-/// the file across the switch as the App's does; the mtime sort lists the
-/// files in the order the service publishes, as the App sorts them.
+/// Mode keys and the mtime sort draw as the App's.
 #[test]
 fn mode_keys_and_the_mtime_sort_draw_like_the_app() {
     let (app_repo, flag_repo) = (
@@ -105,9 +98,7 @@ fn mode_keys_and_the_mtime_sort_draw_like_the_app() {
     });
 }
 
-/// A change the watcher reports refreshes the tab it watches, and the
-/// status line says how many reviewed marks the change cleared, else how
-/// many files changed, in the App's words.
+/// A watched change refreshes its tab, with the App's notices.
 #[test]
 fn the_watcher_refreshes_its_tab_and_counts_cleared_marks() {
     let repo = fixture(2);
@@ -118,8 +109,6 @@ fn the_watcher_refreshes_its_tab_and_counts_cleared_marks() {
         shell.watch_mut().on = true;
         shell.tick(Instant::now());
         assert_eq!(shell.watch_mut().root(), Some(path.as_str()));
-        // The test feeds the changes itself, so the file system's own
-        // events stay out of it.
         shell.watch_mut().on = false;
         shell.tick(Instant::now());
         shell.handle_key(key(KeyCode::Char(' ')));
@@ -154,9 +143,7 @@ fn the_watcher_refreshes_its_tab_and_counts_cleared_marks() {
     });
 }
 
-/// The Open hub's "Change compare base" row opens the base input; Enter
-/// rediffs the tab on the service against the base and keeps it in the
-/// registry, and the frame matches the App's after the same change.
+/// The base row and input rediff the tab and keep its base.
 #[test]
 fn the_base_input_rediffs_the_tab_and_keeps_its_base() {
     let (app_repo, flag_repo) = (worktree_fixture(&[]), worktree_fixture(&[]));
@@ -195,8 +182,7 @@ fn the_base_input_rediffs_the_tab_and_keeps_its_base() {
     });
 }
 
-/// `--target` is every start tab's base from its first load, a tab shown
-/// later included, and the start says nothing about it.
+/// `--target` is every start tab's base.
 #[test]
 fn target_is_every_tabs_base() {
     let (first, second) = (worktree_fixture(&[]), worktree_fixture(&[]));
@@ -217,8 +203,7 @@ fn target_is_every_tabs_base() {
     });
 }
 
-/// A session saved in another view than the tab opens in switches there,
-/// and its position comes back in that view, as the App's restore does.
+/// A session saved in another view restores there, as the App's.
 #[test]
 fn a_session_saved_in_another_view_restores_there_like_the_app() {
     let staged = ["src/f001.rs", "src/f002.rs"];
@@ -247,9 +232,7 @@ fn a_session_saved_in_another_view_restores_there_like_the_app() {
     });
 }
 
-/// The repo's rule tables are read again when the diff moves after the first
-/// frame: a remote added under a `[file_kinds]` table, then `R`, and a
-/// `kind:` filter keeps out the file that table names.
+/// The rule tables are read again after a refresh moves the rules key.
 #[test]
 fn the_rule_tables_are_read_again_after_a_refresh() {
     let repo = fixture(3);
@@ -284,8 +267,7 @@ fn the_rule_tables_are_read_again_after_a_refresh() {
     });
 }
 
-/// The file order comes from the service's `listed_files`, called by the
-/// view alone; no flag-on module orders files itself.
+/// Only the view orders files, through `listed_files`.
 #[test]
 fn the_file_order_comes_from_the_service() {
     for (name, text) in SOURCES {
@@ -319,9 +301,7 @@ fn shows(content: &er_service::TabContent, file: &str) -> bool {
 
 const MOVED: &str = "the tab changed while it loaded";
 
-/// One watcher refresh per tab is out at a time; a change that arrives while
-/// it is out sends exactly one more once it lands, and neither shows the
-/// tab-moved refusal.
+/// One watcher refresh out per tab, and one more for what came meanwhile.
 #[test]
 fn one_watcher_refresh_is_out_per_tab() {
     let repo = fixture(2);
@@ -372,8 +352,7 @@ fn one_watcher_refresh_is_out_per_tab() {
     });
 }
 
-/// A reload refused because another landed first is sent again without a
-/// word: two `R`s in a row both say "Refreshed".
+/// A reload refused as moved is sent again silently.
 #[test]
 fn a_reload_refused_as_moved_is_sent_again() {
     let repo = fixture(2);
@@ -394,9 +373,7 @@ fn a_reload_refused_as_moved_is_sent_again() {
     });
 }
 
-/// A change counted on one tab refreshes that tab after a switch; a change
-/// on the tab shown next refreshes it; and a tab watched before is
-/// refreshed once when it is shown again, for changes made meanwhile.
+/// Changes refresh the tab they came on; a tab shown again is refreshed.
 #[test]
 fn changes_refresh_the_tab_they_were_counted_on() {
     let (first, second) = (fixture(2), fixture(2));
@@ -443,9 +420,8 @@ fn changes_refresh_the_tab_they_were_counted_on() {
     });
 }
 
-/// A refused refresh leaves a switch's follow and a waiting session alone,
-/// and a session whose switch is refused still restores its filter and its
-/// toggles in the view the tab shows.
+/// A refused refresh leaves a switch alone; a refused restore switch keeps
+/// the filter and toggles.
 #[test]
 fn a_refused_restore_switch_keeps_the_filter_and_toggles() {
     let repo = fixture(3);
