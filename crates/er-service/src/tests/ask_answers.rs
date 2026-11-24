@@ -373,6 +373,20 @@ fn a_finding_reply_retried_after_its_root_landed_writes_one_reply() -> anyhow::R
         let ids: Vec<&str> = rows.iter().map(|row| row.id.as_str()).collect();
         assert_eq!(ids, ["c-retry", reply_id.as_str()], "{rows:?}");
         assert_eq!(rows[1].in_reply_to.as_deref(), Some("c-retry"));
+
+        // A later reply under the same thread keeps the id it was painted.
+        let second = Command::ReplyToFinding {
+            context: context(bucket, bucket),
+            finding_id: "f-1".to_string(),
+            body: "And this".to_string(),
+            ai_assist: false,
+            client_id: Some("c-second".to_string()),
+        };
+        let landed = handle.send_and_wait_with(second, WAIT)?;
+        let Reply::FindingReplied { reply_id, .. } = landed else {
+            anyhow::bail!("got {landed:?}");
+        };
+        assert_eq!(reply_id, "c-second");
         Ok(())
     })
 }
