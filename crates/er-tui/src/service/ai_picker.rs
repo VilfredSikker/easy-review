@@ -3,15 +3,15 @@
 //! default selection through the settings actor (decision 11), and a model
 //! refresh is the actor's `RefreshAiModels`.
 //!
-//! Until P74 ports the AI hub, its live rows are "Change agent/model", the
-//! layer rows, which act on the tab's view alone, and the two Cleanup rows,
-//! which ask before their clear; no other row has a service route on this
-//! path yet.
+//! The run rows plan on the service (P74.2); the Review row, the arbiter's
+//! drops and the context copy have no service route on this path yet. The
+//! Specialized review and the Verify hubs are pickers here too.
 
 use er_engine::ai::AiState;
 use er_engine::config::{effort_display_label, AiHubConfig, ErConfig};
 use er_service::{SettingsCommand, SettingsView};
 
+use super::ai_runs::{self, Choice, Start};
 use super::clears::Clear;
 use super::config_hub::Step;
 use super::layers::{HubRow, Layer};
@@ -29,7 +29,7 @@ const AI_HUB_ROWS: [Option<(&str, &str)>; 22] = [
     Some(("Review work", "")),
     Some(("Generate summary", "")),
     Some(("Generate guided tour", "")),
-    Some(("Specialized review", "")),
+    Some((SPECIALIZED, "")),
     Some(("Professor", "")),
     Some(("Validate review", "")),
     Some(("Answer questions", "")),
@@ -48,6 +48,8 @@ const AI_HUB_ROWS: [Option<(&str, &str)>; 22] = [
 ];
 
 const CHANGE_SELECTION: &str = "Change agent/model";
+const SPECIALIZED: &str = "Specialized review";
+const SPECIALIZED_ABOUT: &str = "Focused expert lens — security, patterns, testing, …";
 const CLEANUP_DRAFTS: &str = "Cleanup questions & notes";
 const CLEANUP_REVIEWS: &str = "Cleanup reviews";
 
@@ -55,12 +57,19 @@ const CLEANUP_REVIEWS: &str = "Cleanup reviews";
 #[derive(Clone, Copy)]
 pub struct HubFacts {
     has_ai: bool,
-    has_review: bool,
+    pub(super) has_review: bool,
     has_drafts: bool,
+    pub(super) has_tour: bool,
+    /// The tab's diff has a file to review.
+    pub(super) has_diff: bool,
+    pub(super) has_unanswered: bool,
+    pub(super) has_unaddressed: bool,
+    /// The GitHub comments a validation re-anchors.
+    pub(super) comment_count: usize,
 }
 
 impl HubFacts {
-    pub fn of(ai: &AiState) -> Self {
+    pub fn of(ai: &AiState, has_diff: bool) -> Self {
         let has_questions = ai
             .questions
             .as_ref()
@@ -69,6 +78,14 @@ impl HubFacts {
             has_ai: ai.has_data(),
             has_review: ai.review.is_some(),
             has_drafts: has_questions || ai.has_notes(),
+            has_tour: ai.has_tour(),
+            has_diff,
+            has_unanswered: ai.has_unanswered_questions(),
+            has_unaddressed: ai.has_unaddressed_notes(),
+            comment_count: ai
+                .github_comments
+                .as_ref()
+                .map_or(0, er_engine::ai::count_eligible_github_comments),
         }
     }
 }
@@ -111,6 +128,9 @@ enum Of {
     Provider,
     Model(String),
     Effort(String, String),
+    Experts,
+    Verify,
+    Package(String),
 }
 
 /// What choosing a row does.
@@ -118,6 +138,9 @@ enum Of {
 enum Pick {
     Unported,
     Layer(HubRow),
+    Run(Start),
+    Experts,
+    Package(String),
     ChangeSelection,
     Provider(String),
     Model(String, String),
@@ -142,6 +165,9 @@ impl Picker {
             Of::Provider => HubKind::AiProvider,
             Of::Model(_) => HubKind::AiModel,
             Of::Effort(..) => HubKind::AiEffort,
+            Of::Experts => HubKind::AiExpert,
+            Of::Verify => HubKind::Verify,
+            Of::Package(_) => HubKind::VerifyPackage,
         }
     }
 
@@ -179,6 +205,46 @@ fn row(label: String, hint: &str, description: String, enabled: bool) -> HubItem
         enabled,
         opens_stack_pr: false,
     }
+}
+
+/// A layer row, live by the App's rule, or a row with no route yet.
+fn layer_or_unported(label: &str, hint: &str, facts: &HubFacts, unported: &str) -> (HubItem, Pick) {
+    match LAYER_ROWS.iter().find(|row| row.0 == label) {
+        Some(&(_, description, layer)) => {
+            let enabled = facts.has_ai || !matches!(layer, HubRow::Layer(Layer::AiFindings));
+            (
+                row(label.into(), hint, description.into(), enabled),
+                Pick::Layer(layer),
+            )
+        }
+        None => (
+            row(label.into(), hint, unported.into(), false),
+            Pick::Unported,
+        ),
+    }
+}
+
+/// The expert and Verify rows as the picker lists them.
+fn listed(rows: Vec<ai_runs::Row>) -> (Vec<HubItem>, Vec<Pick>) {
+    rows.into_iter()
+        .map(|listed| {
+            let pick = match listed.choice {
+                Some(Choice::Start(start)) => Pick::Run(start),
+                Some(Choice::Package(id)) => Pick::Package(id),
+                None => Pick::Unported,
+            };
+            let item = HubItem {
+                is_header: listed.header,
+                ..row(
+                    listed.label,
+                    &listed.hint,
+                    listed.description,
+                    listed.enabled,
+                )
+            };
+            (item, pick)
+        })
+        .unzip()
 }
 
 fn build(of: Of, view: &SettingsView, ai_label: &str) -> Option<Picker> {
@@ -237,22 +303,31 @@ fn build(of: Of, view: &SettingsView, ai_label: &str) -> Option<Picker> {
                         ),
                         Pick::Clear(Clear::Reviews),
                     ),
-                    Some((label, hint)) => match LAYER_ROWS.iter().find(|row| row.0 == *label) {
-                        Some(&(_, description, layer)) => {
-                            let enabled =
-                                facts.has_ai || !matches!(layer, HubRow::Layer(Layer::AiFindings));
-                            (
-                                row((*label).into(), hint, description.into(), enabled),
-                                Pick::Layer(layer),
-                            )
-                        }
-                        None => (
-                            row((*label).into(), hint, unported.clone(), false),
-                            Pick::Unported,
+                    Some((SPECIALIZED, hint)) => (
+                        row(SPECIALIZED.into(), hint, SPECIALIZED_ABOUT.into(), true),
+                        Pick::Experts,
+                    ),
+                    Some((label, hint)) => match ai_runs::hub_row(label, facts, ai_label) {
+                        Some((description, enabled, start)) => (
+                            row((*label).into(), hint, description, enabled),
+                            Pick::Run(start),
                         ),
+                        None => layer_or_unported(label, hint, facts, &unported),
                     },
                 })
                 .unzip()
+        }
+        Of::Experts => listed(ai_runs::expert_rows()),
+        Of::Verify => {
+            let rows = ai_runs::verify_rows(config);
+            selected = ai_runs::first_selected(&rows);
+            listed(rows)
+        }
+        Of::Package(id) => {
+            let (heading, rows) = ai_runs::package_rows(config, id)?;
+            selected = ai_runs::first_selected(&rows);
+            title = Some(heading);
+            listed(rows)
         }
         Of::Provider => {
             let chosen = hub.resolve_provider_id(current.provider_id.as_deref());
@@ -365,8 +440,13 @@ fn opened(of: Of, view: &SettingsView, ai_label: &str, also: Option<SettingsComm
     }
 }
 
-/// The flag-on AI hub, the way to the pickers, the layer rows and the
-/// Cleanup rows before P74.
+/// The Verify hub over the settings view's `[commands]` and `[packages]`.
+pub fn open_verify_hub(view: &SettingsView, ai_label: &str) -> Step {
+    opened(Of::Verify, view, ai_label, None)
+}
+
+/// The flag-on AI hub: the way to the pickers, the run rows, the layer rows
+/// and the Cleanup rows.
 pub fn open_ai_hub(view: &SettingsView, ai_label: &str, facts: HubFacts) -> Step {
     opened(Of::AiHub(facts), view, ai_label, None)
 }
@@ -455,6 +535,12 @@ fn select(picker: &Picker, view: &SettingsView, label: &str) -> Step {
         _ if !row.enabled => Step::Notify(row.description.clone()),
         Pick::Layer(layer) => Step::Layer(*layer),
         Pick::Clear(clear) => Step::Clear(*clear),
+        Pick::Run(start) => Step::Run(start.clone()),
+        Pick::Experts => opened(Of::Experts, view, label, None),
+        Pick::Package(id) => match ai_runs::package_rows(&view.config, id) {
+            Some(_) => opened(Of::Package(id.clone()), view, label, None),
+            None => Step::Notify(format!("Package '{id}' not found in config")),
+        },
         Pick::ChangeSelection => open_providers(view, label),
         Pick::Provider(provider_id) => {
             let Some(provider) = view.config.ai_hub.providers.get(provider_id) else {

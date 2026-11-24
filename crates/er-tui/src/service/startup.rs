@@ -206,6 +206,9 @@ pub enum After {
         github_count: usize,
         local_count: usize,
     },
+    /// A rerun's clear: once it lands, the run is planned; a refusal says
+    /// why and nothing runs.
+    Rerun(super::ai_runs::Rerun),
 }
 
 impl After {

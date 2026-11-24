@@ -700,6 +700,26 @@ impl AiState {
         })
     }
 
+    /// Claude has answered a question, so the hub's rerun asks whether to
+    /// clear the answers first.
+    pub fn has_claude_answers(&self) -> bool {
+        self.questions.as_ref().is_some_and(|qs| {
+            qs.questions
+                .iter()
+                .any(|q| q.in_reply_to.is_some() && q.author == "Claude")
+        })
+    }
+
+    /// Claude has replied to a note, so the hub's rerun asks whether to clear
+    /// the replies first.
+    pub fn has_claude_note_replies(&self) -> bool {
+        self.notes.as_ref().is_some_and(|ns| {
+            ns.notes
+                .iter()
+                .any(|n| n.in_reply_to.is_some() && n.author == "Claude")
+        })
+    }
+
     /// Unresolved top-level notes with no reply yet (Address notes hub).
     pub fn has_unaddressed_notes(&self) -> bool {
         self.notes.as_ref().is_some_and(|ns| {

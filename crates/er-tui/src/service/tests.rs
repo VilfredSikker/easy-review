@@ -26,8 +26,10 @@ const WIDTH: u16 = 120;
 const HEIGHT: u16 = 30;
 
 /// The flag-on modules, as text.
-pub(super) const SOURCES: [(&str, &str); 26] = [
+pub(super) const SOURCES: [(&str, &str); 28] = [
+    ("agent_log.rs", include_str!("agent_log.rs")),
     ("ai_picker.rs", include_str!("ai_picker.rs")),
+    ("ai_runs.rs", include_str!("ai_runs.rs")),
     ("clears.rs", include_str!("clears.rs")),
     ("config_hub.rs", include_str!("config_hub.rs")),
     ("context.rs", include_str!("context.rs")),
@@ -362,7 +364,7 @@ pub(super) fn shell_frame(shell: &mut Shell, highlighter: &mut Highlighter) -> B
     terminal.backend().buffer().clone()
 }
 
-fn app_frame(app: &er_engine::app::App, highlighter: &mut Highlighter) -> Buffer {
+pub(super) fn app_frame(app: &er_engine::app::App, highlighter: &mut Highlighter) -> Buffer {
     let mut terminal =
         Terminal::new(TestBackend::new(WIDTH, HEIGHT)).unwrap_or_else(|e| panic!("{e}"));
     let mut cache = crate::screen::ViewCache::default();
@@ -733,7 +735,8 @@ fn tab_keys_load_later_tabs_and_leave_a_failed_one() {
 }
 
 /// The service tests, as text.
-const TEST_SOURCES: [(&str, &str); 19] = [
+const TEST_SOURCES: [(&str, &str); 20] = [
+    ("ai_runs_tests.rs", include_str!("ai_runs_tests.rs")),
     ("clears_tests.rs", include_str!("clears_tests.rs")),
     ("config_hub_tests.rs", include_str!("config_hub_tests.rs")),
     ("context_tests.rs", include_str!("context_tests.rs")),

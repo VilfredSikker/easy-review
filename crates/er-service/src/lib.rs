@@ -93,7 +93,7 @@ pub use protocol::{
 pub use reviewed_resource::{
     content_view, painted_view_matches, reviewed_resource, reviewed_version,
 };
-pub use run_worker::{FlowRequest, RunReceiver, RunRequest};
+pub use run_worker::{catching_panics, FlowRequest, RunReceiver, RunRequest};
 pub use settings::{spawn_settings, SettingsCommand, SettingsHandle, SettingsReply, SettingsView};
 pub use settings_wire::{risk_resource, settings_command, settings_resource};
 pub use tab_pr::stack_source_of;
