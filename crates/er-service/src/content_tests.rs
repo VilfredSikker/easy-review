@@ -885,3 +885,33 @@ fn each_section_the_diff_reads_raises_its_version() {
         assert!(crate::diff_version(&content) > base, "{name} left {base}");
     }
 }
+
+/// Staged just after a commit, a run and an ask read the last commit.
+#[test]
+fn a_run_on_staged_after_a_commit_reads_the_last_commit() -> anyhow::Result<()> {
+    let mut state = WorkspaceState::new();
+    let key = TabKey::next();
+    let mut loaded = loaded_tab("/repo");
+    loaded.tab.mode = DiffMode::Staged;
+    loaded.diff.meta.committed_unpushed = true;
+    state
+        .apply_patch(ContentPatch::Loaded {
+            key,
+            since: None,
+            loaded,
+        })
+        .map_err(|refused| anyhow::anyhow!("{refused}"))?;
+    let content = content_of(state.view(), key)?;
+    let git = FakeGit::default()
+        .with_diff_raw(Ok(String::new()))
+        .with_diff_raw_range(Ok(RAW.to_string()));
+    let ports = Ports {
+        git: Arc::new(git),
+        github: Arc::new(FakeGitHub::default()),
+    };
+
+    let run = crate::review_raw_diff(&ports, &content, "staged")?;
+    assert_eq!(run, RAW, "the run read the empty index");
+    assert_eq!(crate::ask_raw_diff(&ports, &content).as_deref(), Some(RAW));
+    Ok(())
+}

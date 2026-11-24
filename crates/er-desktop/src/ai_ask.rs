@@ -189,21 +189,8 @@ pub fn parsed_for_finding(
 /// The provider, model and effort an ask runs: the saved selection,
 /// resolved as the App resolves its session pick.
 pub fn selection(config: &ErConfig) -> (Option<String>, Option<String>, Option<String>) {
-    let hub = &config.ai_hub;
-    let saved = hub.resolve_default_selection(&config.agent);
-    let provider = hub.resolve_provider_id(saved.provider_id.as_deref());
-    let model = provider
-        .as_deref()
-        .and_then(|provider| hub.resolve_model_id(provider, saved.model_id.as_deref()));
-    let effort = er_engine::config::resolve_effort_for_model(
-        hub,
-        &config.agent,
-        provider.as_deref(),
-        model.as_deref(),
-        saved.effort.as_deref(),
-        None,
-    );
-    (provider, model, effort)
+    let selection = er_service::runs::selection(config);
+    (selection.provider_id, selection.model_id, selection.effort)
 }
 
 /// Where an ask's answer goes.

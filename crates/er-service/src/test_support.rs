@@ -43,8 +43,33 @@ impl Agent {
             wait(&self.first),
             wait(&self.second)
         );
-        format!(
-            r#"
+        provider(cap, &script)
+    }
+
+    /// Writes [`Self::config`] into the settings directory and answers its
+    /// path.
+    pub fn write_config(&self, cap: usize) -> PathBuf {
+        self.write(&self.config(cap))
+    }
+
+    /// Like [`Self::write_config`], for an agent that runs `script` with
+    /// the prompt as `$1`.
+    pub fn write_script_config(&self, script: &str) -> PathBuf {
+        self.write(&provider(50, script))
+    }
+
+    fn write(&self, config: &str) -> PathBuf {
+        let path = self.settings.join("config.toml");
+        std::fs::create_dir_all(&self.settings).unwrap_or_else(|e| panic!("{e}"));
+        std::fs::write(&path, config).unwrap_or_else(|e| panic!("config: {e}"));
+        path
+    }
+}
+
+/// The fake provider's config, running `script` with the prompt as `$1`.
+fn provider(cap: usize, script: &str) -> String {
+    format!(
+        r#"
 [ai_hub]
 default_provider = "gated"
 default_model = "one"
@@ -58,17 +83,7 @@ args = ["-c", '''{script}''', "gated-agent", "{{prompt}}"]
 [[ai_hub.providers.gated.models]]
 id = "one"
 "#
-        )
-    }
-
-    /// Writes [`Self::config`] into the settings directory and answers its
-    /// path.
-    pub fn write_config(&self, cap: usize) -> PathBuf {
-        let path = self.settings.join("config.toml");
-        std::fs::create_dir_all(&self.settings).unwrap_or_else(|e| panic!("{e}"));
-        std::fs::write(&path, self.config(cap)).unwrap_or_else(|e| panic!("config: {e}"));
-        path
-    }
+    )
 }
 
 pub fn open_gate(gate: &Path) {

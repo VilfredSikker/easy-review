@@ -18,11 +18,6 @@ pub(super) const RETIRED_SUMMARY_MARKER: &str = ".retired-summary-noticed";
 /// other two markers for the same reason.
 pub(super) const RETIRED_AUTO_TRIAGE_MARKER: &str = ".retired-auto-triage-noticed";
 
-/// Create the bucket before a command writes into it.
-pub(super) fn ensure_dir(dir: &Path) -> std::io::Result<()> {
-    std::fs::create_dir_all(dir)
-}
-
 /// Write a launch marker. A failed write means the notice shows again next
 /// launch, so the error is dropped on purpose.
 pub(super) fn mark_notice_once(dir: &Path, marker: &str) {

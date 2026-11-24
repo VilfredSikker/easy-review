@@ -34,5 +34,5 @@ pub fn ask_raw_diff(ports: &Ports, content: &TabContent) -> Option<String> {
     if shows_a_diff && !meta.branch_diff_hash.is_empty() && cached_diff_matches_scope(&id, scope) {
         return Some(meta.raw.clone());
     }
-    er_engine::diff_load::fetch_raw(ports, &id, scope, false).ok()
+    er_engine::diff_load::fetch_raw(ports, &id, scope, meta.committed_unpushed).ok()
 }
