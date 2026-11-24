@@ -27,6 +27,6 @@ pub const DEFAULT_CONTEXT_LINES: usize = 10;
 
 pub use blame::{BlameEnd, BlameRequest, BlameSpan, LineAttribution};
 pub use status::{
-    discover_watched_files, git_log_branch, read_watched_file_content, save_snapshot, CommitInfo,
-    FileStatus, WatchedFile, Worktree,
+    delete_watched_file, discover_watched_files, git_log_branch, read_watched_file_content,
+    read_watched_snapshot_diff, save_snapshot, CommitInfo, FileStatus, WatchedFile, Worktree,
 };
