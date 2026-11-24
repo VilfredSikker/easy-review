@@ -20,6 +20,7 @@ use ratatui::text::Line;
 use ratatui::widgets::Paragraph;
 use ratatui::Terminal;
 
+use super::settings::SettingsBridge;
 use super::startup::{self, After, Args, Pending, Start, StartTab};
 use super::tui_view::{self, TuiView};
 use crate::input::keys::{key_action, NormalAction, TuiAction};
@@ -64,6 +65,7 @@ pub struct Shell {
     /// How each tab was opened, so a tab first shown later loads the same way.
     starts: HashMap<TabKey, StartTab>,
     pending: Vec<Pending>,
+    settings: SettingsBridge,
     /// The stubs already sent to parse, per tab and diff revision, so a
     /// parse that fails is not sent again every tick.
     parses_sent: HashSet<(TabKey, u64, String)>,
@@ -97,6 +99,7 @@ impl Shell {
             view: TuiView::default(),
             starts,
             pending,
+            settings: SettingsBridge::default(),
             parses_sent: HashSet::new(),
             load_errors: HashMap::new(),
             start_notice: None,
@@ -111,6 +114,9 @@ impl Shell {
             let notice = start.notices.join("; ");
             shell.start_notice = Some(notice.clone());
             shell.notify(notice);
+        }
+        if let Some(error) = shell.host.settings().view().load_error.clone() {
+            shell.notice(error);
         }
         Ok(shell)
     }
@@ -144,6 +150,16 @@ impl Shell {
     }
 
     #[cfg(test)]
+    pub fn settings(&self) -> &SettingsBridge {
+        &self.settings
+    }
+
+    #[cfg(test)]
+    pub fn send_settings(&mut self, command: er_service::SettingsCommand) {
+        self.settings.send(&self.host.settings(), command);
+    }
+
+    #[cfg(test)]
     pub fn view(&self) -> &TuiView {
         &self.view
     }
@@ -170,6 +186,18 @@ impl Shell {
         self.redraw = true;
     }
 
+    /// Shows a message from an actor once per settings revision: a failure
+    /// arrives both as an event and as its reply.
+    fn notice(&mut self, message: String) {
+        let revision = self
+            .host
+            .settings_if_started()
+            .map_or(0, |settings| settings.view().revision);
+        if self.settings.admit(revision, &message) {
+            self.notify(message);
+        }
+    }
+
     fn unported(&mut self) {
         self.notify(format!("That action is {UNPORTED}"));
     }
@@ -183,12 +211,16 @@ impl Shell {
     pub fn tick(&mut self, now: Instant) {
         loop {
             match self.events.try_recv() {
-                Ok(Event::CommandFailed { message }) => self.notify(message),
+                Ok(Event::CommandFailed { message }) => self.notice(message),
                 Ok(_) => self.redraw = true,
                 Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
             }
         }
         self.drain_replies();
+        for message in self.settings.drain() {
+            self.redraw = true;
+            self.notice(message);
+        }
         if self
             .reloaded_at
             .is_none_or(|at| now.duration_since(at) >= RELOAD_INTERVAL)
@@ -294,7 +326,7 @@ impl Shell {
                 Err(error) if self.host.content(&workspace, key).is_none() => {
                     self.load_errors.insert(key, error.to_string());
                 }
-                Err(error) => self.notify(error.to_string()),
+                Err(error) => self.notice(error.to_string()),
             }
         }
     }
@@ -339,7 +371,8 @@ impl Shell {
         content: &TabContent,
         read: impl FnOnce(&crate::screen::Screen) -> R,
     ) -> Option<R> {
-        let config = self.host.settings().view().config.clone();
+        let settings = self.host.settings().view();
+        let ai_selection_label = self.settings.ai_label(&settings);
         let (tab_names, active_tab) = self.tab_names();
         self.view.tab_mut(key, content);
         let state = self.view.tab(key)?;
@@ -347,7 +380,9 @@ impl Shell {
             tab_names,
             active_tab,
             content,
-            config: &config,
+            config: &settings.config,
+            config_load_error: settings.load_banner.as_deref(),
+            ai_selection_label,
         };
         Some(read(&tui_view::screen(&self.view, state, frame)))
     }

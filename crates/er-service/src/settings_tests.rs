@@ -318,3 +318,74 @@ fn a_write_in_flight_during_a_rollback_reports_an_error() -> anyhow::Result<()> 
         Ok(())
     })
 }
+
+/// A failed load publishes the failed file's banner beside the full message;
+/// a save that finds the file broken later shows the generic banner, and a
+/// repaired reload clears it.
+#[test]
+fn the_load_banner_follows_the_load_and_a_refused_save() -> anyhow::Result<()> {
+    in_temp_storage(|dir| {
+        let path = dir.join("config.toml");
+        std::fs::write(&path, "not = = toml")?;
+        let handle = actor(dir);
+        let view = handle.view();
+        assert_eq!(
+            view.load_banner.as_deref(),
+            Some("config.toml failed to load; saving is disabled until it is reloaded")
+        );
+        assert!(view
+            .load_error
+            .as_deref()
+            .is_some_and(|e| e.contains("could not be loaded")));
+
+        std::fs::remove_file(&path)?;
+        handle.send_and_wait_with(SettingsCommand::ReloadIfFailed, DEADLINE)?;
+        assert_eq!(handle.view().load_banner, None, "the reload clears it");
+
+        patch(&handle, "display.theme", text("first-theme"))?;
+        std::fs::write(&path, "not = = toml")?;
+        assert!(patch(&handle, "display.theme", text("broken")).is_err());
+        assert_eq!(
+            handle.view().load_banner.as_deref(),
+            Some(er_engine::config::CONFIG_LOAD_BANNER)
+        );
+        Ok(())
+    })
+}
+
+/// The actor starts with each provider's cached discovered models, as the
+/// App does, and runs no discovery to get them.
+#[test]
+fn the_actor_starts_with_the_cached_models() -> anyhow::Result<()> {
+    in_temp_storage(|dir| {
+        let (config, _) = er_engine::config::adopt_config_from(&dir.join("absent.toml"));
+        let (id, provider) = config
+            .ai_hub
+            .providers
+            .iter()
+            .find(|(_, provider)| !provider.models_command.is_empty())
+            .ok_or_else(|| anyhow::anyhow!("no provider lists its models"))?;
+        let cache = er_engine::model_discovery::ModelCache {
+            version: 1,
+            command: provider.models_command.clone(),
+            fetched_at: String::new(),
+            fetched_at_unix: 0,
+            models: vec![er_engine::model_discovery::DiscoveredModel {
+                id: "cached-model".into(),
+                label: "Cached".into(),
+                effort_levels: Vec::new(),
+            }],
+        };
+        er_engine::model_discovery::save_cache(id, &cache)?;
+        let handle = actor(dir);
+        let view = handle.view();
+        let models = &view.config.ai_hub.providers[id].models;
+        assert!(
+            models
+                .iter()
+                .any(|m| m.id == "cached-model" && m.discovered),
+            "the cached model is missing"
+        );
+        Ok(())
+    })
+}

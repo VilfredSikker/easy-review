@@ -380,12 +380,14 @@ impl TabViewState {
 }
 
 /// What a frame reads beside the view state: the open tabs' names, the
-/// active tab's content and the config.
+/// active tab's content, and the settings view's config, banner and label.
 pub struct Frame<'a> {
     pub tab_names: Vec<String>,
     pub active_tab: usize,
     pub content: &'a TabContent,
     pub config: &'a ErConfig,
+    pub config_load_error: Option<&'a str>,
+    pub ai_selection_label: String,
 }
 
 /// The frame's read model, from the active tab's published content and its
@@ -406,14 +408,14 @@ pub fn screen<'a>(view: &'a TuiView, state: &'a TabViewState, frame: Frame<'a>) 
             config: frame.config,
             available_update: None,
             notification: view.notification.as_deref(),
-            config_load_error: None,
+            config_load_error: frame.config_load_error,
             watching: false,
             input_mode: match view.input_mode {
                 Mode::Normal => InputMode::Normal,
             },
             overlay: view.overlay.as_ref().map(Overlay::data),
             remote_url_input: "",
-            ai_selection_label: crate::screen::UNPORTED.to_string(),
+            ai_selection_label: frame.ai_selection_label,
             has_comment_draft: !state.draft.textarea.is_empty(),
             can_toggle_comment_type: false,
             split_diff: false,
