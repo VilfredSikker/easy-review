@@ -247,3 +247,49 @@ fn an_acceptance_goes_to_the_actor_holding_the_flow() -> anyhow::Result<()> {
     assert_eq!(host.flow_actor("/b", &cancel), "/b");
     Ok(())
 }
+
+/// Runs `request` on a loaded tab with the gated agent, and answers the task
+/// kinds listed for the tab's bucket and whether the bucket holds the
+/// prepared diff.
+fn lens_run(request: RunRequest) -> anyhow::Result<(Vec<String>, bool)> {
+    let mut seen = (Vec::new(), false);
+    with_repo(|dir, repo| {
+        let agent = Agent::in_dir(dir);
+        let host = ServiceHost::new(gated_ports(Arc::default()), agent.write_config(50));
+        let (key, content) = loaded(&host, repo)?;
+        host.run(key, request)
+            .recv_timeout(WAIT)?
+            .map_err(|error| anyhow::anyhow!(error.message))?;
+        let bucket = &content.context.er_dir;
+        seen.0 = (host.tasks().rows().into_iter())
+            .filter(|row| &row.er_dir == bucket)
+            .map(|row| row.kind)
+            .collect();
+        seen.1 = std::path::Path::new(bucket).join("diff-tmp").exists();
+        for row in host.tasks().rows() {
+            host.tasks().stop(&row.id);
+        }
+        crate::test_support::open_gate(&agent.first);
+        crate::test_support::open_gate(&agent.second);
+        Ok(())
+    })?;
+    Ok(seen)
+}
+
+/// Professor queues the professor lens on a prepared diff.
+#[test]
+fn a_professor_run_queues_the_professor_lens() -> anyhow::Result<()> {
+    let (kinds, prepared) = lens_run(RunRequest::Professor)?;
+    assert_eq!(kinds, [er_engine::ai::professor_task_kind()]);
+    assert!(prepared, "no prepared diff in the bucket");
+    Ok(())
+}
+
+/// Triage queues the triage lens on a prepared diff.
+#[test]
+fn a_triage_run_queues_the_triage_lens() -> anyhow::Result<()> {
+    let (kinds, prepared) = lens_run(RunRequest::Triage)?;
+    assert_eq!(kinds, [er_engine::ai::triage_task_kind()]);
+    assert!(prepared, "no prepared diff in the bucket");
+    Ok(())
+}

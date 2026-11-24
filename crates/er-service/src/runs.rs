@@ -151,6 +151,75 @@ pub fn expert(run: &RunTab<'_>, scope: &str, expert_id: &str) -> Result<(), ErEr
     .map_err(refused)
 }
 
+/// The professor lens on the view the tab shows, by the App's rules: local
+/// only, in Branch, Unstaged or Staged.
+pub fn professor(run: &RunTab<'_>) -> Result<(), ErError> {
+    let mode = run.content.tab.mode;
+    if run.content.context.is_remote {
+        return Err(refused(
+            "Professor is local-only in v1 — checkout the PR first",
+        ));
+    }
+    if !matches!(
+        mode,
+        DiffMode::Branch | DiffMode::Unstaged | DiffMode::Staged
+    ) {
+        return Err(refused("Professor not available in this mode"));
+    }
+    let (er_dir, diff_hash) = prepared_view(run)?;
+    let prompt = prompts::build_professor_review_prompt_prepared_diff(
+        mode.git_mode(),
+        &er_dir,
+        None,
+        None,
+        &diff_hash,
+    );
+    lens(run, &ReviewerKind::Professor, er_dir, prompt)
+}
+
+/// The triage lens on the view the tab shows; local only.
+pub fn triage(run: &RunTab<'_>) -> Result<(), ErError> {
+    if run.content.context.is_remote {
+        return Err(refused(
+            "Triage is local-only in v1 — checkout the PR first",
+        ));
+    }
+    let (er_dir, diff_hash) = prepared_view(run)?;
+    let mode = run.content.tab.mode;
+    let prompt =
+        prompts::build_triage_review_prompt_prepared_diff(mode.git_mode(), &er_dir, &diff_hash);
+    lens(run, &ReviewerKind::Triage, er_dir, prompt)
+}
+
+/// The tab's view, filtered and prepared in its bucket, as the App prepares
+/// it for a lens; answers the bucket and the diff's hash.
+fn prepared_view(run: &RunTab<'_>) -> Result<(String, String), ErError> {
+    let content = run.content;
+    let er_dir = content.context.er_dir.clone();
+    admit(&er_dir)?;
+    std::fs::create_dir_all(&er_dir)
+        .map_err(|e| refused(format!("Failed to create branch managed directory: {e}")))?;
+    let scope = content.tab.mode.fetch_scope();
+    let raw = filtered(review_raw(&run.hooks.ports, content, scope)?, content);
+    if raw.trim().is_empty() {
+        return Err(refused("Nothing to review"));
+    }
+    let config = (run.hooks.config)();
+    let hash = review_inputs(&run.hooks.ports, content, &config, &er_dir, &raw)?;
+    Ok((er_dir, hash))
+}
+
+fn lens(
+    run: &RunTab<'_>,
+    reviewer: &ReviewerKind,
+    er_dir: String,
+    prompt: String,
+) -> Result<(), ErError> {
+    let scope = run.content.tab.mode.fetch_scope().to_string();
+    let target = target(run.content, er_dir, scope);
+    spawn_reviewer(run.host, run.hooks, reviewer, target, prompt, None, false).map_err(refused)
+}
+
 /// Through the agent launcher, as the App's tab commands run. The comments
 /// are the tab's own: its actor relocated them at its last load.
 pub fn validate(run: &RunTab<'_>, scope: &str) -> Result<(), ErError> {
