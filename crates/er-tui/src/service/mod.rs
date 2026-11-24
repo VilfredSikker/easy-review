@@ -24,6 +24,7 @@ mod settings;
 mod shell;
 mod startup;
 mod threads;
+mod tour;
 mod tui_view;
 mod watched;
 mod watcher;
@@ -64,6 +65,8 @@ mod tests;
 mod thread_writes_tests;
 #[cfg(test)]
 mod threads_tests;
+#[cfg(test)]
+mod tour_tests;
 #[cfg(test)]
 mod watched_tests;
 #[cfg(test)]

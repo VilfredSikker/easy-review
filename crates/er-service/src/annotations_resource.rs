@@ -30,7 +30,7 @@ pub fn annotations_resource(content: &TabContent) -> wire::Annotations {
     let shown_tour = ai.tour.as_ref();
     wire::Annotations {
         ai: ai_annotations(content),
-        tour: tour(content),
+        tour: tour_resource(content),
         other_bucket: content.ai.extras.other_bucket.as_ref().map(|facts| {
             let hashes = [
                 content.context.branch_diff_hash.as_str(),
@@ -635,7 +635,9 @@ fn triage_review_update(
 /// each file shows once, under the first pillar that names it, with only
 /// the related files the diff holds, and the files no pillar names close it
 /// as "Other changes"; the working-tree views show the pillars as written.
-fn tour(content: &TabContent) -> wire::Tour {
+/// A front end that needs the tour alone reads it here, once per
+/// [`annotations_version`].
+pub fn tour_resource(content: &TabContent) -> wire::Tour {
     let ai = &content.ai.state;
     let scope = if content.tab.identity().tour_context_is_pr() {
         "pr"

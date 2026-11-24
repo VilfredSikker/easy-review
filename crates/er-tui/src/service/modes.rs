@@ -7,7 +7,6 @@ use er_service::{Command, TabContent};
 
 use super::tui_view::TabViewState;
 use crate::input::keys::Edit;
-use crate::screen::UNPORTED;
 
 /// Where the selection stood when a mode switch or a refresh went out.
 #[derive(Clone)]
@@ -41,24 +40,16 @@ impl Follow {
     }
 }
 
-/// A mode key's command, none for the shown mode, or why it has none.
-pub fn switch(
-    key: TabKey,
-    content: &TabContent,
-    mode: DiffMode,
-) -> Result<Option<Command>, String> {
+/// A mode key's command, none for the shown mode.
+pub fn switch(key: TabKey, content: &TabContent, mode: DiffMode) -> Option<Command> {
     let tab = &content.tab;
-    match mode {
-        _ if mode == tab.mode => Ok(None),
-        DiffMode::Tour => Err(format!("That view is {UNPORTED}")),
-        _ => Ok(Some(Command::SetDiffMode {
-            key,
-            mode,
-            pr_number: (mode == DiffMode::PrDiff)
-                .then_some(tab.pr_number)
-                .flatten(),
-        })),
-    }
+    (mode != tab.mode).then(|| Command::SetDiffMode {
+        key,
+        mode,
+        pr_number: (mode == DiffMode::PrDiff)
+            .then_some(tab.pr_number)
+            .flatten(),
+    })
 }
 
 fn hunks(content: &TabContent, index: usize) -> usize {
@@ -97,6 +88,8 @@ pub fn switched(
             state.h_scroll = 0;
         }
         DiffMode::Hidden => state.watched.shown = Some(true),
+        // The tour keeps its own place; the diff view's file stays selected.
+        DiffMode::Tour => {}
         _ => follow_file(state, content, follow, shown),
     }
     if let Some(saved) = state.restore.take_if(|saved| saved.mode == mode) {

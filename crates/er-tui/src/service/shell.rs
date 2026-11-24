@@ -39,13 +39,14 @@ use super::reviewed::ReviewedCache;
 use super::settings::{SettingsBridge, Side, Then};
 use super::startup::{self, After, Args, Pending, Refresh, Start, StartTab};
 use super::threads::{self, Composed};
+use super::tour;
 use super::tui_view::{self, Ask, Mode, Overlay, PrKnown, TuiView};
 use super::watched::{Landed, Reader};
 use super::watcher::Watch;
 use super::worktree::{self, GitHub, GitPick, HubStep};
 use crate::input::keys::{
     key_action, AiSummaryAction, CommentAction, ConfirmKey, Edit, HistoryAction, NormalAction,
-    OverlayAction, TuiAction, Write,
+    OverlayAction, TourAction, TuiAction, Write,
 };
 use crate::screen::UNPORTED;
 use crate::ui::highlight::Highlighter;
@@ -723,6 +724,7 @@ impl Shell {
         let reviewed_count = self.reviewed.count(key, content);
         let state = self.view.tab_mut(key, content);
         state.history.follow(content);
+        tour::follow(&mut state.tour, content);
         layers::follow(state, content);
         threads::scroll_if_parsed(state, content);
         findings::follow(state, content);
@@ -803,6 +805,7 @@ impl Shell {
             }
             TuiAction::Commit(edit) => return self.commit_key(edit, key, workspace, content),
             TuiAction::History(action) => return self.history_key(action, key, workspace, content),
+            TuiAction::Tour(action) => return self.tour_key(action, key, workspace, content),
             TuiAction::Comment(action) => return self.comment_key(action, key, workspace, content),
             TuiAction::AiSummary(action) => {
                 return self.ai_summary_key(action, key, workspace, content)
@@ -1050,20 +1053,16 @@ impl Shell {
                 return;
             }
             A::SwitchMode(mode) => {
-                match modes::switch(key, content, mode) {
-                    Ok(Some(command)) => {
-                        state.follow = Some(Follow::of(state, content));
-                        // Queued commit moves would each move the tab under
-                        // the switch; the switch drops them.
-                        state.history.queued.clear();
-                        if mode == DiffMode::History && content.tab.mode != DiffMode::History {
-                            state.history.left = Some(Follow::of(state, content));
-                        }
-                        let pr_diff = mode == DiffMode::PrDiff;
-                        self.post(key, workspace, command, After::ModeSwitched { pr_diff });
+                if let Some(command) = modes::switch(key, content, mode) {
+                    state.follow = Some(Follow::of(state, content));
+                    // Queued commit moves would each move the tab under
+                    // the switch; the switch drops them.
+                    state.history.queued.clear();
+                    if mode == DiffMode::History && content.tab.mode != DiffMode::History {
+                        state.history.left = Some(Follow::of(state, content));
                     }
-                    Ok(None) => {}
-                    Err(message) => self.notify(message),
+                    let pr_diff = mode == DiffMode::PrDiff;
+                    self.post(key, workspace, command, After::ModeSwitched { pr_diff });
                 }
                 return;
             }
@@ -1356,6 +1355,24 @@ impl Shell {
         self.post(key, workspace, command, After::Reviewed { advance_from });
         let verb = if marking { "Reviewed" } else { "Unreviewed" };
         self.notify(format!("{verb}: {}", file.path));
+    }
+
+    /// A Tour key; Space and `b` send their reviewed write to the tab's
+    /// actor, and `b` says so at the press, as the App's does.
+    fn tour_key(&mut self, action: TourAction, key: TabKey, workspace: &str, content: &TabContent) {
+        let pillar = action == TourAction::ReviewPillar;
+        let state = self.view.tab_mut(key, content);
+        if let Some(command) = tour::key(&mut state.tour, content, action) {
+            self.post(
+                key,
+                workspace,
+                command,
+                After::Reviewed { advance_from: None },
+            );
+        }
+        if pillar {
+            self.notify("Reviewed all files in pillar".into());
+        }
     }
 
     /// A mark landed under unreviewed-only: the selection moves off the file
@@ -1702,7 +1719,7 @@ impl Shell {
         restore.sent = true;
         let mode = restore.mode;
         match modes::switch(key, &content, mode) {
-            Ok(Some(command)) => {
+            Some(command) => {
                 state.follow = Some(Follow::of(state, &content));
                 let after = After::ModeSwitched { pr_diff: false };
                 self.post(key, &workspace, command, after);

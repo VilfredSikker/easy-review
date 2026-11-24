@@ -58,7 +58,7 @@ mod worktree;
 pub use actor::{spawn, WorkspaceDeps};
 pub use ai_extras::{AiExtras, OtherBucketFacts};
 pub use ai_labels::{ai_labels, AiLabels};
-pub use annotations_resource::{annotations_resource, annotations_version};
+pub use annotations_resource::{annotations_resource, annotations_version, tour_resource};
 pub use app_registry::{
     live_tab_row, resolve_tab_key, tabs_resource, wire_tab_key, AppCommand, AppRegistry, CachedPr,
     TabEntry, TabsView,

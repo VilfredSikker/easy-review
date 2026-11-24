@@ -28,6 +28,7 @@ use super::modes::Follow;
 use super::open_hub::OpenHub;
 use super::review_hub::ReviewHub;
 use super::session::Restore;
+use super::tour::TourPos;
 use super::watched::TabWatched;
 use super::worktree::GitHub;
 use crate::screen::view::{
@@ -303,6 +304,7 @@ pub struct TabViewState {
     pub restore: Option<Restore>,
     pub base_sent: Option<String>,
     pub history: HistoryPos,
+    pub tour: TourPos,
 }
 
 impl Default for TabViewState {
@@ -348,6 +350,7 @@ impl Default for TabViewState {
             restore: None,
             base_sent: None,
             history: HistoryPos::default(),
+            tour: TourPos::default(),
         }
     }
 }
@@ -853,6 +856,7 @@ pub fn screen<'a>(view: &'a TuiView, state: &'a TabViewState, frame: Frame<'a>) 
             reviewed_count: frame.reviewed_count,
             filtered_reviewed_count: state.filtered_reviewed_count(content),
             history: super::history::view(&state.history, content, &state.search_query),
+            tour: super::tour::view(&state.tour, content),
         }),
     }
 }

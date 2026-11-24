@@ -1,6 +1,8 @@
 //! `reviewed(tab)` counts the marks on the diff's files on the server, moves
 //! with every section it reads, and carries the view a write compares.
 
+use std::path::Path;
+
 use super::*;
 use crate::{content_view, painted_view_matches, reviewed_resource, reviewed_version};
 
@@ -247,4 +249,94 @@ fn a_refused_load_still_orders_the_marks_its_clear_saved() -> anyhow::Result<()>
         );
     }
     Ok(())
+}
+
+/// A Branch tour reads the PR bucket's tour when its own bucket has none
+/// (`resolve_view_tour`). Reviewing a pillar marks the paths of the tour
+/// the tab shows, as the App reviews the pillar it draws.
+#[test]
+fn a_pillar_review_marks_the_tour_the_tab_shows_from_the_other_bucket() -> anyhow::Result<()> {
+    review_the_shown_tour(false)
+}
+
+/// The same when the tab's own bucket holds a stale tour whose pillar names
+/// another file: the fresh tour from the PR bucket is the one shown, and the
+/// one reviewed.
+#[test]
+fn a_pillar_review_marks_the_shown_tour_over_a_stale_one_in_its_own_bucket() -> anyhow::Result<()> {
+    review_the_shown_tour(true)
+}
+
+fn tour_naming(path: &str, hash: &str) -> serde_json::Value {
+    serde_json::json!({
+        "version": 1,
+        "diff_hash": hash,
+        "pillars": [{"id": "p-1", "title": "One", "files": [{"path": path}]}]
+    })
+}
+
+/// A tab entering the Tour from Branch with PR 9, the PR bucket holding a
+/// fresh tour whose `p-1` names `src/a.rs`; `stale_own` puts a stale one
+/// naming `src/b.rs` in the tab's own bucket. `p-1` reviewed marks `src/a.rs`.
+fn review_the_shown_tour(stale_own: bool) -> anyhow::Result<()> {
+    use er_engine::ai::ErTour;
+    use er_engine::test_support::write_sidecar_json;
+    with_root(|repo| {
+        let git = Arc::new(
+            FakeGit::default()
+                .with_is_merge_in_progress(false)
+                .with_current_branch(Ok("feature".to_string()))
+                .with_diff_shortstat((0, 0, 0))
+                .with_diff_raw(Ok(RAW.to_string()))
+                .with_remote_url(Ok("git@github.com:acme/widgets.git".to_string())),
+        );
+        let slug = er_engine::storage::repo_storage_slug("acme", "widgets");
+        let pr_bucket = er_engine::storage::pr_bucket_dir(&slug, 9);
+        std::fs::create_dir_all(&pr_bucket)?;
+        let fresh = er_engine::ai::compute_diff_hash(RAW);
+        write_sidecar_json::<ErTour>(&pr_bucket, tour_naming("src/a.rs", &fresh));
+        let github = FakeGitHub::default().with_pr_diff(Ok(RAW.to_string()));
+        let handle = spawn(WorkspaceDeps::new(Ports {
+            git,
+            github: Arc::new(github),
+        }));
+        let key = TabKey::next();
+        load(&handle, key, repo)?;
+        if stale_own {
+            let own = content_of(&handle.view(), key)?.context.er_dir.clone();
+            std::fs::create_dir_all(&own)?;
+            write_sidecar_json::<ErTour>(Path::new(&own), tour_naming("src/b.rs", "old"));
+        }
+        let to_tour = Command::SetDiffMode {
+            key,
+            mode: DiffMode::Tour,
+            pr_number: Some(9),
+        };
+        handle.send_and_wait_with(to_tour, WAIT)?;
+        let content = content_of(&handle.view(), key)?;
+        let shown: Option<Vec<&str>> = content.ai.state.tour.as_ref().map(|tour| {
+            let files = tour.pillars.iter().flat_map(|p| &p.files);
+            files.map(|f| f.path.as_str()).collect()
+        });
+        assert_eq!(shown, Some(vec!["src/a.rs"]), "the tab shows another tour");
+        assert_ne!(
+            Path::new(&content.context.er_dir),
+            pr_bucket.as_path(),
+            "the tour came from the tab's own bucket"
+        );
+
+        let review = Command::BulkReviewPillar {
+            context: content.context.clone(),
+            pillar_id: "p-1".to_string(),
+            reviewed: true,
+        };
+        let reply = handle.send_and_wait_with(review, WAIT)?;
+        assert_eq!(reply, Reply::ReviewedChanged { changed: 1 });
+        let store = er_engine::store_registry::store();
+        let scope = er_store::Scope::dir(&content.context.er_dir)?;
+        let marks = er_engine::session_store::load_reviewed(&store, &scope)?;
+        assert!(marks.contains_key("src/a.rs"), "{marks:?}");
+        assert!(!marks.contains_key("src/b.rs"), "{marks:?}");
+        Ok(())
+    })
 }
