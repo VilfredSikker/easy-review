@@ -4,7 +4,7 @@
 
 use std::time::SystemTime;
 
-use er_engine::config::{FileKindRepoConfig, RiskRuleSource, RiskRules};
+use er_engine::config::{ErConfig, FileKindRepoConfig, RiskRuleSource, RiskRules};
 use er_engine::file_rows::{active_finding_count, mode_str, severity_str, status_str};
 use er_engine::filter::{parse_filter_expr, FILTER_PRESETS};
 use er_engine::git::{DiffFile, FileKind, FileStatus, ProdDiffStats};
@@ -28,6 +28,21 @@ pub struct DiffInputs<'a> {
     pub filter_history: &'a [String],
     /// Newest file first, by the mtimes the load stamped.
     pub sort_by_mtime: bool,
+}
+
+/// The rule tables a tab's file list filters by: its repo's `[file_kinds]`,
+/// and its `[risk]` merged over the committed risk-rules artifact. Both front
+/// ends filter with these, so a `kind:` or `risk:` rule keeps the same files.
+pub fn file_rule_tables(
+    content: &TabContent,
+    config: &ErConfig,
+) -> (FileKindRepoConfig, RiskRules) {
+    let meta = &content.diff.meta;
+    let file_kinds = config.file_kinds.repo(&meta.rules_key).cloned();
+    (
+        file_kinds.unwrap_or_default(),
+        config.risk_rules_merged(&meta.rules_key, meta.risk_artifact.clone()),
+    )
 }
 
 /// The version `diff(tab)` answers at: the newest revision of any section its

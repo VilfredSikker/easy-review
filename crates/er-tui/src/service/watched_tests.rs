@@ -23,7 +23,7 @@ use crate::ui::highlight::Highlighter;
 /// A repo with one changed file, and `a.env` and an older `b.env` that git
 /// ignores and the config watches in snapshot mode. The list is newest
 /// first, so `a.env` leads it and stays first when it is edited.
-fn watched_repo(storage: &Path) -> tempfile::TempDir {
+pub(super) fn watched_repo(storage: &Path) -> tempfile::TempDir {
     let repo = fixture(1);
     std::fs::write(repo.path().join(".git/info/exclude"), "*.env\n")
         .unwrap_or_else(|e| panic!("{e}"));
@@ -40,7 +40,7 @@ fn watched_repo(storage: &Path) -> tempfile::TempDir {
     repo
 }
 
-fn start(path: &str, storage: &Path) -> Shell {
+pub(super) fn start(path: &str, storage: &Path) -> Shell {
     let args = Args {
         paths: vec![path.to_string()],
         ..Args::default()

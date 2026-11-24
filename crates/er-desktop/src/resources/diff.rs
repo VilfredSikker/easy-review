@@ -144,16 +144,12 @@ fn inputs<'a>(
     config: Option<&er_service::SettingsView>,
     filter: &'a TabFilter,
 ) -> DiffInputs<'a> {
-    let meta = &content.diff.meta;
     let fallback = ErConfig::default();
     let config = config.map_or(&fallback, |view| &view.config);
+    let (file_kinds, risk_rules) = er_service::file_rule_tables(content, config);
     DiffInputs {
-        file_kinds: config
-            .file_kinds
-            .repo(&meta.rules_key)
-            .cloned()
-            .unwrap_or_default(),
-        risk_rules: config.risk_rules_merged(&meta.rules_key, meta.risk_artifact.clone()),
+        file_kinds,
+        risk_rules,
         filter: &filter.expr,
         filter_history: &filter.history,
         sort_by_mtime: false,
