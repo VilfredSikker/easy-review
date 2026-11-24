@@ -109,9 +109,12 @@ fn the_reviewed_count_comes_from_the_builder() {
             );
         }
         for statement in flat.split(';') {
-            let counts = statement.contains(".count()") || statement.contains(".len()");
+            let counts = [".count()", ".len()", "+=1"]
+                .iter()
+                .any(|word| statement.contains(word));
+            let reads_marks = statement.contains("contains_key(") || statement.contains("marks");
             assert!(
-                !(counts && statement.contains("marks")),
+                !(counts && reads_marks),
                 "{name} counts the marks: {statement}"
             );
         }
