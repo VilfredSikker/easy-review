@@ -170,6 +170,7 @@ pub(crate) fn first_load(
         tips: RemoteTips::default(),
         history,
         prev_meta: None,
+        committed_unpushed: false,
     })
 }
 
@@ -205,6 +206,17 @@ pub(crate) struct LoadInput {
     /// The diff the tab held. History, Conflicts and Hidden keep its hashes
     /// and PR head, as the App keeps them in those views.
     pub prev_meta: Option<Arc<DiffMeta>>,
+    /// Whether Staged still shows the last commit; the load clears it under
+    /// the App's rules.
+    pub committed_unpushed: bool,
+}
+
+/// Whether Staged keeps showing the last commit: nothing new is staged, and
+/// `HEAD~1` can be read.
+fn shows_last_commit(git: &dyn er_git::Git, tab: &ResolvedTab) -> bool {
+    let staged = git.diff_raw("staged", &tab.base_branch, &tab.repo_root, None);
+    staged.is_ok_and(|raw| raw.is_empty())
+        && git.diff_raw_range("HEAD~1", "HEAD", &tab.repo_root).is_ok()
 }
 
 /// Fetches a branch view's `origin/<base>` again, so a sync compares against
@@ -383,8 +395,10 @@ pub(crate) fn load_tab(
             .remote_repo
             .as_deref()
             .is_some_and(|slug| slug.split('/').count() == 2);
+    let committed_unpushed =
+        input.committed_unpushed && tab.mode == DiffMode::Staged && shows_last_commit(git, &tab);
     let fetch = |scope: &str| {
-        diff_load::fetch_raw_with_preview_head(ports, &id, scope, false)
+        diff_load::fetch_raw_with_preview_head(ports, &id, scope, committed_unpushed)
             .map_err(|error| failed("fetch the diff", error))
     };
     let branch_view = tab.local_branch_view.is_some();
@@ -429,7 +443,7 @@ pub(crate) fn load_tab(
             checkout_root: tab.checkout_root.as_deref(),
             is_remote: id.is_remote(),
             mode: tab.mode,
-            committed_unpushed: false,
+            committed_unpushed,
             revision: tab
                 .local_branch_view
                 .as_deref()
@@ -582,6 +596,7 @@ pub(crate) fn load_tab(
                 rules_key,
                 risk_artifact,
                 commits,
+                committed_unpushed,
             },
             expanded,
         },

@@ -46,6 +46,7 @@ mod settings_wire;
 mod sidecar_reload;
 mod tab_pr;
 mod workspace;
+mod worktree;
 
 pub use actor::{spawn, WorkspaceDeps};
 pub use ai_extras::{AiExtras, OtherBucketFacts};

@@ -21,7 +21,10 @@ use tui_textarea::TextArea;
 
 use super::ai_picker::Picker;
 use super::config_hub::ConfigHub;
-use crate::screen::view::{ConfigEditState, InputMode, OverlayData, SplitSide};
+use super::worktree::GitHub;
+use crate::screen::view::{
+    ConfigEditState, ConfirmAction, HubKind, InputMode, OverlayData, SplitSide,
+};
 use crate::screen::{Chrome, Screen, SectionData, TabData, TabView};
 
 /// What the flag-on loop shows: per tab its view state, and app wide the
@@ -40,6 +43,7 @@ pub enum Overlay {
     ConfigHub(ConfigHub),
     /// The AI hub and its provider, model and effort pickers.
     Picker(Picker),
+    GitHub(GitHub),
     #[cfg_attr(
         not(test),
         expect(dead_code, reason = "no key opens the export picker on this path yet")
@@ -59,7 +63,7 @@ impl Overlay {
         match self {
             Self::ConfigHub(hub) => hub.sync(view),
             Self::Picker(picker) => picker.sync(view, ai_label),
-            Self::ExportPicker { .. } => {}
+            Self::ExportPicker { .. } | Self::GitHub(_) => {}
         }
     }
 
@@ -80,6 +84,12 @@ impl Overlay {
                 items: &picker.rows,
                 selected: picker.selected,
             },
+            Self::GitHub(ref hub) => OverlayData::ModalHub {
+                kind: HubKind::Git,
+                title: None,
+                items: &hub.rows,
+                selected: hub.selected,
+            },
             Self::ExportPicker {
                 include_comments,
                 include_findings,
@@ -97,12 +107,20 @@ impl Overlay {
     }
 }
 
-/// The input modes the flag-on path can be in. Only Normal has a service
-/// route yet.
+/// The input modes the flag-on path can be in; each entry that ports one
+/// adds its variant.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Mode {
     #[default]
     Normal,
+    Commit,
+    Confirm(Ask),
+}
+
+/// What a y/n prompt asks before its write.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Ask {
+    Push,
 }
 
 impl TuiView {
@@ -117,6 +135,11 @@ impl TuiView {
             }
             state
         })
+    }
+
+    /// The view state of `key`'s tab, once it has drawn.
+    pub fn tab_mut_if_open(&mut self, key: TabKey) -> Option<&mut TabViewState> {
+        self.tabs.get_mut(&key)
     }
 
     pub fn tab(&self, key: TabKey) -> Option<&TabViewState> {
@@ -440,6 +463,8 @@ pub fn screen<'a>(view: &'a TuiView, state: &'a TabViewState, frame: Frame<'a>) 
             watching: false,
             input_mode: match view.input_mode {
                 Mode::Normal => InputMode::Normal,
+                Mode::Commit => InputMode::Commit,
+                Mode::Confirm(Ask::Push) => InputMode::Confirm(ConfirmAction::Push),
             },
             overlay: view.overlay.as_ref().map(Overlay::data),
             remote_url_input: "",
@@ -458,7 +483,7 @@ pub fn screen<'a>(view: &'a TuiView, state: &'a TabViewState, frame: Frame<'a>) 
             pr_number: tab.pr_number,
             merge_active: false,
             unresolved_count: 0,
-            committed_unpushed: false,
+            committed_unpushed: content.diff.meta.committed_unpushed,
             sort_by_mtime: state.sort_by_mtime,
             modes: modes(content, frame.config),
             line_stats: ProdDiffStats::summarize(

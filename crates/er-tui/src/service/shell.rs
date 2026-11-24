@@ -13,6 +13,7 @@ use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
+use er_engine::tab_identity::DiffMode;
 use er_engine::TabKey;
 use er_service::{Command, Event, Reply, ReplyReceiver, ServiceHost, SettingsCommand, TabContent};
 use ratatui::backend::{Backend, CrosstermBackend};
@@ -24,8 +25,11 @@ use super::ai_picker;
 use super::config_hub::{self, ConfigHub, Step};
 use super::settings::{SettingsBridge, Side, Then};
 use super::startup::{self, After, Args, Pending, Start, StartTab};
-use super::tui_view::{self, Overlay, TuiView};
-use crate::input::keys::{key_action, NormalAction, OverlayAction, TuiAction};
+use super::tui_view::{self, Ask, Mode, Overlay, TuiView};
+use super::worktree::{self, GitHub, GitPick, HubStep};
+use crate::input::keys::{
+    key_action, ConfirmKey, Edit, NormalAction, OverlayAction, TuiAction, Write,
+};
 use crate::screen::UNPORTED;
 use crate::ui::highlight::Highlighter;
 
@@ -375,6 +379,12 @@ impl Shell {
                         after: After::Nothing,
                     });
                 }
+                Ok(Reply::WorktreeWritten { notice, .. }) => {
+                    if after == After::Commit {
+                        self.committed(key);
+                    }
+                    self.notify(notice);
+                }
                 Ok(_) => {}
                 Err(error) if self.host.content(&workspace, key).is_none() => {
                     self.settings.absorb_reply(&error.to_string());
@@ -449,7 +459,19 @@ impl Shell {
         let action = match action {
             TuiAction::Noop => return,
             TuiAction::Normal(action) => action,
+            TuiAction::Overlay(action) if matches!(self.view.overlay, Some(Overlay::GitHub(_))) => {
+                return self.git_hub_key(action, key, workspace, content)
+            }
             TuiAction::Overlay(action) => return self.overlay_key(action),
+            TuiAction::Commit(edit) => return self.commit_key(edit, key, workspace, content),
+            TuiAction::Write(Write::Push) => {
+                self.view.input_mode = Mode::Normal;
+                return self.post(key, workspace, Command::Push { key }, After::Nothing);
+            }
+            TuiAction::Confirm(ConfirmKey::Cancel) => {
+                self.view.input_mode = Mode::Normal;
+                return;
+            }
             _ => return self.unported(),
         };
         let state = self.view.tab_mut(key, content);
@@ -516,12 +538,103 @@ impl Shell {
                 let label = self.settings.ai_label(&view);
                 return self.run_step(ai_picker::open_ai_hub(&view, &label));
             }
+            A::ToggleStaged => return self.toggle_staged(key, workspace, content),
+            A::StartCommit => {
+                state.commit_input.clear();
+                self.view.input_mode = Mode::Commit;
+                return;
+            }
+            A::AskPush => {
+                if content.tab.mode == DiffMode::Staged && !content.tab.identity().is_remote() {
+                    self.view.input_mode = Mode::Confirm(Ask::Push);
+                }
+                return;
+            }
+            A::OpenGitHub => {
+                self.view.overlay = Some(Overlay::GitHub(GitHub::open(content)));
+                return;
+            }
             A::NextTab => return self.step_tab(true),
             A::PrevTab => return self.step_tab(false),
             _ => return self.unported(),
         };
         if let Some(index) = selected {
             self.parse_if_stub(key, workspace, content, index);
+        }
+    }
+
+    /// Sends a command for `key`'s tab; its reply lands on a later tick.
+    fn post(&mut self, key: TabKey, workspace: &str, command: Command, after: After) {
+        let replies = self.host.post(workspace, command);
+        self.pending.push(Pending {
+            key,
+            workspace: workspace.to_string(),
+            replies,
+            after,
+        });
+    }
+
+    fn toggle_staged(&mut self, key: TabKey, workspace: &str, content: &TabContent) {
+        let selected = self.view.tab_mut(key, content).selected_file;
+        match worktree::stage_command(key, content, selected) {
+            Ok(Some(command)) => self.post(key, workspace, command, After::Nothing),
+            Ok(None) => {}
+            Err(message) => self.notify(message),
+        }
+    }
+
+    fn commit_key(&mut self, edit: Edit, key: TabKey, workspace: &str, content: &TabContent) {
+        let sending = self
+            .pending
+            .iter()
+            .any(|pending| pending.key == key && pending.after == After::Commit);
+        let mut mode = self.view.input_mode;
+        let state = self.view.tab_mut(key, content);
+        let command = worktree::commit_key(key, state, &mut mode, edit, sending);
+        self.view.input_mode = mode;
+        if let Some(command) = command {
+            self.post(key, workspace, command, After::Commit);
+        }
+    }
+
+    /// A commit landed: its input closes, as the App's does.
+    fn committed(&mut self, key: TabKey) {
+        if let Some(state) = self.view.tab_mut_if_open(key) {
+            state.commit_input.clear();
+        }
+        if self.view.input_mode == Mode::Commit {
+            self.view.input_mode = Mode::Normal;
+        }
+    }
+
+    fn git_hub_key(
+        &mut self,
+        action: OverlayAction,
+        key: TabKey,
+        workspace: &str,
+        content: &TabContent,
+    ) {
+        let Some(Overlay::GitHub(hub)) = self.view.overlay.as_mut() else {
+            return;
+        };
+        let step = hub.act(action);
+        if !matches!(step, HubStep::Stay) {
+            self.view.overlay = None;
+        }
+        match step {
+            HubStep::Stay | HubStep::Close => {}
+            HubStep::Notify(message) => self.notify(message),
+            HubStep::Unported => self.unported(),
+            HubStep::Run(GitPick::Push) => {
+                if content.tab.mode == DiffMode::Staged {
+                    self.view.input_mode = Mode::Confirm(Ask::Push);
+                }
+            }
+            HubStep::Run(GitPick::StageFile) => self.toggle_staged(key, workspace, content),
+            HubStep::Run(GitPick::StageAll) => {
+                self.post(key, workspace, Command::StageAll { key }, After::Nothing);
+            }
+            HubStep::Run(GitPick::Unported) => self.unported(),
         }
     }
 
