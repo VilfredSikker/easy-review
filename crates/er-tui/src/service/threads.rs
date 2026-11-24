@@ -1,10 +1,11 @@
 //! The flag-on threads: J and K over the published AI state's hints, and the
-//! composer, whose question and note creates go to the actor of the tab they
-//! were written on. The threads, their order and their counts come from the
-//! engine's `AiState` methods, as on the App path; nothing here orders them.
+//! composer, whose creates, replies and edits go to the actor of the tab they
+//! were written on, as the delete does. The threads, their order and their
+//! counts come from the engine's `AiState` methods, as on the App path;
+//! nothing here orders them.
 
-use er_engine::ai::{annotation_store, CommentType, HintType};
-use er_engine::git::DiffFile;
+use er_engine::ai::{annotation_store, CommentRef, CommentType, HintType};
+use er_engine::git::{DiffFile, DiffLine};
 use er_service::{AnnotationTarget, Command, TabContent};
 use tui_textarea::TextArea;
 
@@ -29,11 +30,7 @@ pub fn start(state: &mut TabViewState, content: &TabContent, kind: CommentType) 
     let Some(file) = selected(state, content).filter(|_| state.sent.is_none()) else {
         return false;
     };
-    let line = file
-        .hunks
-        .get(state.current_hunk)
-        .zip(state.current_line)
-        .and_then(|(hunk, line)| hunk.lines.get(line));
+    let line = cursor_line(state, file);
     let draft = &mut state.draft;
     draft.textarea = TextArea::default();
     draft.file.clone_from(&file.path);
@@ -46,6 +43,102 @@ pub fn start(state: &mut TabViewState, content: &TabContent, kind: CommentType) 
     let deleted = line.is_some_and(|line| line.new_num.is_none());
     draft.side = Some(if deleted { "LEFT" } else { "RIGHT" }.to_string());
     true
+}
+
+/// What a thread key on the focused comment asks of the loop.
+pub enum Focus {
+    /// No comment the key acts on: nothing happens, as on the App.
+    Nothing,
+    /// The composer opened on a reply or an edit.
+    Opened,
+    /// A delete waits on the y/n prompt.
+    AskDelete,
+    /// The key's write is another entry's.
+    Unported,
+}
+
+/// The focused question, note or comment, unless a write of the draft is in
+/// flight. A comment posted on GitHub answers `Unported`: its writes are
+/// P68's, and a local `DeleteThread` would leave it on GitHub.
+fn focused<'c>(state: &TabViewState, content: &'c TabContent) -> Result<CommentRef<'c>, Focus> {
+    let id = state.focused_comment_id.as_deref().ok_or(Focus::Nothing)?;
+    let comment = content.ai.state.find_comment(id).ok_or(Focus::Nothing)?;
+    if state.sent.is_some() {
+        return Err(Focus::Nothing);
+    }
+    match comment {
+        CommentRef::GithubComment(row) if row.github_id.is_some() => Err(Focus::Unported),
+        comment => Ok(comment),
+    }
+}
+
+/// `r`: a reply draft under the focused top-level comment, placed and typed
+/// as its parent, as the App's `start_reply_comment` does.
+pub fn start_reply(state: &mut TabViewState, content: &TabContent) -> Focus {
+    let comment = match focused(state, content) {
+        Ok(comment) if comment.can_reply() => comment,
+        Ok(_) => return Focus::Nothing,
+        Err(focus) => return focus,
+    };
+    let draft = &mut state.draft;
+    draft.textarea = TextArea::default();
+    draft.file = comment.file().to_string();
+    draft.hunk = comment.hunk_index().unwrap_or(0);
+    draft.line = comment.line_start();
+    draft.reply_to = Some(comment.id().to_string());
+    draft.finding_ref = None;
+    draft.kind = comment.comment_type();
+    draft.edit_id = None;
+    draft.client_id = None;
+    Focus::Opened
+}
+
+/// `e`: an edit draft of your own focused top-level comment, prefilled with
+/// its text, as the App's `start_edit_comment` does. Anything else opens the
+/// editor, which P75 ports.
+pub fn start_edit(state: &mut TabViewState, content: &TabContent) -> Focus {
+    if state.sent.is_some() {
+        return Focus::Nothing;
+    }
+    let comment = match focused(state, content) {
+        Ok(comment) if comment.author() == "You" && comment.can_reply() => comment,
+        Err(Focus::Nothing) | Ok(_) => return Focus::Unported,
+        Err(focus) => return focus,
+    };
+    let Some(file) = selected(state, content) else {
+        return Focus::Nothing;
+    };
+    let line = cursor_line(state, file);
+    let draft = &mut state.draft;
+    draft.textarea = TextArea::new(vec![comment.text().to_string()]);
+    draft.file.clone_from(&file.path);
+    draft.hunk = state.current_hunk;
+    draft.line = line.and_then(|line| line.new_num.or(line.old_num));
+    draft.reply_to = None;
+    draft.kind = comment.comment_type();
+    draft.edit_id = Some(comment.id().to_string());
+    draft.client_id = None;
+    Focus::Opened
+}
+
+/// `x`: the focused comment waits on the y/n prompt, if it may be deleted.
+pub fn ask_delete(state: &mut TabViewState, content: &TabContent) -> Focus {
+    match focused(state, content) {
+        Ok(comment) if comment.can_delete() => {
+            state.deleting_comment = Some(comment.id().to_string());
+            Focus::AskDelete
+        }
+        Ok(_) => Focus::Nothing,
+        Err(focus) => focus,
+    }
+}
+
+/// The diff line under the cursor of the selected file.
+fn cursor_line<'f>(state: &TabViewState, file: &'f DiffFile) -> Option<&'f DiffLine> {
+    file.hunks
+        .get(state.current_hunk)
+        .zip(state.current_line)
+        .and_then(|(hunk, line)| hunk.lines.get(line))
 }
 
 /// What a composer key asks of the loop.
@@ -101,26 +194,49 @@ pub fn key(
 
 fn submit(state: &mut TabViewState, mode: &mut Mode, content: &TabContent) -> Composed {
     let draft = &mut state.draft;
-    let body = draft.textarea.lines().join("\n").trim().to_string();
-    if body.is_empty() {
+    let text = draft.textarea.lines().join("\n");
+    if text.is_empty() {
         *mode = Mode::Normal;
         return Composed::Stay;
     }
-    // Edits and replies are P67.2's, and a GitHub comment is P68's.
-    let new_thread = draft.edit_id.is_none() && draft.reply_to.is_none();
-    if !new_thread || draft.finding_ref.is_some() || draft.kind == CommentType::GitHubComment {
+    // A whitespace-only body goes too, and the service refuses it, so the
+    // composer keeps it (ruling 5 on #653).
+    let body = text.trim().to_string();
+    let context = content.context.clone();
+    if let Some(id) = draft.edit_id.clone() {
+        state.sent = Some(format!("Comment updated: {}", truncate(&body, 40)));
+        return Composed::Send(Box::new(Command::UpdateThreadMessage { context, id, body }));
+    }
+    // A finding reply is P72's, and a new GitHub comment is P68's.
+    let new_github = draft.kind == CommentType::GitHubComment && draft.reply_to.is_none();
+    if draft.finding_ref.is_some() || new_github {
         return Composed::Unported;
     }
-    let prefix = if draft.kind == CommentType::Note {
-        "n-"
-    } else {
-        "q-"
+    let prefix = match draft.kind {
+        CommentType::Question => "q-",
+        CommentType::Note => "n-",
+        CommentType::GitHubComment => "c-",
     };
-    let client_id = draft
-        .client_id
-        .get_or_insert_with(|| annotation_store::new_annotation_id(prefix))
-        .clone();
-    let context = content.context.clone();
+    let client_id = Some(
+        draft
+            .client_id
+            .get_or_insert_with(|| annotation_store::new_annotation_id(prefix))
+            .clone(),
+    );
+    let label = match (&draft.reply_to, draft.kind) {
+        (Some(_), _) => "Reply",
+        (None, CommentType::Note) => "Note",
+        (None, _) => "Question",
+    };
+    state.sent = Some(format!("{label} added: {}", truncate(&body, 40)));
+    if let Some(parent_id) = draft.reply_to.clone() {
+        return Composed::Send(Box::new(Command::ReplyToThread {
+            context,
+            parent_id,
+            body,
+            client_id,
+        }));
+    }
     let target = AnnotationTarget {
         file: draft.file.clone(),
         hunk_idx: draft.hunk,
@@ -129,8 +245,7 @@ fn submit(state: &mut TabViewState, mode: &mut Mode, content: &TabContent) -> Co
     };
     let side = draft.side.clone();
     let kind = draft.kind;
-    state.sent = Some(body.clone());
-    let (client_id, reply_to, finding_ref) = (Some(client_id), None, None);
+    let (reply_to, finding_ref) = (None, None);
     Composed::Send(Box::new(if kind == CommentType::Note {
         Command::AddNote {
             context,
@@ -154,20 +269,16 @@ fn submit(state: &mut TabViewState, mode: &mut Mode, content: &TabContent) -> Co
     }))
 }
 
-/// The create in flight landed: the draft clears. Answers what the status
+/// The write in flight landed: the draft clears. Answers what the status
 /// line says, as the App's write does.
 pub fn landed(state: &mut TabViewState) -> Option<String> {
-    let body = state.sent.take()?;
+    let notice = state.sent.take()?;
     let draft = &mut state.draft;
     draft.textarea = TextArea::default();
+    draft.edit_id = None;
     draft.client_id = None;
     draft.side = None;
-    let label = if draft.kind == CommentType::Note {
-        "Note"
-    } else {
-        "Question"
-    };
-    Some(format!("{label} added: {}", truncate(&body, 40)))
+    Some(notice)
 }
 
 fn truncate(text: &str, max: usize) -> String {

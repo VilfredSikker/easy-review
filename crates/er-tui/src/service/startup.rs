@@ -141,9 +141,11 @@ pub enum After {
     /// The snapshot a first read found missing: its diff is read again, and
     /// nothing is announced.
     SnapshotSaved,
-    /// A question or note create: once it lands, the draft of the tab it was
+    /// A create, reply or edit: once it lands, the draft of the tab it was
     /// written on clears; a refusal keeps it.
     Composed,
+    /// A thread delete: once it lands, the status line says so.
+    Deleted,
 }
 
 /// A command in flight. The loop drains its receiver each tick.
