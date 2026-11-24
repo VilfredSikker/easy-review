@@ -160,6 +160,9 @@ pub struct Shell {
     pub refuse_reloads: Option<String>,
     #[cfg(test)]
     pub reload_sends: usize,
+    /// The runs asked of the host in a test.
+    #[cfg(test)]
+    pub runs_started: usize,
     /// The automatic context pick's threshold in a test, over the settings'.
     #[cfg(test)]
     pub auto_context: Option<usize>,
@@ -218,6 +221,8 @@ impl Shell {
             refuse_reloads: None,
             #[cfg(test)]
             reload_sends: 0,
+            #[cfg(test)]
+            runs_started: 0,
             #[cfg(test)]
             auto_context: None,
         };
@@ -468,6 +473,10 @@ impl Shell {
             self.run_buckets.insert(key, content.context.er_dir.clone());
         }
         let started = ai_runs::started(&request);
+        #[cfg(test)]
+        {
+            self.runs_started += 1;
+        }
         self.runs.push((self.host.run(key, request), started));
     }
 

@@ -387,10 +387,10 @@ fn a_refused_clear_starts_no_run() {
         let lease = super::clears_tests::take_lease(&dir);
         choose(&mut shell, 'a', "Review work");
         shell.handle_key(key(KeyCode::Char('y')));
-        settle(&mut shell, |shell| {
-            notice(shell).starts_with("Review not started: ")
-        });
-        settle_within(&mut shell, Duration::from_millis(500), |_| false);
+        settle(&mut shell, |shell| shell.in_flight() == 0);
+        let told = notice(&shell);
+        assert!(told.starts_with("Review not started: "), "{told}");
+        assert_eq!(shell.runs_started, 0, "a refused clear asked for its run");
         assert_eq!(kinds(&shell), Vec::<String>::new(), "a refused clear ran");
         drop(lease);
         release(&mut shell, &agent);
