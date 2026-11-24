@@ -476,15 +476,7 @@ impl Shell {
         if let Some(overlay) = self.view.overlay.as_mut() {
             overlay.sync(&settings, &ai_selection_label);
         }
-        let (tab_names, active_tab) = self.tab_names();
-        let open: Vec<TabKey> = self
-            .host
-            .registry()
-            .tabs_view()
-            .tabs
-            .iter()
-            .map(|tab| tab.key)
-            .collect();
+        let (tab_names, active_tab, open) = self.tab_names();
         self.reviewed.keep_open(&open);
         let reviewed_count = self.reviewed.count(key, content);
         self.view.tab_mut(key, content);
@@ -980,8 +972,8 @@ impl Shell {
         }
     }
 
-    /// The tab strip's names, and the active tab's place in it.
-    fn tab_names(&self) -> (Vec<String>, usize) {
+    /// The tab strip's names, the active tab's place in it, and the keys.
+    fn tab_names(&self) -> (Vec<String>, usize, Vec<TabKey>) {
         let tabs = self.host.registry().tabs_view();
         let rows = er_service::tabs_resource(&tabs);
         let names = rows.tabs.into_iter().map(|row| row.label).collect();
@@ -989,7 +981,8 @@ impl Shell {
             .active
             .and_then(|key| tabs.tabs.iter().position(|tab| tab.key == key))
             .unwrap_or(0);
-        (names, active)
+        let keys = tabs.tabs.iter().map(|tab| tab.key).collect();
+        (names, active, keys)
     }
 
     /// Draws the active tab from its published content and its view state.

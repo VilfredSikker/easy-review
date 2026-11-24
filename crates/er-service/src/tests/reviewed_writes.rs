@@ -31,7 +31,11 @@ diff --git a/src/b.rs b/src/b.rs
 ";
 
 fn deps() -> Arc<WorkspaceDeps> {
-    let git = FakeGit::default().with_diff_against_branch(Ok(RAW.to_string()));
+    deps_on(RAW)
+}
+
+fn deps_on(raw: &str) -> Arc<WorkspaceDeps> {
+    let git = FakeGit::default().with_diff_against_branch(Ok(raw.to_string()));
     Arc::new(WorkspaceDeps::new(Ports {
         git: Arc::new(git),
         github: Arc::new(FakeGitHub::default()),
@@ -175,6 +179,66 @@ fn the_auto_unmark_keeps_a_toggle_saved_since_the_load_read() -> anyhow::Result<
             "the stale mark stayed: {saved:?}"
         );
         assert_eq!(read_by_the_load, saved, "the load publishes other marks");
+        Ok(())
+    })
+}
+
+/// A file edited after the load fetched its diff and marked since keeps its
+/// mark: the load judges only the marks it read.
+#[test]
+fn the_auto_unmark_keeps_a_mark_made_on_a_newer_diff() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let bucket = dir.path().join("bucket");
+    std::fs::create_dir_all(&bucket)?;
+    let bucket = bucket.to_string_lossy().into_owned();
+    er_engine::storage::with_process_test_storage_root(dir.path(), || -> anyhow::Result<()> {
+        let store = er_engine::store_registry::store();
+        let scope = Scope::dir(&bucket)?;
+        let stale = HashMap::from([("src/a.rs".to_string(), "stale".to_string())]);
+        session_store::save_reviewed(&store, &scope, &stale)?;
+        let mut read_by_the_load = session_store::load_reviewed(&store, &scope)?;
+        let newer = RAW.replace("+b-new", "+b-newer");
+        toggle_reviewed(&deps_on(&newer), &context(&bucket), "src/b.rs")
+            .map_err(|error| anyhow::anyhow!("toggle: {error}"))?;
+        let files = er_engine::git::parse_diff(RAW);
+        crate::effect::clear_moved_marks(&mut read_by_the_load, RAW, &files, true, &store, &scope);
+        let saved = marks(&bucket)?;
+        assert!(
+            saved.contains_key("src/b.rs"),
+            "the newer mark was cleared: {saved:?}"
+        );
+        assert_eq!(read_by_the_load, saved, "the load publishes other marks");
+        Ok(())
+    })
+}
+
+/// A load whose marks all still hold takes no lock and saves nothing.
+#[test]
+fn an_auto_unmark_that_clears_nothing_takes_no_lock() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let bucket = dir.path().join("bucket");
+    std::fs::create_dir_all(&bucket)?;
+    let bucket = bucket.to_string_lossy().into_owned();
+    er_engine::storage::with_process_test_storage_root(dir.path(), || -> anyhow::Result<()> {
+        let store = er_engine::store_registry::store();
+        let scope = Scope::dir(&bucket)?;
+        let hash = er_engine::ai::compute_per_file_hash(RAW, "src/a.rs").unwrap_or_default();
+        let held = HashMap::from([("src/a.rs".to_string(), hash)]);
+        session_store::save_reviewed(&store, &scope, &held)?;
+        let lock = std::path::Path::new(&bucket).join(".lock");
+        std::fs::remove_file(&lock)?;
+        let mut read_by_the_load = session_store::load_reviewed(&store, &scope)?;
+        let files = er_engine::git::parse_diff(RAW);
+        let cleared = crate::effect::clear_moved_marks(
+            &mut read_by_the_load,
+            RAW,
+            &files,
+            true,
+            &store,
+            &scope,
+        );
+        assert_eq!(cleared, 0, "a mark that holds was cleared");
+        assert!(!lock.exists(), "a load that cleared nothing took the lock");
         Ok(())
     })
 }
