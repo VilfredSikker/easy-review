@@ -229,7 +229,7 @@ pub fn from_app<'a>(app: &'a App, cache: &'a mut ViewCache) -> Screen<'a> {
             tour: tab.tour.as_ref().map(|tour| TourView {
                 pillars: &cache.tour_pillars,
                 selected_pillar: tour.selected_pillar,
-                files: &tour.files,
+                files: tour.files.iter().collect(),
                 file_is_related: &tour.file_is_related,
                 pillar_file_ranges: &tour.pillar_file_ranges,
                 selected_file: tour.selected_file,

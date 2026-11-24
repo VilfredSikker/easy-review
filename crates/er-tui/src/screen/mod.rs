@@ -113,13 +113,6 @@ pub struct TabView<'a> {
 
 /// The active tab's content, one variant per path. A renderer that reads the
 /// AI state or the reviewed count matches on it.
-#[cfg_attr(
-    feature = "v1-service",
-    expect(
-        clippy::large_enum_variant,
-        reason = "one lives per frame, on the stack; a box would allocate every frame"
-    )
-)]
 pub enum TabData<'a> {
     App(AppData<'a>),
     #[cfg(feature = "v1-service")]
@@ -162,7 +155,7 @@ pub struct HistoryView<'a> {
 pub struct TourView<'a> {
     pub pillars: &'a [view::TourPillar],
     pub selected_pillar: usize,
-    pub files: &'a [DiffFile],
+    pub files: Vec<&'a DiffFile>,
     pub file_is_related: &'a [bool],
     pub pillar_file_ranges: &'a [(usize, usize)],
     pub selected_file: usize,
@@ -205,6 +198,9 @@ pub struct SectionData<'a> {
     pub filtered_reviewed_count: Option<(usize, usize)>,
     /// History's commits and the selected commit's files, in History only.
     pub history: Option<HistoryView<'a>>,
+    /// The tour's pillars and files, from the service's tour builder, in
+    /// Tour only.
+    pub tour: Option<TourView<'a>>,
 }
 
 /// What an area the service path does not draw yet shows instead.
@@ -296,7 +292,7 @@ impl<'a> TabData<'a> {
         match self {
             Self::App(data) => data.tour.as_ref(),
             #[cfg(feature = "v1-service")]
-            Self::Sections(_) => None,
+            Self::Sections(data) => data.tour.as_ref(),
         }
     }
 
@@ -345,6 +341,7 @@ mod tests {
             reviewed_count: (1, 2),
             filtered_reviewed_count: None,
             history: None,
+            tour: None,
         });
         let mut terminal = Terminal::new(TestBackend::new(120, 12)).unwrap();
         let mut hl = crate::ui::highlight::Highlighter::new();
@@ -384,6 +381,7 @@ mod tests {
             reviewed_count: (0, 0),
             filtered_reviewed_count: None,
             history: None,
+            tour: None,
         });
         let mut terminal = Terminal::new(TestBackend::new(140, 12)).unwrap();
         let mut hl = crate::ui::highlight::Highlighter::new();
