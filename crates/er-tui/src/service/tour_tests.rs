@@ -61,8 +61,8 @@ fn seed_tour(app: &mut er_engine::app::App, shell: &mut Shell) {
     assert!(shown(shell), "the seeded tour never reached the AI section");
 }
 
-/// Both paths on their own fixture with the tour seeded, in Tour mode, the
-/// frames compared.
+/// Both paths on their own fixture with the tour seeded, on a line of the
+/// diff and then in Tour mode, the frames compared.
 fn in_tour(
     app_repo: &tempfile::TempDir,
     flag_repo: &tempfile::TempDir,
@@ -71,7 +71,10 @@ fn in_tour(
 ) -> (er_engine::app::App, Shell) {
     let (mut app, mut shell) = both_on(app_repo, flag_repo, storage);
     seed_tour(&mut app, &mut shell);
-    step(&mut app, &mut shell, hl, key(KeyCode::Char('5')));
+    // A line cursor the Tour drops, so leaving it shows where it went.
+    for code in [KeyCode::Down, KeyCode::Down, KeyCode::Char('5')] {
+        step(&mut app, &mut shell, hl, key(code));
+    }
     assert_eq!(app.tab().mode, DiffMode::Tour);
     let content = shell
         .active_content()
