@@ -505,5 +505,60 @@ fn history_copies_and_edits_the_commit_file() {
         assert!(opened_path.ends_with("src/f001.rs"), "{opened_path:?}");
         copy_context(&mut shell);
         assert_copied(&shell, app_copy(&app, 4), "history context");
+
+        // A watched file selected: no diff file, in History as elsewhere.
+        let tab = shell.active_content().map(|c| c.key);
+        if let Some(state) = tab.and_then(|tab| shell.view_mut().tab_mut_if_open(tab)) {
+            state.watched.selected = Some(0);
+        }
+        shell.handle_key(key(KeyCode::Char('e')));
+        assert_eq!(
+            shell.recorder.taken(),
+            [],
+            "a watched file opened a diff file"
+        );
+    });
+}
+
+/// A refresh that moves the selected file's index keeps its selection, as
+/// the App's does: the anchor belongs to the file, not to its place.
+#[test]
+fn a_refresh_that_moves_the_file_keeps_its_selection() {
+    let (app_repo, flag_repo) = (fixture(2), fixture(2));
+    let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+    er_engine::storage::with_process_test_storage_root(storage.path(), || {
+        let (mut app, mut shell) = both_on(&app_repo, &flag_repo, storage.path());
+        let mut hl = Highlighter::new();
+        let keys = [
+            key(KeyCode::Char('k')),
+            key(KeyCode::Down),
+            shift(KeyCode::Down),
+        ];
+        for event in keys {
+            step(&mut app, &mut shell, &mut hl, event);
+        }
+        // A file that sorts first moves src/f001.rs from index 1 to 2.
+        for repo in [&app_repo, &flag_repo] {
+            std::fs::write(repo.path().join("src/a.rs"), "fn a() {}\n")
+                .unwrap_or_else(|e| panic!("{e}"));
+            git(repo.path(), &["add", "."]);
+            git(repo.path(), &["commit", "-q", "-m", "a"]);
+        }
+        press_app(&mut app, KeyCode::Char('R'));
+        shell.handle_key(key(KeyCode::Char('R')));
+        settle(&mut shell, |shell| {
+            shell.in_flight() == 0
+                && shell
+                    .active_content()
+                    .is_some_and(|c| c.diff.files.len() == 3)
+        });
+        for _ in 0..2 {
+            step(&mut app, &mut shell, &mut hl, shift(KeyCode::Down));
+        }
+        let want = app_copy(&app, 4);
+        let notice_of = want.clone().map(|c| c.notice);
+        assert_eq!(notice_of, Ok("Copied selection (4 lines)".to_string()));
+        copy_context(&mut shell);
+        assert_copied(&shell, want, "after the refresh");
     });
 }

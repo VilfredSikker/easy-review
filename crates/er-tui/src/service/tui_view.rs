@@ -261,10 +261,10 @@ pub struct TabViewState {
     pub selected_file: usize,
     pub current_hunk: usize,
     pub current_line: Option<usize>,
-    /// Where a shift-arrow selection started: the file and the line in the
-    /// current hunk. A move the App clears it on clears it, and it holds
-    /// only in its own file.
-    pub selection_anchor: Option<(usize, usize)>,
+    /// Where a shift-arrow selection started: the file's path and the line
+    /// in the current hunk. A move the App clears it on clears it, and it
+    /// holds only in its own file, wherever a reload puts that file.
+    pub selection_anchor: Option<(String, usize)>,
     pub diff_scroll: u16,
     pub h_scroll: u16,
     pub h_scroll_old: u16,
@@ -687,9 +687,14 @@ impl TabViewState {
     /// Shift+arrow: anchors a selection at the cursor line, then moves the
     /// cursor within the hunk, as the App does.
     pub fn extend_selection(&mut self, file: Option<&DiffFile>, down: bool) {
-        if self.selection_anchor.is_none() {
+        let path = file.map_or("", |file| file.path.as_str());
+        if self
+            .selection_anchor
+            .as_ref()
+            .is_none_or(|(anchored, _)| anchored != path)
+        {
             let line = self.current_line.unwrap_or(0);
-            self.selection_anchor = Some((self.selected_file, line));
+            self.selection_anchor = Some((path.to_string(), line));
         }
         let lines = file
             .and_then(|file| file.hunks.get(self.current_hunk))
@@ -707,18 +712,25 @@ impl TabViewState {
     /// The file `e` and "Copy context" read: History's commit file in
     /// History, else the selected diff file unless a watched file is.
     pub fn shown_file<'c>(&self, content: &'c TabContent) -> Option<&'c DiffFile> {
+        if self.watched.selected.is_some() {
+            return None;
+        }
         let at = match content.tab.mode {
             DiffMode::History => self.history.selected_file,
-            _ if self.watched.selected.is_some() => return None,
             _ => self.selected_file,
         };
         content.diff.files.get(at).map(|file| &**file)
     }
 
-    /// The selected line range in the current hunk, from shift+arrow.
-    pub fn selected_range(&self) -> Option<std::ops::RangeInclusive<usize>> {
-        let (file, anchor) = self.selection_anchor?;
-        let current = self.current_line.filter(|_| file == self.selected_file)?;
+    /// The selected line range in `file`'s current hunk, from shift+arrow.
+    pub fn selected_range(
+        &self,
+        file: Option<&DiffFile>,
+    ) -> Option<std::ops::RangeInclusive<usize>> {
+        let (anchored, anchor) = self.selection_anchor.as_ref()?;
+        let path = file.map_or("", |file| file.path.as_str());
+        let current = self.current_line.filter(|_| anchored == path)?;
+        let anchor = *anchor;
         Some(anchor.min(current)..=anchor.max(current))
     }
 

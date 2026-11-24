@@ -115,7 +115,7 @@ pub fn build(pick: Pick, state: &TabViewState, content: &TabContent) -> Built {
     let at = Cursor {
         hunk: state.current_hunk,
         line: state.current_line,
-        range: state.selected_range(),
+        range: state.selected_range(file),
     };
     let er_dir = &content.context.er_dir;
     match pick {
