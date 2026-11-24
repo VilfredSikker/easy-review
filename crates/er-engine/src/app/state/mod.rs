@@ -15849,6 +15849,76 @@ mod tests {
         });
     }
 
+    fn draft(id: &str, author: &str, reply_to: Option<&str>) -> serde_json::Value {
+        serde_json::json!({
+            "id": id, "file": "src/a.rs", "hunk_index": 0, "line_start": 1,
+            "text": id, "author": author, "in_reply_to": reply_to, "resolved": true
+        })
+    }
+
+    /// A bucket with a human thread answered by Claude and a lone human
+    /// draft, in both the questions and the notes, and both backups.
+    fn seed_drafts(er: &std::path::Path) {
+        let rows = |prefix: &str| {
+            let id = |n: &str| format!("{prefix}{n}");
+            vec![
+                draft(&id("1"), "You", None),
+                draft(&id("2"), "Claude", Some(&id("1"))),
+                draft(&id("3"), "You", None),
+            ]
+        };
+        crate::test_support::write_sidecar_json::<crate::ai::ErQuestions>(
+            er,
+            serde_json::json!({"version": 1, "diff_hash": "h", "questions": rows("q")}),
+        );
+        crate::test_support::write_sidecar_json::<crate::ai::ErNotes>(
+            er,
+            serde_json::json!({"version": 1, "diff_hash": "h", "notes": rows("n")}),
+        );
+        std::fs::write(er.join("questions.prev.json"), "{}").unwrap();
+        std::fs::write(er.join("notes.prev.json"), "{}").unwrap();
+    }
+
+    /// Each kept row's id and whether it is resolved.
+    fn kept(rows: &[crate::ai::PrivateAnnotation]) -> Vec<(String, bool)> {
+        rows.iter().map(|q| (q.id.clone(), q.resolved)).collect()
+    }
+
+    /// What the flag-off `z` and the two clear-then-run confirms delete,
+    /// through the App's names: `z` takes both files and both backups; the
+    /// answers and replies clears take only Claude's rows and reopen what
+    /// they answered, keeping every human row and the other file.
+    #[test]
+    fn the_draft_clears_delete_what_the_app_deletes() {
+        let dir = tempfile::tempdir().unwrap();
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let er = dir.path();
+            let at = er.to_str().unwrap();
+            seed_drafts(er);
+            cleanup_question_answers(at);
+            let questions = crate::test_support::read_sidecar::<crate::ai::ErQuestions>(er);
+            let open = |p: &str| vec![(format!("{p}1"), false), (format!("{p}3"), true)];
+            assert_eq!(kept(&questions.questions), open("q"));
+            let notes = crate::test_support::read_sidecar::<crate::ai::ErNotes>(er);
+            assert_eq!(notes.notes.len(), 3, "the answers clear keeps the notes");
+
+            cleanup_note_replies(at);
+            let notes = crate::test_support::read_sidecar::<crate::ai::ErNotes>(er);
+            assert_eq!(kept(&notes.notes), open("n"));
+            assert!(er.join("questions.prev.json").exists());
+
+            cleanup_questions_and_notes(at);
+            for file in [
+                "questions.json",
+                "notes.json",
+                "questions.prev.json",
+                "notes.prev.json",
+            ] {
+                assert!(!er.join(file).exists(), "{file} stayed");
+            }
+        });
+    }
+
     #[test]
     fn cleanup_review_artifacts_also_removes_expert_prev_snapshots() {
         let dir = tempfile::tempdir().unwrap();
