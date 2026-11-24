@@ -131,6 +131,44 @@ fn a_reply_in_flight_is_sent_once() {
     });
 }
 
+/// A reply whose worker dies answers as a refusal: the composer keeps its
+/// text, says so, and the next Enter writes the reply.
+#[test]
+fn a_reply_that_never_answers_frees_the_composer() {
+    let repo = fixture(2);
+    let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+    let start = plan(&args(vec![path_of(&repo)]));
+    er_engine::storage::with_process_test_storage_root(storage.path(), || {
+        let gate = Arc::new(Gate::default());
+        let ports = Ports {
+            git: Arc::new(GatedGit(Arc::clone(&gate))),
+            github: Ports::cli().github,
+        };
+        let mut shell = shell_on(ports, &start, storage.path());
+        settle(&mut shell, loaded);
+        let tab = active_key(&shell);
+        shell.handle_key(key(KeyCode::Char('q')));
+        type_text(&mut shell, "Why this?");
+        shell.handle_key(key(KeyCode::Enter));
+        settle_replies(&mut shell);
+        shell.handle_key(key(KeyCode::Char('J')));
+        shell.handle_key(key(KeyCode::Char('r')));
+        type_text(&mut shell, "Lost");
+        gate.panics.store(true, std::sync::atomic::Ordering::SeqCst);
+        shell.handle_key(key(KeyCode::Enter));
+        settle_replies(&mut shell);
+        gate.panics
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        assert!(state(&shell, tab).sent.is_none(), "the composer is stuck");
+        assert_eq!(draft_text(&shell, tab), "Lost");
+        shell.handle_key(key(KeyCode::Enter));
+        settle_replies(&mut shell);
+        let stored = rows(&er_dir(&shell));
+        let replies = stored.iter().filter(|row| row["is_reply"] == true);
+        assert_eq!(replies.count(), 1, "{stored:?}");
+    });
+}
+
 /// `e` on your own question opens it prefilled; Enter changes its text in
 /// place, under the same id and on the same anchor (ruling 5 on #653).
 #[test]
