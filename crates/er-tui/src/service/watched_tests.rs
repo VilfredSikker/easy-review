@@ -79,7 +79,9 @@ fn selected_path(shell: &Shell) -> String {
 /// The bucket's snapshot of `name`.
 fn snapshot_of(shell: &Shell, name: &str) -> std::path::PathBuf {
     let content = shell.active_content().unwrap_or_else(|| panic!("no tab"));
-    Path::new(&content.context.er_dir).join("snapshots").join(name)
+    Path::new(&content.context.er_dir)
+        .join("snapshots")
+        .join(name)
 }
 
 /// The list draws, then moving into it shows the new file's notice, then
@@ -109,7 +111,12 @@ fn the_watched_files_draw_like_the_app() {
         assert_parity(&app, &flag_on, &mut hl, "created");
 
         settle(&mut shell, |shell| showing(shell, unchanged));
-        assert_parity(&app, &shell_frame(&mut shell, &mut hl), &mut hl, "unchanged");
+        assert_parity(
+            &app,
+            &shell_frame(&mut shell, &mut hl),
+            &mut hl,
+            "unchanged",
+        );
 
         std::fs::write(repo.path().join(&selected), "A=2\n").unwrap_or_else(|e| panic!("{e}"));
         // Both rescan, the App as its loop does every five seconds.
@@ -133,7 +140,7 @@ fn the_watched_files_draw_like_the_app() {
             press_app(&mut app, KeyCode::Char('W'));
             shell.handle_key(key(KeyCode::Char('W')));
             settle(&mut shell, |shell| {
-                watched(shell).is_some_and(|w| w.files.is_empty() == !listed)
+                watched(shell).is_some_and(|w| w.files.is_empty() != listed)
             });
             assert_parity(&app, &shell_frame(&mut shell, &mut hl), &mut hl, step);
         }

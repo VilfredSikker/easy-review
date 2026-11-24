@@ -313,7 +313,12 @@ impl TabViewState {
         } else {
             navigation::prev_file
         };
-        match step(self.selected_file, self.watched.selected, &visible, &watched) {
+        match step(
+            self.selected_file,
+            self.watched.selected,
+            &visible,
+            &watched,
+        ) {
             FileMove::File(idx) => {
                 self.watched.selected = None;
                 self.current_line = None;

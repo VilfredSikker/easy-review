@@ -76,7 +76,10 @@ fn flag_on_modules_name_no_app_and_never_wait() {
                 assert!(!flat.contains(write), "{name} names {write}");
             }
             for named in er_git_names(&flat) {
-                assert!(WATCHED_READS.contains(&named), "{name} names er-git's {named}");
+                assert!(
+                    WATCHED_READS.contains(&named),
+                    "{name} names er-git's {named}"
+                );
             }
         } else {
             for spawn in ["thread::spawn", "thread::Builder"] {
@@ -137,7 +140,10 @@ fn er_git_names<'a>(flat: &'a str) -> Vec<&'a str> {
     };
     let mut names = Vec::new();
     for rest in flat.split("er_git::").skip(1) {
-        match rest.strip_prefix('{').and_then(|group| group.split('}').next()) {
+        match rest
+            .strip_prefix('{')
+            .and_then(|group| group.split('}').next())
+        {
             Some(group) => names.extend(group.split(',').map(ident)),
             None => names.push(ident(rest)),
         }

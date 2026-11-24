@@ -1608,8 +1608,14 @@ mod tests {
         std::fs::write(dir.path().join("a.env"), "A=1\n").unwrap();
         let read = read_watched_snapshot_diff(&root, "a.env", &snapshots).unwrap();
         assert_eq!(read, None);
-        assert!(!dir.path().join("snapshots/a.env").exists(), "the read saved");
-        assert_eq!(diff_watched_file_snapshot(&root, "a.env", &snapshots).unwrap(), None);
+        assert!(
+            !dir.path().join("snapshots/a.env").exists(),
+            "the read saved"
+        );
+        assert_eq!(
+            diff_watched_file_snapshot(&root, "a.env", &snapshots).unwrap(),
+            None
+        );
         assert!(dir.path().join("snapshots/a.env").exists());
     }
 
