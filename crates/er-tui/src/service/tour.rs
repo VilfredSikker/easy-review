@@ -36,8 +36,9 @@ pub struct TourPos {
 }
 
 /// Builds the rows again when the tour, the marks, the mode or the diff
-/// moved. A new entry into the tour, or rows that changed, put the position
-/// on the selected pillar's first file, as the App's rebuild does.
+/// moved. A new entry into the tour, a new diff, or rows that changed put
+/// the position on the selected pillar's first file, as the App's rebuild
+/// does; a reviewed write moves none of these, and keeps the place.
 pub fn follow(pos: &mut TourPos, content: &TabContent) {
     if content.tab.mode != DiffMode::Tour {
         return;
@@ -46,6 +47,7 @@ pub fn follow(pos: &mut TourPos, content: &TabContent) {
     if pos.built == Some(at) {
         return;
     }
+    let new_diff = pos.built.map(|(_, diff)| diff) != Some(at.1);
     pos.built = Some(at);
     #[cfg(test)]
     {
@@ -81,9 +83,12 @@ pub fn follow(pos: &mut TourPos, content: &TabContent) {
         ranges.push((start, files.len()));
     }
     let entered = pos.entered != Some(content.mode_revision);
-    let same = pos.pillars == pillars && pos.files == files && pos.related == related;
+    let same = pos.pillars == pillars
+        && pos.files == files
+        && pos.related == related
+        && pos.ranges == ranges;
     (pos.pillars, pos.files, pos.related, pos.ranges) = (pillars, files, related, ranges);
-    if entered || !same {
+    if entered || new_diff || !same {
         pos.entered = Some(content.mode_revision);
         pos.selected_pillar = pos.selected_pillar.min(pos.pillars.len().saturating_sub(1));
         pos.selected_file = pos.ranges.get(pos.selected_pillar).map_or(0, |r| r.0);

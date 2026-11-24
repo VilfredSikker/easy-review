@@ -12,8 +12,8 @@ use er_engine::tab_identity::DiffMode;
 use er_engine::test_support::write_sidecar_json;
 
 use super::shell::Shell;
-use super::tests::{fixture, key, rows, shell_frame, SOURCES};
-use super::threads_tests::{active_key, both_on, er_dir, state, step};
+use super::tests::{fixture, git, key, loaded, path_of, rows, settle, shell, shell_frame, SOURCES};
+use super::threads_tests::{active_key, args, both_on, er_dir, settle_replies, state, step};
 use crate::ui::highlight::Highlighter;
 
 /// A foundation pillar with `f000` and its related test `f001`, a second
@@ -46,6 +46,11 @@ fn seed_tour(app: &mut er_engine::app::App, shell: &mut Shell) {
         .active_content()
         .unwrap_or_else(|| panic!("no content"));
     write_tour(&before.context.er_dir, &before.context.branch_diff_hash);
+    wait_for_tour(shell);
+}
+
+/// Ticks the reload until the AI section shows a tour.
+fn wait_for_tour(shell: &mut Shell) {
     let shown = |shell: &Shell| {
         shell
             .active_content()
@@ -193,4 +198,63 @@ fn flag_on_modules_build_no_tour_of_their_own() {
             assert!(!text.contains(needle), "{name} names {needle}");
         }
     }
+}
+
+/// A refresh whose diff moves the files under the tour puts the place on the
+/// pillar's first file, as the App's rebuild does: with `P1` naming `f000`
+/// and `f001`, and `P2` naming `f002` and `f003`, the diff going from
+/// `[f000, f002, f003]` to `[f000, f001, f003]` keeps the row count and the
+/// pillars, and the selected row would name a file of the other pillar.
+#[test]
+fn a_new_diff_puts_the_tour_on_its_pillars_first_file() {
+    let repo = fixture(4);
+    let root = repo.path();
+    git(root, &["checkout", "main", "--", "src/f001.rs"]);
+    git(root, &["commit", "-qam", "keep f001"]);
+    let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+    er_engine::storage::with_process_test_storage_root(storage.path(), || {
+        let mut shell = shell(&args(vec![path_of(&repo)]), storage.path());
+        settle(&mut shell, loaded);
+        let pillar = |id: &str, a: &str, b: &str| serde_json::json!({"id": id, "title": id, "files": [{"path": a}, {"path": b}]});
+        let pillars = [
+            pillar("P1", "src/f000.rs", "src/f001.rs"),
+            pillar("P2", "src/f002.rs", "src/f003.rs"),
+        ];
+        write_sidecar_json::<ErTour>(
+            Path::new(&er_dir(&shell)),
+            serde_json::json!({"version": 1, "diff_hash": "", "pillars": pillars}),
+        );
+        wait_for_tour(&mut shell);
+        for code in ['5', 'n'] {
+            shell.handle_key(key(KeyCode::Char(code)));
+            settle_replies(&mut shell);
+        }
+        let tab = active_key(&shell);
+        let selected = |shell: &mut Shell| {
+            shell_frame(shell, &mut Highlighter::new());
+            let content = shell
+                .active_content()
+                .unwrap_or_else(|| panic!("no content"));
+            let tour = &state(shell, tab).tour;
+            let view = super::tour::view(tour, &content).unwrap_or_else(|| panic!("no tour"));
+            let path = view.files.get(view.selected_file).map(|f| f.path.clone());
+            let range = view.pillar_file_ranges.get(view.selected_pillar).copied();
+            (view.selected_pillar, view.selected_file, path, range)
+        };
+        assert_eq!(
+            selected(&mut shell),
+            (1, 1, Some("src/f002.rs".to_string()), Some((1, 3)))
+        );
+
+        git(root, &["checkout", "main", "--", "src/f002.rs"]);
+        std::fs::write(root.join("src/f001.rs"), "let moved = 1;\n")
+            .unwrap_or_else(|e| panic!("{e}"));
+        git(root, &["commit", "-qam", "move"]);
+        shell.handle_key(key(KeyCode::Char('R')));
+        settle_replies(&mut shell);
+        assert_eq!(
+            selected(&mut shell),
+            (1, 2, Some("src/f003.rs".to_string()), Some((2, 3)))
+        );
+    });
 }
