@@ -793,6 +793,15 @@ pub(crate) fn drop_stale_marks(patch: &mut ContentPatch, applied: &mut HashMap<S
     }
 }
 
+/// The reviewed parts of `patch`: the marks a write already saved.
+pub(crate) fn saved_marks(patch: ContentPatch) -> Vec<ContentPatch> {
+    match patch {
+        ContentPatch::Reviewed { .. } => vec![patch],
+        ContentPatch::Several(patches) => patches.into_iter().flat_map(saved_marks).collect(),
+        _ => Vec::new(),
+    }
+}
+
 /// Applies a checked patch at `revision`. A sidecar or reviewed patch reaches
 /// every tab that reads its bucket, duplicate tabs included. Answers how many
 /// reviewed marks a load cleared.

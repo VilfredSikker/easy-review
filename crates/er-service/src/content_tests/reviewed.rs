@@ -174,3 +174,77 @@ fn a_load_that_cleared_marks_drops_an_older_toggle_behind_it() -> anyhow::Result
     );
     Ok(())
 }
+
+/// The load that cleared marks is refused because its tab moved, and its
+/// retry reads the cleared marks with nothing left to clear. The refused
+/// load's saved marks still land with their sequence, so the toggle that
+/// saved before the clear, landing last, is dropped. A sibling tab on the
+/// bucket takes the saved marks as well.
+#[test]
+fn a_refused_load_still_orders_the_marks_its_clear_saved() -> anyhow::Result<()> {
+    use crate::annotations::{marks_patch, update_marks};
+    use er_engine::session_store;
+    let tmp = tempfile::tempdir()?;
+    let store = er_store::ArtifactStore::new(tmp.path());
+    let scope = er_store::Scope::dir(tmp.path())?;
+    let stale = HashMap::from([("src/a.rs".to_string(), "stale".to_string())]);
+    session_store::save_reviewed(&store, &scope, &stale)?;
+    let mut read_by_the_load = session_store::load_reviewed(&store, &scope)?;
+    let toggle = update_marks(&store, &scope, |map| {
+        map.insert("src/b.rs".to_string(), "h".to_string());
+        1
+    })?;
+    let files = er_engine::git::parse_diff(RAW);
+    let (_, marks_seq) =
+        crate::effect::clear_moved_marks(&mut read_by_the_load, RAW, &files, true, &store, &scope);
+    assert!(marks_seq.is_some(), "the clear saved nothing");
+
+    let mut state = WorkspaceState::new();
+    let (key, sibling) = (TabKey::next(), TabKey::next());
+    let tab = |marks: &HashMap<String, String>, marks_seq| {
+        let mut loaded = loaded_tab("/repo");
+        loaded.diff.files = files.clone();
+        loaded.marks = marks.clone();
+        loaded.marks_seq = marks_seq;
+        loaded
+    };
+    for at in [key, sibling] {
+        state
+            .apply_patch(ContentPatch::loaded(at, None, tab(&stale, None)))
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+    }
+    let started = content_of(state.view(), key)?;
+    let ctx = started.context.clone();
+    let moved = ContentPatch::Context {
+        key,
+        since: started.mode_revision,
+        file: files[0].clone(),
+        lines: 20,
+    };
+    state
+        .apply_patch(moved)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    let refused = ContentPatch::loaded(
+        key,
+        Some(started.generation()),
+        tab(&read_by_the_load, marks_seq),
+    );
+    assert_eq!(state.apply_patch(refused), Err(PatchRefused::Moved));
+    let now = content_of(state.view(), key)?.generation();
+    let retry = ContentPatch::loaded(key, Some(now), tab(&read_by_the_load, None));
+    state
+        .apply_patch(retry)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    state
+        .apply_patch(marks_patch(&ctx, toggle)?.1)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    for at in [key, sibling] {
+        assert_eq!(
+            content_of(state.view(), at)?.reviewed.marks,
+            read_by_the_load
+        );
+    }
+    Ok(())
+}

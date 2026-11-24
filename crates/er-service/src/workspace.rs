@@ -247,7 +247,9 @@ impl WorkspaceState {
     }
 
     /// Applies an effect's content patch with a new revision, or refuses it
-    /// with nothing moved when the tab changed since the effect started.
+    /// when the tab changed since the effect started. A refused patch moves
+    /// nothing but the reviewed marks it carries: they were already saved,
+    /// so they land, and their sequence orders the writes still in flight.
     /// Answers the revision and how many reviewed marks a load cleared.
     pub(crate) fn apply_patch(
         &mut self,
@@ -255,10 +257,20 @@ impl WorkspaceState {
     ) -> Result<(u64, usize), PatchRefused> {
         let (mut loads, mut drops) = (Vec::new(), Vec::new());
         content::lifecycle_keys(&patch, &mut loads, &mut drops);
-        if loads.iter().any(|key| self.closed.contains(key)) {
-            return Err(PatchRefused::Moved);
+        let refused = if loads.iter().any(|key| self.closed.contains(key)) {
+            Err(PatchRefused::Moved)
+        } else {
+            content::check(&self.view.tabs, &patch)
+        };
+        if let Err(refused) = refused {
+            let mut saved = ContentPatch::Several(content::saved_marks(patch));
+            if !matches!(&saved, ContentPatch::Several(parts) if parts.is_empty()) {
+                content::drop_stale_marks(&mut saved, &mut self.marks_seq);
+                let revision = self.bump();
+                content::apply(&mut self.view.tabs, saved, revision);
+            }
+            return Err(refused);
         }
-        content::check(&self.view.tabs, &patch)?;
         content::drop_stale_marks(&mut patch, &mut self.marks_seq);
         for key in loads.iter().chain(&drops) {
             self.view.load_errors.remove(key);
