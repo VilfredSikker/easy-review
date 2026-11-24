@@ -153,6 +153,12 @@ pub enum After {
     Approved,
     /// A thread delete: once it lands, the status line says so.
     Deleted,
+    /// A read of the pending review for the review hub.
+    ReviewRead,
+    /// A remove from the pending review; its reply reads the review back.
+    ReviewEdit,
+    /// The review's submit: once it lands, the hub closes.
+    ReviewSubmit,
 }
 
 /// A command in flight. The loop drains its receiver each tick.

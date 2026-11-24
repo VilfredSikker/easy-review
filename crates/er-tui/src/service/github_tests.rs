@@ -19,14 +19,14 @@ use super::shell::Shell;
 use super::startup::Args;
 use super::tests::{
     assert_parity, fixture, git, key, loaded, path_of, plan, settle, settle_within, shell_frame,
-    shell_on, SOURCES, WAIT,
+    shell_on, without_review_row, SOURCES, WAIT,
 };
 use super::tui_view::{Ask, Mode, PrKnown, TabViewState};
 use crate::ui::highlight::Highlighter;
 
 /// A fake that finds acme/widgets#7 for the branch and can post a line
 /// comment on it.
-fn on_pr_7() -> FakeGitHub {
+pub(super) fn on_pr_7() -> FakeGitHub {
     FakeGitHub::default()
         .with_lookup_pr_for_current_branch(Ok(PrLookup::Present {
             owner: "acme".into(),
@@ -50,7 +50,7 @@ fn unknown_outcome() -> GhError {
     }
 }
 
-fn ports(github: &Arc<FakeGitHub>) -> Ports {
+pub(super) fn ports(github: &Arc<FakeGitHub>) -> Ports {
     let github: Arc<dyn er_github::GitHub> = github.clone();
     Ports {
         git: Ports::cli().git,
@@ -59,7 +59,7 @@ fn ports(github: &Arc<FakeGitHub>) -> Ports {
 }
 
 /// The flag path on one working tab of `repo`, loaded.
-fn working(repo: &tempfile::TempDir, github: &Arc<FakeGitHub>, config: &Path) -> Shell {
+pub(super) fn working(repo: &tempfile::TempDir, github: &Arc<FakeGitHub>, config: &Path) -> Shell {
     let args = Args {
         paths: vec![path_of(repo)],
         ..Args::default()
@@ -74,7 +74,7 @@ fn active_key(shell: &Shell) -> TabKey {
     tabs.active.unwrap_or_else(|| panic!("no active tab"))
 }
 
-fn state(shell: &Shell) -> &TabViewState {
+pub(super) fn state(shell: &Shell) -> &TabViewState {
     let key = active_key(shell);
     shell
         .view()
@@ -89,21 +89,21 @@ fn known(shell: &Shell) -> PrKnown {
     shell.view().pr_known(active_key(shell), &content)
 }
 
-fn notice(shell: &Shell) -> String {
+pub(super) fn notice(shell: &Shell) -> String {
     shell.view().notification.clone().unwrap_or_default()
 }
 
-fn settle_replies(shell: &mut Shell) {
+pub(super) fn settle_replies(shell: &mut Shell) {
     settle(shell, |shell| shell.in_flight() == 0);
 }
 
-fn type_text(shell: &mut Shell, text: &str) {
+pub(super) fn type_text(shell: &mut Shell, text: &str) {
     for c in text.chars() {
         shell.handle_key(key(KeyCode::Char(c)));
     }
 }
 
-fn calls(github: &FakeGitHub, name: &str) -> Vec<String> {
+pub(super) fn calls(github: &FakeGitHub, name: &str) -> Vec<String> {
     let prefix = format!("{name}(");
     github
         .calls()
@@ -113,7 +113,7 @@ fn calls(github: &FakeGitHub, name: &str) -> Vec<String> {
 }
 
 /// Opens the Git hub and runs its row at `row`.
-fn git_hub_row(shell: &mut Shell, row: usize) {
+pub(super) fn git_hub_row(shell: &mut Shell, row: usize) {
     shell.handle_key(key(KeyCode::Char('g')));
     for _ in 0..row {
         shell.handle_key(key(KeyCode::Down));
@@ -228,7 +228,7 @@ fn pr_tab(script: FakeGitHub, config: &Path) -> ([tempfile::TempDir; 2], Shell, 
     ([repo, origin], shell, github)
 }
 
-fn overview(author: &str) -> PrOverviewData {
+pub(super) fn overview(author: &str) -> PrOverviewData {
     PrOverviewData {
         number: 7,
         title: "T".into(),
@@ -298,6 +298,7 @@ fn step(app: &mut er_engine::app::App, shell: &mut Shell, hl: &mut Highlighter, 
     crate::handle_key(app, event, &tx, &mut None, &mut cache).unwrap_or_else(|e| panic!("{e}"));
     shell.handle_key(event);
     settle_replies(shell);
+    without_review_row(shell);
     let frame = shell_frame(shell, hl);
     assert_parity(app, &frame, hl, &format!("{event:?}"));
 }
@@ -543,25 +544,50 @@ fn r_on_a_posted_comment_replies_in_its_thread() {
     });
 }
 
-/// `e` on your posted comment says it is not on this build yet: the App
-/// edits it on GitHub first, which is P68.2's. Nothing is written.
+/// `e` on your posted comment edits it on GitHub, then its row, as the
+/// App's edit does; a refused edit keeps the row and the composer, and a
+/// second Enter while the edit is in flight sends nothing.
 #[test]
-fn e_on_a_posted_comment_is_refused() {
-    let repo = fixture(1);
+fn e_on_a_posted_comment_edits_it_on_github_first() {
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
-    let github = Arc::new(on_pr_7());
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
-        let mut shell = working(&repo, &github, storage.path());
-        let dir = seed_posted(&mut shell, "You");
-        let file = Path::new(&dir).join("github-comments.json");
-        let stored = std::fs::read(&file).unwrap_or_else(|e| panic!("{e}"));
-        shell.handle_key(key(KeyCode::Char('e')));
-        assert_eq!(shell.view().input_mode, Mode::Normal);
-        assert_eq!(notice(&shell), super::threads::POSTED_EDIT_REFUSED);
-        settle_replies(&mut shell);
-        let after = std::fs::read(&file).unwrap_or_else(|e| panic!("{e}"));
-        assert_eq!(after, stored, "the comments file changed");
-        assert!(calls(&github, "update_review_comment").is_empty());
+        for refused in [false, true] {
+            let repo = fixture(1);
+            let answer = if refused {
+                Err(GhError::Forbidden {
+                    message: "not yours".into(),
+                })
+            } else {
+                Ok(())
+            };
+            let github = Arc::new(on_pr_7().with_update_review_comment(answer));
+            let mut shell = working(&repo, &github, storage.path());
+            let dir = seed_posted(&mut shell, "You");
+            shell.handle_key(key(KeyCode::Char('e')));
+            assert_eq!(shell.view().input_mode, Mode::Comment);
+            type_text(&mut shell, "Now ");
+            let text = state(&shell).draft.textarea.lines().join("\n");
+            shell.handle_key(key(KeyCode::Enter));
+            shell.handle_key(key(KeyCode::Enter));
+            settle_replies(&mut shell);
+            let edits = calls(&github, "update_review_comment");
+            assert_eq!(edits.len(), 1, "{:?}", github.calls());
+            assert!(edits[0].contains("comment_id=11"), "{edits:?}");
+            let rows = read_sidecar::<ErGithubComments>(Path::new(&dir)).comments;
+            if refused {
+                assert_eq!(rows[0].comment, "posted", "a refused edit changed the row");
+                assert_eq!(shell.view().input_mode, Mode::Comment);
+                let shown = notice(&shell);
+                assert!(shown.starts_with("Failed to update comment"), "{shown}");
+            } else {
+                assert_eq!(rows[0].comment, text);
+                assert!(
+                    notice(&shell).starts_with("Comment updated"),
+                    "{}",
+                    notice(&shell)
+                );
+            }
+        }
     });
 }
 

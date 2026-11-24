@@ -20,6 +20,8 @@ pub enum GitPick {
     PullComments,
     CommentOnPr,
     ApprovePr,
+    /// The review hub (P68.2), which the App path does not have.
+    Review,
     /// A row whose action has no service route on this path yet.
     Unported,
 }
@@ -108,12 +110,31 @@ impl GitHub {
                 GitPick::CommentOnPr,
             ),
             (row("Approve PR", "", approve, has_pr), GitPick::ApprovePr),
+            (
+                row(
+                    "Review and submit…",
+                    "",
+                    "List your pending review and submit it with a decision",
+                    true,
+                ),
+                GitPick::Review,
+            ),
         ];
         let (rows, picks) = rows.into_iter().unzip();
         Self {
             rows,
             picks,
             selected: 0,
+        }
+    }
+
+    /// The hub as the App draws it: without the review row, which only
+    /// this path has.
+    #[cfg(test)]
+    pub fn drop_review_row(&mut self) {
+        if let Some(at) = self.picks.iter().position(|pick| *pick == GitPick::Review) {
+            self.rows.remove(at);
+            self.picks.remove(at);
         }
     }
 

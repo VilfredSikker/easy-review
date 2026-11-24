@@ -269,3 +269,62 @@ fn a_posted_delete_removes_its_rows_only_once_github_has() -> anyhow::Result<()>
     }
     Ok(())
 }
+
+fn stored_text(bucket: &str, id: &str) -> anyhow::Result<String> {
+    let store = er_engine::store_registry::store();
+    let scope = er_store::Scope::dir(bucket)?;
+    let er_store::Loaded::Found(stored) =
+        er_engine::ai::annotation_store::load_github_comments(&store, &scope)?
+    else {
+        anyhow::bail!("the comments file is gone");
+    };
+    let row = stored.value.comments.into_iter().find(|c| c.id == id);
+    Ok(row.map(|row| row.comment).unwrap_or_default())
+}
+
+/// An edit of a posted comment reaches GitHub before its row changes; a
+/// refused edit keeps the row and says so in the App's words.
+#[test]
+fn a_posted_edit_writes_its_row_only_once_github_has() -> anyhow::Result<()> {
+    let refused = GhError::Forbidden {
+        message: "not yours".to_string(),
+    };
+    for answer in [Ok(()), Err(refused)] {
+        let (dir, bucket) = posted_thread()?;
+        let took = answer.is_ok();
+        let github = Arc::new(FakeGitHub::default().with_update_review_comment(answer));
+        er_engine::storage::with_process_test_storage_root(dir.path(), || {
+            let edit = Command::UpdateGithubComment {
+                context: pr_tab(&bucket),
+                id: "gh-12".to_string(),
+                body: " edited ".to_string(),
+            };
+            let reply = actor(&github).send_and_wait_with(edit, WAIT);
+            let calls = github.calls();
+            let edits: Vec<&String> = calls
+                .iter()
+                .filter(|call| call.starts_with("update_review_comment("))
+                .collect();
+            assert_eq!(edits.len(), 1, "{calls:?}");
+            assert!(
+                edits[0].contains("comment_id=12, body=\"edited\""),
+                "{edits:?}"
+            );
+            let text = stored_text(&bucket, "gh-12")?;
+            if took {
+                assert!(reply.is_ok(), "{reply:?}");
+                assert_eq!(text, "edited");
+            } else {
+                assert_eq!(text, "posted", "a refused edit changed the row");
+                let message = reply.err().map(|e| e.to_string()).unwrap_or_default();
+                assert!(
+                    message.starts_with("Failed to update comment: ")
+                        && message.contains("not yours"),
+                    "{message}"
+                );
+            }
+            Ok::<_, anyhow::Error>(())
+        })?;
+    }
+    Ok(())
+}

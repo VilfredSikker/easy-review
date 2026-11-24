@@ -27,7 +27,7 @@ const WIDTH: u16 = 120;
 const HEIGHT: u16 = 30;
 
 /// The flag-on modules, as text.
-pub(super) const SOURCES: [(&str, &str); 16] = [
+pub(super) const SOURCES: [(&str, &str); 17] = [
     ("ai_picker.rs", include_str!("ai_picker.rs")),
     ("config_hub.rs", include_str!("config_hub.rs")),
     ("filter.rs", include_str!("filter.rs")),
@@ -35,6 +35,7 @@ pub(super) const SOURCES: [(&str, &str); 16] = [
     ("layers.rs", include_str!("layers.rs")),
     ("mod.rs", include_str!("mod.rs")),
     ("pr_probe.rs", include_str!("pr_probe.rs")),
+    ("review_hub.rs", include_str!("review_hub.rs")),
     ("reviewed.rs", include_str!("reviewed.rs")),
     ("session.rs", include_str!("session.rs")),
     ("settings.rs", include_str!("settings.rs")),
@@ -325,6 +326,14 @@ pub(super) fn settle_within(
 
 pub(super) fn key(code: KeyCode) -> KeyEvent {
     KeyEvent::new(code, KeyModifiers::NONE)
+}
+
+/// Takes the Git hub's review row out, so the hub draws as the App's,
+/// which has no review hub.
+pub(super) fn without_review_row(shell: &mut Shell) {
+    if let Some(super::tui_view::Overlay::GitHub(hub)) = shell.view_mut().overlay.as_mut() {
+        hub.drop_review_row();
+    }
 }
 
 pub(super) fn shell_frame(shell: &mut Shell, highlighter: &mut Highlighter) -> Buffer {
@@ -715,11 +724,12 @@ fn tab_keys_load_later_tabs_and_leave_a_failed_one() {
 }
 
 /// The service tests, as text.
-const TEST_SOURCES: [(&str, &str); 11] = [
+const TEST_SOURCES: [(&str, &str); 12] = [
     ("config_hub_tests.rs", include_str!("config_hub_tests.rs")),
     ("filter_tests.rs", include_str!("filter_tests.rs")),
     ("github_tests.rs", include_str!("github_tests.rs")),
     ("loop_tests.rs", include_str!("loop_tests.rs")),
+    ("review_hub_tests.rs", include_str!("review_hub_tests.rs")),
     ("reviewed_tests.rs", include_str!("reviewed_tests.rs")),
     ("settings_tests.rs", include_str!("settings_tests.rs")),
     (

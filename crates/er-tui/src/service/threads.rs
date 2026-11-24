@@ -41,6 +41,7 @@ pub fn start(state: &mut TabViewState, content: &TabContent, kind: CommentType) 
     // A paused or emptied edit must not turn this new draft into its edit.
     draft.edit_id = None;
     draft.kind = kind;
+    draft.review = false;
     draft.client_id = None;
     let deleted = line.is_some_and(|line| line.new_num.is_none());
     draft.side = Some(if deleted { "LEFT" } else { "RIGHT" }.to_string());
@@ -57,17 +58,11 @@ pub enum Focus {
     AskDelete,
     /// The key's write is another entry's.
     Unported,
-    /// The key does not act on this comment here, and says why.
-    Refused(&'static str),
 }
-
-/// What `e` says on a comment posted on GitHub: the App edits it there
-/// first, and that command is P68.2's.
-pub const POSTED_EDIT_REFUSED: &str = "Editing a posted comment is not on this build yet";
 
 /// The focused question, note or comment, unless a write of the draft is in
 /// flight. A comment posted on GitHub takes the same keys: its writes go to
-/// GitHub where `github.rs` sends them.
+/// GitHub first.
 fn focused<'c>(state: &TabViewState, content: &'c TabContent) -> Result<CommentRef<'c>, Focus> {
     let id = state.focused_comment_id.as_deref().ok_or(Focus::Nothing)?;
     let comment = content.ai.state.find_comment(id).ok_or(Focus::Nothing)?;
@@ -93,6 +88,7 @@ pub fn start_reply(state: &mut TabViewState, content: &TabContent) -> Focus {
     draft.reply_to = Some(comment.id().to_string());
     draft.finding_ref = None;
     draft.kind = comment.comment_type();
+    draft.review = false;
     draft.edit_id = None;
     draft.client_id = None;
     Focus::Opened
@@ -110,9 +106,6 @@ pub fn start_edit(state: &mut TabViewState, content: &TabContent) -> Focus {
         Err(Focus::Nothing) | Ok(_) => return Focus::Unported,
         Err(focus) => return focus,
     };
-    if matches!(comment, CommentRef::GithubComment(row) if row.github_id.is_some()) {
-        return Focus::Refused(POSTED_EDIT_REFUSED);
-    }
     let Some(file) = selected(state, content) else {
         return Focus::Nothing;
     };
@@ -124,6 +117,7 @@ pub fn start_edit(state: &mut TabViewState, content: &TabContent) -> Focus {
     draft.line = line.and_then(|line| line.new_num.or(line.old_num));
     draft.reply_to = None;
     draft.kind = comment.comment_type();
+    draft.review = false;
     draft.edit_id = Some(comment.id().to_string());
     draft.client_id = None;
     Focus::Opened
@@ -175,10 +169,15 @@ pub fn key(
             draft.textarea.input(key);
         }
         CommentAction::ToggleType if !sending && draft.can_toggle_kind() => {
-            draft.kind = match draft.kind {
-                CommentType::Question => CommentType::Note,
-                CommentType::Note => CommentType::GitHubComment,
-                CommentType::GitHubComment => CommentType::Question,
+            // On this path a GitHub comment on a line may instead join the
+            // pending review (D3), the fourth kind.
+            (draft.kind, draft.review) = match (draft.kind, draft.review) {
+                (CommentType::Question, _) => (CommentType::Note, false),
+                (CommentType::Note, _) => (CommentType::GitHubComment, false),
+                (CommentType::GitHubComment, false) if draft.line.is_some() => {
+                    (CommentType::GitHubComment, true)
+                }
+                (CommentType::GitHubComment, _) => (CommentType::Question, false),
             };
             // The painted id names its kind, so a new kind paints a new one.
             draft.client_id = None;
@@ -215,7 +214,8 @@ fn submit(state: &mut TabViewState, mode: &mut Mode, content: &TabContent) -> Co
     let context = content.context.clone();
     if let Some(id) = draft.edit_id.clone() {
         state.sent = Some(format!("Comment updated: {}", truncate(&body, 40)));
-        return Composed::Send(Box::new(Command::UpdateThreadMessage { context, id, body }));
+        let edit = er_service::edit_message(content, id, body);
+        return Composed::Send(Box::new(edit));
     }
     // A finding reply is P72's. A GitHub comment, or a reply under a posted
     // one, goes to GitHub.

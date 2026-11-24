@@ -12,6 +12,7 @@ mod filter;
 mod github;
 mod layers;
 mod pr_probe;
+mod review_hub;
 mod reviewed;
 mod session;
 mod settings;
@@ -37,6 +38,8 @@ mod filter_tests;
 mod github_tests;
 #[cfg(test)]
 mod loop_tests;
+#[cfg(test)]
+mod review_hub_tests;
 #[cfg(test)]
 mod reviewed_tests;
 #[cfg(test)]

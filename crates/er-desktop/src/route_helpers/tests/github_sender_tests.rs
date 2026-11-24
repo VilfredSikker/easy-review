@@ -177,3 +177,54 @@ fn the_comment_tick_syncs_the_active_pr() {
         );
     });
 }
+
+/// An edit of a comment posted on GitHub goes there before its row
+/// changes, as the App's edit does: GitHub refusing it keeps the row.
+#[test]
+fn an_edit_of_a_posted_comment_reaches_github_first() {
+    with_pr_tab(|state, key, github| {
+        let tabs = state.service.app_registry().tabs_view();
+        let entry = tabs.tabs.iter().find(|entry| entry.key == key);
+        let tab = entry.map(|entry| entry.descriptor.clone());
+        let tab = tab.unwrap_or_else(|| panic!("no tab"));
+        let content = state.service.content(key, &tab);
+        let dir = content.map(|c| c.context.comments_dir.clone());
+        let dir = dir.unwrap_or_else(|| panic!("not loaded"));
+        er_engine::test_support::write_sidecar_json::<er_engine::ai::ErGithubComments>(
+            std::path::Path::new(&dir),
+            serde_json::json!({
+                "version": 1, "diff_hash": "older",
+                "github": {"pr_number": 7, "owner": "acme", "repo": "widgets"},
+                "comments": [{
+                    "id": "gh-11", "file": "src/f0.rs", "hunk_index": 0, "line_start": 1,
+                    "comment": "posted", "author": "You", "source": "github", "github_id": 11
+                }]
+            }),
+        );
+        let reload = er_service::Command::ReloadSidecars { key };
+        let reloaded = state.service.send(&crate::service::actor_key(&tab), reload);
+        assert!(reloaded.is_ok(), "{reloaded:?}");
+        let edit = Command::UpdateThreadMessage {
+            tab: er_service::wire_tab_key(key),
+            view: view(state, key),
+            id: "gh-11".into(),
+            body: "edited".into(),
+        };
+        let refused = send(state, "edit", edit).err().map(|e| e.message);
+        let message = refused.unwrap_or_else(|| panic!("the edit skipped GitHub"));
+        assert!(message.starts_with("Failed to update comment"), "{message}");
+        let edits = github.calls();
+        let edits: Vec<_> = edits
+            .iter()
+            .filter(|call| call.starts_with("update_review_comment("))
+            .collect();
+        assert_eq!(edits.len(), 1, "{edits:?}");
+        let rows = er_engine::test_support::read_sidecar::<er_engine::ai::ErGithubComments>(
+            std::path::Path::new(&dir),
+        );
+        assert_eq!(
+            rows.comments[0].comment, "posted",
+            "a refused edit changed the row"
+        );
+    });
+}

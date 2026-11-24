@@ -74,6 +74,8 @@ pub struct TabView<'a> {
     pub watched_count: usize,
     pub lazy_mode: bool,
     pub comment_type: CommentType,
+    /// The comment joins the pending review; only the flag path drafts one.
+    pub comment_review: bool,
     pub comment_reply_to: Option<&'a str>,
     pub comment_finding_ref: Option<&'a str>,
     pub comment_file: &'a str,

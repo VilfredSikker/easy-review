@@ -802,7 +802,8 @@ pub fn bottom_bar_height(screen: &Screen, width: u16) -> u16 {
         | InputMode::Filter
         | InputMode::Commit
         | InputMode::RemoteUrl
-        | InputMode::BaseBranch => 1,
+        | InputMode::BaseBranch
+        | InputMode::ReviewSummary => 1,
         InputMode::Normal => {
             let hints = build_hints(screen);
             let lines = pack_hint_lines(&hints, width as usize);
@@ -842,6 +843,9 @@ pub fn render_bottom_bar(f: &mut Frame, area: Rect, screen: &Screen) {
                         .to_string()
                 }
                 ConfirmAction::ApprovePR => "Approve this PR on GitHub? (y/n)".to_string(),
+                ConfirmAction::RemoveReviewComment => {
+                    "Remove this comment from your pending review? (y/n)".to_string()
+                }
             };
             let spans = vec![
                 Span::styled(
@@ -877,6 +881,8 @@ pub fn render_bottom_bar(f: &mut Frame, area: Rect, screen: &Screen) {
                 )
             } else if is_finding_reply {
                 ("response", styles::CYAN())
+            } else if tab.comment_review {
+                ("review comment", styles::CYAN())
             } else if is_note {
                 ("note", styles::YELLOW())
             } else if is_question {
@@ -963,6 +969,30 @@ pub fn render_bottom_bar(f: &mut Frame, area: Rect, screen: &Screen) {
                     " cancel",
                     ratatui::style::Style::default().fg(styles::DIM()),
                 ),
+            ];
+            let bar = Paragraph::new(Line::from(spans)).style(panel_bg);
+            f.render_widget(bar, area);
+        }
+        InputMode::ReviewSummary => {
+            let dim = ratatui::style::Style::default().fg(styles::DIM());
+            let spans = vec![
+                Span::styled(
+                    " summary ",
+                    ratatui::style::Style::default()
+                        .fg(styles::BG())
+                        .bg(styles::CYAN())
+                        .add_modifier(ratatui::style::Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!(" {}", screen.chrome.remote_url_input),
+                    ratatui::style::Style::default().fg(styles::TEXT()),
+                ),
+                Span::styled("█", ratatui::style::Style::default().fg(styles::CYAN())),
+                Span::styled("  ", ratatui::style::Style::default()),
+                Span::styled("Enter", styles::key_hint_style()),
+                Span::styled(" done  ", dim),
+                Span::styled("Esc", styles::key_hint_style()),
+                Span::styled(" cancel", dim),
             ];
             let bar = Paragraph::new(Line::from(spans)).style(panel_bg);
             f.render_widget(bar, area);

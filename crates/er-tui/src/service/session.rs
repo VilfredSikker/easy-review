@@ -55,9 +55,12 @@ pub fn capture(content: &TabContent, state: &TabViewState) -> SessionState {
         comment_draft_file: draft.file.clone(),
         comment_draft_hunk: draft.hunk,
         comment_draft_line: draft.line,
+        // The flag-off build skips a "review" draft rather than post it as
+        // a single comment.
         comment_draft_type: match draft.kind {
             CommentType::Question => "question",
             CommentType::Note => "note",
+            CommentType::GitHubComment if draft.review => "review",
             CommentType::GitHubComment => "github",
         }
         .to_string(),
@@ -95,6 +98,7 @@ pub fn restore(state: &mut TabViewState, session: SessionState, content: &TabCon
     }
     (state.show_unreviewed_only, state.sort_by_mtime) = toggles;
     if !session.comment_draft.is_empty() {
+        let review = session.comment_draft_type == "review";
         state.draft = Draft {
             textarea: TextArea::new(session.comment_draft.lines().map(String::from).collect()),
             file: session.comment_draft_file,
@@ -105,6 +109,7 @@ pub fn restore(state: &mut TabViewState, session: SessionState, content: &TabCon
                 "note" => CommentType::Note,
                 _ => CommentType::GitHubComment,
             },
+            review,
             reply_to: session.comment_draft_reply_to,
             finding_ref: session.comment_draft_finding_ref,
             edit_id: session.comment_draft_edit_id,
