@@ -427,6 +427,21 @@ pub(super) fn press_app(app: &mut er_engine::app::App, code: KeyCode) {
     crate::handle_key(app, key(code), &tx, &mut None, &mut cache).unwrap_or_else(|e| panic!("{e}"));
 }
 
+/// A seed written beside the shell reaches it on the reload tick, which says
+/// "✓ AI data refreshed"; the App leg reads its seed in place and says
+/// nothing. Waits for the reload's reply to land, then takes that notice
+/// down, as the App legs clear theirs.
+pub(super) fn let_the_reload_notice_go(shell: &mut Shell) {
+    let deadline = Instant::now() + WAIT;
+    while shell.reloads_in_flight() > 0 && Instant::now() < deadline {
+        shell.tick(Instant::now());
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    if shell.view().notification.as_deref() == Some("✓ AI data refreshed") {
+        shell.clear_notification();
+    }
+}
+
 pub(super) fn loaded(shell: &Shell) -> bool {
     shell.active_content().is_some()
 }

@@ -502,6 +502,7 @@ fn seed_posted(shell: &mut Shell, author: &str) -> String {
         std::thread::sleep(Duration::from_millis(10));
     }
     assert!(moved(shell), "the posted comment never loaded");
+    super::tests::let_the_reload_notice_go(shell);
     shell.handle_key(key(KeyCode::Char('J')));
     assert_eq!(state(shell).focused_comment_id.as_deref(), Some("gh-11"));
     dir

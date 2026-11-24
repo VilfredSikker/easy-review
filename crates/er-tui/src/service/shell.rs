@@ -343,6 +343,19 @@ impl Shell {
         self.pending.len()
     }
 
+    /// The sidecar reloads whose replies have not landed.
+    #[cfg(test)]
+    pub fn reloads_in_flight(&self) -> usize {
+        self.reloads.len()
+    }
+
+    /// Takes the status-line message down, as the App's `clear_notification`.
+    #[cfg(test)]
+    pub fn clear_notification(&mut self) {
+        self.view.notification = None;
+        self.notified_at = None;
+    }
+
     #[cfg(test)]
     pub fn runs_in_flight(&self) -> usize {
         self.runs.len()
