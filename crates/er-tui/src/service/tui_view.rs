@@ -116,6 +116,8 @@ pub enum Mode {
     #[default]
     Normal,
     Commit,
+    /// The composer: the active tab's draft takes the keys.
+    Comment,
     Confirm(Ask),
 }
 
@@ -171,6 +173,17 @@ pub struct TabViewState {
     pub file_tree_width: u16,
     pub panel_width: u16,
     pub draft: Draft,
+    /// The question, note or comment J and K last landed on.
+    pub focused_comment_id: Option<String>,
+    /// The AI revision the Gate last followed; a new one sets it again
+    /// unless it was set by hand.
+    pub gate_followed: Option<u64>,
+    /// The body of the draft's write in flight; the composer takes no edit
+    /// until its reply lands.
+    pub sent: Option<String>,
+    /// A J or K landed on a stub: once it parses, the diff scrolls to the
+    /// hint's hunk, as the App's in-place parse lets it.
+    pub scroll_on_parse: bool,
     /// The filter the session file holds, saved back as it came until the
     /// flag path applies filters.
     pub saved_filter: SavedFilter,
@@ -202,6 +215,10 @@ impl Default for TabViewState {
             file_tree_width: 32,
             panel_width: 40,
             draft: Draft::default(),
+            focused_comment_id: None,
+            gate_followed: None,
+            sent: None,
+            scroll_on_parse: false,
             saved_filter: SavedFilter::default(),
             filter_input: String::new(),
             commit_input: String::new(),
@@ -233,7 +250,8 @@ pub struct Draft {
     pub side: Option<String>,
     pub line_end: Option<usize>,
     /// The id a retried GitHub post carries, so it finds the comment it
-    /// already made (ADR 0053).
+    /// already made (ADR 0053), and the id a question or note create
+    /// carries, so a retry after a refusal writes the same row (ADR 0072).
     pub client_id: Option<String>,
 }
 
@@ -252,6 +270,17 @@ impl Default for Draft {
             line_end: None,
             client_id: None,
         }
+    }
+}
+
+impl Draft {
+    /// Whether Ctrl+T may change the kind: a new draft on a file, as the
+    /// App's rule has it.
+    pub const fn can_toggle_kind(&self) -> bool {
+        self.reply_to.is_none()
+            && self.edit_id.is_none()
+            && self.finding_ref.is_none()
+            && !self.file.is_empty()
     }
 }
 
@@ -462,7 +491,7 @@ impl TabViewState {
 
     /// Scrolls the diff to the cursor: two file header rows, then per hunk a
     /// header row, its lines and a blank row, as the diff view lays it out.
-    fn scroll_to_cursor(&mut self, file: Option<&DiffFile>) {
+    pub fn scroll_to_cursor(&mut self, file: Option<&DiffFile>) {
         let Some(file) = file else { return };
         let mut offset: usize = 2;
         for (idx, hunk) in file.hunks.iter().enumerate() {
@@ -519,8 +548,8 @@ pub struct Frame<'a> {
 }
 
 /// The frame's read model, from the active tab's published content and its
-/// view state. Draws the section data and the reviewed count; the AI panels
-/// show the unported message.
+/// view state. Draws the section data, the threads and the reviewed count;
+/// the AI Summary panel shows the unported message.
 pub fn screen<'a>(view: &'a TuiView, state: &'a TabViewState, frame: Frame<'a>) -> Screen<'a> {
     let content = frame.content;
     let tab = &content.tab;
@@ -544,6 +573,7 @@ pub fn screen<'a>(view: &'a TuiView, state: &'a TabViewState, frame: Frame<'a>) 
             input_mode: match view.input_mode {
                 Mode::Normal => InputMode::Normal,
                 Mode::Commit => InputMode::Commit,
+                Mode::Comment => InputMode::Comment,
                 Mode::Confirm(Ask::Push) => InputMode::Confirm(ConfirmAction::Push),
                 Mode::Confirm(Ask::DeleteWatchedFile) => {
                     InputMode::Confirm(ConfirmAction::DeleteWatchedFile {
@@ -554,8 +584,8 @@ pub fn screen<'a>(view: &'a TuiView, state: &'a TabViewState, frame: Frame<'a>) 
             overlay: view.overlay.as_ref().map(Overlay::data),
             remote_url_input: "",
             ai_selection_label: frame.ai_selection_label,
-            has_comment_draft: !state.draft.textarea.is_empty(),
-            can_toggle_comment_type: false,
+            has_comment_draft: !state.draft.textarea.is_empty() && view.input_mode != Mode::Comment,
+            can_toggle_comment_type: state.draft.can_toggle_kind(),
             split_diff: false,
         },
         tab: TabView {
@@ -584,7 +614,7 @@ pub fn screen<'a>(view: &'a TuiView, state: &'a TabViewState, frame: Frame<'a>) 
             panel_width: state.panel_width,
             review_focus: ReviewFocus::Files,
             selected_file: state.selected_file,
-            focused_comment_id: None,
+            focused_comment_id: state.focused_comment_id.as_deref(),
             focused_finding_id: None,
             filter_expr: &state.filter_expr,
             search_query: &state.search_query,
@@ -631,6 +661,7 @@ pub fn screen<'a>(view: &'a TuiView, state: &'a TabViewState, frame: Frame<'a>) 
             files,
             reviewed,
             pr: content.pr.overview.as_ref(),
+            ai: &content.ai.state,
             reviewed_count: frame.reviewed_count,
         }),
     }

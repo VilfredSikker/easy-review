@@ -255,13 +255,13 @@ fn a_restored_draft_keeps_its_client_id() {
 /// Holds `diff_raw` and `current_branch` while closed, so a tab load's
 /// effect stays in flight until the test opens it.
 #[derive(Default)]
-struct Gate {
+pub(super) struct Gate {
     closed: Mutex<bool>,
     opened: Condvar,
 }
 
 impl Gate {
-    fn set(&self, closed: bool) {
+    pub(super) fn set(&self, closed: bool) {
         *self.closed.lock().unwrap_or_else(|e| e.into_inner()) = closed;
         self.opened.notify_all();
     }
@@ -275,7 +275,7 @@ impl Gate {
 }
 
 /// The real git, behind the gate.
-struct GatedGit(Arc<Gate>);
+pub(super) struct GatedGit(pub(super) Arc<Gate>);
 
 macro_rules! pass_through {
     ($($name:ident($($arg:ident: $ty:ty),*) -> $ret:ty;)*) => {
