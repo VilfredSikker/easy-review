@@ -13,7 +13,7 @@ use super::tests::{
     app_on, assert_parity, fixture, git, key, loaded, path_of, press_app, settle, settle_within,
     shell, shell_frame, SOURCES,
 };
-use crate::screen::UNPORTED;
+use super::tui_view::Overlay;
 use crate::ui::highlight::Highlighter;
 
 fn storage() -> tempfile::TempDir {
@@ -152,11 +152,12 @@ fn the_base_input_rediffs_the_tab_and_keeps_its_base() {
         let mut app = app_on(&path_of(&app_repo));
         let mut shell = start(vec![path_of(&flag_repo)], None, storage.path());
         let before = content(&shell).diff.files.len();
-        // The hub's other rows wait for their entries and say so.
+        // The hub's first row opens the folder browser (P75.2); Esc leaves it.
         shell.handle_key(key(KeyCode::Char('o')));
         shell.handle_key(key(KeyCode::Enter));
-        let notice = shell.view().notification.clone().unwrap_or_default();
-        assert!(notice.contains(UNPORTED), "{notice}");
+        let browsing = matches!(shell.view().overlay, Some(Overlay::Directory(_)));
+        assert!(browsing, "Browse folders opened no browser");
+        shell.handle_key(key(KeyCode::Esc));
         let mut codes = vec![KeyCode::Char('o'), KeyCode::Down, KeyCode::Down];
         codes.extend([KeyCode::Down, KeyCode::Enter]);
         codes.extend("other".chars().map(KeyCode::Char));
