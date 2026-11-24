@@ -412,6 +412,13 @@ fn changes_refresh_the_tab_they_were_counted_on() {
         git(first.path(), &["commit", "-qam", "unwatched"]);
         shell.watch_mut().on = true;
         shell.handle_key(key(KeyCode::Char('[')));
+        // Before the file system could report anything, the re-arm sent one.
+        shell.tick(Instant::now());
+        assert_eq!(
+            shell.in_flight(),
+            1,
+            "showing the tab again refreshed nothing"
+        );
         let caught = settle_within(&mut shell, Duration::from_secs(20), |shell| {
             idle(shell) && shows(&of(shell, one, &one_ws), "src/f001.rs")
         });
