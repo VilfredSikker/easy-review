@@ -97,7 +97,6 @@ impl TabContent {
     }
 
     pub(crate) fn from_loaded(key: TabKey, loaded: LoadedTab, revision: u64) -> Self {
-        let pr_number = loaded.tab.pr_number;
         Self {
             key,
             tab: loaded.tab,
@@ -125,11 +124,12 @@ impl TabContent {
             }),
             pr: Arc::new(PrSection {
                 revision,
-                pr_number,
+                pr_number: loaded.pr.pr_number,
                 overview: loaded.pr.overview,
                 commits: loaded.pr.commits,
                 head_oid: loaded.pr.head_oid,
                 stack: loaded.pr.stack,
+                branch: loaded.pr.branch,
             }),
             freshness: Arc::new(FreshnessSection {
                 revision,
@@ -418,6 +418,9 @@ pub struct PrSection {
     /// The tab's `gh stack` as the last lookup read it; none until one ran.
     /// A load keeps it while the tab reads its stack from the same place.
     pub stack: Option<StackRead>,
+    /// On a working tab, the viewed branch whose PR `LoadBranchPr` read here;
+    /// none on a PR tab. A load applied while the branch holds carries it.
+    pub branch: Option<String>,
 }
 
 /// One stack lookup: where it read, for which branch, and what it found.
@@ -439,6 +442,7 @@ impl PrSection {
             commits: self.commits.clone(),
             head_oid: self.head_oid.clone(),
             stack: Some(stack),
+            branch: self.branch.clone(),
         }
     }
 }
@@ -561,10 +565,12 @@ pub(crate) struct LoadedDiff {
 
 #[derive(Default)]
 pub(crate) struct LoadedPr {
+    pub pr_number: Option<u64>,
     pub overview: Option<PrOverviewData>,
     pub commits: Vec<CommitInfo>,
     pub head_oid: Option<String>,
     pub stack: Option<StackRead>,
+    pub branch: Option<String>,
 }
 
 /// An AI state read again from the sidecars, with their stamp.
@@ -640,6 +646,13 @@ pub(crate) enum ContentPatch {
     Stack {
         key: TabKey,
         stack: Box<StackRead>,
+    },
+    /// A working tab's branch PR, read off the actor for `branch`.
+    BranchPr {
+        key: TabKey,
+        number: u64,
+        branch: String,
+        overview: Box<PrOverviewData>,
     },
     /// History's next page, read after the first `since` commits.
     History {
@@ -725,6 +738,7 @@ pub(crate) fn lifecycle_keys(
         | ContentPatch::Ai { .. }
         | ContentPatch::Freshness { .. }
         | ContentPatch::Stack { .. }
+        | ContentPatch::BranchPr { .. }
         | ContentPatch::History { .. }
         | ContentPatch::Sidecar { .. }
         | ContentPatch::Reviewed { .. } => {}
@@ -765,6 +779,7 @@ pub(crate) fn check(
         ContentPatch::Ai { .. }
         | ContentPatch::Freshness { .. }
         | ContentPatch::Stack { .. }
+        | ContentPatch::BranchPr { .. }
         | ContentPatch::Sidecar { .. }
         | ContentPatch::Reviewed { .. }
         | ContentPatch::Dropped { .. } => Ok(()),
@@ -814,6 +829,17 @@ pub(crate) fn apply(
         ContentPatch::Loaded { key, loaded, .. } => {
             let cleared = loaded.cleared;
             let mut loaded = loaded;
+            // A working tab's branch PR is carried from the section held now,
+            // so a load that began before `LoadBranchPr` landed keeps it.
+            let branch = crate::tab_pr::viewed_branch(&loaded.tab);
+            let branch_pr = tabs.get(&key).map(|content| &content.pr).filter(|held| {
+                loaded.tab.pr_number.is_none() && held.branch.as_deref() == Some(branch.as_str())
+            });
+            if let Some(held) = branch_pr {
+                loaded.pr.pr_number = held.pr_number;
+                loaded.pr.overview.clone_from(&held.overview);
+                loaded.pr.branch.clone_from(&held.branch);
+            }
             let held = tabs.get(&key).and_then(|content| content.pr.stack.clone());
             loaded.pr.stack =
                 held.filter(|read| still_reads(&loaded.tab, loaded.pr.overview.as_ref(), read));
@@ -898,6 +924,33 @@ pub(crate) fn apply(
                     next.pr = Arc::new(next.pr.with_stack(*stack, revision));
                     *content = Arc::new(next);
                 }
+            }
+            0
+        }
+        ContentPatch::BranchPr {
+            key,
+            number,
+            branch,
+            overview,
+        } => {
+            // A tab that became a PR tab, or moved to another branch, since
+            // the read began is no longer described by it.
+            let holds = |content: &TabContent| {
+                content.tab.pr_number.is_none()
+                    && crate::tab_pr::viewed_branch(&content.tab) == branch
+            };
+            if let Some(content) = tabs.get_mut(&key).filter(|content| holds(content)) {
+                let mut next = TabContent::clone(content);
+                next.pr = Arc::new(PrSection {
+                    revision,
+                    pr_number: Some(number),
+                    overview: Some(*overview),
+                    commits: Vec::new(),
+                    head_oid: None,
+                    stack: content.pr.stack.clone(),
+                    branch: Some(branch),
+                });
+                *content = Arc::new(next);
             }
             0
         }

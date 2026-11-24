@@ -22,6 +22,7 @@ use crate::protocol::{AnnotationTarget, Command, Reply, TabContext};
 use crate::workspace::{WorkspaceState, WorkspaceView};
 use crate::{spawn, WorkspaceHandle};
 
+mod branch_pr;
 mod context;
 mod gaps;
 mod hunks;

@@ -18,8 +18,8 @@ use er_service::{EARLIER_VERSION_POSTED, OWN_PR_APPROVAL_REFUSED};
 use super::shell::Shell;
 use super::startup::Args;
 use super::tests::{
-    assert_parity, fixture, git, key, loaded, path_of, plan, settle, settle_within, shell_frame,
-    shell_on, without_review_row, SOURCES, WAIT,
+    assert_parity, fixture, git, key, loaded, path_of, plan, plan_on, settle, settle_within,
+    shell_frame, shell_on, without_review_row, SOURCES, WAIT,
 };
 use super::tui_view::{Ask, Mode, PrKnown, TabViewState};
 use crate::ui::highlight::Highlighter;
@@ -196,7 +196,10 @@ fn a_pull_with_no_pr_marks_the_tab_absent() {
 
 /// A local PR tab on #7 of acme/widgets, its refs fetched. Answers the repo
 /// and its origin, which must outlive the shell.
-fn pr_tab(script: FakeGitHub, config: &Path) -> ([tempfile::TempDir; 2], Shell, Arc<FakeGitHub>) {
+pub(super) fn pr_tab(
+    script: FakeGitHub,
+    config: &Path,
+) -> ([tempfile::TempDir; 2], Shell, Arc<FakeGitHub>) {
     let repo = fixture(1);
     let origin = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     git(origin.path(), &["init", "-q", "--bare"]);
@@ -219,7 +222,7 @@ fn pr_tab(script: FakeGitHub, config: &Path) -> ([tempfile::TempDir; 2], Shell, 
         pr: Some(7),
         ..Args::default()
     };
-    let mut shell = shell_on(ports(&github), &plan(&args), config);
+    let mut shell = shell_on(ports(&github), &plan_on(&args, &ports(&github)), config);
     let fetched = |shell: &Shell| {
         shell
             .active_content()

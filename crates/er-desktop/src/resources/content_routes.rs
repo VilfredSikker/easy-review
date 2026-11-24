@@ -10,7 +10,7 @@ use er_engine::tab_identity::DiffMode;
 use er_engine::tabs_record::{TabDescriptor, TabKind};
 use er_engine::TabKey;
 use er_service::{
-    AppCommand, Command, OpenTarget, Reply, TabContent, TabContext, TabEntry, TabsView,
+    same_pr, AppCommand, Command, OpenTarget, Reply, TabContent, TabContext, TabEntry, TabsView,
 };
 
 use crate::projects;
@@ -138,24 +138,6 @@ pub(crate) fn open(state: &DesktopState, tab: TabDescriptor, replace: bool) -> R
     let key = view.active.ok_or("The new tab did not become active")?;
     load(state, key, &tab)?;
     Ok(())
-}
-
-/// Two descriptors of one PR, whatever the tab kind (A15): the same PR number
-/// in the same repo. The repo is `owner/repo` when both carry it, since a
-/// local PR's actor is its clone and a remote PR's is the repo; a descriptor
-/// without it (a local PR saved by an older build) is matched by its actor.
-fn same_pr(open: &TabDescriptor, tab: &TabDescriptor) -> bool {
-    fn repo(d: &TabDescriptor) -> Option<(&String, &String)> {
-        d.pr_owner.as_ref().zip(d.pr_repo.as_ref())
-    }
-    tab.pr_number.is_some()
-        && open.pr_number == tab.pr_number
-        && match (repo(open), repo(tab)) {
-            (Some((a_owner, a_repo)), Some((b_owner, b_repo))) => {
-                a_owner.eq_ignore_ascii_case(b_owner) && a_repo.eq_ignore_ascii_case(b_repo)
-            }
-            _ => open.workspace_key() == tab.workspace_key(),
-        }
 }
 
 pub(crate) fn app_command(state: &DesktopState, command: AppCommand) -> Result<TabsView, String> {
