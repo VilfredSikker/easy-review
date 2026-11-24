@@ -155,7 +155,6 @@ pub enum Composed {
     Send(Box<Command>),
     /// A GitHub post, whose reply the GitHub writes take.
     Posted(Box<Command>),
-    Unported,
 }
 
 /// Runs a composer key on the active tab's draft. Submit builds the create
@@ -217,10 +216,22 @@ fn submit(state: &mut TabViewState, mode: &mut Mode, content: &TabContent) -> Co
         state.sent = Some(format!("Comment updated: {}", truncate(&body, 40)));
         return Composed::Send(Box::new(Command::UpdateThreadMessage { context, id, body }));
     }
-    // A finding reply is P72's. A GitHub comment, or a reply under a posted
-    // one, goes to GitHub.
-    if draft.finding_ref.is_some() {
-        return Composed::Unported;
+    // A finding reply writes a thread on the finding: a root, then the reply
+    // (ruling 5 on #653). A GitHub comment, or a reply under a posted one,
+    // goes to GitHub.
+    if let Some(finding_id) = draft.finding_ref.clone() {
+        let client_id = draft
+            .client_id
+            .get_or_insert_with(|| annotation_store::new_annotation_id("c-"))
+            .clone();
+        state.sent = Some(format!("Comment added: {}", truncate(&body, 40)));
+        return Composed::Send(Box::new(Command::ReplyToFinding {
+            context,
+            finding_id,
+            body,
+            ai_assist: false,
+            client_id: Some(client_id),
+        }));
     }
     if draft.kind == CommentType::GitHubComment {
         if let Some(command) = super::github::submit(state, content, body.clone()) {
@@ -339,6 +350,7 @@ pub fn jump_hint(state: &mut TabViewState, content: &TabContent, forward: bool) 
     };
     let (path, hunk, _, id, _) = &hints[next];
     state.focused_comment_id = Some(id.clone());
+    state.focused_finding_id = None;
     let mut newly = None;
     if current_path != Some(path) {
         if let Some(idx) = files.iter().position(|file| &file.path == path) {

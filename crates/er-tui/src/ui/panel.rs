@@ -129,21 +129,17 @@ fn render_panel(f: &mut Frame, area: Rect, screen: &Screen, content: PanelConten
     match content {
         PanelContent::FileDetail => render_file_detail(&mut lines, area, screen),
         PanelContent::PrOverview => render_pr_overview(&mut lines, area, screen),
-        PanelContent::AiSummary | PanelContent::SymbolRefs | PanelContent::AgentLog => {
-            match (screen.data.app(), content) {
-                (Some(data), PanelContent::AiSummary) => {
-                    render_ai_summary(&mut lines, area, screen, data.ai);
-                }
-                (Some(data), PanelContent::SymbolRefs) => {
-                    render_symbol_refs(&mut lines, area, screen, data);
-                }
-                (Some(data), _) => render_agent_log(&mut lines, area, data),
-                (None, _) => lines.push(Line::from(Span::styled(
-                    UNPORTED,
-                    Style::default().fg(styles::MUTED()),
-                ))),
+        PanelContent::AiSummary => render_ai_summary(&mut lines, area, screen, ai),
+        PanelContent::SymbolRefs | PanelContent::AgentLog => match (screen.data.app(), content) {
+            (Some(data), PanelContent::SymbolRefs) => {
+                render_symbol_refs(&mut lines, area, screen, data);
             }
-        }
+            (Some(data), _) => render_agent_log(&mut lines, area, data),
+            (None, _) => lines.push(Line::from(Span::styled(
+                UNPORTED,
+                Style::default().fg(styles::MUTED()),
+            ))),
+        },
     }
 
     let border_style = if tab.panel_focus {
@@ -436,24 +432,7 @@ fn render_file_findings(lines: &mut Vec<Line<'_>>, area: Rect, screen: &Screen, 
     let file_stale = ai.is_file_stale(path);
     let max_w = area.width.saturating_sub(5) as usize;
 
-    let mut sorted_findings: Vec<&er_engine::ai::Finding> = fr.findings.iter().collect();
-    sorted_findings.sort_by(|a, b| {
-        let sev_ord = |r: &RiskLevel| match r {
-            RiskLevel::High => 0,
-            RiskLevel::Medium => 1,
-            RiskLevel::Low => 2,
-            RiskLevel::Info => 3,
-        };
-        // Resolved findings sink to the bottom; active ones sort by
-        // how much the grade can be trusted, then severity. The
-        // direction lives on the type (`trust_rank`), not here.
-        a.resolved
-            .cmp(&b.resolved)
-            .then_with(|| a.confidence.trust_rank().cmp(&b.confidence.trust_rank()))
-            .then_with(|| a.hunk_index.cmp(&b.hunk_index))
-            .then_with(|| a.line_start.cmp(&b.line_start))
-            .then_with(|| sev_ord(&a.severity).cmp(&sev_ord(&b.severity)))
-    });
+    let sorted_findings = sorted_file_findings(fr);
 
     // The count describes what the list is about to draw, and names
     // what it is not drawing. A number that counts hidden rows is
@@ -513,6 +492,50 @@ fn render_file_findings(lines: &mut Vec<Line<'_>>, area: Rect, screen: &Screen, 
             push_finding(lines, screen, finding, file_stale, max_w);
         }
     }
+}
+
+/// A file's findings in the File panel's order: resolved last, then by how
+/// much the grade can be trusted, the place and the severity.
+fn sorted_file_findings(fr: &er_engine::ai::ErFileReview) -> Vec<&er_engine::ai::Finding> {
+    let mut sorted_findings: Vec<&er_engine::ai::Finding> = fr.findings.iter().collect();
+    sorted_findings.sort_by(|a, b| {
+        let sev_ord = |r: &RiskLevel| match r {
+            RiskLevel::High => 0,
+            RiskLevel::Medium => 1,
+            RiskLevel::Low => 2,
+            RiskLevel::Info => 3,
+        };
+        // Resolved findings sink to the bottom; active ones sort by
+        // how much the grade can be trusted, then severity. The
+        // direction lives on the type (`trust_rank`), not here.
+        a.resolved
+            .cmp(&b.resolved)
+            .then_with(|| a.confidence.trust_rank().cmp(&b.confidence.trust_rank()))
+            .then_with(|| a.hunk_index.cmp(&b.hunk_index))
+            .then_with(|| a.line_start.cmp(&b.line_start))
+            .then_with(|| sev_ord(&a.severity).cmp(&sev_ord(&b.severity)))
+    });
+    sorted_findings
+}
+
+/// The findings the File panel draws for `path`, top to bottom: the rows
+/// that pass the Gate, with duplicates collapsed and security first. The
+/// flag path's panel j/k steps through this list.
+#[cfg(feature = "v1-service")]
+pub fn drawn_file_findings<'a>(
+    ai: &'a er_engine::ai::AiState,
+    layers: &er_engine::ai::InlineLayers,
+    path: &'a str,
+) -> Vec<&'a er_engine::ai::Finding> {
+    let Some(fr) = ai.file_review(path).filter(|_| layers.show_ai_findings) else {
+        return Vec::new();
+    };
+    let filtered = sorted_file_findings(fr)
+        .into_iter()
+        .filter(|f| f.passes(layers));
+    let visible = project_file_findings(path, filtered, &ai.arbiter_graded_keys);
+    let (security, ordinary) = security_first(&visible);
+    security.into_iter().chain(ordinary).collect()
 }
 
 fn project_file_findings<'a>(
