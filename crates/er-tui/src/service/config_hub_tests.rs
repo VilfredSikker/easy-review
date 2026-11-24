@@ -235,6 +235,21 @@ fn a_cycled_provider_saves_and_labels_like_the_app() {
         settle_quietly(&mut shell, || read(&agents).contains(&saved));
         assert!(read(&agents).contains(&saved), "{}", read(&agents));
         assert_parity(&app, &shell_frame(&mut shell, &mut hl), &mut hl, "cycle");
+        // Then the Model and Effort rows below it, one key each.
+        let app_agents = storage.path().join("agents.toml");
+        for step in ["model", "effort"] {
+            for code in [J, KeyCode::Enter] {
+                press_app(&mut app, code);
+                shell.handle_key(key(code));
+            }
+            settle_quietly(&mut shell, || read(&agents) == read(&app_agents));
+            assert_eq!(read(&agents), read(&app_agents), "{step}");
+            assert_parity(&app, &shell_frame(&mut shell, &mut hl), &mut hl, step);
+        }
+        assert!(
+            app.config.ai_hub.default_effort.is_some(),
+            "no effort was pinned"
+        );
     });
 }
 
@@ -316,5 +331,11 @@ fn a_model_refresh_shows_in_the_open_picker() {
         shell.handle_key(key(KeyCode::Enter));
         assert!(picker(&shell).is_none(), "the refresh left the picker open");
         settle(&mut shell, |_| read(&runs).lines().count() == 2);
+        // Opened again on a fresh cache, the picker's refresh lists nothing.
+        let before = revision(&shell);
+        open_provider(&mut shell, "fake");
+        shell.handle_key(key(KeyCode::Enter));
+        settle(&mut shell, |shell| revision(shell) > before);
+        assert_eq!(read(&runs).lines().count(), 2, "opening forced a listing");
     });
 }
