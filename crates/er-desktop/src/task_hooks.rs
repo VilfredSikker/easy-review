@@ -71,7 +71,7 @@ pub fn cancel_running(desktop: &DesktopState, id: &str) -> Result<(), ErError> {
 /// filed in the inbox.
 fn on_finish(desktop: &DesktopState, task: &Finished<'_>) {
     let row = task.row;
-    if row.kind == er_engine::ai::prompts::IMPORTANCE_TASK_KIND && row.status == "done" {
+    if er_service::tasks::committed_importance(row) {
         reload_risk_rules(desktop, task.target);
         crate::resources::notice::tell(
             desktop,
@@ -84,35 +84,20 @@ fn on_finish(desktop: &DesktopState, task: &Finished<'_>) {
     }
 }
 
-/// Has the settings view read the repo's rules again after an importance run
-/// committed them, so `risk(key)` moves, and refreshes every loaded tab on
-/// the repo, so its diff reads the new table and filters with it at once, as
-/// the App's `sync_repo_rules_to_tabs` hands them on. A load replaces the
-/// paths the view resolves, so it sends a loaded tab's paths on that repo,
-/// the active tab's first.
+/// Reloads the repo's rules and refreshes its loaded tabs, through
+/// er-service's step, as the TUI's host does.
 fn reload_risk_rules(desktop: &DesktopState, target: &BackgroundTaskTarget) {
-    let tabs = desktop.service.app_registry().tabs_view();
-    let active = tabs.active;
-    let mut on_repo: Vec<_> = tabs
-        .tabs
-        .iter()
-        .filter(|entry| entry.descriptor.repo_root == target.repo_root)
-        .collect();
-    on_repo.sort_by_key(|entry| Some(entry.key) != active);
-    let paths = on_repo
-        .iter()
-        .find_map(|entry| desktop.service.content(entry.key, &entry.descriptor))
-        .map(|content| content.diff.files.iter().map(|f| f.path.clone()).collect())
-        .unwrap_or_default();
-    let load = er_service::SettingsCommand::LoadRiskRules {
-        repo_root: target.repo_root.clone(),
-        remote_repo: target.remote_repo.clone(),
-        paths,
-    };
-    if let Err(error) = desktop.service.settings().send_and_wait(load) {
+    let service = &desktop.service;
+    let reloaded = er_service::tasks::reload_risk_rules(
+        &service.app_registry().tabs_view(),
+        target,
+        &service.settings(),
+        |entry| service.content(entry.key, &entry.descriptor),
+        |entry| {
+            crate::watcher::refresh(service, entry.key, &entry.descriptor);
+        },
+    );
+    if let Err(error) = reloaded {
         log::warn!("reload risk rules after importance: {error}");
-    }
-    for entry in on_repo {
-        crate::watcher::refresh(&desktop.service, entry.key, &entry.descriptor);
     }
 }

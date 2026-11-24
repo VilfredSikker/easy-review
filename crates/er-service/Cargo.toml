@@ -9,8 +9,9 @@ description = "Workspace actor and use cases for easy-review"
 [features]
 # Compiles `Command::Stall` and `Command::Hold`; a dependent's test holds an
 # actor with them to show that a read never waits on it. Also the gated fake
-# agent the task tests run.
-test-support = []
+# agent the task tests run, and the agent runtime's refusal of real provider
+# CLIs.
+test-support = ["er-agent/test-support"]
 
 [dependencies]
 # P40's actor reads these types; declared here so P40 is manifest-free.

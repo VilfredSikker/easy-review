@@ -130,12 +130,10 @@ fn render_panel(f: &mut Frame, area: Rect, screen: &Screen, content: PanelConten
         PanelContent::FileDetail => render_file_detail(&mut lines, area, screen),
         PanelContent::PrOverview => render_pr_overview(&mut lines, area, screen),
         PanelContent::AiSummary => render_ai_summary(&mut lines, area, screen, ai),
-        PanelContent::SymbolRefs | PanelContent::AgentLog => match (screen.data.app(), content) {
-            (Some(data), PanelContent::SymbolRefs) => {
-                render_symbol_refs(&mut lines, area, screen, data);
-            }
-            (Some(data), _) => render_agent_log(&mut lines, area, data),
-            (None, _) => lines.push(Line::from(Span::styled(
+        PanelContent::AgentLog => render_agent_log(&mut lines, area, screen),
+        PanelContent::SymbolRefs => match screen.data.app() {
+            Some(data) => render_symbol_refs(&mut lines, area, screen, data),
+            None => lines.push(Line::from(Span::styled(
                 UNPORTED,
                 Style::default().fg(styles::MUTED()),
             ))),
@@ -158,12 +156,7 @@ fn render_panel(f: &mut Frame, area: Rect, screen: &Screen, content: PanelConten
     // or more lines — so the stored offset under-shoots the bottom. Recompute here, where
     // the wrapped line count is known. Only borders LEFT + horizontal padding, so the inner
     // height is the full area height.
-    let scroll = if content == PanelContent::AgentLog
-        && screen
-            .data
-            .app()
-            .is_some_and(|data| data.agent_log_auto_scroll)
-    {
+    let scroll = if content == PanelContent::AgentLog && screen.data.agent_log().1 {
         lines
             .len()
             .saturating_sub(area.height as usize)
@@ -1451,13 +1444,13 @@ fn render_symbol_refs<'a>(
 
 // ── AgentLog ──
 
-fn render_agent_log<'a>(lines: &mut Vec<Line<'a>>, area: Rect, data: &'a AppData<'a>) {
+fn render_agent_log<'a>(lines: &mut Vec<Line<'a>>, area: Rect, screen: &Screen<'a>) {
     use crate::screen::view::AgentLogSource;
 
     let max_w = area.width.saturating_sub(4) as usize; // panel padding + border
+    let (agent_log, _, running_count) = screen.data.agent_log();
 
     // Header
-    let running_count = data.running_command_count;
 
     let mut header_spans = vec![Span::styled(
         "Agent Log",
@@ -1475,7 +1468,7 @@ fn render_agent_log<'a>(lines: &mut Vec<Line<'a>>, area: Rect, data: &'a AppData
     lines.push(Line::from(header_spans));
     lines.push(Line::from(""));
 
-    if data.agent_log.is_empty() {
+    if agent_log.is_empty() {
         lines.push(Line::from(Span::styled(
             "No agent output yet",
             Style::default().fg(styles::MUTED()),
@@ -1494,9 +1487,9 @@ fn render_agent_log<'a>(lines: &mut Vec<Line<'a>>, area: Rect, data: &'a AppData
     }
 
     // Calculate relative timestamps from first entry
-    let first_ts = data.agent_log.first().map(|e| e.timestamp);
+    let first_ts = agent_log.first().map(|e| e.timestamp);
 
-    for entry in data.agent_log {
+    for entry in agent_log {
         let elapsed = first_ts
             .map(|first| entry.timestamp.duration_since(first))
             .unwrap_or_default();

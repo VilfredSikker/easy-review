@@ -151,7 +151,7 @@ fn the_review_clear_takes_the_professor_and_expert_results() {
     });
 }
 
-fn take_lease(dir: &str) -> er_store::LeaseGuard {
+pub(super) fn take_lease(dir: &str) -> er_store::LeaseGuard {
     let scope = er_store::Scope::dir(dir).unwrap_or_else(|e| panic!("{e}"));
     er_engine::store_registry::store()
         .lease(&scope, Duration::ZERO, "flow-1")
