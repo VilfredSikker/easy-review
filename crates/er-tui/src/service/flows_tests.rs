@@ -73,6 +73,15 @@ fn flow_agent(storage: &Path, gated: bool) -> Agent {
     agent
 }
 
+/// Opens the gate when dropped, so a failed test leaves no agent waiting.
+struct Release(std::path::PathBuf);
+
+impl Drop for Release {
+    fn drop(&mut self) {
+        open_gate(&self.0);
+    }
+}
+
 fn flow_shell(repo: &tempfile::TempDir, storage: &Path) -> Shell {
     let mut shell = shell(&args(vec![path_of(repo)]), storage);
     settle(&mut shell, loaded);
@@ -214,6 +223,7 @@ fn the_flow_rows_cancel_and_decline() {
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
         let agent = flow_agent(storage.path(), true);
+        let _release = Release(agent.first.clone());
         let mut shell = flow_shell(&repo, storage.path());
         choose(&mut shell, 'a', "Review");
         flow_until(&mut shell, "triage runs", |live| {
@@ -252,6 +262,7 @@ fn the_ai_hub_draws_like_the_app_in_each_flow_state() {
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
         let agent = flow_agent(storage.path(), true);
+        let _release = Release(agent.first.clone());
         let mut app = app_on(&path_of(&app_repo));
         let mut shell = flow_shell(&flag_repo, storage.path());
         let mut hl = Highlighter::new();
