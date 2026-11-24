@@ -26,6 +26,7 @@ use super::config_hub::{self, ConfigHub, Step};
 use super::settings::{SettingsBridge, Side, Then};
 use super::startup::{self, After, Args, Pending, Start, StartTab};
 use super::tui_view::{self, Ask, Mode, Overlay, TuiView};
+use super::watched::{Landed, Reader};
 use super::worktree::{self, GitHub, GitPick, HubStep};
 use crate::input::keys::{
     key_action, ConfirmKey, Edit, NormalAction, OverlayAction, TuiAction, Write,
@@ -51,8 +52,9 @@ pub fn run(args: &Args) -> anyhow::Result<()> {
     let ports = er_engine::ports::Ports::cli();
     let start = startup::plan(args, &*ports.git)?;
     let (tx, events) = std::sync::mpsc::channel();
+    let git = Arc::clone(&ports.git);
     let host = ServiceHost::new(ports, er_engine::config::managed_config_path()).with_events(tx);
-    let mut shell = Shell::start(host, events, &start)?;
+    let mut shell = Shell::start(host, events, &start, git)?;
     let mut highlighter = Highlighter::new();
 
     enable_raw_mode()?;
@@ -91,16 +93,19 @@ pub struct Shell {
     /// save is due.
     unsaved: HashSet<TabKey>,
     save_due: Option<Instant>,
+    /// The watched files' reader, the one worker thread this path starts.
+    watched: Reader,
     pub should_quit: bool,
 }
 
 impl Shell {
     /// Lists the start's tabs and loads the first. A flag with no service
-    /// route yet goes on the status line.
+    /// route yet goes on the status line. `git` lists the watched files.
     pub fn start(
         host: ServiceHost,
         events: Receiver<Event>,
         start: &Start,
+        git: Arc<dyn er_git::Git>,
     ) -> anyhow::Result<Self> {
         let (keys, pending) = startup::open(&host, start)?;
         let starts = keys.into_iter().zip(start.tabs.iter().cloned()).collect();
@@ -121,6 +126,7 @@ impl Shell {
             reloaded_at: None,
             unsaved: HashSet::new(),
             save_due: None,
+            watched: Reader::spawn(git),
             should_quit: false,
         };
         if !start.notices.is_empty() {
@@ -237,6 +243,7 @@ impl Shell {
             }
         }
         self.drain_replies();
+        self.sync_watched(now);
         self.drain_reloads();
         let landed = self.settings.drain();
         for message in landed.failures {
@@ -379,9 +386,17 @@ impl Shell {
                         after: After::Nothing,
                     });
                 }
+                Ok(Reply::WorktreeWritten { .. }) if after == After::SnapshotSaved => {
+                    if let Some(state) = self.view.tab_mut_if_open(key) {
+                        state.watched.reread();
+                    }
+                }
                 Ok(Reply::WorktreeWritten { notice, .. }) => {
                     if after == After::Commit {
                         self.committed(key);
+                    }
+                    if after == After::Watched {
+                        self.watched.rescan = true;
                     }
                     self.notify(notice);
                 }
@@ -468,22 +483,34 @@ impl Shell {
                 self.view.input_mode = Mode::Normal;
                 return self.post(key, workspace, Command::Push { key }, After::Nothing);
             }
+            TuiAction::Write(Write::DeleteWatchedFile) => {
+                self.view.input_mode = Mode::Normal;
+                let state = self.view.tab_mut(key, content);
+                if let Some(path) = state.watched.deleting.take() {
+                    let command = Command::DeleteWatchedFile { key, path };
+                    self.post(key, workspace, command, After::Watched);
+                }
+                return;
+            }
             TuiAction::Confirm(ConfirmKey::Cancel) => {
                 self.view.input_mode = Mode::Normal;
                 return;
             }
             _ => return self.unported(),
         };
+        let config = self.host.settings().view().config.watched.clone();
         let state = self.view.tab_mut(key, content);
         let file = content
             .diff
             .files
             .get(state.selected_file)
+            .filter(|_| state.watched.selected.is_none())
             .map(|file| &**file);
+        let shown = state.watched.is_shown(&config);
         let selected = match action {
             A::Quit => return self.quit(),
-            A::NextFile => state.move_file(content, true),
-            A::PrevFile => state.move_file(content, false),
+            A::NextFile => state.move_file(content, shown, true),
+            A::PrevFile => state.move_file(content, shown, false),
             A::NextUnreviewedFile => match state.next_unreviewed(content) {
                 tui_view::Jump::NoFiles => None,
                 tui_view::Jump::AllReviewed => {
@@ -552,6 +579,28 @@ impl Shell {
             }
             A::OpenGitHub => {
                 self.view.overlay = Some(Overlay::GitHub(GitHub::open(content)));
+                return;
+            }
+            A::ToggleWatchedFiles => {
+                let (message, scan) = state.watched.toggle(&config);
+                self.watched.rescan |= scan;
+                return self.notify(message.to_string());
+            }
+            A::UpdateWatchedSnapshot if config.diff_mode != "snapshot" => {
+                return self.notify("Snapshot mode not enabled (diff_mode = \"content\")".into())
+            }
+            A::UpdateWatchedSnapshot => {
+                if let Some(path) = state.watched.selected_file().map(|f| f.path.clone()) {
+                    let command = Command::SaveWatchedSnapshot { key, path };
+                    self.post(key, workspace, command, After::Watched);
+                }
+                return;
+            }
+            A::AskDeleteWatchedFile => {
+                if let Some(file) = state.watched.selected_file() {
+                    state.watched.deleting = Some(file.path.clone());
+                    self.view.input_mode = Mode::Confirm(Ask::DeleteWatchedFile);
+                }
                 return;
             }
             A::NextTab => return self.step_tab(true),
@@ -636,6 +685,69 @@ impl Shell {
             }
             HubStep::Run(GitPick::Unported) => self.unported(),
         }
+    }
+
+    /// The active tab's watched files: landed reads are applied, the list is
+    /// read when due, and the selected file's snapshot diff when the
+    /// selection reached it or a write or rescan asked. A file with no
+    /// snapshot yet gets one through the service.
+    fn sync_watched(&mut self, now: Instant) {
+        while let Some(landed) = self.watched.try_landed() {
+            self.redraw = true;
+            let key = match &landed {
+                Landed::Scanned { key, .. } | Landed::Diff { key, .. } => *key,
+            };
+            let Some(state) = self.view.tab_mut_if_open(key) else {
+                continue;
+            };
+            let save = match landed {
+                Landed::Scanned {
+                    files, not_ignored, ..
+                } => {
+                    state.watched.scanned(files, not_ignored);
+                    None
+                }
+                Landed::Diff { path, diff, .. } => state.watched.read(path, diff),
+            };
+            let workspace = self.workspace_of(key);
+            if let (Some(path), Some(workspace)) = (save, workspace) {
+                let command = Command::SaveWatchedSnapshot { key, path };
+                self.post(key, &workspace, command, After::SnapshotSaved);
+            }
+        }
+        let Some((key, _, Some(content))) = self.active() else {
+            return;
+        };
+        let tab = &content.tab;
+        if tab.identity().is_remote() {
+            return;
+        }
+        let settings = self.host.settings().view();
+        let config = &settings.config.watched;
+        let due = self.watched.scan_due(key, settings.revision, now);
+        let state = self.view.tab_mut(key, &content);
+        if due && state.watched.is_shown(config) && !config.paths.is_empty() {
+            self.watched.scan(key, &tab.repo_root, config);
+        }
+        // Hidden opens on its first watched file, as the App's switch does.
+        let first = state.watched.selected.is_none() && !state.watched.files.is_empty();
+        if tab.mode == DiffMode::Hidden && first {
+            state.watched.selected = Some(0);
+            state.diff_scroll = 0;
+            state.h_scroll = 0;
+        }
+        if config.diff_mode == "snapshot" {
+            if let Some(path) = state.watched.wants_read() {
+                let er_dir = &content.context.er_dir;
+                self.watched.diff(key, &tab.repo_root, path, er_dir);
+            }
+        }
+    }
+
+    fn workspace_of(&self, key: TabKey) -> Option<String> {
+        let tabs = self.host.registry().tabs_view();
+        let entry = tabs.tabs.iter().find(|entry| entry.key == key)?;
+        Some(entry.descriptor.workspace_key())
     }
 
     /// Opens the config hub on the settings view, and asks the actor to

@@ -21,6 +21,7 @@ use tui_textarea::TextArea;
 
 use super::ai_picker::Picker;
 use super::config_hub::ConfigHub;
+use super::watched::TabWatched;
 use super::worktree::GitHub;
 use crate::screen::view::{
     ConfigEditState, ConfirmAction, HubKind, InputMode, OverlayData, SplitSide,
@@ -121,6 +122,7 @@ pub enum Mode {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Ask {
     Push,
+    DeleteWatchedFile,
 }
 
 impl TuiView {
@@ -173,6 +175,7 @@ pub struct TabViewState {
     pub saved_filter: SavedFilter,
     pub filter_input: String,
     pub commit_input: String,
+    pub watched: TabWatched,
     context_overrides: HashMap<String, usize>,
     mtime_cache: HashMap<String, SystemTime>,
 }
@@ -201,6 +204,7 @@ impl Default for TabViewState {
             saved_filter: SavedFilter::default(),
             filter_input: String::new(),
             commit_input: String::new(),
+            watched: TabWatched::default(),
             context_overrides: HashMap::new(),
             mtime_cache: HashMap::new(),
         }
@@ -284,11 +288,23 @@ impl TabViewState {
         )
     }
 
-    /// Moves to the next or previous visible file. Answers the file it
-    /// selected, which may still be a stub to parse.
-    pub fn move_file(&mut self, content: &TabContent, forward: bool) -> Option<usize> {
+    /// Moves to the next or previous visible file, on through the watched
+    /// files when they show. Answers the diff file it selected, which may
+    /// still be a stub to parse.
+    pub fn move_file(
+        &mut self,
+        content: &TabContent,
+        watched_shown: bool,
+        forward: bool,
+    ) -> Option<usize> {
         let visible: Vec<usize> = self
             .visible(&content.diff.files, &content.reviewed.marks)
+            .iter()
+            .map(|(idx, _)| *idx)
+            .collect();
+        let watched: Vec<usize> = self
+            .watched
+            .visible(watched_shown, &self.search_query)
             .iter()
             .map(|(idx, _)| *idx)
             .collect();
@@ -297,8 +313,9 @@ impl TabViewState {
         } else {
             navigation::prev_file
         };
-        match step(self.selected_file, None, &visible, &[]) {
+        match step(self.selected_file, self.watched.selected, &visible, &watched) {
             FileMove::File(idx) => {
+                self.watched.selected = None;
                 self.current_line = None;
                 self.select_file_top(idx);
                 Some(idx)
@@ -307,7 +324,17 @@ impl TabViewState {
                 self.select_file_top(idx);
                 Some(idx)
             }
-            FileMove::Stay | FileMove::Watched(_) | FileMove::LeaveWatched => None,
+            FileMove::Watched(idx) => {
+                self.watched.selected = Some(idx);
+                self.diff_scroll = 0;
+                self.h_scroll = 0;
+                None
+            }
+            FileMove::LeaveWatched => {
+                self.watched.selected = None;
+                None
+            }
+            FileMove::Stay => None,
         }
     }
 
@@ -451,6 +478,9 @@ pub fn screen<'a>(view: &'a TuiView, state: &'a TabViewState, frame: Frame<'a>) 
     let reviewed = &content.reviewed.marks;
     let is_remote = tab.identity().is_remote();
     let file_kinds = FileKindRepoConfig::default();
+    let watched = &state.watched;
+    let watched_shown = watched.is_shown(&frame.config.watched);
+    let selected_watched = watched.selected_file();
     Screen {
         chrome: Chrome {
             tab_names: frame.tab_names,
@@ -465,6 +495,11 @@ pub fn screen<'a>(view: &'a TuiView, state: &'a TabViewState, frame: Frame<'a>) 
                 Mode::Normal => InputMode::Normal,
                 Mode::Commit => InputMode::Commit,
                 Mode::Confirm(Ask::Push) => InputMode::Confirm(ConfirmAction::Push),
+                Mode::Confirm(Ask::DeleteWatchedFile) => {
+                    InputMode::Confirm(ConfirmAction::DeleteWatchedFile {
+                        path: watched.deleting.as_deref().unwrap_or_default(),
+                    })
+                }
             },
             overlay: view.overlay.as_ref().map(Overlay::data),
             remote_url_input: "",
@@ -504,8 +539,8 @@ pub fn screen<'a>(view: &'a TuiView, state: &'a TabViewState, frame: Frame<'a>) 
             filter_expr: &state.filter_expr,
             search_query: &state.search_query,
             show_unreviewed_only: state.show_unreviewed_only,
-            show_watched: false,
-            watched_count: 0,
+            show_watched: watched_shown,
+            watched_count: watched.files.len(),
             lazy_mode: content.diff.meta.lazy,
             comment_type: state.draft.kind,
             comment_reply_to: state.draft.reply_to.as_deref(),
@@ -517,7 +552,10 @@ pub fn screen<'a>(view: &'a TuiView, state: &'a TabViewState, frame: Frame<'a>) 
             filter_input: &state.filter_input,
             commit_input: &state.commit_input,
             visible_files: state.visible(files, reviewed),
-            selected_diff_file: files.get(state.selected_file).map(|file| &**file),
+            selected_diff_file: files
+                .get(state.selected_file)
+                .filter(|_| selected_watched.is_none())
+                .map(|file| &**file),
             diff_scroll: state.diff_scroll,
             current_hunk: state.current_hunk,
             current_line: state.current_line,
@@ -531,11 +569,13 @@ pub fn screen<'a>(view: &'a TuiView, state: &'a TabViewState, frame: Frame<'a>) 
             review_cursor: 0,
             branch_diff_hash: &content.diff.meta.branch_diff_hash,
             repo_root: &tab.repo_root,
-            visible_watched: Vec::new(),
-            selected_watched: None,
-            selected_watched_index: None,
-            watched_not_ignored: &[],
-            watched_snapshot: None,
+            visible_watched: watched.visible(watched_shown, &state.search_query),
+            selected_watched,
+            selected_watched_index: watched.selected,
+            watched_not_ignored: &watched.not_ignored,
+            watched_snapshot: watched
+                .snapshot()
+                .filter(|_| frame.config.watched.diff_mode == "snapshot"),
         },
         data: TabData::Sections(SectionData {
             files,
@@ -593,6 +633,9 @@ fn modes(content: &TabContent, config: &ErConfig) -> Vec<DiffMode> {
     }
     if features.view_history && !read_only {
         modes.push(DiffMode::History);
+    }
+    if features.view_hidden && !read_only && !config.watched.paths.is_empty() {
+        modes.push(DiffMode::Hidden);
     }
     modes
 }

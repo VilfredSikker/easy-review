@@ -26,7 +26,7 @@ use crate::jobs::JobHost;
 use crate::protocol::{Command, Event, Reply, TabContext};
 use crate::sidecar_reload::SidecarReloads;
 use crate::workspace::{WorkspaceState, WorkspaceView};
-use crate::worktree::Write;
+use crate::worktree::{Watched, Write};
 
 /// The actor's dependencies. This is the seam P45 extends: the actor takes
 /// this value rather than the ports directly, so a new dependency (the shared
@@ -1128,6 +1128,14 @@ fn handle_command(
             crate::worktree::spawn(deps, state, tx, reply, key, Write::Commit(message));
         }
         Command::Push { key } => crate::worktree::spawn(deps, state, tx, reply, key, Write::Push),
+        Command::SaveWatchedSnapshot { key, path } => {
+            let write = Watched::Snapshot(path);
+            crate::worktree::spawn_watched(state, tx, reply, key, write);
+        }
+        Command::DeleteWatchedFile { key, path } => {
+            let write = Watched::Delete(path);
+            crate::worktree::spawn_watched(state, tx, reply, key, write);
+        }
         #[cfg(test)]
         Command::Ping => {
             let _ = reply.send(Ok(Reply::Pong));

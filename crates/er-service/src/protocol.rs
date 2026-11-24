@@ -360,6 +360,11 @@ pub enum Command {
     Commit { key: TabKey, message: String },
     /// Push the checkout's branch, then reload the tab.
     Push { key: TabKey },
+    /// Save a watched file's snapshot, the baseline its diff reads against.
+    SaveWatchedSnapshot { key: TabKey, path: String },
+    /// Delete a watched file. A path that leaves the repo root, through `..`
+    /// or a symlinked directory, is refused.
+    DeleteWatchedFile { key: TabKey, path: String },
 }
 
 /// What started a comment sync, which decides how fresh the read must be.

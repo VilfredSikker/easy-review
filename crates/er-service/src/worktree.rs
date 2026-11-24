@@ -1,7 +1,8 @@
 //! The working-tree writes (decision 8): stage, unstage, stage all, commit
 //! and push. Each runs the `Git` port on an effect thread, then reloads the
 //! tab in the view it shows, so the write and the diff it changed publish in
-//! one revision.
+//! one revision. A watched file's snapshot and delete run there too, under
+//! er-git's path checks.
 
 use std::sync::mpsc::Sender;
 
@@ -113,4 +114,46 @@ fn run(
         }
     };
     Ok((notice, input))
+}
+
+/// A write to a watched file, which git does not track.
+pub(crate) enum Watched {
+    Snapshot(String),
+    Delete(String),
+}
+
+/// Runs a watched-file write in the tab's repo off the actor. The diff
+/// section does not show watched files, so nothing reloads.
+pub(crate) fn spawn_watched(
+    state: &WorkspaceState,
+    tx: &Sender<ActorMsg>,
+    reply: ReplySender,
+    key: TabKey,
+    write: Watched,
+) {
+    let Some(content) = state.view().tabs.get(&key).cloned() else {
+        return refuse_unknown_tab(reply);
+    };
+    spawn_effect(tx, reply, move || {
+        crate::guard::assert_off_actor();
+        let tab = &content.tab;
+        if tab.identity().is_remote() {
+            return Err(failed("This tab has no working tree to write in"));
+        }
+        let root = &tab.repo_root;
+        let notice = match write {
+            Watched::Snapshot(path) => {
+                let snapshots = format!("{}/snapshots", content.context.er_dir);
+                er_git::save_snapshot(root, &path, &snapshots)
+                    .map_err(|error| failed(format!("Snapshot error: {error}")))?;
+                "Snapshot updated".to_string()
+            }
+            Watched::Delete(path) => {
+                er_git::delete_watched_file(root, &path)
+                    .map_err(|error| failed(format!("Delete failed: {error}")))?;
+                format!("Deleted: {path}")
+            }
+        };
+        Ok(Reply::WorktreeWritten { key, notice })
+    });
 }
