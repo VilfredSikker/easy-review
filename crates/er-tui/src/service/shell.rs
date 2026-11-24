@@ -23,6 +23,7 @@ use ratatui::Terminal;
 
 use super::ai_picker;
 use super::config_hub::{self, ConfigHub, Step};
+use super::reviewed::ReviewedCache;
 use super::settings::{SettingsBridge, Side, Then};
 use super::startup::{self, After, Args, Pending, Start, StartTab};
 use super::tui_view::{self, Ask, Mode, Overlay, TuiView};
@@ -93,6 +94,7 @@ pub struct Shell {
     /// save is due.
     unsaved: HashSet<TabKey>,
     save_due: Option<Instant>,
+    reviewed: ReviewedCache,
     /// The watched files' reader, the one worker thread this path starts.
     watched: Reader,
     pub should_quit: bool,
@@ -126,6 +128,7 @@ impl Shell {
             reloaded_at: None,
             unsaved: HashSet::new(),
             save_due: None,
+            reviewed: ReviewedCache::default(),
             watched: Reader::spawn(git),
             should_quit: false,
         };
@@ -191,6 +194,16 @@ impl Shell {
     #[cfg(test)]
     pub fn view_mut(&mut self) -> &mut TuiView {
         &mut self.view
+    }
+
+    #[cfg(test)]
+    pub fn reviewed_builds(&self) -> usize {
+        self.reviewed.builds
+    }
+
+    #[cfg(test)]
+    pub fn in_flight(&self) -> usize {
+        self.pending.len()
     }
 
     /// The active tab's content, once its load has published.
@@ -386,6 +399,14 @@ impl Shell {
                         after: After::Nothing,
                     });
                 }
+                Ok(Reply::ReviewedChanged { .. }) => {
+                    if let After::Reviewed {
+                        advance_from: Some(position),
+                    } = after
+                    {
+                        self.advance(key, &workspace, position);
+                    }
+                }
                 Ok(Reply::WorktreeWritten { .. }) if after == After::SnapshotSaved => {
                     if let Some(state) = self.view.tab_mut_if_open(key) {
                         state.watched.reread();
@@ -455,7 +476,9 @@ impl Shell {
         if let Some(overlay) = self.view.overlay.as_mut() {
             overlay.sync(&settings, &ai_selection_label);
         }
-        let (tab_names, active_tab) = self.tab_names();
+        let (tab_names, active_tab, open) = self.tab_names();
+        self.reviewed.keep_open(&open);
+        let reviewed_count = self.reviewed.count(key, content);
         self.view.tab_mut(key, content);
         let state = self.view.tab(key)?;
         let frame = tui_view::Frame {
@@ -465,6 +488,7 @@ impl Shell {
             config: &settings.config,
             config_load_error: settings.load_banner.as_deref(),
             ai_selection_label,
+            reviewed_count,
         };
         Some(read(&tui_view::screen(&self.view, state, frame)))
     }
@@ -566,6 +590,30 @@ impl Shell {
                 return self.run_step(ai_picker::open_ai_hub(&view, &label));
             }
             A::ToggleStaged => return self.toggle_staged(key, workspace, content),
+            A::ToggleReviewed => return self.toggle_reviewed(key, workspace, content),
+            A::ToggleUnreviewedOnly => {
+                state.show_unreviewed_only = !state.show_unreviewed_only;
+                let showing = state.show_unreviewed_only;
+                let selected = state.snap(content);
+                self.notify(if showing {
+                    "Showing unreviewed only".into()
+                } else {
+                    "Showing all files".into()
+                });
+                selected
+            }
+            A::ToggleCompacted => {
+                if let Some(file) = file.filter(|file| file.compacted) {
+                    let paths = vec![file.path.clone()];
+                    let command = Command::ParseFiles {
+                        key,
+                        paths,
+                        expand: true,
+                    };
+                    self.post(key, workspace, command, After::Nothing);
+                }
+                return;
+            }
             A::StartCommit => {
                 state.commit_input.clear();
                 self.view.input_mode = Mode::Commit;
@@ -629,6 +677,39 @@ impl Shell {
             Ok(Some(command)) => self.post(key, workspace, command, After::Nothing),
             Ok(None) => {}
             Err(message) => self.notify(message),
+        }
+    }
+
+    /// Sends the selected file's reviewed toggle with the context of the
+    /// content this key was pressed on, and says what it did as the App does.
+    fn toggle_reviewed(&mut self, key: TabKey, workspace: &str, content: &TabContent) {
+        let state = self.view.tab_mut(key, content);
+        let Some(file) = content.diff.files.get(state.selected_file) else {
+            return;
+        };
+        let marking = !content.reviewed.marks.contains_key(&file.path);
+        let advance_from =
+            (marking && state.show_unreviewed_only).then(|| state.visible_position(content));
+        let command = Command::ToggleReviewed {
+            context: content.context.clone(),
+            path: file.path.clone(),
+        };
+        self.post(key, workspace, command, After::Reviewed { advance_from });
+        let verb = if marking { "Reviewed" } else { "Unreviewed" };
+        self.notify(format!("{verb}: {}", file.path));
+    }
+
+    /// A mark landed under unreviewed-only: the selection moves off the file
+    /// the list now hides.
+    fn advance(&mut self, key: TabKey, workspace: &str, position: usize) {
+        let Some(content) = self.host.content(workspace, key) else {
+            return;
+        };
+        let Some(state) = self.view.tab_mut_if_open(key) else {
+            return;
+        };
+        if let Some(index) = state.advance_to(&content, position) {
+            self.parse_if_stub(key, workspace, &content, index);
         }
     }
 
@@ -891,8 +972,8 @@ impl Shell {
         }
     }
 
-    /// The tab strip's names, and the active tab's place in it.
-    fn tab_names(&self) -> (Vec<String>, usize) {
+    /// The tab strip's names, the active tab's place in it, and the keys.
+    fn tab_names(&self) -> (Vec<String>, usize, Vec<TabKey>) {
         let tabs = self.host.registry().tabs_view();
         let rows = er_service::tabs_resource(&tabs);
         let names = rows.tabs.into_iter().map(|row| row.label).collect();
@@ -900,7 +981,8 @@ impl Shell {
             .active
             .and_then(|key| tabs.tabs.iter().position(|tab| tab.key == key))
             .unwrap_or(0);
-        (names, active)
+        let keys = tabs.tabs.iter().map(|tab| tab.key).collect();
+        (names, active, keys)
     }
 
     /// Draws the active tab from its published content and its view state.

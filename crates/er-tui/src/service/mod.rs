@@ -8,6 +8,7 @@
 
 mod ai_picker;
 mod config_hub;
+mod reviewed;
 mod session;
 mod settings;
 mod shell;
@@ -27,6 +28,8 @@ pub const RUNS_ON_SERVICE: bool = true;
 mod config_hub_tests;
 #[cfg(test)]
 mod loop_tests;
+#[cfg(test)]
+mod reviewed_tests;
 #[cfg(test)]
 mod settings_tests;
 #[cfg(test)]

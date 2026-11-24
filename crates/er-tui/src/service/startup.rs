@@ -129,6 +129,11 @@ pub enum After {
     FetchPrRefs,
     /// A commit: once it lands, the commit input closes.
     Commit,
+    /// A reviewed toggle. A mark made under unreviewed-only moves the
+    /// selection to this place in the visible list once the marks publish.
+    Reviewed {
+        advance_from: Option<usize>,
+    },
     /// A watched-file write the user asked for: the list is read again.
     Watched,
     /// The snapshot a first read found missing: its diff is read again, and

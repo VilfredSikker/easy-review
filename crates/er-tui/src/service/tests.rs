@@ -13,7 +13,7 @@ use er_engine::tabs_record::TabKind;
 use er_engine::TabKey;
 use er_service::{Command, ServiceHost, WorkspaceError};
 use ratatui::backend::TestBackend;
-use ratatui::buffer::{Buffer, Cell};
+use ratatui::buffer::Buffer;
 use ratatui::Terminal;
 
 use super::shell::Shell;
@@ -27,10 +27,11 @@ const WIDTH: u16 = 120;
 const HEIGHT: u16 = 30;
 
 /// The flag-on modules, as text.
-const SOURCES: [(&str, &str); 10] = [
+pub(super) const SOURCES: [(&str, &str); 11] = [
     ("ai_picker.rs", include_str!("ai_picker.rs")),
     ("config_hub.rs", include_str!("config_hub.rs")),
     ("mod.rs", include_str!("mod.rs")),
+    ("reviewed.rs", include_str!("reviewed.rs")),
     ("session.rs", include_str!("session.rs")),
     ("settings.rs", include_str!("settings.rs")),
     ("shell.rs", include_str!("shell.rs")),
@@ -333,79 +334,26 @@ pub(super) fn rows(buffer: &Buffer) -> Vec<String> {
         .collect()
 }
 
-/// Every cell matches in text and style, except on the single-tab mode row
-/// right of the AI selection's padded label, where the reviewed count is not
-/// on the flag-on path until P70. The mode row is right-aligned, so the label
-/// sits in other columns while the count differs: its cells are found in each
-/// frame and compared there.
+/// Every cell matches in text and style.
 pub(super) fn assert_parity(
     app: &er_engine::app::App,
     flag_on: &Buffer,
     hl: &mut Highlighter,
     step: &str,
 ) {
-    const MODES_ROW: usize = 1;
-    let label_shown = app.config.ai_hub.has_presets();
-    let ai_label: Vec<String> = format!(" {} ", app.active_ai_selection_label())
-        .chars()
-        .map(String::from)
-        .collect();
     let app = &app_frame(app, hl);
-    let mode_row = |buffer: &Buffer| {
-        let at = MODES_ROW * usize::from(WIDTH);
-        buffer.content[at..at + usize::from(WIDTH)].to_vec()
-    };
-    let text = |row: &[Cell]| row.iter().map(Cell::symbol).collect::<String>();
-    let start = |row: &[Cell], path: &str| {
-        row.windows(ai_label.len())
-            .position(|cells| cells.iter().zip(&ai_label).all(|(c, l)| c.symbol() == l))
-            .unwrap_or_else(|| {
-                let label = ai_label.concat();
-                panic!("{step}: no {label:?} on the {path} mode row: {}", text(row))
-            })
-    };
-    // With no label drawn, the count is the right-aligned group's first word
-    // after the gap.
-    let group = |row: &[Cell]| {
-        let blank = |at: usize| row[at].symbol() == " ";
-        let end = (0..row.len()).rposition(|at| !blank(at)).unwrap_or(0);
-        (1..end)
-            .rev()
-            .find(|&at| blank(at) && blank(at - 1))
-            .map_or(0, |at| at + 1)
-    };
-    let (app_row, flag_row) = (mode_row(app), mode_row(flag_on));
-    let masked = if label_shown {
-        let (app_at, flag_at) = (start(&app_row, "App"), start(&flag_row, "flag-on"));
-        for offset in 0..ai_label.len() {
-            assert_eq!(
-                app_row[app_at + offset].style(),
-                flag_row[flag_at + offset].style(),
-                "{step}: the AI label's style at its cell {offset}"
-            );
-        }
-        app_at.min(flag_at)
-    } else {
-        group(&app_row).min(group(&flag_row))
-    };
     let (app_rows, flag_rows) = (rows(app), rows(flag_on));
     for row in 0..usize::from(HEIGHT) {
-        let width = if row == MODES_ROW {
-            masked
-        } else {
-            usize::from(WIDTH)
-        };
-        let head = |text: &str| text.chars().take(width).collect::<String>();
         assert_eq!(
-            head(&app_rows[row]),
-            head(&flag_rows[row]),
+            app_rows[row],
+            flag_rows[row],
             "{step}: row {row} differs\napp:\n{}\nflag-on:\n{}",
             app_rows.join("\n"),
             flag_rows.join("\n")
         );
         let at =
             |buffer: &Buffer, col: usize| buffer.content[row * usize::from(WIDTH) + col].style();
-        for col in 0..width {
+        for col in 0..usize::from(WIDTH) {
             assert_eq!(
                 at(app, col),
                 at(flag_on, col),

@@ -7,7 +7,7 @@ use ratatui::{
 
 use super::styles;
 use crate::screen::view::{ConfirmAction, InputMode};
-use crate::screen::{Screen, UNPORTED};
+use crate::screen::Screen;
 use er_engine::ai::PanelContent;
 use er_engine::tab_identity::DiffMode;
 
@@ -372,16 +372,12 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, screen: &Screen) {
             ratatui::style::Style::default().fg(styles::MUTED()),
         ));
     }
-    match data.reviewed_count() {
-        Some((reviewed, total)) if total > 0 => right.push(Span::styled(
+    let (reviewed, total) = data.reviewed_count();
+    if total > 0 {
+        right.push(Span::styled(
             format!("{}/{} reviewed", reviewed, total),
             ratatui::style::Style::default().fg(styles::BLUE()),
-        )),
-        Some(_) => {}
-        None => right.push(Span::styled(
-            format!("reviewed count {UNPORTED}"),
-            ratatui::style::Style::default().fg(styles::MUTED()),
-        )),
+        ));
     }
     if screen.chrome.watching {
         if !right.is_empty() {
