@@ -886,8 +886,7 @@ fn each_section_the_diff_reads_raises_its_version() {
     }
 }
 
-/// Staged just after a commit, a run and an ask read the last commit, as the
-/// view shows it, even when the content holds no diff of that scope.
+/// Staged just after a commit, a run and an ask read the last commit.
 #[test]
 fn a_run_on_staged_after_a_commit_reads_the_last_commit() -> anyhow::Result<()> {
     let mut state = WorkspaceState::new();

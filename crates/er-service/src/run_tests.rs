@@ -1,6 +1,4 @@
-//! Runs through the host: planning a run, which reads git, never holds the
-//! caller, and a questions run points the agent at the bucket file that
-//! holds the question just added.
+//! Runs and flow commands through the host.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::TryRecvError;

@@ -316,7 +316,6 @@ pub struct DiffMeta {
     /// Staged shows the last commit instead of an empty index: set by a
     /// commit, and cleared by a push, a mode switch, new staged changes, or a
     /// `HEAD~1` that cannot be read, as the App clears it.
-    /// A run on Staged reads that commit too.
     pub committed_unpushed: bool,
 }
 
