@@ -7,6 +7,7 @@
 //! action no service route covers yet says so on the status line.
 
 mod session;
+mod settings;
 mod shell;
 mod startup;
 mod tui_view;
@@ -20,5 +21,7 @@ pub const RUNS_ON_SERVICE: bool = true;
 
 #[cfg(test)]
 mod loop_tests;
+#[cfg(test)]
+mod settings_tests;
 #[cfg(test)]
 mod tests;

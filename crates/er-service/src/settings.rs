@@ -25,8 +25,8 @@ use std::time::Duration;
 use er_engine::config::{
     adopt_config_from, apply_config_field, config_hub_view, config_pair_load_failed, hub_edits,
     normalize_effort, overlay_discovered_models, risk_rules_view, save_config_pair_to, AiSelection,
-    ConfigFieldValue, ConfigHubView, ErConfig, ModelUpsert, ProviderUpsert, ReviewModelGroups,
-    RiskFilesView, RiskRuleTable, RiskRulesView,
+    ConfigFieldValue, ConfigHubView, ConfigLoadError, ErConfig, ModelUpsert, ProviderUpsert,
+    ReviewModelGroups, RiskFilesView, RiskRuleTable, RiskRulesView, CONFIG_LOAD_BANNER,
 };
 use er_engine::model_discovery::DiscoveredModel;
 use er_engine::uninstall::{UninstallOptions, UninstallPreview, UninstallResult};
@@ -148,6 +148,10 @@ pub struct SettingsView {
     pub uninstall_preview: Option<UninstallPreview>,
     /// Why the config file failed to load; saves refuse until it reloads.
     pub load_error: Option<String>,
+    /// The one-line banner a front end keeps up while saves refuse: the
+    /// failed file's banner from a load, or the generic one when a save
+    /// finds a file broken mid-session.
+    pub load_banner: Option<String>,
     /// The last command failure, cleared by the next success.
     pub last_error: Option<String>,
 }
@@ -209,7 +213,7 @@ enum Outcome {
     },
     Reloaded {
         config: Box<ErConfig>,
-        load_error: Option<String>,
+        load_error: Option<ConfigLoadError>,
     },
 }
 
@@ -264,8 +268,9 @@ impl SettingsHandle {
 /// actor that owns it. `config_path` is `config.toml`; `agents.toml` sits
 /// beside it.
 pub fn spawn_settings(deps: WorkspaceDeps, config_path: PathBuf) -> SettingsHandle {
-    let (config, error) = adopt_config_from(&config_path);
+    let (mut config, error) = adopt_config_from(&config_path);
     let saves = Arc::new(SaveSlot::new(&config));
+    overlay_cached_models(&mut config);
     let state = SettingsState {
         config,
         config_path,
@@ -276,6 +281,7 @@ pub fn spawn_settings(deps: WorkspaceDeps, config_path: PathBuf) -> SettingsHand
         risk_files: BTreeMap::new(),
         risk_keys: BTreeMap::new(),
         uninstall_preview: None,
+        load_banner: error.as_ref().map(ConfigLoadError::banner),
         load_error: error.map(|e| e.to_string()),
         last_error: None,
         discovery_inflight: HashSet::new(),
@@ -298,6 +304,24 @@ pub fn spawn_settings(deps: WorkspaceDeps, config_path: PathBuf) -> SettingsHand
         .spawn(move || run(deps, state, tx, rx, subscribers, view))
         .expect("spawn the settings actor thread");
     handle
+}
+
+/// Overlays each provider's cached discovered models, as the App does at
+/// start. It runs no discovery: a provider with no cache keeps its presets
+/// until a refresh.
+fn overlay_cached_models(config: &mut ErConfig) {
+    if !config.features.model_discovery {
+        return;
+    }
+    for (id, provider) in &mut config.ai_hub.providers {
+        if provider.models_command.is_empty() {
+            continue;
+        }
+        let cache = er_engine::model_discovery::load_valid_cache(id, &provider.models_command);
+        if let Some(cache) = cache {
+            overlay_discovered_models(provider, &cache.models);
+        }
+    }
 }
 
 /// The latest config to save, and what is on disk. Effects write whatever is
@@ -387,6 +411,7 @@ struct SettingsState {
     risk_keys: BTreeMap<(String, Option<String>), String>,
     uninstall_preview: Option<UninstallPreview>,
     load_error: Option<String>,
+    load_banner: Option<String>,
     last_error: Option<String>,
     discovery_inflight: HashSet<String>,
     saves: Arc<SaveSlot>,
@@ -403,6 +428,7 @@ impl SettingsState {
             risk_keys: self.risk_keys.clone(),
             uninstall_preview: self.uninstall_preview.clone(),
             load_error: self.load_error.clone(),
+            load_banner: self.load_banner.clone(),
             last_error: self.last_error.clone(),
         }
     }
@@ -665,7 +691,7 @@ fn handle_command(
                 let (config, error) = adopt_config_from(&path);
                 Ok(Outcome::Reloaded {
                     config: Box::new(config),
-                    load_error: error.map(|e| e.to_string()),
+                    load_error: error,
                 })
             });
         }
@@ -784,6 +810,9 @@ fn apply(
                 state.config = on_disk;
                 state.rebuild_all_risk();
             }
+            if config_pair_load_failed(&state.config_path) {
+                state.load_banner = Some(CONFIG_LOAD_BANNER.to_string());
+            }
             state.last_error = Some(message.clone());
             state.revision += 1;
             Err(WorkspaceError::Failed(message))
@@ -837,7 +866,8 @@ fn apply(
                 state.config = *config;
                 state.rebuild_all_risk();
             }
-            state.load_error = load_error;
+            state.load_banner = load_error.as_ref().map(ConfigLoadError::banner);
+            state.load_error = load_error.map(|e| e.to_string());
             state.revision += 1;
             Ok(SettingsReply::ConfigChanged {
                 revision: state.revision,

@@ -50,8 +50,10 @@ actor and one app registry, each started on first use.
 
 - An area with no builder or no command route yet draws the unported-area
   message on the flag path until the entry that ports it.
-- A source scan keeps every flag-on module from naming the App, and from
-  calling `send_and_wait` or `recv_timeout`. A test holds a load on a gated
+- A source scan keeps every flag-on module from naming the App, from
+  calling `send_and_wait` or `recv_timeout`, from writing or discovering
+  settings itself, and from starting a thread. The watched-file reader alone
+  may start one, and the scan holds it to er-git's read functions. A test holds a load on a gated
   git port and bounds each key's frame.
 - The TUI and the desktop each run a settings actor over one `config.toml`,
   as the two processes did before; ADR 0005's rule against a reload that

@@ -14,12 +14,13 @@ use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use er_engine::TabKey;
-use er_service::{Command, Event, Reply, ServiceHost, TabContent};
+use er_service::{Command, Event, Reply, ReplyReceiver, ServiceHost, TabContent};
 use ratatui::backend::{Backend, CrosstermBackend};
 use ratatui::text::Line;
 use ratatui::widgets::Paragraph;
 use ratatui::Terminal;
 
+use super::settings::{SettingsBridge, Side};
 use super::startup::{self, After, Args, Pending, Start, StartTab};
 use super::tui_view::{self, TuiView};
 use crate::input::keys::{key_action, NormalAction, TuiAction};
@@ -30,6 +31,8 @@ use crate::ui::highlight::Highlighter;
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
 /// How long a status-line message stays up.
 const NOTIFICATION_DWELL: Duration = Duration::from_secs(3);
+/// How long a message worth a longer read stays up, as the App's long notice.
+const NOTIFICATION_DWELL_LONG: Duration = Duration::from_secs(5);
 /// How often each loaded tab's sidecars are read again, for writes made
 /// outside this process.
 const RELOAD_INTERVAL: Duration = Duration::from_secs(1);
@@ -64,6 +67,7 @@ pub struct Shell {
     /// How each tab was opened, so a tab first shown later loads the same way.
     starts: HashMap<TabKey, StartTab>,
     pending: Vec<Pending>,
+    settings: SettingsBridge,
     /// The stubs already sent to parse, per tab and diff revision, so a
     /// parse that fails is not sent again every tick.
     parses_sent: HashSet<(TabKey, u64, String)>,
@@ -73,6 +77,9 @@ pub struct Shell {
     start_notice: Option<String>,
     redraw: bool,
     notified_at: Option<Instant>,
+    dwell: Duration,
+    /// The sidecar reloads in flight, whose failures pair with their events.
+    reloads: Vec<ReplyReceiver>,
     reloaded_at: Option<Instant>,
     /// The tabs a key changed since their session was saved, and when the
     /// save is due.
@@ -97,11 +104,14 @@ impl Shell {
             view: TuiView::default(),
             starts,
             pending,
+            settings: SettingsBridge::default(),
             parses_sent: HashSet::new(),
             load_errors: HashMap::new(),
             start_notice: None,
             redraw: true,
             notified_at: None,
+            dwell: NOTIFICATION_DWELL,
+            reloads: Vec::new(),
             reloaded_at: None,
             unsaved: HashSet::new(),
             save_due: None,
@@ -111,6 +121,13 @@ impl Shell {
             let notice = start.notices.join("; ");
             shell.start_notice = Some(notice.clone());
             shell.notify(notice);
+        }
+        if let Some(error) = shell.host.settings().view().load_error.clone() {
+            let revision = shell.host.settings().view().revision;
+            if shell.settings.admit_once(revision, &error) {
+                shell.notify(error);
+                shell.dwell = NOTIFICATION_DWELL_LONG;
+            }
         }
         Ok(shell)
     }
@@ -144,6 +161,16 @@ impl Shell {
     }
 
     #[cfg(test)]
+    pub fn settings(&self) -> &SettingsBridge {
+        &self.settings
+    }
+
+    #[cfg(test)]
+    pub fn send_settings(&mut self, command: er_service::SettingsCommand) {
+        self.settings.send(&self.host.settings(), command);
+    }
+
+    #[cfg(test)]
     pub fn view(&self) -> &TuiView {
         &self.view
     }
@@ -167,7 +194,21 @@ impl Shell {
     fn notify(&mut self, message: String) {
         self.view.notification = Some(message);
         self.notified_at = Some(Instant::now());
+        self.dwell = NOTIFICATION_DWELL;
         self.redraw = true;
+    }
+
+    /// Runs a failed reply through the same path a landed one takes.
+    #[cfg(test)]
+    pub fn land_failed_reply(&mut self, message: String) {
+        self.failure(Side::Reply, message);
+    }
+
+    /// Shows an actor's failure, once for its event and its reply together.
+    fn failure(&mut self, side: Side, message: String) {
+        if self.settings.admit_failure(side, &message) {
+            self.notify(message);
+        }
     }
 
     fn unported(&mut self) {
@@ -183,12 +224,21 @@ impl Shell {
     pub fn tick(&mut self, now: Instant) {
         loop {
             match self.events.try_recv() {
-                Ok(Event::CommandFailed { message }) => self.notify(message),
+                Ok(Event::CommandFailed { message }) => self.failure(Side::Event, message),
                 Ok(_) => self.redraw = true,
                 Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
             }
         }
         self.drain_replies();
+        self.drain_reloads();
+        let landed = self.settings.drain();
+        for message in landed.failures {
+            self.failure(Side::Reply, message);
+        }
+        for message in landed.messages {
+            self.settings.admit_message(&message);
+            self.notify(message);
+        }
         if self
             .reloaded_at
             .is_none_or(|at| now.duration_since(at) >= RELOAD_INTERVAL)
@@ -204,7 +254,7 @@ impl Shell {
             self.notified_at = Some(now);
         } else if self
             .notified_at
-            .is_some_and(|at| now.duration_since(at) >= NOTIFICATION_DWELL)
+            .is_some_and(|at| now.duration_since(at) >= self.dwell)
         {
             self.notified_at = None;
             self.view.notification = None;
@@ -212,19 +262,36 @@ impl Shell {
         }
     }
 
-    /// Asks the actor of every loaded tab to read its sidecars again. The
-    /// reply is dropped: a reload that read something publishes, and that
-    /// event asks for the draw.
-    fn reload_sidecars(&self) {
+    /// Asks the actor of every loaded tab to read its sidecars again. A
+    /// reload that read something publishes, and that event asks for the
+    /// draw; only a failed reply is looked at.
+    fn reload_sidecars(&mut self) {
         let tabs = self.host.registry().tabs_view();
         for entry in &tabs.tabs {
             let workspace = entry.descriptor.workspace_key();
             if self.host.content(&workspace, entry.key).is_some() {
-                drop(
-                    self.host
-                        .post(&workspace, Command::ReloadSidecars { key: entry.key }),
-                );
+                let replies = self
+                    .host
+                    .post(&workspace, Command::ReloadSidecars { key: entry.key });
+                self.reloads.push(replies);
             }
+        }
+    }
+
+    fn drain_reloads(&mut self) {
+        let mut failures = Vec::new();
+        self.reloads.retain(|replies| match replies.try_recv() {
+            Ok(reply) => {
+                if let Err(error) = reply {
+                    failures.push(error.to_string());
+                }
+                false
+            }
+            Err(TryRecvError::Empty) => true,
+            Err(TryRecvError::Disconnected) => false,
+        });
+        for message in failures {
+            self.failure(Side::Reply, message);
         }
     }
 
@@ -292,9 +359,10 @@ impl Shell {
                 }
                 Ok(_) => {}
                 Err(error) if self.host.content(&workspace, key).is_none() => {
+                    self.settings.absorb_reply(&error.to_string());
                     self.load_errors.insert(key, error.to_string());
                 }
-                Err(error) => self.notify(error.to_string()),
+                Err(error) => self.failure(Side::Reply, error.to_string()),
             }
         }
     }
@@ -339,7 +407,8 @@ impl Shell {
         content: &TabContent,
         read: impl FnOnce(&crate::screen::Screen) -> R,
     ) -> Option<R> {
-        let config = self.host.settings().view().config.clone();
+        let settings = self.host.settings().view();
+        let ai_selection_label = self.settings.ai_label(&settings);
         let (tab_names, active_tab) = self.tab_names();
         self.view.tab_mut(key, content);
         let state = self.view.tab(key)?;
@@ -347,7 +416,9 @@ impl Shell {
             tab_names,
             active_tab,
             content,
-            config: &config,
+            config: &settings.config,
+            config_load_error: settings.load_banner.as_deref(),
+            ai_selection_label,
         };
         Some(read(&tui_view::screen(&self.view, state, frame)))
     }
