@@ -57,16 +57,8 @@ impl Rerun {
         let ai = &content.ai.state;
         match self {
             Self::Review => ai.review.is_some(),
-            Self::Questions => ai.questions.as_ref().is_some_and(|q| {
-                q.questions
-                    .iter()
-                    .any(|q| q.in_reply_to.is_some() && q.author == "Claude")
-            }),
-            Self::Notes => ai.notes.as_ref().is_some_and(|ns| {
-                ns.notes
-                    .iter()
-                    .any(|n| n.in_reply_to.is_some() && n.author == "Claude")
-            }),
+            Self::Questions => ai.has_claude_answers(),
+            Self::Notes => ai.has_claude_note_replies(),
         }
     }
 }
