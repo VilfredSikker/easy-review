@@ -25,12 +25,15 @@ use super::ai_picker;
 use super::config_hub::{self, ConfigHub, Step};
 use super::filter::{self, Done};
 use super::layers::{self, Layer};
+use super::modes::{self, BaseStep, Follow};
+use super::open_hub::{OpenHub, OpenStep};
 use super::reviewed::ReviewedCache;
 use super::settings::{SettingsBridge, Side, Then};
-use super::startup::{self, After, Args, Pending, Start, StartTab};
+use super::startup::{self, After, Args, Pending, Refresh, Start, StartTab};
 use super::threads::{self, Composed};
 use super::tui_view::{self, Ask, Mode, Overlay, TuiView};
 use super::watched::{Landed, Reader};
+use super::watcher::Watch;
 use super::worktree::{self, GitHub, GitPick, HubStep};
 use crate::input::keys::{
     key_action, CommentAction, ConfirmKey, Edit, NormalAction, OverlayAction, TuiAction, Write,
@@ -100,6 +103,8 @@ pub struct Shell {
     reviewed: ReviewedCache,
     /// The watched files' reader, the one worker thread this path starts.
     watched: Reader,
+    /// The file watcher on the active tab's checkout.
+    watch: Watch,
     pub should_quit: bool,
 }
 
@@ -136,6 +141,7 @@ impl Shell {
             save_due: None,
             reviewed: ReviewedCache::default(),
             watched: Reader::spawn(git),
+            watch: Watch::default(),
             should_quit: false,
         };
         if !start.notices.is_empty() {
@@ -208,6 +214,11 @@ impl Shell {
     }
 
     #[cfg(test)]
+    pub fn watch_mut(&mut self) -> &mut Watch {
+        &mut self.watch
+    }
+
+    #[cfg(test)]
     pub fn in_flight(&self) -> usize {
         self.pending.len()
     }
@@ -274,6 +285,7 @@ impl Shell {
             }
         }
         self.drain_replies();
+        self.sync_watch(now);
         self.sync_watched(now);
         self.drain_reloads();
         let landed = self.settings.drain();
@@ -311,6 +323,7 @@ impl Shell {
             self.save_sessions();
         }
         let loaded = self.parse_selected_stub();
+        self.send_restore();
         if !loaded && self.notified_at.is_some() {
             self.notified_at = Some(now);
         } else if self
@@ -434,6 +447,23 @@ impl Shell {
                         after: After::Nothing,
                     });
                 }
+                Ok(Reply::ContentLoaded {
+                    reviewed_cleared, ..
+                }) if after.follows() => self.reloaded(key, &workspace, after, reviewed_cleared),
+                Err(error) if after.follows() && self.host.content(&workspace, key).is_some() => {
+                    if let Some(state) = self.view.tab_mut_if_open(key) {
+                        state.follow = None;
+                        state.base_sent = None;
+                    }
+                    let message = match after {
+                        After::ModeSwitched { pr_diff: true } => {
+                            format!("PR diff unavailable: {error}")
+                        }
+                        After::BaseChanged => format!("Could not change base: {error}"),
+                        _ => error.to_string(),
+                    };
+                    self.notify(message);
+                }
                 Ok(Reply::ReviewedChanged { .. }) => {
                     if let After::Reviewed {
                         advance_from: Some(position),
@@ -541,6 +571,7 @@ impl Shell {
             config_load_error: settings.load_banner.as_deref(),
             ai_selection_label,
             reviewed_count,
+            watching: self.watch.watching(),
         };
         Some(read(&tui_view::screen(&self.view, state, frame)))
     }
@@ -560,7 +591,11 @@ impl Shell {
                 let done = filter::history(&mut self.view, key, content, shown, action);
                 return self.filtered(key, workspace, content, done);
             }
+            TuiAction::Overlay(action) if matches!(self.view.overlay, Some(Overlay::Open(_))) => {
+                return self.open_hub_key(action)
+            }
             TuiAction::Overlay(action) => return self.overlay_key(action, key, content),
+            TuiAction::BaseBranch(edit) => return self.base_key(edit, key, workspace, content),
             TuiAction::Search(edit) => {
                 let shown = self.watched_shown(key, content);
                 let done = filter::search(&mut self.view, key, content, shown, edit);
@@ -758,6 +793,37 @@ impl Shell {
                 return self.focus(focus);
             }
             A::NextHint | A::PrevHint => threads::jump_hint(state, content, action == A::NextHint),
+            A::SwitchMode(mode) => {
+                match modes::switch(key, content, mode) {
+                    Ok(Some(command)) => {
+                        state.follow = Some(Follow::of(state, content));
+                        let pr_diff = mode == DiffMode::PrDiff;
+                        self.post(key, workspace, command, After::ModeSwitched { pr_diff });
+                    }
+                    Ok(None) => {}
+                    Err(message) => self.notify(message),
+                }
+                return;
+            }
+            A::Refresh => return self.refresh(key, workspace, content, Refresh::Key),
+            A::ToggleMtimeSort => {
+                state.sort_by_mtime = !state.sort_by_mtime;
+                let recent = state.sort_by_mtime;
+                self.notify(if recent {
+                    "Sort: recent first".into()
+                } else {
+                    "Sort: default".into()
+                });
+                return self.refresh(key, workspace, content, Refresh::Sort);
+            }
+            A::ToggleWatch => {
+                let message = self.watch.toggle(key, content);
+                return self.notify(message);
+            }
+            A::OpenOpenHub => {
+                self.view.overlay = Some(Overlay::Open(OpenHub::open(content)));
+                return;
+            }
             A::TogglePanel | A::TogglePanelReverse => {
                 layers::cycle_panel(state, content, action == A::TogglePanel);
                 return;
@@ -968,7 +1034,142 @@ impl Shell {
             HubStep::Run(GitPick::StageAll) => {
                 self.post(key, workspace, Command::StageAll { key }, After::Nothing);
             }
+            HubStep::Run(GitPick::Refresh) => self.refresh(key, workspace, content, Refresh::Key),
             HubStep::Run(GitPick::Unported) => self.unported(),
+        }
+    }
+
+    /// Sends a refresh of `key`'s tab, auto-unmark included; once it lands
+    /// the selection stays on its file.
+    fn refresh(&mut self, key: TabKey, workspace: &str, content: &TabContent, why: Refresh) {
+        let state = self.view.tab_mut(key, content);
+        state.follow = Some(Follow::of(state, content));
+        let command = Command::RefreshDiff {
+            key,
+            force: false,
+            adopt_head_oid: None,
+        };
+        self.post(key, workspace, command, After::Refreshed(why));
+    }
+
+    /// A mode switch, refresh or base change landed: the selection follows
+    /// the App's rule for it, and the status line says what it did.
+    fn reloaded(&mut self, key: TabKey, workspace: &str, after: After, cleared: usize) {
+        let Some(content) = self.host.content(workspace, key) else {
+            return;
+        };
+        let shown = self.watched_shown(key, &content);
+        let state = self.view.tab_mut(key, &content);
+        let selected = match after {
+            After::ModeSwitched { .. } => modes::switched(state, &content, shown),
+            _ => modes::refreshed(state, &content),
+        };
+        let sent = state.base_sent.take();
+        match after {
+            After::Refreshed(Refresh::Key) => self.notify("Refreshed".into()),
+            After::Refreshed(Refresh::Watched { files }) => {
+                self.notify(modes::watch_notice(cleared, files));
+            }
+            After::BaseChanged => {
+                let base_ref = content.tab.base_branch.clone();
+                let saved = self
+                    .host
+                    .registry()
+                    .send(er_service::AppCommand::SetBaseRef { key, base_ref });
+                match (saved, sent) {
+                    (Err(error), _) => self.notify(error.to_string()),
+                    (Ok(_), Some(base)) => self.notify(format!("Base set to {base}")),
+                    (Ok(_), None) => {}
+                }
+            }
+            _ => {}
+        }
+        if let Some(index) = selected {
+            self.parse_if_stub(key, workspace, &content, index);
+        }
+    }
+
+    /// One key in the base input; Enter sends the base change.
+    fn base_key(&mut self, edit: Edit, key: TabKey, workspace: &str, content: &TabContent) {
+        let step = modes::base_key(&mut self.view.base_input, edit);
+        let BaseStep::Send(base) = step else {
+            if matches!(step, BaseStep::Close) {
+                self.view.input_mode = Mode::Normal;
+            }
+            return;
+        };
+        self.view.input_mode = Mode::Normal;
+        let state = self.view.tab_mut(key, content);
+        state.follow = Some(Follow::of(state, content));
+        state.base_sent = Some(base.clone());
+        self.post(
+            key,
+            workspace,
+            Command::ChangeBase { key, base },
+            After::BaseChanged,
+        );
+    }
+
+    /// A key on the Open hub; "Change compare base" opens the base input.
+    fn open_hub_key(&mut self, action: OverlayAction) {
+        let Some(Overlay::Open(hub)) = self.view.overlay.as_mut() else {
+            return;
+        };
+        let step = hub.act(action);
+        if !matches!(step, OpenStep::Stay) {
+            self.view.overlay = None;
+        }
+        match step {
+            OpenStep::Stay | OpenStep::Close => {}
+            OpenStep::Notify(message) => self.notify(message),
+            OpenStep::Unported => self.unported(),
+            OpenStep::ChangeBase => {
+                self.view.base_input.clear();
+                self.view.input_mode = Mode::BaseBranch;
+            }
+        }
+    }
+
+    /// The watcher follows the active tab, and a change that has settled
+    /// refreshes the tab it was watching.
+    fn sync_watch(&mut self, now: Instant) {
+        let active = self.active();
+        let shown = active
+            .as_ref()
+            .and_then(|(key, _, content)| Some((*key, &**content.as_ref()?)));
+        self.watch.follow(shown);
+        let Some((key, files)) = self.watch.drain(now) else {
+            return;
+        };
+        let Some(workspace) = self.workspace_of(key) else {
+            return;
+        };
+        if let Some(content) = self.host.content(&workspace, key) {
+            self.refresh(key, &workspace, &content, Refresh::Watched { files });
+        }
+    }
+
+    /// Sends the switch a restored session waits for, once, on the active
+    /// tab; the position comes back when it lands.
+    fn send_restore(&mut self) {
+        let Some((key, workspace, Some(content))) = self.active() else {
+            return;
+        };
+        let Some(state) = self.view.tab_mut_if_open(key) else {
+            return;
+        };
+        let Some(restore) = state.restore.as_mut().filter(|restore| !restore.sent) else {
+            return;
+        };
+        restore.sent = true;
+        let mode = restore.mode;
+        match modes::switch(key, &content, mode) {
+            Ok(Some(command)) => {
+                state.follow = Some(Follow::of(state, &content));
+                let after = After::ModeSwitched { pr_diff: false };
+                self.post(key, &workspace, command, after);
+            }
+            _ => state.restore = None,
         }
     }
 

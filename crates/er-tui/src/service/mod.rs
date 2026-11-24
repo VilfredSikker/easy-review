@@ -10,6 +10,8 @@ mod ai_picker;
 mod config_hub;
 mod filter;
 mod layers;
+mod modes;
+mod open_hub;
 mod reviewed;
 mod session;
 mod settings;
@@ -18,6 +20,7 @@ mod startup;
 mod threads;
 mod tui_view;
 mod watched;
+mod watcher;
 mod worktree;
 
 pub use shell::run;
@@ -33,6 +36,8 @@ mod config_hub_tests;
 mod filter_tests;
 #[cfg(test)]
 mod loop_tests;
+#[cfg(test)]
+mod modes_tests;
 #[cfg(test)]
 mod reviewed_tests;
 #[cfg(test)]

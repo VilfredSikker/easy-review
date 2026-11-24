@@ -7,8 +7,6 @@ use er_engine::tabs_record::{TabDescriptor, TabKind};
 use er_engine::TabKey;
 use er_service::{AppCommand, Command, Reply, ReplyReceiver, ServiceHost};
 
-use crate::screen::UNPORTED;
-
 /// The command line's targets and flags, as `main` parsed them.
 #[derive(Debug, Default)]
 pub struct Args {
@@ -45,9 +43,6 @@ pub fn plan(args: &Args, git: &dyn er_git::Git) -> anyhow::Result<Start> {
         filter: args.filter.clone(),
         ..Start::default()
     };
-    if args.target.is_some() {
-        start.notices.push(format!("--target is {UNPORTED}"));
-    }
     if args.remote {
         for url in args
             .paths
@@ -89,6 +84,10 @@ pub fn plan(args: &Args, git: &dyn er_git::Git) -> anyhow::Result<Start> {
     }
     if let (Some(number), Some(first)) = (args.pr, start.tabs.first_mut()) {
         *first = local_pr(first.tab.repo_root.clone(), number);
+    }
+    // `--target` is each tab's base from its first load, as the App's.
+    for start_tab in &mut start.tabs {
+        start_tab.tab.base_ref.clone_from(&args.target);
     }
     Ok(start)
 }
@@ -146,6 +145,39 @@ pub enum After {
     Composed,
     /// A thread delete: once it lands, the status line says so.
     Deleted,
+    /// A mode switch: the selection follows the App's rule for a switch. A
+    /// refused PR diff says it is unavailable, as the App's.
+    ModeSwitched {
+        pr_diff: bool,
+    },
+    /// A refresh: the selection stays on its file, and the status line says
+    /// what the refresh was for.
+    Refreshed(Refresh),
+    /// A base change: the registry keeps the new base, and the status line
+    /// says so.
+    BaseChanged,
+}
+
+impl After {
+    /// Whether the selection follows the reply, as after a reload the user
+    /// asked for.
+    pub const fn follows(self) -> bool {
+        matches!(
+            self,
+            Self::ModeSwitched { .. } | Self::Refreshed(_) | Self::BaseChanged
+        )
+    }
+}
+
+/// Why a refresh went out, for its notice.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Refresh {
+    /// `R`: "Refreshed".
+    Key,
+    /// `m`: the sort's notice went at the press.
+    Sort,
+    /// The watcher saw `files` changes.
+    Watched { files: usize },
 }
 
 /// A command in flight. The loop drains its receiver each tick.

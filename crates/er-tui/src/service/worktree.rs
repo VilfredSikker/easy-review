@@ -16,6 +16,7 @@ pub enum GitPick {
     Push,
     StageFile,
     StageAll,
+    Refresh,
     /// A row whose action has no service route on this path yet.
     Unported,
 }
@@ -48,8 +49,8 @@ fn row(label: &str, hint: &str, description: &str, enabled: bool) -> HubItem {
 }
 
 impl GitHub {
-    /// The hub as the App opens it on this tab. Refresh and the GitHub rows
-    /// wait for their entries (P68, P71).
+    /// The hub as the App opens it on this tab. The GitHub rows wait for
+    /// their entry (P68).
     pub fn open(content: &TabContent) -> Self {
         let tab = &content.tab;
         let has_pr = tab.pr_number.is_some();
@@ -83,7 +84,7 @@ impl GitHub {
             ),
             (
                 row("Refresh diff", "R", "Re-run git diff and reload", true),
-                GitPick::Unported,
+                GitPick::Refresh,
             ),
             (
                 row(

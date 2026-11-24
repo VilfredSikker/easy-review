@@ -9,7 +9,6 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::SystemTime;
 
 use er_engine::ai::{CommentType, InlineLayers, PanelContent, ReviewFocus};
 use er_engine::config::{ErConfig, FileKindRepoConfig, RiskRules};
@@ -17,13 +16,16 @@ use er_engine::filter::{parse_filter_expr, FilterRule, FILTER_PRESETS};
 use er_engine::git::{DiffFile, DiffHunk, LineType, ProdDiffStats};
 use er_engine::navigation::{self, FileMove, LineCursor, LineMove};
 use er_engine::tab_identity::DiffMode;
-use er_engine::visible_files::{filtered_reviewed_count, visible_files, FileListView};
+use er_engine::visible_files::{filtered_reviewed_count, FileListView};
 use er_engine::TabKey;
 use er_service::{SettingsView, TabContent};
 use tui_textarea::TextArea;
 
 use super::ai_picker::Picker;
 use super::config_hub::ConfigHub;
+use super::modes::Follow;
+use super::open_hub::OpenHub;
+use super::session::Restore;
 use super::watched::TabWatched;
 use super::worktree::GitHub;
 use crate::screen::view::{
@@ -44,6 +46,8 @@ pub struct TuiView {
     pub settings: Option<Arc<SettingsView>>,
     /// `--filter`, for the first tab's view state once it is made.
     pub start_filter: Option<(TabKey, String)>,
+    /// The base input's text.
+    pub base_input: String,
 }
 
 /// The overlays the flag-on path holds; each entry that ports an overlay's
@@ -53,6 +57,7 @@ pub enum Overlay {
     /// The AI hub and its provider, model and effort pickers.
     Picker(Picker),
     GitHub(GitHub),
+    Open(OpenHub),
     /// The filter presets, then the tab's recent filters.
     FilterHistory {
         history: Vec<String>,
@@ -77,7 +82,10 @@ impl Overlay {
         match self {
             Self::ConfigHub(hub) => hub.sync(view),
             Self::Picker(picker) => picker.sync(view, ai_label),
-            Self::ExportPicker { .. } | Self::GitHub(_) | Self::FilterHistory { .. } => {}
+            Self::ExportPicker { .. }
+            | Self::GitHub(_)
+            | Self::Open(_)
+            | Self::FilterHistory { .. } => {}
         }
     }
 
@@ -100,6 +108,12 @@ impl Overlay {
             },
             Self::GitHub(ref hub) => OverlayData::ModalHub {
                 kind: HubKind::Git,
+                title: None,
+                items: &hub.rows,
+                selected: hub.selected,
+            },
+            Self::Open(ref hub) => OverlayData::ModalHub {
+                kind: HubKind::Open,
                 title: None,
                 items: &hub.rows,
                 selected: hub.selected,
@@ -141,6 +155,8 @@ pub enum Mode {
     /// The composer: the active tab's draft takes the keys.
     Comment,
     Confirm(Ask),
+    /// The compare-base input, opened from the Open hub.
+    BaseBranch,
 }
 
 /// What a y/n prompt asks before its write.
@@ -228,7 +244,12 @@ pub struct TabViewState {
     pub commit_input: String,
     pub watched: TabWatched,
     context_overrides: HashMap<String, usize>,
-    mtime_cache: HashMap<String, SystemTime>,
+    /// Where the selection stood when a mode switch or refresh went out.
+    pub follow: Option<Follow>,
+    /// A session saved in another view, waiting for its switch.
+    pub restore: Option<Restore>,
+    /// The base the input sent, for the reply's notice.
+    pub base_sent: Option<String>,
 }
 
 impl Default for TabViewState {
@@ -264,7 +285,9 @@ impl Default for TabViewState {
             commit_input: String::new(),
             watched: TabWatched::default(),
             context_overrides: HashMap::new(),
-            mtime_cache: HashMap::new(),
+            follow: None,
+            restore: None,
+            base_sent: None,
         }
     }
 }
@@ -354,11 +377,11 @@ impl TabViewState {
     }
 
     /// The files the tree lists, with their index in the diff: the filter,
-    /// then the search, then unreviewed-only.
+    /// then the search, then unreviewed-only, in the service's order.
     pub fn visible<'f>(&self, content: &'f TabContent) -> Vec<(usize, &'f DiffFile)> {
         let search = self.search_query.to_lowercase();
-        let files = content.diff.files.iter().map(|file| &**file);
-        visible_files(files, &self.list_view(content, &search))
+        let view = self.list_view(content, &search);
+        er_service::listed_files(content, &view, self.sort_by_mtime)
     }
 
     /// Reviewed and total files among those the filter keeps, or `None`
@@ -627,6 +650,8 @@ pub struct Frame<'a> {
     pub ai_selection_label: String,
     /// Reviewed and total files, from the reviewed builder.
     pub reviewed_count: (usize, usize),
+    /// Whether the file watcher runs.
+    pub watching: bool,
 }
 
 /// The frame's read model, from the active tab's published content and its
@@ -651,13 +676,14 @@ pub fn screen<'a>(view: &'a TuiView, state: &'a TabViewState, frame: Frame<'a>) 
             available_update: None,
             notification: view.notification.as_deref(),
             config_load_error: frame.config_load_error,
-            watching: false,
+            watching: frame.watching,
             input_mode: match view.input_mode {
                 Mode::Normal => InputMode::Normal,
                 Mode::Search => InputMode::Search,
                 Mode::Filter => InputMode::Filter,
                 Mode::Commit => InputMode::Commit,
                 Mode::Comment => InputMode::Comment,
+                Mode::BaseBranch => InputMode::BaseBranch,
                 Mode::Confirm(Ask::Push) => InputMode::Confirm(ConfirmAction::Push),
                 Mode::Confirm(Ask::DeleteComment) => {
                     InputMode::Confirm(ConfirmAction::DeleteComment)
@@ -669,7 +695,7 @@ pub fn screen<'a>(view: &'a TuiView, state: &'a TabViewState, frame: Frame<'a>) 
                 }
             },
             overlay: view.overlay.as_ref().map(Overlay::data),
-            remote_url_input: "",
+            remote_url_input: &view.base_input,
             ai_selection_label: frame.ai_selection_label,
             has_comment_draft: !state.draft.textarea.is_empty() && view.input_mode != Mode::Comment,
             can_toggle_comment_type: state.draft.can_toggle_kind(),
@@ -731,7 +757,7 @@ pub fn screen<'a>(view: &'a TuiView, state: &'a TabViewState, frame: Frame<'a>) 
             h_scroll_new: state.h_scroll_new,
             split_focus: SplitSide::New,
             context_overrides: &state.context_overrides,
-            mtime_cache: &state.mtime_cache,
+            mtime_cache: &content.diff.meta.stamps.mtimes,
             panel_scroll: state.panel_scroll,
             review_cursor: 0,
             branch_diff_hash: &content.diff.meta.branch_diff_hash,
@@ -781,9 +807,9 @@ pub fn tab_name(content: &TabContent) -> String {
         )
 }
 
-/// The views the mode bar offers. A PR tab with no checkout offers its PR
-/// diff alone; the views that need a builder or the watcher join as they
-/// are ported.
+/// The views the mode bar offers, as the App lists them, so each number key
+/// picks the same view on both paths. A PR tab with no checkout offers its PR
+/// diff alone. Conflicts joins once the load publishes a merge (P71.2).
 fn modes(content: &TabContent, config: &ErConfig) -> Vec<DiffMode> {
     let tab = &content.tab;
     if tab.identity().is_remote() || (tab.pr_number.is_some() && tab.checkout_root.is_none()) {
@@ -801,8 +827,14 @@ fn modes(content: &TabContent, config: &ErConfig) -> Vec<DiffMode> {
     if features.view_staged && !read_only {
         modes.push(DiffMode::Staged);
     }
+    if tab.pr_number.is_some() {
+        modes.push(DiffMode::PrDiff);
+    }
     if features.view_history && !read_only {
         modes.push(DiffMode::History);
+    }
+    if features.view_tour && content.ai.state.has_tour() {
+        modes.push(DiffMode::Tour);
     }
     if features.view_hidden && !read_only && !config.watched.paths.is_empty() {
         modes.push(DiffMode::Hidden);

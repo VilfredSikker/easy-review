@@ -69,7 +69,7 @@ pub use content::{
     ScopeStats, SidecarStamp, StackRead, TabContent,
 };
 pub use diff_resource::{
-    diff_load_error, diff_resource, diff_version, file_rule_tables, DiffInputs,
+    diff_load_error, diff_resource, diff_version, file_rule_tables, listed_files, DiffInputs,
 };
 pub use effect::{descriptor_bucket, tab_bucket};
 pub use flow_view::{
