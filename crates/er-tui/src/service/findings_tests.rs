@@ -312,6 +312,20 @@ fn a_finding_reply_writes_a_root_and_the_reply() {
         assert_eq!(rows[1].in_reply_to.as_ref(), Some(&rows[0].id));
         assert_eq!(shell.view().input_mode, Mode::Normal);
         assert_eq!(draft_text(&shell, tab), "");
+
+        // The reply moved the AI section, and the finding is still there, so
+        // its focus stays; a review without it drops the focus.
+        let mut hl = Highlighter::new();
+        shell_frame(&mut shell, &mut hl);
+        assert_eq!(focused(&shell).as_deref(), Some("f2"));
+        seed_shell(&mut shell, |dir, hash| {
+            let only = serde_json::json!({"src/f000.rs": {"risk": "high", "findings": [
+                finding("f1", 0, 4, "informational")
+            ]}});
+            write_review(dir, hash, only);
+        });
+        shell_frame(&mut shell, &mut hl);
+        assert_eq!(focused(&shell), None);
     });
 }
 
