@@ -1,6 +1,4 @@
-//! P71.1 on the flag path: the mode keys, the mtime sort, the watcher, the
-//! base change, `--target`, a session saved in another view, and the rule
-//! tables read again after a refresh.
+//! P71.1 on the flag path.
 
 use std::time::{Duration, Instant, SystemTime};
 
@@ -43,8 +41,7 @@ fn idle(shell: &Shell) -> bool {
     shell.in_flight() == 0
 }
 
-/// Presses `code` on both paths, the last step's message gone first, and
-/// compares the frames once the flag path's replies have landed.
+/// One key on both paths, then frame parity.
 fn step(app: &mut App, shell: &mut Shell, hl: &mut Highlighter, code: KeyCode) {
     app.clear_notification();
     shell.tick(Instant::now() + Duration::from_secs(60));
@@ -59,9 +56,7 @@ fn write(root: &std::path::Path, file: &str, text: &str) {
     std::fs::write(root.join(file), text).unwrap_or_else(|e| panic!("{e}"));
 }
 
-/// The three-file fixture with `f001` and `f002` edited in the working tree
-/// and `stage` staged, a branch `other` at the tip, and mtimes that put
-/// `f001`, then `f002`, then `f000` first.
+/// `f001` and `f002` edited, `stage` staged, `other` at the tip, set mtimes.
 fn worktree_fixture(stage: &[&str]) -> tempfile::TempDir {
     let repo = fixture(3);
     let root = repo.path();
@@ -84,9 +79,7 @@ fn worktree_fixture(stage: &[&str]) -> tempfile::TempDir {
     repo
 }
 
-/// Each mode key shows the view the App shows, and the selection follows
-/// the file across the switch as the App's does; the mtime sort lists the
-/// files in the order the service publishes, as the App sorts them.
+/// Mode keys and the mtime sort draw as the App's.
 #[test]
 fn mode_keys_and_the_mtime_sort_draw_like_the_app() {
     let (app_repo, flag_repo) = (
@@ -105,9 +98,7 @@ fn mode_keys_and_the_mtime_sort_draw_like_the_app() {
     });
 }
 
-/// A change the watcher reports refreshes the tab it watches, and the
-/// status line says how many reviewed marks the change cleared, else how
-/// many files changed, in the App's words.
+/// A watched change refreshes its tab, with the App's notices.
 #[test]
 fn the_watcher_refreshes_its_tab_and_counts_cleared_marks() {
     let repo = fixture(2);
@@ -118,8 +109,6 @@ fn the_watcher_refreshes_its_tab_and_counts_cleared_marks() {
         shell.watch_mut().on = true;
         shell.tick(Instant::now());
         assert_eq!(shell.watch_mut().root(), Some(path.as_str()));
-        // The test feeds the changes itself, so the file system's own
-        // events stay out of it.
         shell.watch_mut().on = false;
         shell.tick(Instant::now());
         shell.handle_key(key(KeyCode::Char(' ')));
@@ -154,9 +143,7 @@ fn the_watcher_refreshes_its_tab_and_counts_cleared_marks() {
     });
 }
 
-/// The Open hub's "Change compare base" row opens the base input; Enter
-/// rediffs the tab on the service against the base and keeps it in the
-/// registry, and the frame matches the App's after the same change.
+/// The base row and input rediff the tab and keep its base.
 #[test]
 fn the_base_input_rediffs_the_tab_and_keeps_its_base() {
     let (app_repo, flag_repo) = (worktree_fixture(&[]), worktree_fixture(&[]));
@@ -195,8 +182,7 @@ fn the_base_input_rediffs_the_tab_and_keeps_its_base() {
     });
 }
 
-/// `--target` is every start tab's base from its first load, a tab shown
-/// later included, and the start says nothing about it.
+/// `--target` is every start tab's base.
 #[test]
 fn target_is_every_tabs_base() {
     let (first, second) = (worktree_fixture(&[]), worktree_fixture(&[]));
@@ -217,8 +203,7 @@ fn target_is_every_tabs_base() {
     });
 }
 
-/// A session saved in another view than the tab opens in switches there,
-/// and its position comes back in that view, as the App's restore does.
+/// A session saved in another view restores there, as the App's.
 #[test]
 fn a_session_saved_in_another_view_restores_there_like_the_app() {
     let staged = ["src/f001.rs", "src/f002.rs"];
@@ -247,9 +232,7 @@ fn a_session_saved_in_another_view_restores_there_like_the_app() {
     });
 }
 
-/// The repo's rule tables are read again when the diff moves after the first
-/// frame: a remote added under a `[file_kinds]` table, then `R`, and a
-/// `kind:` filter keeps out the file that table names.
+/// The rule tables are read again after a refresh moves the rules key.
 #[test]
 fn the_rule_tables_are_read_again_after_a_refresh() {
     let repo = fixture(3);
@@ -284,8 +267,7 @@ fn the_rule_tables_are_read_again_after_a_refresh() {
     });
 }
 
-/// The file order comes from the service's `listed_files`, called by the
-/// view alone; no flag-on module orders files itself.
+/// Only the view orders files, through `listed_files`.
 #[test]
 fn the_file_order_comes_from_the_service() {
     for (name, text) in SOURCES {
@@ -294,4 +276,195 @@ fn the_file_order_comes_from_the_service() {
         let calls = flat.contains("listed_files(");
         assert_eq!(calls, name == "tui_view.rs", "{name} and listed_files");
     }
+}
+
+/// Commits a change to `file` and tells the watcher about it.
+fn change(shell: &mut Shell, root: &std::path::Path, file: &str) {
+    write(root, file, "let watched = 1;\n");
+    git(root, &["commit", "-qam", "watched"]);
+    let path = format!("{}/{file}", path_of_dir(root));
+    let sender = shell.watch_mut().sender();
+    sender
+        .send(WatchEvent::FilesChanged(vec![path]))
+        .unwrap_or_else(|e| panic!("{e}"));
+}
+
+fn path_of_dir(root: &std::path::Path) -> String {
+    let canonical = std::fs::canonicalize(root).unwrap_or_else(|e| panic!("{e}"));
+    canonical.to_string_lossy().into_owned()
+}
+
+fn shows(content: &er_service::TabContent, file: &str) -> bool {
+    let diff = content.diff.files.iter().find(|f| f.path == file);
+    diff.is_some_and(|f| format!("{:?}", f.hunks).contains("watched"))
+}
+
+const MOVED: &str = "the tab changed while it loaded";
+
+/// One watcher refresh out per tab, and one more for what came meanwhile.
+#[test]
+fn one_watcher_refresh_is_out_per_tab() {
+    let repo = fixture(2);
+    let storage = storage();
+    er_engine::storage::with_process_test_storage_root(storage.path(), || {
+        let mut shell = start(vec![path_of(&repo)], None, storage.path());
+        let content = content(&shell);
+        let key = shell.host().registry().tabs_view().active;
+        let key = key.unwrap_or_else(|| panic!("no tab"));
+        // The watch alone, on its own clock.
+        let mut watch = super::watcher::Watch::default();
+        watch.on = false;
+        let t0 = Instant::now();
+        watch.follow(Some((key, &content)), t0);
+        let sender = watch.sender();
+        let event = || WatchEvent::FilesChanged(vec!["a".into()]);
+        sender.send(event()).unwrap_or_else(|e| panic!("{e}"));
+        watch.count(t0);
+        let later = |secs| t0 + Duration::from_secs(secs);
+        assert_eq!(watch.ready(later(1)), Some((key, 1)));
+        sender.send(event()).unwrap_or_else(|e| panic!("{e}"));
+        watch.count(later(1));
+        assert_eq!(watch.ready(later(2)), None, "a second refresh went out");
+        watch.landed(key);
+        assert_eq!(watch.ready(later(2)), Some((key, 1)));
+        assert_eq!(watch.ready(later(3)), None);
+
+        // The shell, with two changes in a row.
+        let start = Instant::now();
+        change(&mut shell, repo.path(), "src/f000.rs");
+        shell.tick(start);
+        shell.tick(start + Duration::from_secs(1));
+        change(&mut shell, repo.path(), "src/f001.rs");
+        shell.tick(start + Duration::from_secs(2));
+        shell.tick(start + Duration::from_secs(3));
+        assert!(shell.in_flight() <= 1, "two watcher refreshes are out");
+        let both = |shell: &Shell| {
+            let content = super::modes_tests::content(shell);
+            idle(shell) && shows(&content, "src/f000.rs") && shows(&content, "src/f001.rs")
+        };
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while !both(&shell) && Instant::now() < deadline {
+            shell.tick(Instant::now() + Duration::from_secs(3));
+            let notice = shell.view().notification.clone().unwrap_or_default();
+            assert!(!notice.contains(MOVED), "{notice}");
+        }
+        assert!(both(&shell), "the second change was not refreshed");
+    });
+}
+
+/// A reload refused as moved is sent again silently.
+#[test]
+fn a_reload_refused_as_moved_is_sent_again() {
+    let repo = fixture(2);
+    let storage = storage();
+    er_engine::storage::with_process_test_storage_root(storage.path(), || {
+        let mut shell = start(vec![path_of(&repo)], None, storage.path());
+        for _ in 0..3 {
+            shell.handle_key(key(KeyCode::Char('R')));
+            shell.handle_key(key(KeyCode::Char('R')));
+            let deadline = Instant::now() + Duration::from_secs(20);
+            while !idle(&shell) && Instant::now() < deadline {
+                shell.tick(Instant::now());
+                let notice = shell.view().notification.clone().unwrap_or_default();
+                assert!(!notice.contains(MOVED), "{notice}");
+            }
+            assert_eq!(shell.view().notification.as_deref(), Some("Refreshed"));
+        }
+    });
+}
+
+/// Changes refresh the tab they came on; a tab shown again is refreshed.
+#[test]
+fn changes_refresh_the_tab_they_were_counted_on() {
+    let (first, second) = (fixture(2), fixture(2));
+    let storage = storage();
+    er_engine::storage::with_process_test_storage_root(storage.path(), || {
+        let paths = vec![path_of(&first), path_of(&second)];
+        let mut shell = start(paths, None, storage.path());
+        shell.tick(Instant::now());
+        let tabs = shell.host().registry().tabs_view();
+        let tab = |at: usize| {
+            let entry = &tabs.tabs[at];
+            (entry.key, entry.descriptor.workspace_key())
+        };
+        let ((one, one_ws), (two, two_ws)) = (tab(0), tab(1));
+        let of = |shell: &Shell, key, workspace: &str| {
+            let content = shell.host().content(workspace, key);
+            content.unwrap_or_else(|| panic!("tab not loaded"))
+        };
+        change(&mut shell, first.path(), "src/f000.rs");
+        shell.tick(Instant::now());
+        shell.handle_key(key(KeyCode::Char(']')));
+        settle(&mut shell, |shell| {
+            idle(shell) && shows(&of(shell, one, &one_ws), "src/f000.rs")
+        });
+        settle(&mut shell, |shell| {
+            shell.host().content(&two_ws, two).is_some()
+        });
+        shell.tick(Instant::now());
+        change(&mut shell, second.path(), "src/f000.rs");
+        let refreshed = settle_within(&mut shell, Duration::from_secs(20), |shell| {
+            idle(shell) && shows(&of(shell, two, &two_ws), "src/f000.rs")
+        });
+        assert!(refreshed, "the shown tab's change was not refreshed");
+        // A change on the first tab while the second is watched.
+        write(first.path(), "src/f001.rs", "let watched = 1;\n");
+        git(first.path(), &["commit", "-qam", "unwatched"]);
+        shell.watch_mut().on = true;
+        shell.handle_key(key(KeyCode::Char('[')));
+        // Before the file system could report anything, the re-arm sent one.
+        shell.tick(Instant::now());
+        assert_eq!(
+            shell.in_flight(),
+            1,
+            "showing the tab again refreshed nothing"
+        );
+        let caught = settle_within(&mut shell, Duration::from_secs(20), |shell| {
+            idle(shell) && shows(&of(shell, one, &one_ws), "src/f001.rs")
+        });
+        shell.watch_mut().on = false;
+        assert!(caught, "the tab shown again was not refreshed");
+    });
+}
+
+/// A refused refresh leaves a switch alone; a refused restore switch keeps
+/// the filter and toggles.
+#[test]
+fn a_refused_restore_switch_keeps_the_filter_and_toggles() {
+    let repo = fixture(3);
+    let storage = storage();
+    er_engine::storage::with_process_test_storage_root(storage.path(), || {
+        let mut shell = start(vec![path_of(&repo)], None, storage.path());
+        let content = content(&shell);
+        let entry = shell.host().registry().tabs_view().active_entry().cloned();
+        let entry = entry.unwrap_or_else(|| panic!("no tab"));
+        let state = shell.view_mut().tab_mut(entry.key, &content);
+        let mut session = super::session::capture(&content, state);
+        session.filter_expr = "f001".into();
+        session.show_unreviewed_only = true;
+        state.restore = Some(super::session::Restore {
+            mode: DiffMode::Staged,
+            session,
+            sent: true,
+        });
+        state.follow = Some(super::modes::Follow::of(state, &content));
+        let workspace = entry.descriptor.workspace_key();
+        // A refused refresh leaves the switch's follow and the session alone.
+        let refresh = super::startup::After::Refreshed(super::startup::Refresh::Key);
+        shell.lose_write(entry.key, workspace.clone(), refresh);
+        shell.tick(Instant::now());
+        let view = shell.view().tab(entry.key);
+        let waiting = view.is_some_and(|state| state.follow.is_some() && state.restore.is_some());
+        assert!(waiting, "a refused refresh let go of the switch's follow");
+        let after = super::startup::After::ModeSwitched { pr_diff: false };
+        shell.lose_write(entry.key, workspace, after);
+        shell.tick(Instant::now());
+        let state = shell
+            .view()
+            .tab(entry.key)
+            .unwrap_or_else(|| panic!("no view"));
+        assert!(state.restore.is_none());
+        assert_eq!(state.filter_expr, "f001");
+        assert!(state.show_unreviewed_only);
+    });
 }

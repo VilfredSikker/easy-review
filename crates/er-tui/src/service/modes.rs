@@ -1,7 +1,5 @@
 //! The flag-on mode keys, `R`, the mtime sort and the base change (P71.1);
 //! History, Conflicts and Hidden through the same keys (P71.2).
-//! Each sends its service command at the press; when the reply lands the
-//! selection follows the App's rule for that step.
 
 use er_engine::tab_identity::DiffMode;
 use er_engine::TabKey;
@@ -43,8 +41,7 @@ impl Follow {
     }
 }
 
-/// The command a mode key sends, nothing when the tab already shows that
-/// mode, or the message for a mode another entry ports.
+/// A mode key's command, none for the shown mode, or why it has none.
 pub fn switch(
     key: TabKey,
     content: &TabContent,
@@ -79,8 +76,12 @@ fn hunks(content: &TabContent, index: usize) -> usize {
 /// before when it lists it, with its hunk and line while it still has that
 /// hunk, else the first file; then the snap, then the scroll to the hunk.
 /// Answers the file it selected.
-pub fn switched(state: &mut TabViewState, content: &TabContent, shown: bool) -> Option<usize> {
-    let follow = state.follow.take()?;
+pub fn switched(
+    state: &mut TabViewState,
+    follow: Follow,
+    content: &TabContent,
+    shown: bool,
+) -> Option<usize> {
     let mode = content.tab.mode;
     if mode != DiffMode::History {
         state.history.left = None;
@@ -119,12 +120,9 @@ fn follow_file(state: &mut TabViewState, content: &TabContent, follow: Follow, s
     state.scroll_to_cursor(files.get(state.selected_file).map(|file| &**file));
 }
 
-/// A refresh landed: the file selected before it stays selected, at its hunk,
-/// line and scroll; a file the diff dropped leaves the selection in range,
-/// as the App's refresh.
-pub fn refreshed(state: &mut TabViewState, content: &TabContent) -> Option<usize> {
-    let follow = state.follow.take()?;
-    // History's position follows its commit; the diff view's waits.
+/// A refresh landed: the App's refresh selection rule. History's position
+/// follows its commit, and the diff view's waits.
+pub fn refreshed(state: &mut TabViewState, follow: Follow, content: &TabContent) -> Option<usize> {
     if content.tab.mode == DiffMode::History {
         return None;
     }
@@ -163,8 +161,7 @@ pub enum BaseStep {
     Send(String),
 }
 
-/// One key in the base input, as the App's: Enter sends a name that is not
-/// blank, Esc drops the text.
+/// One key in the base input, as the App's.
 pub fn base_key(text: &mut String, edit: Edit) -> BaseStep {
     match edit {
         Edit::Submit => {
@@ -191,16 +188,15 @@ pub fn base_key(text: &mut String, edit: Edit) -> BaseStep {
     }
 }
 
-/// The App's two refresh notices: the marks a change cleared, else the
-/// files that changed.
-pub fn watch_notice(cleared: usize, files: usize) -> String {
+/// The App's watcher notice; none for a re-arm refresh that cleared nothing.
+pub fn watch_notice(cleared: usize, files: usize) -> Option<String> {
     let plural = |n: usize| if n == 1 { "" } else { "s" };
     if cleared > 0 {
-        format!(
+        Some(format!(
             "{cleared} reviewed file{} auto-unmarked (diff changed)",
             plural(cleared)
-        )
+        ))
     } else {
-        format!("{files} file{} changed", plural(files))
+        (files > 0).then(|| format!("{files} file{} changed", plural(files)))
     }
 }

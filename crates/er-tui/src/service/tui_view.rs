@@ -49,6 +49,17 @@ pub struct TuiView {
     pub start_filter: Option<(TabKey, String)>,
     /// The base input's text.
     pub base_input: String,
+    /// What the start's probe or a pull learned about a tab's PR.
+    pr_known: HashMap<TabKey, PrKnown>,
+}
+
+/// Whether a tab's branch has a pull request, as far as the TUI knows. Only
+/// GitHub's own "no PR" answer makes it `Absent` (ADR 0053).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PrKnown {
+    Present,
+    Absent,
+    Unknown,
 }
 
 /// The overlays the flag-on path holds; each entry that ports an overlay's
@@ -165,6 +176,7 @@ pub enum Mode {
 pub enum Ask {
     Push,
     DeleteWatchedFile,
+    ApprovePr,
     DeleteComment,
 }
 
@@ -197,6 +209,18 @@ impl TuiView {
 
     pub fn tab(&self, key: TabKey) -> Option<&TabViewState> {
         self.tabs.get(&key)
+    }
+
+    /// What is known of `content`'s PR: a tab opened on one has it.
+    pub fn pr_known(&self, key: TabKey, content: &TabContent) -> PrKnown {
+        if content.tab.pr_number.is_some() {
+            return PrKnown::Present;
+        }
+        self.pr_known.get(&key).copied().unwrap_or(PrKnown::Unknown)
+    }
+
+    pub fn learn_pr(&mut self, key: TabKey, known: PrKnown) {
+        self.pr_known.insert(key, known);
     }
 }
 
@@ -245,8 +269,10 @@ pub struct TabViewState {
     pub commit_input: String,
     pub watched: TabWatched,
     context_overrides: HashMap<String, usize>,
-    /// Where the selection stood when a mode switch or refresh went out.
+    /// Where the selection stood when a mode switch or base change went out.
     pub follow: Option<Follow>,
+    /// The same for a refresh, kept apart so one leaves a switch's alone.
+    pub refresh_follow: Option<Follow>,
     /// A session saved in another view, waiting for its switch.
     pub restore: Option<Restore>,
     /// The base the input sent, for the reply's notice.
@@ -288,6 +314,7 @@ impl Default for TabViewState {
             watched: TabWatched::default(),
             context_overrides: HashMap::new(),
             follow: None,
+            refresh_follow: None,
             restore: None,
             base_sent: None,
             history: HistoryPos::default(),
@@ -688,6 +715,7 @@ pub fn screen<'a>(view: &'a TuiView, state: &'a TabViewState, frame: Frame<'a>) 
                 Mode::Comment => InputMode::Comment,
                 Mode::BaseBranch => InputMode::BaseBranch,
                 Mode::Confirm(Ask::Push) => InputMode::Confirm(ConfirmAction::Push),
+                Mode::Confirm(Ask::ApprovePr) => InputMode::Confirm(ConfirmAction::ApprovePR),
                 Mode::Confirm(Ask::DeleteComment) => {
                     InputMode::Confirm(ConfirmAction::DeleteComment)
                 }
@@ -811,9 +839,8 @@ pub fn tab_name(content: &TabContent) -> String {
         )
 }
 
-/// The views the mode bar offers, as the App lists them, so each number key
-/// picks the same view on both paths. A PR tab with no checkout offers its PR
-/// diff alone; Conflicts shows while the load finds a merge in progress.
+/// The App's mode list, so number keys match; Conflicts shows while a
+/// merge is in progress.
 fn modes(content: &TabContent, config: &ErConfig) -> Vec<DiffMode> {
     let tab = &content.tab;
     if tab.identity().is_remote() || (tab.pr_number.is_some() && tab.checkout_root.is_none()) {

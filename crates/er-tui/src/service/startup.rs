@@ -143,18 +143,22 @@ pub enum After {
     /// A create, reply or edit: once it lands, the draft of the tab it was
     /// written on clears; a refusal keeps it.
     Composed,
+    /// A GitHub post from the composer: as `Composed`, and a refusal that
+    /// adopted an earlier body drops the draft's client id.
+    Posted,
+    /// A pull of the PR's comments.
+    Synced,
+    /// An approval.
+    Approved,
     /// A thread delete: once it lands, the status line says so.
     Deleted,
-    /// A mode switch: the selection follows the App's rule for a switch. A
-    /// refused PR diff says it is unavailable, as the App's.
+    /// A mode switch; a refused PR diff says it is unavailable.
     ModeSwitched {
         pr_diff: bool,
     },
-    /// A refresh: the selection stays on its file, and the status line says
-    /// what the refresh was for.
+    /// A refresh, and what it was for.
     Refreshed(Refresh),
-    /// A base change: the registry keeps the new base, and the status line
-    /// says so.
+    /// A base change, which the registry keeps.
     BaseChanged,
     /// A History commit `k` or `j` picked: once it lands, the next press
     /// moves on from the commit shown.
@@ -164,8 +168,7 @@ pub enum After {
 }
 
 impl After {
-    /// Whether the selection follows the reply, as after a reload the user
-    /// asked for.
+    /// A reload the selection follows.
     pub const fn follows(self) -> bool {
         matches!(
             self,
@@ -191,6 +194,8 @@ pub struct Pending {
     pub workspace: String,
     pub replies: ReplyReceiver,
     pub after: After,
+    /// A reload to resend if its tab moved, and its resends.
+    pub retry: Option<(Command, u8)>,
 }
 
 /// Lists every tab in the registry, makes the first one active, and loads
@@ -236,5 +241,6 @@ pub fn load(host: &ServiceHost, key: TabKey, start_tab: &StartTab) -> Pending {
         workspace,
         replies,
         after,
+        retry: None,
     }
 }

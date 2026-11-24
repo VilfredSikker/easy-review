@@ -57,21 +57,24 @@ pub enum Focus {
     AskDelete,
     /// The key's write is another entry's.
     Unported,
+    /// The key does not act on this comment here, and says why.
+    Refused(&'static str),
 }
 
+/// What `e` says on a comment posted on GitHub: the App edits it there
+/// first, and that command is P68.2's.
+pub const POSTED_EDIT_REFUSED: &str = "Editing a posted comment is not on this build yet";
+
 /// The focused question, note or comment, unless a write of the draft is in
-/// flight. A comment posted on GitHub answers `Unported`: its writes are
-/// P68's, and a local `DeleteThread` would leave it on GitHub.
+/// flight. A comment posted on GitHub takes the same keys: its writes go to
+/// GitHub where `github.rs` sends them.
 fn focused<'c>(state: &TabViewState, content: &'c TabContent) -> Result<CommentRef<'c>, Focus> {
     let id = state.focused_comment_id.as_deref().ok_or(Focus::Nothing)?;
     let comment = content.ai.state.find_comment(id).ok_or(Focus::Nothing)?;
     if state.sent.is_some() {
         return Err(Focus::Nothing);
     }
-    match comment {
-        CommentRef::GithubComment(row) if row.github_id.is_some() => Err(Focus::Unported),
-        comment => Ok(comment),
-    }
+    Ok(comment)
 }
 
 /// `r`: a reply draft under the focused top-level comment, placed and typed
@@ -107,6 +110,9 @@ pub fn start_edit(state: &mut TabViewState, content: &TabContent) -> Focus {
         Err(Focus::Nothing) | Ok(_) => return Focus::Unported,
         Err(focus) => return focus,
     };
+    if matches!(comment, CommentRef::GithubComment(row) if row.github_id.is_some()) {
+        return Focus::Refused(POSTED_EDIT_REFUSED);
+    }
     let Some(file) = selected(state, content) else {
         return Focus::Nothing;
     };
@@ -147,6 +153,8 @@ fn cursor_line<'f>(state: &TabViewState, file: &'f DiffFile) -> Option<&'f DiffL
 pub enum Composed {
     Stay,
     Send(Box<Command>),
+    /// A GitHub post, whose reply the GitHub writes take.
+    Posted(Box<Command>),
     Unported,
 }
 
@@ -209,11 +217,17 @@ fn submit(state: &mut TabViewState, mode: &mut Mode, content: &TabContent) -> Co
         state.sent = Some(format!("Comment updated: {}", truncate(&body, 40)));
         return Composed::Send(Box::new(Command::UpdateThreadMessage { context, id, body }));
     }
-    // A finding reply is P72's, and a new GitHub comment is P68's.
-    let new_github = draft.kind == CommentType::GitHubComment && draft.reply_to.is_none();
-    if draft.finding_ref.is_some() || new_github {
+    // A finding reply is P72's. A GitHub comment, or a reply under a posted
+    // one, goes to GitHub.
+    if draft.finding_ref.is_some() {
         return Composed::Unported;
     }
+    if draft.kind == CommentType::GitHubComment {
+        if let Some(command) = super::github::submit(state, content, body.clone()) {
+            return Composed::Posted(Box::new(command));
+        }
+    }
+    let draft = &mut state.draft;
     let prefix = match draft.kind {
         CommentType::Question => "q-",
         CommentType::Note => "n-",

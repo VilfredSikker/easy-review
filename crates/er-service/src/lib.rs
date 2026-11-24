@@ -65,8 +65,8 @@ pub use app_registry::{
 };
 pub use ask_context::{ask_raw_diff, ask_scope};
 pub use content::{
-    AiSection, DiffMeta, DiffSection, FreshnessSection, HistorySection, PrSection, ReviewedSection,
-    ScopeStats, SidecarStamp, StackRead, TabContent,
+    refused_as_moved, AiSection, DiffMeta, DiffSection, FreshnessSection, HistorySection,
+    PrSection, ReviewedSection, ScopeStats, SidecarStamp, StackRead, TabContent,
 };
 pub use diff_resource::{
     diff_load_error, diff_resource, diff_version, file_rule_tables, listed_files, DiffInputs,
@@ -77,11 +77,13 @@ pub use flow_view::{
 };
 pub use flows::read_flow_run;
 pub use freshness::{BaseBehind, Divergence, Freshness, RemoteTips};
+pub use github_comments::EARLIER_VERSION_POSTED;
 pub use handle::{WorkspaceError, WorkspaceHandle, REPLY_TIMEOUT};
 pub use host::{ReplyReceiver, ServiceHost};
 pub use hunks::{file_hunks, read_hunks, HunkRead};
 pub use job_rows::{job_rows, run_status, JobRows};
 pub use pending_review::{read_pending_review, OWN_PR_APPROVAL_REFUSED};
+pub use pr_posts::{review_write_message, with_review_hints};
 pub use pr_resource::{pr_resource, pr_version};
 pub use protocol::{
     AcceptanceDiff, AnnotationKind, AnnotationTarget, ArenaCommand, ArenaContext, Command, Event,

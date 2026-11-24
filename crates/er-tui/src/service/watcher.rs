@@ -1,8 +1,7 @@
-//! The flag-on file watcher. One `FileWatcher` follows the active tab's
-//! checkout, else its repo root, and a change refreshes that tab through the
-//! service once the changes stop for the App's 200 ms. The watcher's threads
-//! are er-engine's; this module starts none.
+//! The flag-on file watcher on the active tab's root. One refresh per tab is
+//! out at a time; er-engine's `FileWatcher` owns the threads.
 
+use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
 
@@ -15,17 +14,20 @@ const DEBOUNCE: Duration = Duration::from_millis(200);
 /// The watcher's own debounce, as the App's.
 const WATCH_DEBOUNCE_MS: u64 = 500;
 
-/// The watcher, whether the user wants it, and the changes not yet refreshed.
 pub struct Watch {
     /// On at the start, as the App's; `w` turns it off and on.
     pub on: bool,
     watching: Option<(String, FileWatcher)>,
-    /// The tab a refresh goes to.
+    /// The active tab, which a change counted now belongs to.
     key: Option<TabKey>,
     tx: Sender<WatchEvent>,
     rx: Receiver<WatchEvent>,
-    /// The changed files counted since the last refresh, and when it is due.
-    due: Option<(Instant, usize)>,
+    /// Per tab, the changes counted and when their refresh is due.
+    due: HashMap<TabKey, (Instant, usize)>,
+    /// The tabs with a watcher refresh out.
+    out: HashSet<TabKey>,
+    /// The tabs the watcher has followed.
+    seen: HashSet<TabKey>,
 }
 
 impl Default for Watch {
@@ -37,13 +39,14 @@ impl Default for Watch {
             key: None,
             tx,
             rx,
-            due: None,
+            due: HashMap::new(),
+            out: HashSet::new(),
+            seen: HashSet::new(),
         }
     }
 }
 
-/// The directory a tab's watcher watches: its checkout, else its repo root.
-/// A remote tab has none.
+/// A tab's checkout, else its repo root; a remote tab has none.
 fn root_of(content: &TabContent) -> Option<&str> {
     let tab = &content.tab;
     if tab.identity().is_remote() {
@@ -58,16 +61,24 @@ impl Watch {
         self.watching.is_some()
     }
 
-    /// Watches the active tab's root, opening a watcher when the root moved.
-    /// A watcher that cannot open turns watching off without a word, as the
-    /// App's start does.
-    pub fn follow(&mut self, active: Option<(TabKey, &TabContent)>) {
+    /// Watches the active tab's root. A tab followed before is refreshed once
+    /// when shown again; a watcher that cannot open turns watching off.
+    pub fn follow(&mut self, active: Option<(TabKey, &TabContent)>, now: Instant) {
         let root = active.and_then(|(key, content)| Some((key, root_of(content)?)));
-        let Some((key, root)) = root.filter(|_| self.on) else {
+        let Some((key, root)) = root else {
             self.watching = None;
             return;
         };
-        self.key = Some(key);
+        if self.key != Some(key) {
+            if !self.seen.insert(key) && self.on {
+                self.due.entry(key).or_insert((now, 0));
+            }
+            self.key = Some(key);
+        }
+        if !self.on {
+            self.watching = None;
+            return;
+        }
         if self.watching.as_ref().is_some_and(|(at, _)| at == root) {
             return;
         }
@@ -105,19 +116,29 @@ impl Watch {
         }
     }
 
-    /// Counts the changes that arrived, and answers the tab to refresh and
-    /// how many files changed once they have stopped for the debounce.
-    pub fn drain(&mut self, now: Instant) -> Option<(TabKey, usize)> {
+    /// Counts the changes that arrived for the tab watched when they came.
+    pub fn count(&mut self, now: Instant) {
         while let Ok(WatchEvent::FilesChanged(paths)) = self.rx.try_recv() {
-            let files = self.due.map_or(0, |(_, files)| files) + paths.len();
-            self.due = Some((now + DEBOUNCE, files));
+            let Some(key) = self.key else { continue };
+            let files = self.due.get(&key).map_or(0, |(_, files)| *files) + paths.len();
+            self.due.insert(key, (now + DEBOUNCE, files));
         }
-        let (at, files) = self.due?;
-        if now < at {
-            return None;
-        }
-        self.due = None;
-        Some((self.key?, files))
+    }
+
+    /// A tab past the debounce with no refresh out; it is out until `landed`.
+    pub fn ready(&mut self, now: Instant) -> Option<(TabKey, usize)> {
+        let (&key, &(_, files)) = self
+            .due
+            .iter()
+            .find(|(key, (at, _))| *at <= now && !self.out.contains(key))?;
+        self.due.remove(&key);
+        self.out.insert(key);
+        Some((key, files))
+    }
+
+    /// `key`'s watcher refresh answered, landed or refused.
+    pub fn landed(&mut self, key: TabKey) {
+        self.out.remove(&key);
     }
 
     /// The watched root, for a test.
@@ -126,8 +147,7 @@ impl Watch {
         self.watching.as_ref().map(|(root, _)| root.as_str())
     }
 
-    /// A sender into the watcher's channel, so a test feeds a change
-    /// without waiting on the file system's events.
+    /// For a test to feed changes.
     #[cfg(test)]
     pub fn sender(&self) -> Sender<WatchEvent> {
         self.tx.clone()

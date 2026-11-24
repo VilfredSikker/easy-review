@@ -71,8 +71,7 @@ pub fn capture(content: &TabContent, state: &TabViewState) -> SessionState {
     }
 }
 
-/// A session saved in another view than the tab opened in: the shell sends
-/// the switch, and the position comes back once the content shows `mode`.
+/// A session waiting for the switch to its view.
 pub struct Restore {
     pub mode: DiffMode,
     pub session: SessionState,
@@ -80,8 +79,7 @@ pub struct Restore {
     pub sent: bool,
 }
 
-/// The view a saved session asks for, as the App maps it: a PR diff, Hidden
-/// and Tour come back in Branch.
+/// The App's mode mapping: a PR diff, Hidden and Tour come back in Branch.
 fn saved_mode(session: &SessionState) -> DiffMode {
     match session.diff_mode.as_str() {
         "unstaged" => DiffMode::Unstaged,
@@ -95,10 +93,8 @@ fn saved_mode(session: &SessionState) -> DiffMode {
 /// Puts `session` back on a new tab's `state` when it was saved on this
 /// diff; a session from another diff would select a file that moved.
 ///
-/// The draft comes back whole at once: its client id is what lets a retried
-/// post find the comment it already made (ADR 0053). A session saved in
-/// another view is kept on the state as a `Restore`, and the rest comes back
-/// once the switch lands, as the App's restore switches first.
+/// The draft comes back at once (ADR 0053); a session from another view
+/// waits as a `Restore` for its switch.
 pub fn restore(state: &mut TabViewState, session: SessionState, content: &TabContent) {
     if session.diff_hash != content.diff.meta.branch_diff_hash {
         return;
@@ -128,6 +124,11 @@ pub fn restore_in_mode(state: &mut TabViewState, session: SessionState, content:
     } else {
         restore_position(state, &session, content);
     }
+    restore_filter(state, session, content);
+}
+
+/// A session whose view could not be shown keeps its filter and toggles.
+pub fn restore_in_view(state: &mut TabViewState, session: SessionState, content: &TabContent) {
     restore_filter(state, session, content);
 }
 

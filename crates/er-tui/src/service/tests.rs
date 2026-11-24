@@ -26,15 +26,17 @@ const WIDTH: u16 = 120;
 const HEIGHT: u16 = 30;
 
 /// The flag-on modules, as text.
-pub(super) const SOURCES: [(&str, &str); 18] = [
+pub(super) const SOURCES: [(&str, &str); 20] = [
     ("ai_picker.rs", include_str!("ai_picker.rs")),
     ("config_hub.rs", include_str!("config_hub.rs")),
     ("filter.rs", include_str!("filter.rs")),
+    ("github.rs", include_str!("github.rs")),
     ("history.rs", include_str!("history.rs")),
     ("layers.rs", include_str!("layers.rs")),
     ("mod.rs", include_str!("mod.rs")),
     ("modes.rs", include_str!("modes.rs")),
     ("open_hub.rs", include_str!("open_hub.rs")),
+    ("pr_probe.rs", include_str!("pr_probe.rs")),
     ("reviewed.rs", include_str!("reviewed.rs")),
     ("session.rs", include_str!("session.rs")),
     ("settings.rs", include_str!("settings.rs")),
@@ -50,9 +52,10 @@ pub(super) const SOURCES: [(&str, &str); 18] = [
 /// No flag-on module reaches the App, fetches a PR's refs itself, writes or
 /// discovers settings itself, writes the working tree itself, starts a
 /// thread, or waits on an actor: the service owns the domain, and a key never
-/// blocks the loop. The one thread a module may start is the watched-file
-/// reader's, which only reads: it makes none of the calls a write takes, and
-/// every er-git name it uses is a read.
+/// blocks the loop. Two modules may start a thread, and both only read: the
+/// watched-file reader makes none of the calls a write takes, and every er-git
+/// name it uses is a read; the PR probe's calls are checked in
+/// `github_tests`.
 #[test]
 fn flag_on_modules_name_no_app_and_never_wait() {
     let banned = [
@@ -98,7 +101,7 @@ fn flag_on_modules_name_no_app_and_never_wait() {
                     "{name} names er-git's {named}"
                 );
             }
-        } else {
+        } else if name != "pr_probe.rs" {
             for spawn in ["thread::spawn", "thread::Builder"] {
                 assert!(!flat.contains(spawn), "{name} names {spawn}");
             }
@@ -279,7 +282,21 @@ pub(super) fn plan(args: &Args) -> Start {
 }
 
 pub(super) fn shell(args: &Args, config_dir: &Path) -> Shell {
-    shell_on(Ports::cli(), &plan(args), config_dir)
+    shell_on(test_ports(), &plan(args), config_dir)
+}
+
+/// A GitHub that answers nothing it was not scripted to: the start's PR
+/// probe gets an error, which reads as unknown, and no test reaches `gh`.
+pub(super) fn fake_github() -> Arc<dyn er_github::GitHub> {
+    Arc::new(er_github::FakeGitHub::default())
+}
+
+/// The real git beside [`fake_github`].
+pub(super) fn test_ports() -> Ports {
+    Ports {
+        git: Ports::cli().git,
+        github: fake_github(),
+    }
 }
 
 pub(super) fn shell_on(ports: Ports, start: &Start, config_dir: &Path) -> Shell {
@@ -611,7 +628,7 @@ fn a_failed_first_load_shows_its_error_and_the_notices() {
     start.notices.push("A start notice".into());
     std::fs::remove_dir_all(repo.path().join(".git")).unwrap_or_else(|e| panic!("{e}"));
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
-        let mut shell = shell_on(Ports::cli(), &start, storage.path());
+        let mut shell = shell_on(test_ports(), &start, storage.path());
         let mut hl = Highlighter::new();
         let mut text = |shell: &mut Shell| rows(&shell_frame(shell, &mut hl)).join("\n");
         let deadline = Instant::now() + WAIT;
@@ -644,7 +661,7 @@ fn tab_keys_load_later_tabs_and_leave_a_failed_one() {
     let start = plan(&args);
     std::fs::remove_dir_all(broken.path().join(".git")).unwrap_or_else(|e| panic!("{e}"));
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
-        let mut shell = shell_on(Ports::cli(), &start, storage.path());
+        let mut shell = shell_on(test_ports(), &start, storage.path());
         let mut hl = Highlighter::new();
         let mut text = |shell: &mut Shell| rows(&shell_frame(shell, &mut hl)).join("\n");
         let tabs = shell.host().registry().tabs_view();
@@ -693,4 +710,38 @@ fn tab_keys_load_later_tabs_and_leave_a_failed_one() {
         shell.handle_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL));
         assert!(shell.should_quit, "Ctrl+Q did not quit a failed tab");
     });
+}
+
+/// The service tests, as text.
+const TEST_SOURCES: [(&str, &str); 11] = [
+    ("config_hub_tests.rs", include_str!("config_hub_tests.rs")),
+    ("filter_tests.rs", include_str!("filter_tests.rs")),
+    ("github_tests.rs", include_str!("github_tests.rs")),
+    ("loop_tests.rs", include_str!("loop_tests.rs")),
+    ("reviewed_tests.rs", include_str!("reviewed_tests.rs")),
+    ("settings_tests.rs", include_str!("settings_tests.rs")),
+    (
+        "thread_writes_tests.rs",
+        include_str!("thread_writes_tests.rs"),
+    ),
+    ("threads_tests.rs", include_str!("threads_tests.rs")),
+    ("watched_tests.rs", include_str!("watched_tests.rs")),
+    ("worktree_tests.rs", include_str!("worktree_tests.rs")),
+    ("tests.rs", include_str!("tests.rs")),
+];
+
+/// No service test hands the shell the real GitHub: the start's PR probe
+/// would run `gh` in every fixture.
+#[test]
+fn service_tests_never_reach_the_real_github() {
+    let needles = [
+        concat!("Ports::cli()", ".github"),
+        concat!("shell_on(", "Ports::cli()"),
+    ];
+    for (name, text) in TEST_SOURCES {
+        let flat: String = text.split_whitespace().collect();
+        for needle in needles {
+            assert!(!flat.contains(needle), "{name} names {needle}");
+        }
+    }
 }

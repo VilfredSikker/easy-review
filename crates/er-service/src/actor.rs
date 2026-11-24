@@ -801,6 +801,16 @@ fn handle_command(
                 .map(|(id, patch)| Effected::patched(Reply::AnnotationWritten { id }, patch))
             });
         }
+        Command::DeleteGithubComment { context, id } => {
+            if !context_matches(state, &context) {
+                return refuse_stale(reply);
+            }
+            let deps = deps.clone();
+            spawn_effect(tx, reply, move || {
+                crate::github_comments::delete_github_comment(&deps, &context, &id)
+                    .map(|(path, patch)| Effected::patched(Reply::ThreadChanged { path }, patch))
+            });
+        }
         Command::PromoteToComment { context, id, body } => {
             if !context_matches(state, &context) {
                 return refuse_stale(reply);
@@ -868,9 +878,13 @@ fn handle_command(
                 crate::pending_review::submit(deps, context, event, &summary)
             });
         }
-        Command::PostGithubPrComment { context, body } => {
+        Command::PostGithubPrComment {
+            context,
+            body,
+            client_id,
+        } => {
             spawn_fetch(deps, state, tx, reply, context, move |deps, context| {
-                crate::pr_posts::post_pr_comment(deps, context, &body)
+                crate::pr_posts::post_pr_comment(deps, context, &body, client_id)
             });
         }
         Command::PostGithubLineComment {

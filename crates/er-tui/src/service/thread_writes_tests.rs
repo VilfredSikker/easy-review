@@ -3,11 +3,10 @@
 //! hub's layer rows act on the tab's view as the App's hub does.
 
 use std::path::Path;
-use std::time::{Duration, Instant};
 
 use crossterm::event::KeyCode;
-use er_engine::ai::{ErGithubComments, ErQuestions};
-use er_engine::test_support::{read_sidecar, write_sidecar_json};
+use er_engine::ai::ErQuestions;
+use er_engine::test_support::read_sidecar;
 
 use std::sync::Arc;
 
@@ -17,14 +16,13 @@ use super::loop_tests::{Gate, GatedGit};
 use super::shell::Shell;
 use super::startup::After;
 use super::tests::{
-    fixture, key, loaded, path_of, plan, press_app, settle, settle_within, shell, shell_on, SOURCES,
+    fixture, key, loaded, path_of, plan, press_app, settle, shell, shell_on, SOURCES,
 };
 use super::threads_tests::{
     active_key, args, both_on, draft_text, early_in_a_second, er_dir, seed_both, settle_replies,
     state, step, type_text,
 };
 use super::tui_view::{Mode, Overlay};
-use crate::screen::UNPORTED;
 use crate::ui::highlight::Highlighter;
 
 /// The rows of a bucket's questions and notes files as stored, less the
@@ -112,7 +110,7 @@ fn a_reply_in_flight_is_sent_once() {
         let gate = Arc::new(Gate::default());
         let ports = Ports {
             git: Arc::new(GatedGit(Arc::clone(&gate))),
-            github: Ports::cli().github,
+            github: super::tests::fake_github(),
         };
         let mut shell = shell_on(ports, &start, storage.path());
         settle(&mut shell, loaded);
@@ -146,7 +144,7 @@ fn a_reply_that_never_answers_frees_the_composer() {
         let gate = Arc::new(Gate::default());
         let ports = Ports {
             git: Arc::new(GatedGit(Arc::clone(&gate))),
-            github: Ports::cli().github,
+            github: super::tests::fake_github(),
         };
         let mut shell = shell_on(ports, &start, storage.path());
         settle(&mut shell, loaded);
@@ -294,66 +292,6 @@ fn a_whitespace_body_is_refused_and_kept() {
         let notice = shell.view().notification.clone().unwrap_or_default();
         assert!(notice.contains("empty"), "{notice:?}");
         assert!(rows(&er_dir(&shell)).is_empty());
-    });
-}
-
-/// Seeds one comment posted on GitHub, yours, on the first file.
-fn seed_posted(shell: &mut Shell) -> std::path::PathBuf {
-    let before = shell
-        .active_content()
-        .unwrap_or_else(|| panic!("no content"));
-    let dir = Path::new(&before.context.comments_dir).to_path_buf();
-    std::fs::create_dir_all(&dir).unwrap_or_else(|e| panic!("{e}"));
-    let comment = serde_json::json!({
-        "id": "c-posted", "file": "src/f000.rs", "hunk_index": 0, "line_start": 4,
-        "line_end": null, "comment": "On GitHub", "source": "github",
-        "github_id": 7, "author": "You"
-    });
-    write_sidecar_json::<ErGithubComments>(
-        &dir,
-        serde_json::json!({"version": 1, "diff_hash": before.context.diff_hash, "comments": [comment]}),
-    );
-    let moved = |shell: &Shell| {
-        shell
-            .active_content()
-            .is_some_and(|now| now.ai.revision > before.ai.revision)
-    };
-    assert!(
-        settle_within(shell, Duration::from_secs(10), moved),
-        "the posted comment never reached the AI section"
-    );
-    dir.join("github-comments.json")
-}
-
-/// Reply, edit and delete on a comment posted on GitHub answer the unported
-/// message until P68, and the comments file is untouched.
-#[test]
-fn a_posted_comment_takes_no_reply_edit_or_delete() {
-    let repo = fixture(1);
-    let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
-    er_engine::storage::with_process_test_storage_root(storage.path(), || {
-        let mut shell = shell(&args(vec![path_of(&repo)]), storage.path());
-        settle(&mut shell, loaded);
-        let file = seed_posted(&mut shell);
-        let stored = std::fs::read_to_string(&file).unwrap_or_else(|e| panic!("{e}"));
-        shell.handle_key(key(KeyCode::Char('K')));
-        let tab = active_key(&shell);
-        let focused = state(&shell, tab).focused_comment_id.clone();
-        assert_eq!(focused.as_deref(), Some("c-posted"));
-        for code in ['r', 'e', 'x'] {
-            shell.tick(Instant::now() + Duration::from_secs(60));
-            shell.handle_key(key(KeyCode::Char(code)));
-            settle_replies(&mut shell);
-            assert_eq!(
-                shell.view().input_mode,
-                Mode::Normal,
-                "{code} opened a mode"
-            );
-            let notice = shell.view().notification.clone().unwrap_or_default();
-            assert!(notice.contains(UNPORTED), "{code}: {notice:?}");
-        }
-        let after = std::fs::read_to_string(&file).unwrap_or_else(|e| panic!("{e}"));
-        assert_eq!(after, stored);
     });
 }
 
