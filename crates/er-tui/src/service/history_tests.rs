@@ -102,16 +102,21 @@ fn merging() -> tempfile::TempDir {
 
 /// History's key shows the commits and the selected commit's files; `k`,
 /// `j`, `n` and the line keys move as the App's do, and leaving History
-/// returns to the file the diff view had selected.
+/// for another view selects the file History was entered on, by path.
 #[test]
 fn history_draws_like_the_app() {
     let (app_repo, flag_repo) = twins(two_commits);
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
+        // Unstaged lists `f002` alone, which Branch lists third.
+        for repo in [&app_repo, &flag_repo] {
+            let file = repo.path().join("src/f002.rs");
+            std::fs::write(file, "let unstaged = 1;\n").unwrap_or_else(|e| panic!("{e}"));
+        }
         let mut app = app_on(&path_of(&app_repo));
         let mut shell = start(&path_of(&flag_repo), storage.path());
         let mut hl = Highlighter::new();
-        for code in ['j', '4', 'k', 'n', 'j', 'n'] {
+        for code in ['2', '4', 'k', 'n', 'j', 'n'] {
             step(&mut app, &mut shell, &mut hl, KeyCode::Char(code));
         }
         for code in [
