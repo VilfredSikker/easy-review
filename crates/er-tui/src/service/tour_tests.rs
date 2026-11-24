@@ -64,6 +64,7 @@ fn wait_for_tour(shell: &mut Shell) {
         std::thread::sleep(Duration::from_millis(10));
     }
     assert!(shown(shell), "the seeded tour never reached the AI section");
+    super::tests::let_the_reload_notice_go(shell);
 }
 
 /// Both paths on their own fixture with the tour seeded, on a line of the

@@ -1712,7 +1712,6 @@ pub fn managed_config_path() -> std::path::PathBuf {
 /// The typed config ignores unknown keys, so the file itself is the only
 /// place the key can still be seen. A file that cannot be read or parsed is
 /// not reported here; the load path already says so.
-#[cfg(feature = "ui")]
 pub(crate) fn retired_summary_command_set(path: &std::path::Path) -> bool {
     let Ok(text) = std::fs::read_to_string(path) else {
         return false;
@@ -4677,7 +4676,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "ui")]
     fn the_retired_summary_key_is_seen_in_the_raw_file() {
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path().join("config.toml");

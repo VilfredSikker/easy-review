@@ -55,6 +55,8 @@ mod context_tests;
 #[cfg(test)]
 mod copy_tests;
 #[cfg(test)]
+mod duties_tests;
+#[cfg(test)]
 mod filter_tests;
 #[cfg(test)]
 mod findings_tests;

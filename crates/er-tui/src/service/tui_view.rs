@@ -46,6 +46,8 @@ pub struct TuiView {
     pub input_mode: Mode,
     pub overlay: Option<Overlay>,
     pub notification: Option<String>,
+    /// A newer release, once the start's update check finds one.
+    pub available_update: Option<String>,
     /// The settings the rule tables come from; a new tab reads them before
     /// its session restores a filter.
     pub settings: Option<Arc<SettingsView>>,
@@ -817,7 +819,7 @@ pub fn screen<'a>(view: &'a TuiView, state: &'a TabViewState, frame: Frame<'a>) 
             active_tab: frame.active_tab,
             theme: &frame.config.display.theme,
             config: frame.config,
-            available_update: None,
+            available_update: view.available_update.as_deref(),
             notification: view.notification.as_deref(),
             config_load_error: frame.config_load_error,
             watching: frame.watching,

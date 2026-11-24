@@ -212,6 +212,7 @@ pub(super) fn pr_tab(
     let raw = "diff --git a/src/f000.rs b/src/f000.rs\n--- a/src/f000.rs\n+++ b/src/f000.rs\n@@ -1 +1 @@\n-a\n+b\n";
     let github = Arc::new(
         script
+            .with_ensure_installed(Ok(()))
             .with_pr_diff(Ok(raw.into()))
             .with_pr_base_branch_and_commits(Ok(("main".into(), Vec::new())))
             .with_fetch_pr_base_ref(Ok("origin/main".into()))
@@ -501,6 +502,7 @@ fn seed_posted(shell: &mut Shell, author: &str) -> String {
         std::thread::sleep(Duration::from_millis(10));
     }
     assert!(moved(shell), "the posted comment never loaded");
+    super::tests::let_the_reload_notice_go(shell);
     shell.handle_key(key(KeyCode::Char('J')));
     assert_eq!(state(shell).focused_comment_id.as_deref(), Some("gh-11"));
     dir

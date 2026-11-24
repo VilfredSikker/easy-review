@@ -249,7 +249,7 @@ fn main() -> Result<()> {
             remote: cli.remote,
             target: cli.target,
         };
-        return service::run(&args);
+        return service::run(&args, update::spawn_background_check());
     }
 
     let ports = er_engine::ports::Ports::cli();
@@ -436,6 +436,13 @@ fn main() -> Result<()> {
 
 /// Print a dim `er <args>` hint so the user can quickly reopen the same session.
 fn print_resume_hint(app: &App) {
+    if let Some(hint) = resume_hint(app) {
+        eprintln!("\x1b[2m{hint}\x1b[0m");
+    }
+}
+
+/// The `er <args>` line that reopens the App's tabs, if it has one to give.
+fn resume_hint(app: &App) -> Option<String> {
     let has_remote = app.tabs.iter().any(|t| t.remote_repo.is_some());
     if app.tabs.len() > 1 || has_remote {
         let has_local = app.tabs.iter().any(|t| t.remote_repo.is_none());
@@ -456,7 +463,9 @@ fn print_resume_hint(app: &App) {
         } else {
             "er"
         };
-        eprintln!("\x1b[2m{} {}\x1b[0m", prefix, args.join(" "));
+        Some(format!("{} {}", prefix, args.join(" ")))
+    } else {
+        None
     }
 }
 
