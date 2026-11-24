@@ -258,10 +258,16 @@ fn resume_plan(er_dir: &str, flow: &ReviewFlow) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// The completion error the driver keeps a cancelled row on.
+const CANCELLED_BEFORE_LAUNCH: &str = "cancelled before launch";
+
 /// A stage task the host launched and has not handed back.
 struct StageTask {
     kind: String,
     target: BackgroundTaskTarget,
+    run: Arc<er_agent::agent_run::AgentRunHandle>,
+    /// Stopped while it still waited for its agent slot.
+    cancelled: bool,
 }
 
 /// The flag path's [`ReviewFlowHost`]. It holds the settings and the view the
@@ -504,10 +510,11 @@ impl ReviewFlowHost for ServiceFlowHost {
             error: None,
         };
         let task_id = id.clone();
+        let run = er_agent::agent_run::AgentRunHandle::new();
+        let handle = Arc::clone(&run);
         // Unnamed on purpose, like every effect thread.
         thread::Builder::new()
             .spawn(move || {
-                let handle = er_agent::agent_run::AgentRunHandle::new();
                 let result = job.run(&*sink, limits, handle, None);
                 let completion = StageCompletion {
                     done: result.is_ok(),
@@ -521,7 +528,15 @@ impl ReviewFlowHost for ServiceFlowHost {
                 let _ = tx.send(ActorMsg::FlowTick);
             })
             .context("start the stage worker")?;
-        self.tasks.insert(id.clone(), StageTask { kind, target });
+        self.tasks.insert(
+            id.clone(),
+            StageTask {
+                kind,
+                target,
+                run,
+                cancelled: false,
+            },
+        );
         Ok(id)
     }
 
@@ -529,8 +544,11 @@ impl ReviewFlowHost for ServiceFlowHost {
     fn register_review_flow_task(&mut self, _id: String) {}
 
     fn take_review_flow_task_completion(&mut self, id: &str) -> Option<StageCompletion> {
-        let completion = self.finished().remove(id)?;
-        self.tasks.remove(id);
+        let mut completion = self.finished().remove(id)?;
+        if self.tasks.remove(id).is_some_and(|task| task.cancelled) {
+            completion.done = false;
+            completion.error = Some(CANCELLED_BEFORE_LAUNCH.into());
+        }
         Some(completion)
     }
 
@@ -540,10 +558,20 @@ impl ReviewFlowHost for ServiceFlowHost {
         self.is_running(id).then_some(FlowTaskStatus::Running)
     }
 
-    /// Nothing waits in a host queue, so there is never a queued task to
-    /// retire; running stages drain on their own.
-    fn cancel_queued_background_task(&mut self, _id: &str) -> bool {
-        false
+    /// A stage still waiting for its agent slot is stopped there and never
+    /// launches. A launched stage is left to drain on its own.
+    fn cancel_queued_background_task(&mut self, id: &str) -> bool {
+        if !self.is_running(id) {
+            return false;
+        }
+        let Some(task) = self.tasks.get_mut(id) else {
+            return false;
+        };
+        if !task.run.cancel_before_launch() {
+            return false;
+        }
+        task.cancelled = true;
+        true
     }
 
     fn arena_start_seeded_for(
