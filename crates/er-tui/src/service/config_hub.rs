@@ -29,6 +29,8 @@ pub enum Step {
     Unported,
     /// Closes the overlay and runs an AI hub layer row on the tab's view.
     Layer(super::layers::HubRow),
+    /// Closes the overlay and asks before a Cleanup row's clear.
+    Clear(super::clears::Clear),
 }
 
 pub struct ConfigHub {

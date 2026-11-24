@@ -179,6 +179,8 @@ pub enum After {
     CommitSelected,
     /// History's next page: once it lands, the waiting `k` moves into it.
     MoreHistory,
+    /// A clear: once it lands, the status line says so; a refusal says why.
+    Cleared(super::clears::Clear),
 }
 
 impl After {

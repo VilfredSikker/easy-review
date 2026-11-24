@@ -3,13 +3,16 @@
 //! default selection through the settings actor (decision 11), and a model
 //! refresh is the actor's `RefreshAiModels`.
 //!
-//! Until P74 ports the AI hub, its live rows are "Change agent/model" and
-//! the layer rows, which act on the tab's view alone; no other row has a
-//! service route on this path yet.
+//! Until P74 ports the AI hub, its live rows are "Change agent/model", the
+//! layer rows, which act on the tab's view alone, and the two Cleanup rows,
+//! which ask before their clear; no other row has a service route on this
+//! path yet.
 
+use er_engine::ai::AiState;
 use er_engine::config::{effort_display_label, AiHubConfig, ErConfig};
 use er_service::{SettingsCommand, SettingsView};
 
+use super::clears::Clear;
 use super::config_hub::Step;
 use super::layers::{HubRow, Layer};
 use super::tui_view::Overlay;
@@ -40,11 +43,35 @@ const AI_HUB_ROWS: [Option<(&str, &str)>; 22] = [
     Some(("Confidence gate", "T")),
     Some(("Show arbiter's drops", "")),
     Some(("Propose risk rules", "")),
-    Some(("Cleanup questions & notes", "z")),
-    Some(("Cleanup reviews", "Z")),
+    Some((CLEANUP_DRAFTS, "z")),
+    Some((CLEANUP_REVIEWS, "Z")),
 ];
 
 const CHANGE_SELECTION: &str = "Change agent/model";
+const CLEANUP_DRAFTS: &str = "Cleanup questions & notes";
+const CLEANUP_REVIEWS: &str = "Cleanup reviews";
+
+/// What the AI hub's rows read from the tab, as the App's hub reads it.
+#[derive(Clone, Copy)]
+pub struct HubFacts {
+    has_ai: bool,
+    has_review: bool,
+    has_drafts: bool,
+}
+
+impl HubFacts {
+    pub fn of(ai: &AiState) -> Self {
+        let has_questions = ai
+            .questions
+            .as_ref()
+            .is_some_and(|q| !q.questions.is_empty());
+        Self {
+            has_ai: ai.has_data(),
+            has_review: ai.review.is_some(),
+            has_drafts: has_questions || ai.has_notes(),
+        }
+    }
+}
 
 /// The layer rows the App's hub lists: label, description and row. Toggle
 /// AI findings is live only with AI data, as on the App.
@@ -79,8 +106,8 @@ const LAYER_ROWS: [(&str, &str, HubRow); 5] = [
 /// Which list a picker shows, so it can be built again from a newer view.
 #[derive(Clone)]
 enum Of {
-    /// The hub, and whether the tab has AI data.
-    AiHub(bool),
+    /// The hub, and what its rows read from the tab.
+    AiHub(HubFacts),
     Provider,
     Model(String),
     Effort(String, String),
@@ -96,6 +123,7 @@ enum Pick {
     Model(String, String),
     Effort(String, String, String),
     Refresh(String),
+    Clear(Clear),
 }
 
 pub struct Picker {
@@ -160,7 +188,7 @@ fn build(of: Of, view: &SettingsView, ai_label: &str) -> Option<Picker> {
     let mut selected = 0;
     let mut title = None;
     let (rows, picks): (Vec<HubItem>, Vec<Pick>) = match &of {
-        Of::AiHub(has_ai) => {
+        Of::AiHub(facts) => {
             let unported = format!("That action is {UNPORTED}");
             AI_HUB_ROWS
                 .iter()
@@ -181,10 +209,38 @@ fn build(of: Of, view: &SettingsView, ai_label: &str) -> Option<Picker> {
                         ),
                         Pick::ChangeSelection,
                     ),
+                    Some((CLEANUP_DRAFTS, hint)) => (
+                        row(
+                            CLEANUP_DRAFTS.into(),
+                            hint,
+                            if facts.has_drafts {
+                                "Delete the question and note files"
+                            } else {
+                                "no questions or notes to clean up"
+                            }
+                            .into(),
+                            facts.has_drafts,
+                        ),
+                        Pick::Clear(Clear::QuestionsAndNotes),
+                    ),
+                    Some((CLEANUP_REVIEWS, hint)) => (
+                        row(
+                            CLEANUP_REVIEWS.into(),
+                            hint,
+                            if facts.has_review {
+                                "Delete review sidecars (review.json, …)"
+                            } else {
+                                "no review data to clean up"
+                            }
+                            .into(),
+                            facts.has_review,
+                        ),
+                        Pick::Clear(Clear::Reviews),
+                    ),
                     Some((label, hint)) => match LAYER_ROWS.iter().find(|row| row.0 == *label) {
                         Some(&(_, description, layer)) => {
                             let enabled =
-                                *has_ai || !matches!(layer, HubRow::Layer(Layer::AiFindings));
+                                facts.has_ai || !matches!(layer, HubRow::Layer(Layer::AiFindings));
                             (
                                 row((*label).into(), hint, description.into(), enabled),
                                 Pick::Layer(layer),
@@ -309,10 +365,10 @@ fn opened(of: Of, view: &SettingsView, ai_label: &str, also: Option<SettingsComm
     }
 }
 
-/// The flag-on AI hub, the way to the pickers and the layer rows before
-/// P74. `has_ai` is whether the tab has AI data.
-pub fn open_ai_hub(view: &SettingsView, ai_label: &str, has_ai: bool) -> Step {
-    opened(Of::AiHub(has_ai), view, ai_label, None)
+/// The flag-on AI hub, the way to the pickers, the layer rows and the
+/// Cleanup rows before P74.
+pub fn open_ai_hub(view: &SettingsView, ai_label: &str, facts: HubFacts) -> Step {
+    opened(Of::AiHub(facts), view, ai_label, None)
 }
 
 fn open_providers(view: &SettingsView, ai_label: &str) -> Step {
@@ -398,6 +454,7 @@ fn select(picker: &Picker, view: &SettingsView, label: &str) -> Step {
         Pick::Unported => Step::Unported,
         _ if !row.enabled => Step::Notify(row.description.clone()),
         Pick::Layer(layer) => Step::Layer(*layer),
+        Pick::Clear(clear) => Step::Clear(*clear),
         Pick::ChangeSelection => open_providers(view, label),
         Pick::Provider(provider_id) => {
             let Some(provider) = view.config.ai_hub.providers.get(provider_id) else {
