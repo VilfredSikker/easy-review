@@ -46,6 +46,9 @@ pub struct ServiceHost {
     events: Option<Sender<Event>>,
     tasks: OnceLock<TaskHost>,
     worker: OnceLock<Worker>,
+    /// The sender the task host's events go to, read at each send, so a host
+    /// whose tasks started before `with_events` still sends them.
+    task_events: Arc<Mutex<Option<Sender<Event>>>>,
 }
 
 impl ServiceHost {
@@ -69,6 +72,7 @@ impl ServiceHost {
             events: None,
             tasks: OnceLock::new(),
             worker: OnceLock::new(),
+            task_events: Arc::default(),
         }
     }
 
@@ -77,6 +81,7 @@ impl ServiceHost {
     #[must_use]
     pub fn with_events(mut self, events: Sender<Event>) -> Self {
         forward(self.registry.subscribe(), events.clone());
+        *lock(&self.task_events) = Some(events.clone());
         self.events = Some(events);
         self
     }
@@ -149,12 +154,8 @@ impl ServiceHost {
     /// The app's one task host. Each row change sends `TasksChanged`.
     pub fn tasks(&self) -> &TaskHost {
         self.tasks.get_or_init(|| {
-            let events = self.events.clone();
-            TaskHost::new(move |revision| {
-                if let Some(events) = &events {
-                    let _ = events.send(Event::TasksChanged { revision });
-                }
-            })
+            let events = Arc::clone(&self.task_events);
+            TaskHost::new(move |revision| send(&events, Event::TasksChanged { revision }))
         })
     }
 
@@ -162,14 +163,12 @@ impl ServiceHost {
     /// and `TaskNotice` events for its messages.
     pub fn task_hooks(&self) -> TaskHooks {
         let settings = self.settings();
-        let events = self.events.clone();
+        let events = Arc::clone(&self.task_events);
         TaskHooks {
             ports: self.deps.ports().clone(),
             config: Arc::new(move || Arc::clone(&settings.view().config)),
             notify: Arc::new(move |message, long| {
-                if let Some(events) = &events {
-                    let _ = events.send(Event::TaskNotice { message, long });
-                }
+                send(&events, Event::TaskNotice { message, long });
             }),
             finished: Arc::new(|_| {}),
         }
@@ -233,6 +232,12 @@ fn failed_now(message: &str) -> ReplyReceiver {
     let (tx, rx) = std::sync::mpsc::channel();
     let _ = tx.send(Err(WorkspaceError::Failed(message.to_string())));
     rx
+}
+
+fn send(events: &Mutex<Option<Sender<Event>>>, event: Event) {
+    if let Some(events) = lock(events).as_ref() {
+        let _ = events.send(event);
+    }
 }
 
 /// One thread per subscription, alive until the subscription ends or nothing
