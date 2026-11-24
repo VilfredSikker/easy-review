@@ -192,7 +192,7 @@ fn a_mark_under_unreviewed_only_advances_like_the_app() {
 /// A fixture whose diff holds a lock file the default patterns compact.
 fn with_lock() -> tempfile::TempDir {
     let repo = fixture(1);
-    let lock: String = (0..30).map(|line| format!("dep-{line} = 1\n")).collect();
+    let lock = "dep = 1\n".repeat(30);
     std::fs::write(repo.path().join("Cargo.lock"), lock).unwrap_or_else(|e| panic!("{e}"));
     git(repo.path(), &["add", "."]);
     git(repo.path(), &["commit", "-q", "-m", "lock"]);
