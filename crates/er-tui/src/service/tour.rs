@@ -18,7 +18,8 @@ use crate::screen::{view, TourView};
 pub struct TourPos {
     /// The builder's version and the diff's revision the rows were built at.
     built: Option<(u64, u64)>,
-    /// The mode load the position belongs to; a new entry starts it again.
+    /// The load the position belongs to (each load stamps `mode_revision`);
+    /// an entry or a refresh starts it again.
     entered: Option<u64>,
     pillars: Vec<view::TourPillar>,
     /// Each row's file, by its index in the tab's diff.
@@ -36,9 +37,10 @@ pub struct TourPos {
 }
 
 /// Builds the rows again when the tour, the marks, the mode or the diff
-/// moved. A new entry into the tour, a new diff, or rows that changed put
-/// the position on the selected pillar's first file, as the App's rebuild
-/// does; a reviewed write moves none of these, and keeps the place.
+/// moved. A load (an entry or a refresh), a diff that moved without one, or
+/// rows that changed put the position on the selected pillar's first file,
+/// as the App's rebuild does; a reviewed write or an AI reload moves none
+/// of these, and keeps the place.
 pub fn follow(pos: &mut TourPos, content: &TabContent) {
     if content.tab.mode != DiffMode::Tour {
         return;

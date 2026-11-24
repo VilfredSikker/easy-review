@@ -201,7 +201,8 @@ fn flag_on_modules_build_no_tour_of_their_own() {
 }
 
 /// A refresh whose diff moves the files under the tour puts the place on the
-/// pillar's first file, as the App's rebuild does: with `P1` naming `f000`
+/// pillar's first file, as the App's rebuild does. The load, the diff
+/// revision and the ranges each start it again. With `P1` naming `f000`
 /// and `f001`, and `P2` naming `f002` and `f003`, the diff going from
 /// `[f000, f002, f003]` to `[f000, f001, f003]` keeps the row count and the
 /// pillars, and the selected row would name a file of the other pillar.
