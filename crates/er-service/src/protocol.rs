@@ -372,6 +372,11 @@ pub enum Command {
     /// Read a loaded tab's `gh stack` again into its PR section. The lookup
     /// runs off the actor; a tab with nowhere to read a stack is refused.
     RefreshStack { key: TabKey },
+    /// Fill a working tab's PR section with the PR its branch has, which the
+    /// front end's probe found, and leave the tab's `pr_number` unset, so it
+    /// keeps its working-tree modes. The read runs off the actor; a PR tab is
+    /// refused.
+    LoadBranchPr { key: TabKey, number: u64 },
 
     // ── Working-tree commands (P69) ──
     /// Stage one path of a loaded tab's checkout, then reload the tab. In
@@ -828,6 +833,10 @@ pub enum Reply {
     },
     /// A stack lookup landed in the tab's PR section.
     StackRead {
+        key: TabKey,
+    },
+    /// A working tab's branch PR was read into its PR section.
+    BranchPrLoaded {
         key: TabKey,
     },
     /// History listed `added` more commits; none means the list is whole.

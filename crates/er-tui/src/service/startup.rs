@@ -51,14 +51,7 @@ pub fn plan(args: &Args, git: &dyn er_git::Git) -> anyhow::Result<Start> {
         {
             let pr = github::parse_github_pr_url(url)
                 .ok_or_else(|| anyhow::anyhow!("Invalid GitHub PR URL: {url}"))?;
-            let mut tab = descriptor(TabKind::RemotePr, String::new());
-            tab.pr_owner = Some(pr.owner);
-            tab.pr_repo = Some(pr.repo);
-            tab.pr_number = Some(pr.number);
-            start.tabs.push(StartTab {
-                tab,
-                fetch_pr_refs: false,
-            });
+            start.tabs.push(remote_pr(pr));
         }
         return Ok(start);
     }
@@ -109,6 +102,18 @@ fn descriptor(kind: TabKind, repo_root: String) -> TabDescriptor {
 fn working(repo_root: String) -> StartTab {
     StartTab {
         tab: descriptor(TabKind::Working, repo_root),
+        fetch_pr_refs: false,
+    }
+}
+
+/// A remote PR tab, with no clone, as `--remote` and the Open hub open one.
+pub fn remote_pr(pr: github::PrRef) -> StartTab {
+    let mut tab = descriptor(TabKind::RemotePr, String::new());
+    tab.pr_owner = Some(pr.owner);
+    tab.pr_repo = Some(pr.repo);
+    tab.pr_number = Some(pr.number);
+    StartTab {
+        tab,
         fetch_pr_refs: false,
     }
 }
@@ -179,6 +184,14 @@ pub enum After {
     CommitSelected,
     /// History's next page: once it lands, the waiting `k` moves into it.
     MoreHistory,
+    /// A stack lookup the Open hub asked for: once it lands, its rows follow.
+    StackRead,
+    /// The PR section's forced refresh after a pull: once it lands, the
+    /// pull's notice says the PR status was refreshed, as the App's does.
+    PrRefreshed {
+        github_count: usize,
+        local_count: usize,
+    },
 }
 
 impl After {

@@ -33,6 +33,7 @@ use super::history;
 use super::layers::{self, Layer};
 use super::modes::{self, BaseStep, Follow};
 use super::open_hub::{OpenHub, OpenStep};
+use super::open_pr::{self, Opened};
 use super::pr_probe::Probe;
 use super::review_hub::{self, ReviewHub};
 use super::reviewed::ReviewedCache;
@@ -138,6 +139,10 @@ pub struct Shell {
     /// answer, until the tab it probed has content.
     probe: Option<Probe>,
     probed: Option<(TabKey, BranchPrProbe)>,
+    /// The PR the probe found for a working tab's branch, and that branch.
+    branch_prs: HashMap<TabKey, (u64, String)>,
+    /// The tabs with a stack lookup on the way.
+    stacks_reading: HashSet<TabKey>,
     pub should_quit: bool,
     /// The refusal every reload gets in a test, and the reloads it refused.
     #[cfg(test)]
@@ -193,6 +198,8 @@ impl Shell {
             watch: Watch::default(),
             probe,
             probed: None,
+            branch_prs: HashMap::new(),
+            stacks_reading: HashSet::new(),
             should_quit: false,
             #[cfg(test)]
             refuse_reloads: None,
@@ -497,6 +504,7 @@ impl Shell {
                                 | After::ReviewEdit
                                 | After::ReviewSubmit
                                 | After::Checklist { .. }
+                                | After::StackRead
                         ) =>
                 {
                     let lost = er_service::WorkspaceError::Failed(
@@ -525,6 +533,22 @@ impl Shell {
                     }
                     if let (Err(error), After::Context { auto: false }) = (reply, after) {
                         self.failure(Side::Reply, error.to_string());
+                    }
+                }
+                reply if after == After::StackRead => {
+                    self.stacks_reading.remove(&key);
+                    if let Err(error) = reply {
+                        self.failure(Side::Reply, error.to_string());
+                    }
+                }
+                reply if matches!(after, After::PrRefreshed { .. }) => {
+                    if let After::PrRefreshed {
+                        github_count,
+                        local_count,
+                    } = after
+                    {
+                        let refreshed = reply.is_ok();
+                        self.notify(github::synced(github_count, local_count, refreshed));
                     }
                 }
                 _ if matches!(after, After::CommitSelected | After::MoreHistory) => {
@@ -605,7 +629,7 @@ impl Shell {
                     local_count,
                 }) if after == After::Synced => {
                     self.view.learn_pr(key, PrKnown::Present);
-                    self.notify(github::synced(github_count, local_count));
+                    self.refresh_pr(key, &workspace, github_count, local_count);
                 }
                 Err(error) if after == After::Synced => {
                     let message = error.to_string();
@@ -729,6 +753,10 @@ impl Shell {
         threads::scroll_if_parsed(state, content);
         findings::follow(state, content);
         findings::place_if_parsed(state, content);
+        let reading = self.stacks_reading.contains(&key);
+        if let Some(Overlay::Open(hub)) = self.view.overlay.as_mut() {
+            hub.follow(content, reading);
+        }
         let state = self.view.tab(key)?;
         let frame = tui_view::Frame {
             tab_names,
@@ -789,10 +817,11 @@ impl Shell {
                 return self.filtered(key, workspace, content, done);
             }
             TuiAction::Overlay(action) if matches!(self.view.overlay, Some(Overlay::Open(_))) => {
-                return self.open_hub_key(action)
+                return self.open_hub_key(action, key, workspace, content)
             }
             TuiAction::Overlay(action) => return self.overlay_key(action, key, content),
             TuiAction::BaseBranch(edit) => return self.base_key(edit, key, workspace, content),
+            TuiAction::RemoteUrl(edit) => return self.remote_url_key(edit),
             TuiAction::Search(edit) => {
                 let shown = self.watched_shown(key, content);
                 let done = filter::search(&mut self.view, key, content, shown, edit);
@@ -1082,7 +1111,8 @@ impl Shell {
                 return self.notify(message);
             }
             A::OpenOpenHub => {
-                self.view.overlay = Some(Overlay::Open(OpenHub::open(content)));
+                let reading = self.read_stack(key, workspace, content, false);
+                self.view.overlay = Some(Overlay::Open(OpenHub::open(content, reading)));
                 return;
             }
             A::TogglePanel | A::TogglePanelReverse => {
@@ -1307,9 +1337,10 @@ impl Shell {
         let Some(key) = self.probed.as_ref().map(|(key, _)| *key) else {
             return;
         };
-        let workspace = self.workspace_of(key);
-        let Some(content) = workspace.and_then(|workspace| self.host.content(&workspace, key))
-        else {
+        let Some(workspace) = self.workspace_of(key) else {
+            return;
+        };
+        let Some(content) = self.host.content(&workspace, key) else {
             return;
         };
         let Some((_, probe)) = self.probed.take() else {
@@ -1318,6 +1349,14 @@ impl Shell {
         match probe {
             BranchPrProbe::Present { number, base } => {
                 self.view.learn_pr(key, PrKnown::Present);
+                // The PR panel reads the PR section, which the branch's PR
+                // fills without making the tab a PR tab.
+                if content.tab.pr_number.is_none() {
+                    let branch = content.tab.current_branch.clone();
+                    self.branch_prs.insert(key, (number, branch));
+                    let command = Command::LoadBranchPr { key, number };
+                    self.post(key, &workspace, command, After::Nothing);
+                }
                 if base != content.tab.base_branch {
                     self.notify(format!(
                         "PR #{number} targets {base} — run: er --pr {number}"
@@ -1663,7 +1702,13 @@ impl Shell {
         );
     }
 
-    fn open_hub_key(&mut self, action: OverlayAction) {
+    fn open_hub_key(
+        &mut self,
+        action: OverlayAction,
+        key: TabKey,
+        workspace: &str,
+        content: &TabContent,
+    ) {
         let Some(Overlay::Open(hub)) = self.view.overlay.as_mut() else {
             return;
         };
@@ -1679,7 +1724,111 @@ impl Shell {
                 self.view.base_input.clear();
                 self.view.input_mode = Mode::BaseBranch;
             }
+            OpenStep::RemoteUrl => {
+                self.view.base_input.clear();
+                self.view.input_mode = Mode::RemoteUrl;
+            }
+            OpenStep::OpenPr(pr) => {
+                let failed = format!("Failed to open {} (#{})", pr.branch, pr.number);
+                self.open_pr(&pr.url, &failed);
+            }
+            // As the App's, the hub opens again on its loading row.
+            OpenStep::RefreshStack => {
+                let reading = self.read_stack(key, workspace, content, true);
+                self.view.overlay = Some(Overlay::Open(OpenHub::open(content, reading)));
+            }
         }
+    }
+
+    /// Posts `key`'s stack lookup unless one is on the way: on the Open hub's
+    /// first open while the PR section holds no stack, and on "Refresh
+    /// stack" (`again`). Answers whether a lookup is on the way.
+    fn read_stack(
+        &mut self,
+        key: TabKey,
+        workspace: &str,
+        content: &TabContent,
+        again: bool,
+    ) -> bool {
+        if self.stacks_reading.contains(&key) {
+            return true;
+        }
+        let wanted =
+            er_service::stack_source_of(content).is_some() && (again || content.pr.stack.is_none());
+        if wanted {
+            self.stacks_reading.insert(key);
+            self.post(
+                key,
+                workspace,
+                Command::RefreshStack { key },
+                After::StackRead,
+            );
+        }
+        wanted
+    }
+
+    fn remote_url_key(&mut self, edit: Edit) {
+        match modes::base_key(&mut self.view.base_input, edit) {
+            BaseStep::Stay => {}
+            BaseStep::Close => self.view.input_mode = Mode::Normal,
+            BaseStep::Send(url) => {
+                self.view.input_mode = Mode::Normal;
+                self.open_pr(&url, "Failed");
+            }
+        }
+    }
+
+    /// Opens `url`'s PR as a tab, or selects the tab that holds it, with the
+    /// App's notices; a failure says `failed` and why.
+    fn open_pr(&mut self, url: &str, failed: &str) {
+        match open_pr::open(&self.host, url) {
+            Ok(Opened::Selected(key)) => {
+                self.load_if_new(key);
+                let name = self.label_of(key);
+                self.notify(format!("Switched to tab: {name}"));
+            }
+            Ok(Opened::Listed(key, start)) => {
+                self.pending.push(startup::load(&self.host, key, &start));
+                self.starts.insert(key, start);
+                let name = self.label_of(key);
+                self.notify(format!("Opened remote: {name}"));
+            }
+            Err(error) => self.notify(format!("{failed}: {error}")),
+        }
+    }
+
+    /// A pull landed: the PR section is read again, as the App's pull reads
+    /// the overview, and the notice waits for that read. A working tab whose
+    /// branch PR the probe did not number says only what the pull did.
+    fn refresh_pr(
+        &mut self,
+        key: TabKey,
+        workspace: &str,
+        github_count: usize,
+        local_count: usize,
+    ) {
+        let content = self.host.content(workspace, key);
+        let command = match content {
+            Some(content) if content.tab.pr_number.is_some() => Some(Command::RefreshDiff {
+                key,
+                force: true,
+                adopt_head_oid: None,
+            }),
+            Some(content) => self
+                .branch_prs
+                .get(&key)
+                .filter(|(_, branch)| *branch == content.tab.current_branch)
+                .map(|&(number, _)| Command::LoadBranchPr { key, number }),
+            None => None,
+        };
+        let Some(command) = command else {
+            return self.notify(github::synced(github_count, local_count, false));
+        };
+        let after = After::PrRefreshed {
+            github_count,
+            local_count,
+        };
+        self.post(key, workspace, command, after);
     }
 
     /// The watcher follows the active tab and refreshes settled changes.
@@ -2006,16 +2155,28 @@ impl Shell {
         {
             return self.notify(error.to_string());
         }
-        let loaded = self
-            .host
-            .content(&entry.descriptor.workspace_key(), key)
-            .is_some();
+        self.load_if_new(key);
+    }
+
+    /// Loads `key`'s tab the first time it is shown.
+    fn load_if_new(&mut self, key: TabKey) {
+        let Some(workspace) = self.workspace_of(key) else {
+            return;
+        };
+        let loaded = self.host.content(&workspace, key).is_some();
         let loading = self.pending.iter().any(|pending| pending.key == key);
         if let (false, false, Some(start_tab)) = (loaded, loading, self.starts.get(&key)) {
             self.load_errors.remove(&key);
             let pending = startup::load(&self.host, key, start_tab);
             self.pending.push(pending);
         }
+    }
+
+    /// `key`'s name in the tab strip.
+    fn label_of(&self, key: TabKey) -> String {
+        let (names, _, keys) = self.tab_names();
+        let at = keys.iter().position(|listed| *listed == key);
+        at.and_then(|at| names.get(at).cloned()).unwrap_or_default()
     }
 
     /// The tab strip's names, the active tab's place in it, and the keys.
