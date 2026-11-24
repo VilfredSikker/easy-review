@@ -290,7 +290,7 @@ fn the_ai_hub_draws_like_the_app_in_each_flow_state() {
             _ => panic!("the App's results are not open"),
         };
         if let Some(Overlay::FlowResults(results)) = shell.view_mut().overlay.as_mut() {
-            results.results.run_id = app_run;
+            results.found.run_id = app_run;
         }
         assert_parity(&app, &shell_frame(&mut shell, &mut hl), &mut hl, "results");
     });

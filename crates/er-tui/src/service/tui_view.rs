@@ -155,7 +155,7 @@ impl Overlay {
                 detail_scroll: progress.detail_scroll,
             },
             Self::FlowResults(ref results) => OverlayData::ReviewFlowResults {
-                results: &results.results,
+                results: &results.found,
                 selected: results.selected,
                 selected_ids: &results.selected_ids,
                 detail_scroll: results.detail_scroll,

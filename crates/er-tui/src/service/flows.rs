@@ -42,7 +42,7 @@ impl Act {
 pub struct FlowFacts {
     er_dir: String,
     scope: String,
-    live: Option<LiveReviewFlow>,
+    live: Option<Box<LiveReviewFlow>>,
     has_diff: bool,
 }
 
@@ -51,7 +51,7 @@ impl FlowFacts {
         Self {
             er_dir: content.context.er_dir.clone(),
             scope: content.tab.mode.fetch_scope().to_string(),
-            live: live.cloned(),
+            live: live.cloned().map(Box::new),
             has_diff: !content.diff.files.is_empty(),
         }
     }
@@ -72,7 +72,7 @@ pub fn rows(facts: &FlowFacts) -> Vec<Row> {
         };
         ("Review", about, facts.has_diff, act)
     };
-    let live = facts.live.as_ref();
+    let live = facts.live.as_deref();
     let draining = live.is_some_and(|live| live.draining);
     let flow = live.map(|live| &live.flow);
     let running = flow.is_some_and(|flow| {
@@ -242,7 +242,7 @@ impl Progress {
 
 /// The results overlay: the run's surviving findings and the picked ones.
 pub struct Results {
-    pub results: ReviewFlowResults,
+    pub found: ReviewFlowResults,
     pub selected: usize,
     pub selected_ids: HashSet<String>,
     pub detail_scroll: usize,
@@ -251,7 +251,7 @@ pub struct Results {
 impl Results {
     pub fn new(results: ReviewFlowResults) -> Self {
         Self {
-            results,
+            found: results,
             selected: 0,
             selected_ids: HashSet::new(),
             detail_scroll: 0,
@@ -318,7 +318,7 @@ pub fn progress_key(progress: &mut Progress, action: OverlayAction) -> Then {
 
 pub fn results_key(results: &mut Results, action: OverlayAction) -> Then {
     match action {
-        OverlayAction::ToggleFlowFinding => match results.results.findings.get(results.selected) {
+        OverlayAction::ToggleFlowFinding => match results.found.findings.get(results.selected) {
             Some(finding) if finding.selectable => {
                 if !results.selected_ids.remove(&finding.id) {
                     results.selected_ids.insert(finding.id.clone());
@@ -334,7 +334,7 @@ pub fn results_key(results: &mut Results, action: OverlayAction) -> Then {
         OverlayAction::AcceptFlowFindings => {
             let mut finding_ids: Vec<String> = results.selected_ids.iter().cloned().collect();
             finding_ids.sort();
-            let (er_dir, run_id) = (&results.results.er_dir, &results.results.run_id);
+            let (er_dir, run_id) = (&results.found.er_dir, &results.found.run_id);
             Then::Send {
                 request: FlowRequest::Accept {
                     er_dir: er_dir.clone(),
@@ -350,7 +350,7 @@ pub fn results_key(results: &mut Results, action: OverlayAction) -> Then {
         }
         OverlayAction::Close => Then::Close,
         action => {
-            let len = results.results.findings.len();
+            let len = results.found.findings.len();
             step(
                 &mut results.selected,
                 &mut results.detail_scroll,
