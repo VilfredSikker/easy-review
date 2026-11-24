@@ -118,6 +118,7 @@ impl SettingsBridge {
     }
 
     #[cfg(not(test))]
+    #[expect(clippy::unused_self, reason = "only a test reads the notices shown")]
     fn record(&mut self, _message: &str) {}
 
     /// How many times `message` was shown.
