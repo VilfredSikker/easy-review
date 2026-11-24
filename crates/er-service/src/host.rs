@@ -21,6 +21,7 @@ use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use er_engine::ports::Ports;
+use er_engine::review_flow_driver::{flow_run_results, ReviewFlowResults};
 use er_engine::TabKey;
 
 use crate::actor::{spawn, WorkspaceDeps};
@@ -267,10 +268,38 @@ impl ServiceHost {
         let FlowRequest::Accept { er_dir, .. } = request else {
             return workspace_key.to_string();
         };
-        lock(&self.handles)
-            .iter()
-            .find(|(_, handle)| handle.view().review_flow(er_dir).is_some())
-            .map_or_else(|| workspace_key.to_string(), |(key, _)| key.clone())
+        self.holder(er_dir)
+            .map_or_else(|| workspace_key.to_string(), |(key, _)| key)
+    }
+
+    /// The actor whose published view holds `er_dir`'s flow, and that view.
+    fn holder(&self, er_dir: &str) -> Option<(String, Arc<WorkspaceView>)> {
+        lock(&self.handles).iter().find_map(|(key, handle)| {
+            let view = handle.view();
+            view.review_flow(er_dir)
+                .is_some()
+                .then(|| (key.clone(), view))
+        })
+    }
+
+    /// A flow run's results, checked against the flow and the target its
+    /// holder published, read on the worker since they are read from disk.
+    pub fn flow_results(
+        &self,
+        er_dir: &str,
+        run_id: &str,
+    ) -> Receiver<Result<ReviewFlowResults, WorkspaceError>> {
+        let view = self.holder(er_dir).map(|(_, view)| view);
+        let (er_dir, run_id) = (er_dir.to_string(), run_id.to_string());
+        run_worker::read(self.worker(), move || {
+            let live = view.as_ref().and_then(|view| view.review_flow(&er_dir));
+            let target = live.and_then(|live| {
+                let run = live.run_targets.iter().find(|(id, _)| *id == run_id);
+                run.map(|(_, target)| target)
+            });
+            flow_run_results(live.map(|live| &live.flow), target, &er_dir, &run_id)
+                .map_err(|error| WorkspaceError::Failed(format!("{error:#}")))
+        })
     }
 
     fn worker(&self) -> &Worker {

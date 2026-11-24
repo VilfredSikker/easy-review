@@ -290,6 +290,19 @@ fn flow_command(inputs: &FlowInputs, request: FlowRequest) -> Result<FlowCommand
     })
 }
 
+/// Runs `read` on the worker and answers its result once.
+pub(crate) fn read<T: Send + 'static>(
+    worker: &Worker,
+    read: impl FnOnce() -> Result<T, WorkspaceError> + Send + 'static,
+) -> Receiver<Result<T, WorkspaceError>> {
+    let (tx, rx) = mpsc::channel();
+    let failed = |message: String| Err(WorkspaceError::Failed(message));
+    submit(worker, tx, failed, move |tx| {
+        let _ = tx.send(read());
+    });
+    rx
+}
+
 pub(crate) fn refused_now(message: &str) -> RunReceiver {
     let (tx, rx) = mpsc::channel();
     let _ = tx.send(Err(refused(message)));
