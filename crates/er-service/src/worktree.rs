@@ -282,3 +282,12 @@ pub(crate) fn spawn_watched(
         Ok(Reply::WorktreeWritten { key, notice })
     });
 }
+
+/// The repo's worktrees, as git lists them; run on an effect thread.
+pub(crate) fn list(
+    deps: &WorkspaceDeps,
+    repo_root: &str,
+) -> Result<Vec<er_git::Worktree>, WorkspaceError> {
+    let listed = deps.ports().git.list_worktrees(repo_root);
+    listed.map_err(|error| WorkspaceError::Failed(error.to_string()))
+}

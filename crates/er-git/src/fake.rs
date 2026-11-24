@@ -43,6 +43,7 @@ struct FakeState {
     commit_shortstats: Option<HashMap<String, (usize, usize, usize)>>,
     unpushed_shas: Option<HashSet<String>>,
     list_worktrees: Option<Result<Vec<Worktree>, GitError>>,
+    list_worktrees_hook: Hook,
     blob_oid: Option<Result<String, GitError>>,
     read_blob: Option<Result<Vec<u8>, GitError>>,
     read_blob_hook: Hook,
@@ -252,6 +253,14 @@ impl FakeGit {
     #[must_use]
     pub fn with_list_worktrees(self, value: Result<Vec<Worktree>, GitError>) -> Self {
         self.lock().list_worktrees = Some(value);
+        self
+    }
+
+    /// Runs `hook` inside each `list_worktrees` call, before it answers, so
+    /// a test can hold the read.
+    #[must_use]
+    pub fn with_list_worktrees_hook(self, hook: impl Fn() + Send + Sync + 'static) -> Self {
+        self.lock().list_worktrees_hook = Hook(Some(Arc::new(hook)));
         self
     }
 
@@ -621,10 +630,17 @@ impl Git for FakeGit {
     }
 
     fn list_worktrees(&self, repo_root: &str) -> Result<Vec<Worktree>, GitError> {
-        self.record(format!("list_worktrees(repo_root={repo_root:?})"))
-            .list_worktrees
-            .clone()
-            .unwrap_or_else(|| Err(unscripted("list_worktrees")))
+        let (answer, hook) = {
+            let state = self.record(format!("list_worktrees(repo_root={repo_root:?})"));
+            (
+                state.list_worktrees.clone(),
+                state.list_worktrees_hook.clone(),
+            )
+        };
+        if let Some(hook) = hook.0 {
+            hook();
+        }
+        answer.unwrap_or_else(|| Err(unscripted("list_worktrees")))
     }
 
     fn blob_oid(&self, root: &str, spec: &str) -> Result<String, GitError> {

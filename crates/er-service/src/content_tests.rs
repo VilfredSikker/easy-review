@@ -29,6 +29,7 @@ mod hunks;
 mod reviewed;
 mod stamps;
 mod worktree;
+mod worktrees;
 
 const RAW: &str = "\
 diff --git a/src/a.rs b/src/a.rs

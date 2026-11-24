@@ -23,6 +23,7 @@ pub mod dev_log;
 pub mod diagram_upload;
 pub mod diff_fetch;
 pub mod diff_load;
+pub mod dir_browse;
 pub mod env_path;
 pub mod shell_command;
 #[cfg(feature = "ui")]

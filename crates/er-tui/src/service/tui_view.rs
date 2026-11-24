@@ -78,6 +78,8 @@ pub enum Overlay {
     /// The review hub, which `TuiView::review` holds.
     Review,
     Open(OpenHub),
+    Worktrees(super::open::Worktrees),
+    Directory(super::open::Directory),
     /// The filter presets, then the tab's recent filters.
     FilterHistory {
         history: Vec<String>,
@@ -104,6 +106,8 @@ impl Overlay {
             | Self::GitHub(_)
             | Self::Review
             | Self::Open(_)
+            | Self::Worktrees(_)
+            | Self::Directory(_)
             | Self::FilterHistory { .. } => {}
         }
     }
@@ -142,6 +146,15 @@ impl Overlay {
                 title: None,
                 items: &hub.rows,
                 selected: hub.selected,
+            },
+            Self::Worktrees(ref picker) => OverlayData::WorktreePicker {
+                worktrees: &picker.worktrees,
+                selected: picker.selected,
+            },
+            Self::Directory(ref browser) => OverlayData::DirectoryBrowser {
+                current_path: &browser.current_path,
+                entries: &browser.entries,
+                selected: browser.selected,
             },
             Self::Copy(ref hub) => OverlayData::ModalHub {
                 kind: HubKind::Copy,
