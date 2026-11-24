@@ -140,14 +140,13 @@ fn each_run_row_runs_its_kind() {
             let found = settle_within(&mut shell, Duration::from_secs(20), listed);
             assert!(found, "{label} listed {:?}, not {kind}", kinds(&shell));
             if kind == "importance" {
-                // The host's refusal reaches the status line as its notice.
-                let told = |shell: &Shell| {
-                    let notice = shell.view().notification.as_deref();
-                    notice.is_some_and(|text| text.contains("custom CLI"))
-                };
-                settle(&mut shell, told);
+                settle(&mut shell, |shell| notice(shell).contains("custom CLI"));
             }
         }
+        choose(&mut shell, 'a', "Generate summary");
+        settle(&mut shell, |shell| {
+            notice(shell).contains("summary already running")
+        });
         choose(&mut shell, 'a', "Specialized review");
         let expert = er_engine::ai::EXPERTS[0];
         choose(&mut shell, ' ', expert.label);
