@@ -375,3 +375,35 @@ fn a_tab_with_no_working_tree_refuses_every_write() -> anyhow::Result<()> {
     );
     Ok(())
 }
+
+/// A watched-file delete stays inside the repo: `..` and a symlinked
+/// directory that points outside are refused and the file stays, while a
+/// file in the repo is deleted.
+#[cfg(unix)]
+#[test]
+fn a_watched_delete_outside_the_root_is_refused() -> anyhow::Result<()> {
+    with_root(|repo| {
+        repo_at(repo);
+        let outside = format!("{repo}-outside");
+        write(&outside, "secret.env", "KEEP=1\n");
+        std::os::unix::fs::symlink(&outside, Path::new(repo).join("linkdir"))?;
+        write(repo, "a.env", "A=1\n");
+        let handle = cli_actor();
+        let key = TabKey::next();
+        load_in(&handle, key, repo, DiffMode::Unstaged);
+        let delete = |path: &str| {
+            let path = path.to_string();
+            handle.send_and_wait_with(Command::DeleteWatchedFile { key, path }, WAIT)
+        };
+
+        for path in ["../repo-outside/secret.env", "linkdir/secret.env"] {
+            let refused = delete(path);
+            assert!(refused.is_err(), "{path}: {refused:?}");
+            let kept = Path::new(&outside).join("secret.env");
+            assert!(kept.exists(), "{path} deleted a file outside the repo");
+        }
+        assert_eq!(delete("a.env")?, written(key, "Deleted: a.env"));
+        assert!(!Path::new(repo).join("a.env").exists(), "a.env stayed");
+        Ok(())
+    })
+}
