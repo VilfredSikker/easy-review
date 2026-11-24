@@ -296,7 +296,7 @@ fn a_whitespace_body_is_refused_and_kept() {
 }
 
 /// Moves the open AI hub to `label` on both paths, which must agree on it.
-fn hub_to(app: &mut er_engine::app::App, shell: &mut Shell, label: &str) {
+pub(super) fn hub_to(app: &mut er_engine::app::App, shell: &mut Shell, label: &str) {
     let selected = |shell: &Shell| match &shell.view().overlay {
         Some(Overlay::Picker(picker)) => picker.rows[picker.selected].label.clone(),
         _ => panic!("the AI hub is not open"),
