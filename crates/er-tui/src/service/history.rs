@@ -34,12 +34,6 @@ pub struct HistoryPos {
     pub left: Option<Follow>,
 }
 
-/// What a History key asks of the service.
-pub enum Ask {
-    Stay,
-    Send(Command),
-}
-
 impl HistoryPos {
     /// A load showed another commit, or History listed from another source:
     /// the position goes back to the top.
@@ -69,15 +63,19 @@ impl HistoryPos {
     }
 }
 
-/// Runs a History key, as the App's `execute_history`.
-pub fn key(pos: &mut HistoryPos, key: TabKey, content: &TabContent, action: HistoryAction) -> Ask {
+/// Runs a History key, as the App's `execute_history`; answers the command
+/// a commit move sends.
+pub fn key(
+    pos: &mut HistoryPos,
+    key: TabKey,
+    content: &TabContent,
+    action: HistoryAction,
+) -> Option<Command> {
     use HistoryAction as H;
     let files = &content.diff.files;
     match action {
         H::NextCommit | H::PrevCommit => {
-            let Some(history) = content.history.as_deref() else {
-                return Ask::Stay;
-            };
+            let history = content.history.as_deref()?;
             let at = pos.sent.as_deref().or(history.selected.as_deref());
             let index = at
                 .and_then(|sha| history.commits.iter().position(|c| c.hash == sha))
@@ -91,10 +89,10 @@ pub fn key(pos: &mut HistoryPos, key: TabKey, content: &TabContent, action: Hist
                 Some(commit) => {
                     pos.sent = Some(commit.hash.clone());
                     let sha = commit.hash.clone();
-                    return Ask::Send(Command::SelectCommit { key, sha });
+                    return Some(Command::SelectCommit { key, sha });
                 }
                 None if action == H::NextCommit && !history.all_loaded => {
-                    return Ask::Send(Command::LoadMoreHistory { key });
+                    return Some(Command::LoadMoreHistory { key });
                 }
                 None => {}
             }
@@ -110,7 +108,7 @@ pub fn key(pos: &mut HistoryPos, key: TabKey, content: &TabContent, action: Hist
         H::ScrollUp(rows) => pos.diff_scroll = pos.diff_scroll.saturating_sub(rows),
         H::NextFile | H::PrevFile => {}
     }
-    Ask::Stay
+    None
 }
 
 fn to_file(pos: &mut HistoryPos, files: &[Arc<DiffFile>], by: isize) {

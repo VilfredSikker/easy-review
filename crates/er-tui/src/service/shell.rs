@@ -24,7 +24,7 @@ use ratatui::Terminal;
 use super::ai_picker;
 use super::config_hub::{self, ConfigHub, Step};
 use super::filter::{self, Done};
-use super::history::{self, Ask as HistoryAsk};
+use super::history;
 use super::layers::{self, Layer};
 use super::modes::{self, BaseStep, Follow};
 use super::open_hub::{OpenHub, OpenStep};
@@ -1122,8 +1122,7 @@ impl Shell {
         content: &TabContent,
     ) {
         let state = self.view.tab_mut(key, content);
-        let HistoryAsk::Send(command) = history::key(&mut state.history, key, content, action)
-        else {
+        let Some(command) = history::key(&mut state.history, key, content, action) else {
             return;
         };
         let after = match command {

@@ -51,6 +51,8 @@ fn step(app: &mut App, shell: &mut Shell, hl: &mut Highlighter, code: KeyCode) {
 }
 
 /// Two copies of one repo, so their commits share hashes.
+// The lint gate reads this file alone, without the module's `cfg(test)`.
+#[cfg(test)]
 fn twins(make: fn() -> tempfile::TempDir) -> (tempfile::TempDir, tempfile::TempDir) {
     let repo = make();
     let copy = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
@@ -76,6 +78,7 @@ fn two_commits() -> tempfile::TempDir {
 }
 
 /// A merge of `other` into `feature` stopped on a conflict in `f000`.
+#[cfg(test)]
 fn merging() -> tempfile::TempDir {
     let repo = fixture(2);
     let root = repo.path();
