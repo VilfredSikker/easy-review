@@ -51,7 +51,7 @@ pub fn start(state: &mut TabViewState, content: &TabContent, kind: CommentType) 
 /// What a composer key asks of the loop.
 pub enum Composed {
     Stay,
-    Send(Command),
+    Send(Box<Command>),
     Unported,
 }
 
@@ -131,7 +131,7 @@ fn submit(state: &mut TabViewState, mode: &mut Mode, content: &TabContent) -> Co
     let kind = draft.kind;
     state.sent = Some(body.clone());
     let (client_id, reply_to, finding_ref) = (Some(client_id), None, None);
-    Composed::Send(if kind == CommentType::Note {
+    Composed::Send(Box::new(if kind == CommentType::Note {
         Command::AddNote {
             context,
             target,
@@ -151,7 +151,7 @@ fn submit(state: &mut TabViewState, mode: &mut Mode, content: &TabContent) -> Co
             reply_to,
             finding_ref,
         }
-    })
+    }))
 }
 
 /// The create in flight landed: the draft clears. Answers what the status
@@ -206,9 +206,9 @@ pub fn jump_hint(state: &mut TabViewState, content: &TabContent, forward: bool) 
         });
     let next = match (at, forward) {
         (Some(at), true) if at < last => at + 1,
-        (Some(_), true) | (None, true) => 0,
+        (Some(_) | None, true) => 0,
         (Some(at), false) if at > 0 => at - 1,
-        (Some(_), false) | (None, false) => last,
+        (Some(_) | None, false) => last,
     };
     let (path, hunk, _, id, _) = &hints[next];
     state.focused_comment_id = Some(id.clone());

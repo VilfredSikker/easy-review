@@ -793,7 +793,7 @@ impl Shell {
         self.view.input_mode = mode;
         match composed {
             Composed::Stay => {}
-            Composed::Send(command) => self.post(key, workspace, command, After::Composed),
+            Composed::Send(command) => self.post(key, workspace, *command, After::Composed),
             Composed::Unported => self.unported(),
         }
     }
