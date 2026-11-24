@@ -176,7 +176,9 @@ pub enum Refresh {
     Key,
     /// `m`: the sort's notice went at the press.
     Sort,
-    Watched { files: usize },
+    Watched {
+        files: usize,
+    },
 }
 
 /// A command in flight. The loop drains its receiver each tick.
