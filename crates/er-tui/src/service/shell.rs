@@ -25,6 +25,7 @@ use ratatui::Terminal;
 
 use super::ai_picker;
 use super::config_hub::{self, ConfigHub, Step};
+use super::context;
 use super::filter::{self, Done};
 use super::findings::{self, Summary};
 use super::github;
@@ -142,6 +143,9 @@ pub struct Shell {
     pub refuse_reloads: Option<String>,
     #[cfg(test)]
     pub reload_sends: usize,
+    /// The automatic context pick's threshold in a test, over the settings'.
+    #[cfg(test)]
+    pub auto_context: Option<usize>,
 }
 
 impl Shell {
@@ -193,6 +197,8 @@ impl Shell {
             refuse_reloads: None,
             #[cfg(test)]
             reload_sends: 0,
+            #[cfg(test)]
+            auto_context: None,
         };
         if !start.notices.is_empty() {
             let notice = start.notices.join("; ");
@@ -315,6 +321,16 @@ impl Shell {
         if self.settings.admit_failure(side, &message) {
             self.notify(message);
         }
+    }
+
+    /// The automatic context pick's threshold; zero turns it off.
+    fn auto_context(&self) -> usize {
+        #[cfg(test)]
+        if let Some(threshold) = self.auto_context {
+            return threshold;
+        }
+        let view = self.host.settings().view();
+        view.config.display.auto_context_threshold
     }
 
     fn unported(&mut self) {
@@ -499,6 +515,17 @@ impl Shell {
             } = landing;
             self.redraw = true;
             match reply {
+                reply if matches!(after, After::Context { .. }) => {
+                    let content = self.host.content(&workspace, key);
+                    let state = self.view.tab_mut_if_open(key);
+                    if let (Some(state), Some(content)) = (state, content) {
+                        let sent = retry.as_ref().map(|(command, _)| command);
+                        context::landed(state, &content, reply.is_ok(), sent);
+                    }
+                    if let (Err(error), After::Context { auto: false }) = (reply, after) {
+                        self.failure(Side::Reply, error.to_string());
+                    }
+                }
                 _ if matches!(after, After::CommitSelected | After::MoreHistory) => {
                     self.history_landed(key, &workspace, after, reply);
                 }
@@ -826,6 +853,7 @@ impl Shell {
             return self.filtered(key, workspace, content, done);
         }
         let config = self.host.settings().view().config.watched.clone();
+        let threshold = self.auto_context();
         let state = self.view.tab_mut(key, content);
         let file = content
             .diff
@@ -836,8 +864,28 @@ impl Shell {
         let shown = state.watched.is_shown(&config);
         let selected = match action {
             A::Quit => return self.quit(),
-            A::NextFile => state.move_file(content, shown, true),
-            A::PrevFile => state.move_file(content, shown, false),
+            A::NextFile | A::PrevFile => {
+                let moved = state.move_file(content, shown, action == A::NextFile);
+                let at = state.selected_file;
+                let auto = context::auto(key, state, content, at, threshold);
+                if let Some(command) = auto {
+                    self.post(key, workspace, command, After::Context { auto: true });
+                }
+                moved
+            }
+            A::ExpandContext | A::CollapseContext => {
+                let expand = action == A::ExpandContext;
+                return match context::step(key, state, content, file, expand) {
+                    Ok(Some(command @ Command::ParseFiles { .. })) => {
+                        self.post(key, workspace, command, After::Nothing);
+                    }
+                    Ok(Some(command)) => {
+                        self.post(key, workspace, command, After::Context { auto: false });
+                    }
+                    Ok(None) => {}
+                    Err(message) => self.notify(message),
+                };
+            }
             A::NextUnreviewedFile => match state.next_unreviewed(content) {
                 tui_view::Jump::NoFiles => None,
                 tui_view::Jump::AllReviewed => {
@@ -1102,7 +1150,8 @@ impl Shell {
 
     /// Sends a command for `key`'s tab; its reply lands on a later tick.
     fn post(&mut self, key: TabKey, workspace: &str, command: Command, after: After) {
-        let retry = after.follows().then(|| (command.clone(), 0));
+        let kept = after.follows() || matches!(after, After::Context { .. });
+        let retry = kept.then(|| (command.clone(), 0));
         let replies = self.send_reload(workspace, command, after);
         self.pending.push(Pending {
             key,

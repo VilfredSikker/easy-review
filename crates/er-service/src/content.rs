@@ -109,6 +109,7 @@ impl TabContent {
                 files: loaded.diff.files.into_iter().map(Arc::new).collect(),
                 meta: Arc::new(loaded.diff.meta),
                 expanded: loaded.diff.expanded,
+                context: loaded.diff.context,
             }),
             reviewed: Arc::new(ReviewedSection {
                 revision,
@@ -231,6 +232,7 @@ impl TabContent {
                 files,
                 meta: Arc::clone(&self.diff.meta),
                 expanded: kept,
+                context: self.diff.context.clone(),
             }),
             ..self.clone()
         }
@@ -258,10 +260,37 @@ impl TabContent {
                 files,
                 meta: Arc::clone(&self.diff.meta),
                 expanded: kept,
+                context: self.diff.context.clone(),
             }),
             ..self.clone()
         };
         (next, compacted)
+    }
+
+    /// This content with one file fetched again at `lines` of context; the
+    /// default count leaves the map.
+    fn with_context(&self, file: DiffFile, lines: usize, revision: u64) -> Self {
+        let mut files = self.diff.files.clone();
+        if let Some(slot) = files.iter_mut().find(|slot| slot.path == file.path) {
+            let mut context = self.diff.context.clone();
+            if lines == er_engine::git::DEFAULT_CONTEXT_LINES {
+                context.remove(&file.path);
+            } else {
+                context.insert(file.path.clone(), lines);
+            }
+            *slot = Arc::new(file);
+            return Self {
+                diff: Arc::new(DiffSection {
+                    revision,
+                    files,
+                    meta: Arc::clone(&self.diff.meta),
+                    expanded: self.diff.expanded.clone(),
+                    context,
+                }),
+                ..self.clone()
+            };
+        }
+        self.clone()
     }
 }
 
@@ -288,6 +317,10 @@ pub struct DiffSection {
     pub meta: Arc<DiffMeta>,
     /// The compacted files the user expanded, which a load parses in full.
     pub expanded: BTreeSet<String>,
+    /// Each file's context-line count away from the default. A reload in the
+    /// same view and base fetches the file with it again; a mode switch or a
+    /// base change drops it.
+    pub context: HashMap<String, usize>,
 }
 
 /// What a diff section keeps beside its files.
@@ -515,12 +548,15 @@ pub(crate) struct LoadedTab {
     pub history: Option<Arc<HistorySection>>,
     /// How many reviewed marks the load cleared.
     pub cleared: usize,
+    /// The sequence the clear's save took, when it saved.
+    pub marks_seq: Option<u64>,
 }
 
 pub(crate) struct LoadedDiff {
     pub files: Vec<DiffFile>,
     pub meta: DiffMeta,
     pub expanded: BTreeSet<String>,
+    pub context: HashMap<String, usize>,
 }
 
 #[derive(Default)]
@@ -579,10 +615,21 @@ pub(crate) enum ContentPatch {
         payload: WrittenPayload,
         written: Option<SystemTime>,
     },
-    /// The reviewed marks a write saved in `er_dir`.
+    /// The reviewed marks a write saved in `er_dir`. `seq` was taken under
+    /// the bucket's lock, so a write that finishes late drops behind a newer
+    /// one already applied.
     Reviewed {
         er_dir: String,
         marks: HashMap<String, String>,
+        seq: u64,
+    },
+    /// One file fetched again with `lines` of context, over the load at
+    /// `since` (the content's `mode_revision`).
+    Context {
+        key: TabKey,
+        since: u64,
+        file: DiffFile,
+        lines: usize,
     },
     /// What a probe's tips show against the tab, measured off the actor.
     Freshness {
@@ -608,6 +655,22 @@ pub(crate) enum ContentPatch {
 }
 
 impl ContentPatch {
+    /// A load, with the marks its clear saved beside it: the sequence orders
+    /// it against the reviewed writes, and the other tabs on the bucket take
+    /// the saved marks.
+    pub(crate) fn loaded(key: TabKey, since: Option<u64>, loaded: Box<LoadedTab>) -> Self {
+        let saved = loaded.marks_seq.map(|seq| Self::Reviewed {
+            er_dir: loaded.context.er_dir.clone(),
+            marks: loaded.marks.clone(),
+            seq,
+        });
+        let load = Self::Loaded { key, since, loaded };
+        match saved {
+            Some(saved) => Self::Several(vec![load, saved]),
+            None => load,
+        }
+    }
+
     /// The patch for a sidecar just stored in `dir`, with the file's mtime
     /// as the store left it. Built on the effect thread that wrote it.
     pub(crate) fn stored_sidecar(dir: &str, payload: WrittenPayload) -> Self {
@@ -658,6 +721,7 @@ pub(crate) fn lifecycle_keys(
         }
         ContentPatch::Parsed { .. }
         | ContentPatch::Compacted { .. }
+        | ContentPatch::Context { .. }
         | ContentPatch::Ai { .. }
         | ContentPatch::Freshness { .. }
         | ContentPatch::Stack { .. }
@@ -686,6 +750,10 @@ pub(crate) fn check(
                 _ => Err(PatchRefused::Moved),
             }
         }
+        ContentPatch::Context { key, since, .. } => match tabs.get(key) {
+            Some(content) if content.mode_revision == *since => Ok(()),
+            _ => Err(PatchRefused::Moved),
+        },
         ContentPatch::History { key, since, .. } => {
             let held = tabs.get(key).and_then(|content| content.history.as_ref());
             match held {
@@ -700,6 +768,37 @@ pub(crate) fn check(
         | ContentPatch::Sidecar { .. }
         | ContentPatch::Reviewed { .. }
         | ContentPatch::Dropped { .. } => Ok(()),
+    }
+}
+
+/// Drops each reviewed patch older than the last one applied on its bucket,
+/// and records the newer ones: two writes publish in the order they finish,
+/// which is not always the order they took the lock in.
+pub(crate) fn drop_stale_marks(patch: &mut ContentPatch, applied: &mut HashMap<String, u64>) {
+    match patch {
+        ContentPatch::Reviewed { er_dir, seq, .. } => {
+            let last = applied.entry(er_dir.clone()).or_default();
+            if *seq < *last {
+                *patch = ContentPatch::Several(Vec::new());
+            } else {
+                *last = *seq;
+            }
+        }
+        ContentPatch::Several(patches) => {
+            for patch in patches {
+                drop_stale_marks(patch, applied);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The reviewed parts of `patch`: the marks a write already saved.
+pub(crate) fn saved_marks(patch: ContentPatch) -> Vec<ContentPatch> {
+    match patch {
+        ContentPatch::Reviewed { .. } => vec![patch],
+        ContentPatch::Several(patches) => patches.into_iter().flat_map(saved_marks).collect(),
+        _ => Vec::new(),
     }
 }
 
@@ -759,7 +858,15 @@ pub(crate) fn apply(
             }
             0
         }
-        ContentPatch::Reviewed { er_dir, marks } => {
+        ContentPatch::Context {
+            key, file, lines, ..
+        } => {
+            if let Some(content) = tabs.get_mut(&key) {
+                *content = Arc::new(content.with_context(file, lines, revision));
+            }
+            0
+        }
+        ContentPatch::Reviewed { er_dir, marks, .. } => {
             for content in tabs.values_mut() {
                 if let Some(next) = content.with_marks(&er_dir, &marks, revision) {
                     *content = Arc::new(next);

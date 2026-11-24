@@ -476,7 +476,7 @@ impl TabState {
         }
 
         // Untracked files (Added status with synthetic diff) are already full-file
-        if file.status == git::FileStatus::Added && file.hunks.len() <= 1 {
+        if git::shows_whole_file(file) {
             return Ok(());
         }
 
@@ -486,16 +486,9 @@ impl TabState {
             .get(&path)
             .copied()
             .unwrap_or(git::DEFAULT_CONTEXT_LINES);
-
-        // Find next step above current
-        let next = git::CONTEXT_STEPS
-            .iter()
-            .copied()
-            .find(|&s| s > current)
-            .unwrap_or(git::FULL_CONTEXT);
-        if next == current {
+        let Some(next) = git::next_context_step(current) else {
             return Ok(());
-        }
+        };
 
         // Re-fetch the file diff with new context
         let git = self.ports.git.clone();
@@ -539,17 +532,9 @@ impl TabState {
             .copied()
             .unwrap_or(git::DEFAULT_CONTEXT_LINES);
 
-        if current <= git::DEFAULT_CONTEXT_LINES {
+        let Some(prev) = git::prev_context_step(current) else {
             return Ok(());
-        }
-
-        // Find previous step below current
-        let prev = git::CONTEXT_STEPS
-            .iter()
-            .rev()
-            .copied()
-            .find(|&s| s < current)
-            .unwrap_or(git::DEFAULT_CONTEXT_LINES);
+        };
 
         let git = self.ports.git.clone();
         if let Some(file) = self.files.get_mut(self.selected_file) {
@@ -590,23 +575,12 @@ impl TabState {
             None => return,
         };
 
-        if file.compacted || self.context_overrides.contains_key(&file.path) {
+        if self.context_overrides.contains_key(&file.path) {
             return;
         }
-        if file.status == git::FileStatus::Added && file.hunks.len() <= 1 {
+        let Some(picked) = git::auto_context(file) else {
             return;
-        }
-
-        let total_lines: usize = file.hunks.iter().map(|h| h.lines.len()).sum();
-        if total_lines == 0 {
-            return;
-        }
-
-        let hunks = file.hunks.len();
-        let picked = pick_context_for_size(total_lines, hunks);
-        if picked <= git::DEFAULT_CONTEXT_LINES {
-            return;
-        }
+        };
 
         let path = file.path.clone();
         let git = self.ports.git.clone();
@@ -989,31 +963,9 @@ impl TabState {
     }
 }
 
-/// Tiered ladder via `git::SIZE_LADDER`: bigger context for smaller files,
-/// lean context for big ones. `total_lines` is the file's diff line count at
-/// the default `--unified` value; `hunks` is the hunk count. Returns the
-/// `--unified=N` value to use, falling back to `DEFAULT_CONTEXT_LINES` for
-/// files larger than the last tier.
-fn pick_context_for_size(total_lines: usize, hunks: usize) -> usize {
-    let ladder = git::SIZE_LADDER;
-    let base_tier = ladder.iter().position(|(limit, _)| total_lines <= *limit);
-    let tier = match base_tier {
-        Some(i) => i,
-        None => return git::DEFAULT_CONTEXT_LINES,
-    };
-
-    // Hunk-count nudge: many scattered small hunks benefit from more context.
-    let nudged = if hunks >= 4 && tier > 0 {
-        tier - 1
-    } else {
-        tier
-    };
-    ladder[nudged].1
-}
-
 #[cfg(test)]
 mod tests {
-    use super::pick_context_for_size;
+    use crate::git::pick_context_for_size;
 
     #[test]
     fn tiny_files_get_full_context() {
