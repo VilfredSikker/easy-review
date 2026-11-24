@@ -511,6 +511,10 @@ fn launch(
             }
         }
     });
+    // Told before the job runs, so a quick failure is told after it.
+    if !launch.quiet {
+        (hooks.notify)(started, false);
+    }
     let (worker_host, worker_hooks, id) = (host.clone(), hooks.clone(), id.to_string());
     // Unnamed, like every thread that reaches the storage root.
     std::thread::Builder::new()
@@ -526,9 +530,6 @@ fn launch(
             dispatch(&worker_host, &worker_hooks);
         })
         .map_err(|e| format!("start the task worker: {e}"))?;
-    if !launch.quiet {
-        (hooks.notify)(started, false);
-    }
     Ok(())
 }
 

@@ -149,8 +149,8 @@ pub struct Shell {
     branch_prs: HashMap<TabKey, (u64, String)>,
     /// The tabs with a stack lookup on the way.
     stacks_reading: HashSet<TabKey>,
-    /// The runs the host is planning, with the notice each says once taken.
-    runs: Vec<(RunReceiver, Option<String>)>,
+    /// The runs the host is planning.
+    runs: Vec<RunReceiver>,
     /// The bucket each tab that ran something showed, so a closed tab's log
     /// goes.
     run_buckets: HashMap<TabKey, String>,
@@ -375,9 +375,6 @@ impl Shell {
     /// cleared. A message holds while the active tab loads, so its dwell runs
     /// on frames that show the tab.
     pub fn tick(&mut self, now: Instant) {
-        // Before the events, so a run that fails at once tells its failure
-        // after its start, not under it.
-        self.drain_runs();
         loop {
             match self.events.try_recv() {
                 // A moved load is resent or its reply says so.
@@ -412,6 +409,7 @@ impl Shell {
             }
         }
         self.drain_replies();
+        self.drain_runs();
         self.sync_tasks();
         self.sync_watch(now);
         self.sync_probe();
@@ -474,34 +472,32 @@ impl Shell {
         {
             self.run_buckets.insert(key, content.context.er_dir.clone());
         }
-        let started = ai_runs::started(&request);
+        // Said as asked, as the App does; any later notice replaces it.
+        if let Some(started) = ai_runs::started(&request) {
+            self.notify(started);
+        }
         #[cfg(test)]
         {
             self.runs_started += 1;
         }
-        self.runs.push((self.host.run(key, request), started));
+        self.runs.push(self.host.run(key, request));
     }
 
-    /// A run the planner refused says why; a tab command it took says the
-    /// App's start notice, since the host tells none for it.
+    /// A run the planner refused says why.
     fn drain_runs(&mut self) {
         let mut said = Vec::new();
-        self.runs
-            .retain(|(replies, started)| match replies.try_recv() {
-                Ok(Ok(())) => {
-                    said.extend(started.clone());
-                    false
-                }
-                Ok(Err(error)) => {
-                    said.push(error.message);
-                    false
-                }
-                Err(TryRecvError::Empty) => true,
-                Err(TryRecvError::Disconnected) => {
-                    said.push("The run stopped before it answered".into());
-                    false
-                }
-            });
+        self.runs.retain(|replies| match replies.try_recv() {
+            Ok(Ok(())) => false,
+            Ok(Err(error)) => {
+                said.push(error.message);
+                false
+            }
+            Err(TryRecvError::Empty) => true,
+            Err(TryRecvError::Disconnected) => {
+                said.push("The run stopped before it answered".into());
+                false
+            }
+        });
         for message in said {
             self.notify(message);
         }

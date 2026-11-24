@@ -426,7 +426,8 @@ fn an_empty_diff_keeps_its_review_on_a_rerun() {
 }
 
 /// A test build refuses a provider CLI on `PATH`: with the default
-/// provider, `claude`, the spawn is refused and the run fails.
+/// provider, `claude`, the spawn is refused, and the run's failure replaces
+/// the start notice the key showed.
 #[test]
 fn a_test_build_never_starts_a_real_provider_cli() {
     let repo = fixture(1);
@@ -442,6 +443,7 @@ fn a_test_build_never_starts_a_real_provider_cli() {
         assert_eq!(provider.provider_id.as_deref(), Some("claude"));
         let before = er_agent::agent_run::real_cli_refusals();
         choose(&mut shell, 'a', "Generate summary");
+        assert_eq!(notice(&shell), "summary started...");
         let refused = |_: &Shell| er_agent::agent_run::real_cli_refusals() > before;
         let seen = settle_within(&mut shell, Duration::from_secs(20), refused);
         assert!(seen, "the spawn was not refused");
