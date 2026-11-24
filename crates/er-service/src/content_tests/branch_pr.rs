@@ -62,3 +62,49 @@ fn a_branch_pr_fills_the_pr_section_and_keeps_the_working_modes() -> anyhow::Res
         Ok(())
     })
 }
+
+fn branch_pr(key: TabKey, branch: &str) -> ContentPatch {
+    ContentPatch::BranchPr {
+        key,
+        number: 7,
+        branch: branch.to_string(),
+        overview: Box::new(overview("One")),
+    }
+}
+
+/// A reload that began before the branch PR landed keeps the section when
+/// it applies; a load on another branch drops it.
+#[test]
+fn a_load_keeps_the_branch_pr_only_while_the_branch_holds() -> Result<(), PatchRefused> {
+    let mut state = WorkspaceState::new();
+    let key = TabKey::next();
+    let loaded = |since| ContentPatch::Loaded {
+        key,
+        since,
+        loaded: loaded_tab("/repo"),
+    };
+    let (since, _) = state.apply_patch(loaded(None))?;
+    state.apply_patch(branch_pr(key, "feature"))?;
+    state.apply_patch(loaded(Some(since)))?;
+    let pr = &state.view().tabs[&key].pr;
+    let kept = pr.overview.as_ref().map(|pr| pr.title.as_str());
+    assert_eq!(
+        kept,
+        Some("One"),
+        "the in-flight reload dropped the branch PR"
+    );
+    assert_eq!(pr.pr_number, Some(7));
+
+    let since = state.view().tabs[&key].generation();
+    let mut other = loaded_tab("/repo");
+    other.tab.current_branch = "other".to_string();
+    state.apply_patch(ContentPatch::Loaded {
+        key,
+        since: Some(since),
+        loaded: other,
+    })?;
+    let pr = &state.view().tabs[&key].pr;
+    assert!(pr.overview.is_none(), "another branch kept the branch PR");
+    assert_eq!(pr.pr_number, None);
+    Ok(())
+}

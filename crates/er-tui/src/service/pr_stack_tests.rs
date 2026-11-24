@@ -13,7 +13,7 @@ use er_github::{BranchPrProbe, FakeGitHub, PrCommentBundle, PrOverviewData};
 use ratatui::buffer::Buffer;
 
 use super::github_tests::{
-    calls, notice, on_pr_7, overview, ports, settle_replies, type_text, working,
+    calls, notice, on_pr_7, overview, ports, pr_tab, settle_replies, type_text, working,
 };
 use super::shell::Shell;
 use super::tests::{assert_parity, fixture, key, path_of, rows, settle, shell_frame, SOURCES};
@@ -285,4 +285,33 @@ fn the_stack_and_the_overview_are_read_only_on_the_service() {
             assert!(!flat.contains(word), "{name} names {word}");
         }
     }
+}
+
+/// A `--pr` tab names its repo, so opening the same PR from the Open hub
+/// focuses it: one tab, two actors never write the one PR bucket.
+#[test]
+fn opening_the_pr_a_pr_tab_holds_focuses_that_tab() {
+    let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+    er_engine::storage::with_process_test_storage_root(storage.path(), || {
+        let (_repo, mut shell, _github) = pr_tab(on_pr_7(), storage.path());
+        let tabs = shell.host().registry().tabs_view();
+        let local = tabs.active_entry().unwrap_or_else(|| panic!("no tab"));
+        assert_eq!(local.descriptor.pr_owner.as_deref(), Some("acme"));
+        let local = local.key;
+        open_hub_row(&mut shell, "Open remote PR");
+        type_text(&mut shell, "https://github.com/acme/widgets/pull/7");
+        shell.handle_key(key(KeyCode::Enter));
+        let tabs = shell.host().registry().tabs_view();
+        assert_eq!(
+            tabs.tabs.len(),
+            1,
+            "a second tab was listed for the open PR #7"
+        );
+        assert_eq!(tabs.active, Some(local));
+        assert!(
+            notice(&shell).starts_with("Switched to tab: "),
+            "{}",
+            notice(&shell)
+        );
+    });
 }

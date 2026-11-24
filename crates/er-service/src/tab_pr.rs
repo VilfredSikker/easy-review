@@ -103,8 +103,9 @@ pub(crate) fn read_stack(
 
 /// The PR section of a load of `tab`.
 pub(crate) fn load_pr(deps: &WorkspaceDeps, tab: &ResolvedTab, load: PrLoad<'_>) -> LoadedPr {
+    // A working tab's branch PR is carried when the load applies.
     let Some(number) = tab.pr_number else {
-        return branch_pr(tab, load.prev);
+        return LoadedPr::default();
     };
     let remote = remote_parts(tab);
     // A branch PR's section holds no commits, so a PR tab reads its own.
@@ -153,21 +154,6 @@ pub(crate) fn load_pr(deps: &WorkspaceDeps, tab: &ResolvedTab, load: PrLoad<'_>)
         overview,
         commits,
         head_oid,
-        ..LoadedPr::default()
-    }
-}
-
-/// A working tab's branch PR (`LoadBranchPr`), carried while the tab views
-/// the branch it was read for. Only another `LoadBranchPr` reads it again.
-fn branch_pr(tab: &ResolvedTab, prev: Option<&PrSection>) -> LoadedPr {
-    let branch = viewed_branch(tab);
-    let Some(prev) = prev.filter(|prev| prev.branch.as_deref() == Some(branch.as_str())) else {
-        return LoadedPr::default();
-    };
-    LoadedPr {
-        pr_number: prev.pr_number,
-        overview: prev.overview.clone(),
-        branch: Some(branch),
         ..LoadedPr::default()
     }
 }

@@ -283,7 +283,11 @@ pub(super) fn path_of(dir: &tempfile::TempDir) -> String {
 }
 
 pub(super) fn plan(args: &Args) -> Start {
-    startup::plan(args, &*Ports::cli().git).unwrap_or_else(|e| panic!("{e:#}"))
+    plan_on(args, &test_ports())
+}
+
+pub(super) fn plan_on(args: &Args, ports: &Ports) -> Start {
+    startup::plan(args, ports).unwrap_or_else(|e| panic!("{e:#}"))
 }
 
 pub(super) fn shell(args: &Args, config_dir: &Path) -> Shell {
@@ -523,14 +527,14 @@ fn the_start_opens_listed_tabs_and_refuses_an_unlisted_load() {
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     let path = path_of(&repo);
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
-        let ports = Ports::cli();
+        let ports = test_ports();
         let pr = startup::plan(
             &Args {
                 paths: vec![path.clone()],
                 pr: Some(7),
                 ..Args::default()
             },
-            &*ports.git,
+            &ports,
         )
         .unwrap_or_else(|e| panic!("{e:#}"));
         assert_eq!(pr.tabs[0].tab.kind, TabKind::LocalPr);
@@ -542,7 +546,7 @@ fn the_start_opens_listed_tabs_and_refuses_an_unlisted_load() {
                 remote: true,
                 ..Args::default()
             },
-            &*ports.git,
+            &ports,
         )
         .unwrap_or_else(|e| panic!("{e:#}"));
         assert_eq!(remote.tabs[0].tab.kind, TabKind::RemotePr);

@@ -419,7 +419,7 @@ pub struct PrSection {
     /// A load keeps it while the tab reads its stack from the same place.
     pub stack: Option<StackRead>,
     /// On a working tab, the viewed branch whose PR `LoadBranchPr` read here;
-    /// none on a PR tab. A load carries the section while the branch holds.
+    /// none on a PR tab. A load applied while the branch holds carries it.
     pub branch: Option<String>,
 }
 
@@ -829,6 +829,17 @@ pub(crate) fn apply(
         ContentPatch::Loaded { key, loaded, .. } => {
             let cleared = loaded.cleared;
             let mut loaded = loaded;
+            // A working tab's branch PR is carried from the section held now,
+            // so a load that began before `LoadBranchPr` landed keeps it.
+            let branch = crate::tab_pr::viewed_branch(&loaded.tab);
+            let branch_pr = tabs.get(&key).map(|content| &content.pr).filter(|held| {
+                loaded.tab.pr_number.is_none() && held.branch.as_deref() == Some(branch.as_str())
+            });
+            if let Some(held) = branch_pr {
+                loaded.pr.pr_number = held.pr_number;
+                loaded.pr.overview.clone_from(&held.overview);
+                loaded.pr.branch.clone_from(&held.branch);
+            }
             let held = tabs.get(&key).and_then(|content| content.pr.stack.clone());
             loaded.pr.stack =
                 held.filter(|read| still_reads(&loaded.tab, loaded.pr.overview.as_ref(), read));

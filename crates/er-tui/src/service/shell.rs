@@ -70,7 +70,7 @@ const RELOAD_TRIES: u8 = 3;
 /// until the user quits.
 pub fn run(args: &Args) -> anyhow::Result<()> {
     let ports = er_engine::ports::Ports::cli();
-    let start = startup::plan(args, &*ports.git)?;
+    let start = startup::plan(args, &ports)?;
     let (tx, events) = std::sync::mpsc::channel();
     let git = Arc::clone(&ports.git);
     let host = ServiceHost::new(ports, er_engine::config::managed_config_path()).with_events(tx);
@@ -505,6 +505,7 @@ impl Shell {
                                 | After::ReviewSubmit
                                 | After::Checklist { .. }
                                 | After::StackRead
+                                | After::PrRefreshed { .. }
                         ) =>
                 {
                     let lost = er_service::WorkspaceError::Failed(
@@ -547,7 +548,11 @@ impl Shell {
                         local_count,
                     } = after
                     {
-                        let refreshed = reply.is_ok();
+                        // A branch PR dropped because the tab moved branch
+                        // meanwhile refreshed nothing.
+                        let content = self.host.content(&workspace, key);
+                        let held = content.is_some_and(|content| content.pr.pr_number.is_some());
+                        let refreshed = reply.is_ok() && held;
                         self.notify(github::synced(github_count, local_count, refreshed));
                     }
                 }

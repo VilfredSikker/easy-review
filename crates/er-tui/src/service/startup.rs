@@ -37,8 +37,10 @@ pub struct Start {
 
 /// Turns the arguments into tabs. Paths resolve to their repo roots; a PR
 /// URL opens a remote PR with `--remote`, or this clone's PR without;
-/// `--pr` makes the first tab that PR. Reads the repo roots and nothing else.
-pub fn plan(args: &Args, git: &dyn er_git::Git) -> anyhow::Result<Start> {
+/// `--pr` makes the first tab that PR. Reads the repo roots, and for `--pr`
+/// the origin's `owner/repo`, which the port parses from the remote URL.
+pub fn plan(args: &Args, ports: &er_engine::ports::Ports) -> anyhow::Result<Start> {
+    let git = &*ports.git;
     let mut start = Start {
         filter: args.filter.clone(),
         ..Start::default()
@@ -65,7 +67,9 @@ pub fn plan(args: &Args, git: &dyn er_git::Git) -> anyhow::Result<Start> {
             let root = git
                 .repo_root_cwd()
                 .context("Cannot open PR URL: not in a git repository. Clone the repo first.")?;
-            start.tabs.push(local_pr(root, pr.number));
+            start
+                .tabs
+                .push(local_pr(root, pr.number, Some((pr.owner, pr.repo))));
         } else {
             let dir =
                 std::fs::canonicalize(path).with_context(|| format!("Path not found: {path}"))?;
@@ -76,7 +80,11 @@ pub fn plan(args: &Args, git: &dyn er_git::Git) -> anyhow::Result<Start> {
         }
     }
     if let (Some(number), Some(first)) = (args.pr, start.tabs.first_mut()) {
-        *first = local_pr(first.tab.repo_root.clone(), number);
+        let root = first.tab.repo_root.clone();
+        // The repo names the PR, so an open of the same PR from the Open hub
+        // finds this tab (`same_pr`) instead of listing a second one.
+        let repo = ports.github.get_repo_info(git, &root).ok();
+        *first = local_pr(root, number, repo);
     }
     // `--target` is each tab's base from its first load, as the App's.
     for start_tab in &mut start.tabs {
@@ -118,9 +126,13 @@ pub fn remote_pr(pr: github::PrRef) -> StartTab {
     }
 }
 
-fn local_pr(repo_root: String, number: u64) -> StartTab {
+fn local_pr(repo_root: String, number: u64, repo: Option<(String, String)>) -> StartTab {
     let mut tab = descriptor(TabKind::LocalPr, repo_root);
     tab.pr_number = Some(number);
+    if let Some((owner, name)) = repo {
+        tab.pr_owner = Some(owner);
+        tab.pr_repo = Some(name);
+    }
     StartTab {
         tab,
         fetch_pr_refs: true,
