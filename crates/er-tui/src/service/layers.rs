@@ -55,8 +55,8 @@ pub fn toggle(state: &mut TabViewState, layer: Layer) -> &'static str {
 }
 
 /// Moves the Gate to its next level and pins it, so a later AI revision
-/// leaves it; answers the status line's message.
-pub fn cycle_gate(state: &mut TabViewState, content: &TabContent) -> String {
+/// leaves it; answers the level's label.
+fn next_gate(state: &mut TabViewState) -> &'static str {
     let layers = &mut state.layers;
     layers.min_trust = match layers.min_trust {
         Confidence::Informational => Confidence::Tentative,
@@ -64,13 +64,35 @@ pub fn cycle_gate(state: &mut TabViewState, content: &TabContent) -> String {
         _ => Confidence::Informational,
     };
     layers.min_trust_pinned = true;
+    crate::input::min_trust_label(layers.min_trust)
+}
+
+/// T: the next Gate level; answers the status line's message, which says
+/// whether an arbiter has graded the review, as the App's key does.
+pub fn cycle_gate(state: &mut TabViewState, content: &TabContent) -> String {
     let graded = if content.ai.state.arbiter_effect.graded() {
         "arbiter-graded"
     } else {
         "self-reported grades, nothing graded yet"
     };
-    let level = crate::input::min_trust_label(layers.min_trust);
+    let level = next_gate(state);
     format!("Confidence: {level} — {graded}")
+}
+
+/// A layer row of the AI hub.
+#[derive(Clone, Copy)]
+pub enum HubRow {
+    Layer(Layer),
+    Gate,
+}
+
+/// Runs an AI hub layer row; answers the status line's message, as the App's
+/// hub does, whose Gate message names the level alone.
+pub fn hub_row(state: &mut TabViewState, row: HubRow) -> String {
+    match row {
+        HubRow::Layer(layer) => toggle(state, layer).to_string(),
+        HubRow::Gate => format!("Confidence: {}", next_gate(state)),
+    }
 }
 
 /// The Gate follows the review: each new AI revision sets it from the

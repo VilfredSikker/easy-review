@@ -44,6 +44,8 @@ mod settings_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
+mod thread_writes_tests;
+#[cfg(test)]
 mod threads_tests;
 #[cfg(test)]
 mod watched_tests;

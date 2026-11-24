@@ -3,13 +3,15 @@
 //! default selection through the settings actor (decision 11), and a model
 //! refresh is the actor's `RefreshAiModels`.
 //!
-//! Until P74 ports the AI hub, its one live row is "Change agent/model": no
-//! other row has a service route on this path yet.
+//! Until P74 ports the AI hub, its live rows are "Change agent/model" and
+//! the layer rows, which act on the tab's view alone; no other row has a
+//! service route on this path yet.
 
 use er_engine::config::{effort_display_label, AiHubConfig, ErConfig};
 use er_service::{SettingsCommand, SettingsView};
 
 use super::config_hub::Step;
+use super::layers::{HubRow, Layer};
 use super::tui_view::Overlay;
 use crate::input::keys::OverlayAction;
 use crate::screen::view::{HubItem, HubKind};
@@ -44,10 +46,41 @@ const AI_HUB_ROWS: [Option<(&str, &str)>; 22] = [
 
 const CHANGE_SELECTION: &str = "Change agent/model";
 
+/// The layer rows the App's hub lists: label, description and row. Toggle
+/// AI findings is live only with AI data, as on the App.
+const LAYER_ROWS: [(&str, &str, HubRow); 5] = [
+    (
+        "Toggle AI findings",
+        "Show/hide inline AI findings",
+        HubRow::Layer(Layer::AiFindings),
+    ),
+    (
+        "Toggle comments",
+        "Show/hide GitHub comment layer",
+        HubRow::Layer(Layer::Comments),
+    ),
+    (
+        "Toggle questions",
+        "Show/hide question layer",
+        HubRow::Layer(Layer::Questions),
+    ),
+    (
+        "Hide resolved",
+        "Toggle hiding resolved comments",
+        HubRow::Layer(Layer::HideResolved),
+    ),
+    (
+        "Confidence gate",
+        "Cycle which grades show: all, tentative+, confirmed only",
+        HubRow::Gate,
+    ),
+];
+
 /// Which list a picker shows, so it can be built again from a newer view.
 #[derive(Clone)]
 enum Of {
-    AiHub,
+    /// The hub, and whether the tab has AI data.
+    AiHub(bool),
     Provider,
     Model(String),
     Effort(String, String),
@@ -57,6 +90,7 @@ enum Of {
 #[derive(Clone)]
 enum Pick {
     Unported,
+    Layer(HubRow),
     ChangeSelection,
     Provider(String),
     Model(String, String),
@@ -76,7 +110,7 @@ pub struct Picker {
 impl Picker {
     pub fn kind(&self) -> HubKind {
         match self.of {
-            Of::AiHub => HubKind::Ai,
+            Of::AiHub(_) => HubKind::Ai,
             Of::Provider => HubKind::AiProvider,
             Of::Model(_) => HubKind::AiModel,
             Of::Effort(..) => HubKind::AiEffort,
@@ -126,7 +160,7 @@ fn build(of: Of, view: &SettingsView, ai_label: &str) -> Option<Picker> {
     let mut selected = 0;
     let mut title = None;
     let (rows, picks): (Vec<HubItem>, Vec<Pick>) = match &of {
-        Of::AiHub => {
+        Of::AiHub(has_ai) => {
             let unported = format!("That action is {UNPORTED}");
             AI_HUB_ROWS
                 .iter()
@@ -147,10 +181,20 @@ fn build(of: Of, view: &SettingsView, ai_label: &str) -> Option<Picker> {
                         ),
                         Pick::ChangeSelection,
                     ),
-                    Some((label, hint)) => (
-                        row((*label).into(), hint, unported.clone(), false),
-                        Pick::Unported,
-                    ),
+                    Some((label, hint)) => match LAYER_ROWS.iter().find(|row| row.0 == *label) {
+                        Some(&(_, description, layer)) => {
+                            let enabled =
+                                *has_ai || !matches!(layer, HubRow::Layer(Layer::AiFindings));
+                            (
+                                row((*label).into(), hint, description.into(), enabled),
+                                Pick::Layer(layer),
+                            )
+                        }
+                        None => (
+                            row((*label).into(), hint, unported.clone(), false),
+                            Pick::Unported,
+                        ),
+                    },
                 })
                 .unzip()
         }
@@ -265,9 +309,10 @@ fn opened(of: Of, view: &SettingsView, ai_label: &str, also: Option<SettingsComm
     }
 }
 
-/// The flag-on AI hub, the way to the pickers before P74.
-pub fn open_ai_hub(view: &SettingsView, ai_label: &str) -> Step {
-    opened(Of::AiHub, view, ai_label, None)
+/// The flag-on AI hub, the way to the pickers and the layer rows before
+/// P74. `has_ai` is whether the tab has AI data.
+pub fn open_ai_hub(view: &SettingsView, ai_label: &str, has_ai: bool) -> Step {
+    opened(Of::AiHub(has_ai), view, ai_label, None)
 }
 
 fn open_providers(view: &SettingsView, ai_label: &str) -> Step {
@@ -352,6 +397,7 @@ fn select(picker: &Picker, view: &SettingsView, label: &str) -> Step {
     match choice {
         Pick::Unported => Step::Unported,
         _ if !row.enabled => Step::Notify(row.description.clone()),
+        Pick::Layer(layer) => Step::Layer(*layer),
         Pick::ChangeSelection => open_providers(view, label),
         Pick::Provider(provider_id) => {
             let Some(provider) = view.config.ai_hub.providers.get(provider_id) else {

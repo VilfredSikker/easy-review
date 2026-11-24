@@ -8,7 +8,7 @@ use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use er_engine::ai::review_flow::FlowState;
+use er_engine::ai::review_flow::{FlowState, FlowTaskStage, FlowTaskStatus};
 use er_engine::ai::review_md::ReviewMdSource;
 use er_engine::arena::{ArenaProgressState, ArenaScope};
 use er_engine::config::{
@@ -450,5 +450,145 @@ fn a_load_shows_interrupted_flows_and_starts_nothing() {
             "a cancelled flow stays cancelled"
         );
         assert_eq!(*sink.submitted.lock().unwrap(), 0, "a load submits no job");
+    });
+}
+
+/// Triage picks Standard with the security lens, so two finders follow it.
+/// Each launch appends its lens to `launches`; each finder then waits for
+/// `gate`, but never past its directory's removal or 30 s, so a failed test
+/// leaves no provider behind.
+fn gated_standard_config(bucket: &str, dir: &Path) -> ErConfig {
+    let script = "wait_gate() { i=0; while [ ! -f '__DIR__/gate' ] && [ -d '__DIR__' ] && [ $i -lt 600 ]; do sleep 0.05; i=$((i+1)); done; }\n\
+         case \"$1\" in\n\
+         *triage.json*) __PREAMBLE__; echo triage >> '__DIR__/launches'; printf '{\"version\":1,\"diff_hash\":\"%s\",\"verdict\":{\"primary\":\"expert\",\"experts\":[\"security\"]}}' \"$h\" > \"$out/triage.json\" ;;\n\
+         *experts/security.json*) __PREAMBLE__; echo security >> '__DIR__/launches'; wait_gate; mkdir -p \"$out/experts\"; printf '{\"version\":1,\"expert_id\":\"security\",\"diff_hash\":\"%s\",\"files\":{}}' \"$h\" > \"$out/experts/security.json\" ;;\n\
+         *review.json*) __PREAMBLE__; echo general >> '__DIR__/launches'; wait_gate; __REVIEW__ ;;\n\
+         *) exit 2 ;;\n\
+         esac"
+        .replace("__PREAMBLE__", er_engine::test_support::STAGING_PREAMBLE)
+        .replace("__REVIEW__", er_engine::test_support::WRITE_REVIEW_SIDECARS)
+        .replace("__DIR__", &dir.to_string_lossy());
+    let mut config = deep_config(bucket, &dir.join("gate"));
+    for provider in config.ai_hub.providers.values_mut() {
+        provider.args[1] = er_engine::test_support::staged_script(&script, bucket);
+    }
+    // One slot: the second finder waits for the first.
+    config.ai_hub.max_concurrent_reviews = 1;
+    config
+}
+
+fn launches(dir: &Path) -> Vec<String> {
+    std::fs::read_to_string(dir.join("launches"))
+        .unwrap_or_default()
+        .lines()
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Polls `done` until it holds, failing after 30 s.
+fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !done() {
+        assert!(Instant::now() < deadline, "{what} within 30 s");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+fn finder_status(view: &WorkspaceView, bucket: &str, lens: &str) -> Option<FlowTaskStatus> {
+    view.review_flow(bucket)?
+        .flow
+        .tasks
+        .iter()
+        .find(|task| task.stage == FlowTaskStage::Finding && task.lens.as_deref() == Some(lens))
+        .map(|task| task.status)
+}
+
+/// A cancel stops a finder still waiting for its agent slot: it never
+/// launches and its row ends Cancelled, while the finder already running
+/// drains and finishes as before. The bucket's lease is held until that one
+/// is done, then released.
+#[test]
+fn a_cancel_stops_a_finder_waiting_for_its_slot() {
+    let _serial = er_agent::agent_slots::test_serial();
+    let dir = tempfile::tempdir().unwrap();
+    er_engine::storage::with_process_test_storage_root(dir.path(), || {
+        let repo = dir.path().join("repo");
+        let bucket_path = dir.path().join("bucket");
+        std::fs::create_dir_all(&repo).unwrap();
+        std::fs::create_dir_all(&bucket_path).unwrap();
+        let repo = repo.to_string_lossy().into_owned();
+        let bucket = bucket_path.to_string_lossy().into_owned();
+        let config = gated_standard_config(&bucket, dir.path());
+        let handle = spawn(WorkspaceDeps::new(ports()));
+
+        handle
+            .send_and_wait_with(
+                Command::Flow(FlowCommand::Start {
+                    context: context(&config, view_of(&repo, &bucket)),
+                    scope: "branch".into(),
+                }),
+                DEADLINE,
+            )
+            .unwrap();
+        wait_until("one finder runs while the other waits", || {
+            let view = handle.view();
+            launches(dir.path()).len() == 2
+                && ["general", "security"].iter().all(|lens| {
+                    finder_status(&view, &bucket, lens)
+                        .is_some_and(|status| status != FlowTaskStatus::Waiting)
+                })
+        });
+        let running = launches(dir.path())[1].clone();
+        let waiting = if running == "general" {
+            "security"
+        } else {
+            "general"
+        };
+
+        let cancelled = handle
+            .send_and_wait_with(
+                Command::Flow(FlowCommand::Cancel {
+                    er_dir: bucket.clone(),
+                }),
+                DEADLINE,
+            )
+            .unwrap();
+        assert_eq!(
+            cancelled,
+            Reply::FlowChanged {
+                er_dir: bucket.clone()
+            }
+        );
+        wait_until("the waiting finder's row shows Cancelled", || {
+            finder_status(&handle.view(), &bucket, waiting) == Some(FlowTaskStatus::Cancelled)
+        });
+        assert!(
+            er_engine::arena::check_bucket_admission(&bucket).is_err(),
+            "the lease is held while the running finder runs"
+        );
+
+        std::fs::write(dir.path().join("gate"), "").unwrap();
+        wait_until("the cancelled flow drains and frees the bucket", || {
+            let view = handle.view();
+            flow_state(&view, &bucket) == Some(FlowState::Cancelled)
+                && !view.review_flow(&bucket).is_some_and(|live| live.draining)
+                && er_engine::arena::check_bucket_admission(&bucket).is_ok()
+        });
+        assert_eq!(
+            launches(dir.path()),
+            vec!["triage".to_string(), running.clone()],
+            "the waiting finder never launched"
+        );
+        let view = handle.view();
+        assert_eq!(
+            finder_status(&view, &bucket, waiting),
+            Some(FlowTaskStatus::Cancelled),
+            "the waiting finder's row stays Cancelled after its completion"
+        );
+        assert_eq!(
+            finder_status(&view, &bucket, &running),
+            Some(FlowTaskStatus::Done),
+            "the running finder drained as before"
+        );
     });
 }

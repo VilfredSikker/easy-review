@@ -160,6 +160,7 @@ pub enum Ask {
     Push,
     DeleteWatchedFile,
     ApprovePr,
+    DeleteComment,
 }
 
 impl TuiView {
@@ -239,9 +240,11 @@ pub struct TabViewState {
     /// The AI revision the Gate last followed; a new one sets it again
     /// unless it was set by hand.
     pub gate_followed: Option<u64>,
-    /// The body of the draft's write in flight; the composer takes no edit
-    /// until its reply lands.
+    /// The notice of the draft's write in flight; the composer takes no
+    /// edit until its reply lands.
     pub sent: Option<String>,
+    /// The comment the delete prompt asks about.
+    pub deleting_comment: Option<String>,
     /// A J or K landed on a stub: once it parses, the diff scrolls to the
     /// hint's hunk, as the App's in-place parse lets it.
     pub scroll_on_parse: bool,
@@ -279,6 +282,7 @@ impl Default for TabViewState {
             focused_comment_id: None,
             gate_followed: None,
             sent: None,
+            deleting_comment: None,
             scroll_on_parse: false,
             filter_input: String::new(),
             commit_input: String::new(),
@@ -680,6 +684,9 @@ pub fn screen<'a>(view: &'a TuiView, state: &'a TabViewState, frame: Frame<'a>) 
                 Mode::Comment => InputMode::Comment,
                 Mode::Confirm(Ask::Push) => InputMode::Confirm(ConfirmAction::Push),
                 Mode::Confirm(Ask::ApprovePr) => InputMode::Confirm(ConfirmAction::ApprovePR),
+                Mode::Confirm(Ask::DeleteComment) => {
+                    InputMode::Confirm(ConfirmAction::DeleteComment)
+                }
                 Mode::Confirm(Ask::DeleteWatchedFile) => {
                     InputMode::Confirm(ConfirmAction::DeleteWatchedFile {
                         path: watched.deleting.as_deref().unwrap_or_default(),

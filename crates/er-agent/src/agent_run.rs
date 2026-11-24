@@ -144,6 +144,10 @@ pub struct AgentRunHandle {
     /// stop needs to say which of the two happened: a user who pressed stop
     /// does not want "timed out", and a timeout is not something the user did.
     timed_out: AtomicBool,
+    /// Set by the runner once it holds a slot and is about to spawn. Under
+    /// its lock, so a stop that is only for a run still waiting and the
+    /// runner's step past the wait cannot both win.
+    launched: Mutex<bool>,
 }
 
 /// How often the timeout watchdog re-checks whether the run is over.
@@ -166,6 +170,7 @@ impl AgentRunHandle {
             children: Mutex::new(Vec::new()),
             pid: Mutex::new(None),
             timed_out: AtomicBool::new(false),
+            launched: Mutex::new(false),
         })
     }
 
@@ -222,6 +227,29 @@ impl AgentRunHandle {
     /// still waiting for a concurrency slot.
     pub fn cancel_flag(&self) -> &AtomicBool {
         &self.cancel
+    }
+
+    /// Stop the run only if it has not launched yet: it is still waiting for
+    /// a slot, or about to. Answers whether it was stopped. A launched run is
+    /// left alone, so a caller that lets running work drain can use this.
+    pub fn cancel_before_launch(&self) -> bool {
+        let launched = self.launched.lock().unwrap_or_else(|e| e.into_inner());
+        if *launched {
+            return false;
+        }
+        self.cancel.store(true, Ordering::SeqCst);
+        true
+    }
+
+    /// The runner's step from the slot wait to the spawn. False when the run
+    /// was stopped first, and then it must not spawn.
+    pub(crate) fn begin_launch(&self) -> bool {
+        let mut launched = self.launched.lock().unwrap_or_else(|e| e.into_inner());
+        if self.is_cancelled() {
+            return false;
+        }
+        *launched = true;
+        true
     }
 
     /// Record that the child has been reaped and nothing is left to kill.
@@ -486,6 +514,20 @@ mod tests {
     #[test]
     fn new_handle_is_not_cancelled() {
         assert!(!AgentRunHandle::new().is_cancelled());
+    }
+
+    /// A stop before the launch wins and the runner may not spawn; after the
+    /// launch it is refused and the run is left alone.
+    #[test]
+    fn a_stop_before_launch_and_the_launch_exclude_each_other() {
+        let waiting = AgentRunHandle::new();
+        assert!(waiting.cancel_before_launch());
+        assert!(!waiting.begin_launch());
+
+        let launched = AgentRunHandle::new();
+        assert!(launched.begin_launch());
+        assert!(!launched.cancel_before_launch());
+        assert!(!launched.is_cancelled());
     }
 
     /// A live child, so this exercises the real kill path rather than only the
