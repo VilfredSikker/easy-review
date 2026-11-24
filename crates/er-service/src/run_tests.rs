@@ -247,3 +247,134 @@ fn an_acceptance_goes_to_the_actor_holding_the_flow() -> anyhow::Result<()> {
     assert_eq!(host.flow_actor("/b", &cancel), "/b");
     Ok(())
 }
+
+/// Runs `request` on a loaded tab with the gated agent, and answers the task
+/// kinds listed for the tab's bucket and whether the bucket holds the
+/// prepared diff.
+fn lens_run(request: RunRequest) -> anyhow::Result<(Vec<String>, bool)> {
+    let mut seen = (Vec::new(), false);
+    with_repo(|dir, repo| {
+        let agent = Agent::in_dir(dir);
+        let host = ServiceHost::new(gated_ports(Arc::default()), agent.write_config(50));
+        let (key, content) = loaded(&host, repo)?;
+        host.run(key, request)
+            .recv_timeout(WAIT)?
+            .map_err(|error| anyhow::anyhow!(error.message))?;
+        let bucket = &content.context.er_dir;
+        seen.0 = (host.tasks().rows().into_iter())
+            .filter(|row| &row.er_dir == bucket)
+            .map(|row| row.kind)
+            .collect();
+        seen.1 = std::path::Path::new(bucket).join("diff-tmp").exists();
+        for row in host.tasks().rows() {
+            host.tasks().stop(&row.id);
+        }
+        crate::test_support::open_gate(&agent.first);
+        crate::test_support::open_gate(&agent.second);
+        Ok(())
+    })?;
+    Ok(seen)
+}
+
+/// Professor queues the professor lens on a prepared diff.
+#[test]
+fn a_professor_run_queues_the_professor_lens() -> anyhow::Result<()> {
+    let (kinds, prepared) = lens_run(RunRequest::Professor)?;
+    assert_eq!(kinds, [er_engine::ai::professor_task_kind()]);
+    assert!(prepared, "no prepared diff in the bucket");
+    Ok(())
+}
+
+/// Triage queues the triage lens on a prepared diff.
+#[test]
+fn a_triage_run_queues_the_triage_lens() -> anyhow::Result<()> {
+    let (kinds, prepared) = lens_run(RunRequest::Triage)?;
+    assert_eq!(kinds, [er_engine::ai::triage_task_kind()]);
+    assert!(prepared, "no prepared diff in the bucket");
+    Ok(())
+}
+
+/// Professor refuses History, and both lenses refuse a remote tab, each
+/// with the App's message and with no task queued.
+#[test]
+fn the_lenses_refuse_what_the_app_refuses() -> anyhow::Result<()> {
+    with_repo(|dir, repo| {
+        let host = ServiceHost::new(gated_ports(Arc::default()), dir.join("config.toml"));
+        let (_, content) = loaded(&host, repo)?;
+        let mut history = (*content).clone();
+        history.tab.mode = er_engine::tab_identity::DiffMode::History;
+        let mut remote = (*content).clone();
+        remote.context.is_remote = true;
+        let hooks = host.task_hooks();
+        let refusal =
+            |content: &TabContent,
+             plan: fn(&crate::runs::RunTab<'_>) -> Result<(), er_protocol::ErError>| {
+                let run = crate::runs::RunTab {
+                    host: host.tasks(),
+                    hooks: &hooks,
+                    content,
+                };
+                plan(&run).err().map(|error| error.message)
+            };
+        let cases = [
+            (
+                refusal(&history, crate::runs::professor),
+                "Professor not available in this mode",
+            ),
+            (
+                refusal(&remote, crate::runs::professor),
+                "Professor is local-only in v1 — checkout the PR first",
+            ),
+            (
+                refusal(&remote, crate::runs::triage),
+                "Triage is local-only in v1 — checkout the PR first",
+            ),
+        ];
+        for (refused, message) in cases {
+            assert_eq!(refused.as_deref(), Some(message));
+        }
+        assert!(
+            host.tasks().rows().is_empty(),
+            "a refused lens queued a task"
+        );
+        Ok(())
+    })
+}
+
+/// An acceptance sent through `flow` from another project's tab reaches the
+/// actor whose view holds the flow: that actor is held, so no answer comes,
+/// where the tab's own actor would answer at once.
+#[test]
+fn a_flow_acceptance_reaches_the_actor_holding_the_flow() -> anyhow::Result<()> {
+    with_repo(|dir, repo| {
+        let host = ServiceHost::new(gated_ports(Arc::default()), dir.join("config.toml"));
+        let (key, _) = loaded(&host, repo)?;
+        let holder = host.handle_for("/a");
+        drop(holder.send(Command::Hold));
+        let flow = crate::LiveReviewFlow {
+            er_dir: "/flows/a".into(),
+            flow: er_engine::ai::review_flow::ReviewFlow::new("hash"),
+            draining: false,
+            run_targets: Vec::new(),
+            rerun_stages: Vec::new(),
+        };
+        *holder
+            .view
+            .write()
+            .map_err(|_| anyhow::anyhow!("poisoned view"))? = Arc::new(crate::WorkspaceView {
+            review_flows: vec![flow],
+            ..Default::default()
+        });
+        let accept = crate::FlowRequest::Accept {
+            er_dir: "/flows/a".into(),
+            run_id: "run".into(),
+            finding_ids: Vec::new(),
+        };
+        let answer = host.flow(key, accept).recv_timeout(Duration::from_secs(1));
+        assert!(
+            matches!(answer, Err(std::sync::mpsc::RecvTimeoutError::Timeout)),
+            "the tab's own actor answered: {answer:?}"
+        );
+        Ok(())
+    })
+}
