@@ -64,6 +64,8 @@ struct FakeState {
     reply_comment_remote: Option<Result<u64, GhError>>,
     update_review_comment: Option<Result<(), GhError>>,
     delete_comment: Option<Result<(), GhError>>,
+    /// Answers taken one per call before `delete_comment`'s.
+    delete_comment_answers: std::collections::VecDeque<Result<(), GhError>>,
     edit_body: Option<Result<(), GhError>>,
     approve: Option<Result<(), GhError>>,
     fetch_pr_comment_bundle: Option<Result<PrCommentBundle, GhError>>,
@@ -105,6 +107,16 @@ struct FakeState {
     pr_checks_remote: Option<Result<Vec<CheckRun>, GhError>>,
     pr_checks_state_remote: Option<Result<&'static str, GhError>>,
     pr_thread_addressing_remote: Option<Result<ThreadAddressingSummary, GhError>>,
+}
+
+impl FakeState {
+    fn take_delete_answer(&mut self) -> Result<(), GhError> {
+        self.delete_comment_answers.pop_front().unwrap_or_else(|| {
+            self.delete_comment
+                .clone()
+                .unwrap_or_else(|| Err(unscripted("delete_comment")))
+        })
+    }
 }
 
 fn unscripted(method: &str) -> GhError {
@@ -361,6 +373,14 @@ impl FakeGitHub {
     #[must_use]
     pub fn with_delete_comment(self, value: Result<(), GhError>) -> Self {
         self.lock().delete_comment = Some(value);
+        self
+    }
+
+    /// Answers the next `delete_comment` calls in turn; once they run out,
+    /// the `with_delete_comment` answer applies.
+    #[must_use]
+    pub fn with_delete_comment_answers(self, answers: Vec<Result<(), GhError>>) -> Self {
+        self.lock().delete_comment_answers = answers.into();
         self
     }
 
@@ -1113,9 +1133,7 @@ impl GitHub for FakeGitHub {
         self.record(format!(
             "delete_comment(owner={owner:?}, repo={repo:?}, comment_id={comment_id:?}, repo_root={repo_root:?})"
         ))
-        .delete_comment
-        .clone()
-        .unwrap_or_else(|| Err(unscripted("delete_comment")))
+        .take_delete_answer()
     }
 
     fn edit_body(&self, repo_root: &str, body: &str) -> Result<(), GhError> {

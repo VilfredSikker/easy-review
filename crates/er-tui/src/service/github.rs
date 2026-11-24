@@ -58,13 +58,11 @@ pub fn start_general(state: &mut TabViewState, known: PrKnown) -> Result<bool, S
 pub fn submit(state: &mut TabViewState, content: &TabContent, body: String) -> Option<Command> {
     let draft = &mut state.draft;
     let context = content.context.clone();
-    let posted_parent = draft.reply_to.as_deref().map(|id| {
-        matches!(
-            content.ai.state.find_comment(id),
-            Some(CommentRef::GithubComment(row)) if row.github_id.is_some()
-        )
-    });
-    if posted_parent == Some(false) {
+    if draft
+        .reply_to
+        .as_deref()
+        .is_some_and(|id| !posted(content, id))
+    {
         return None;
     }
     let client_id = Some(
@@ -102,6 +100,24 @@ pub fn submit(state: &mut TabViewState, content: &TabContent, body: String) -> O
     };
     state.sent = Some(body);
     Some(command)
+}
+
+fn posted(content: &TabContent, id: &str) -> bool {
+    matches!(
+        content.ai.state.find_comment(id),
+        Some(CommentRef::GithubComment(row)) if row.github_id.is_some()
+    )
+}
+
+/// The delete the prompt confirmed: a comment posted on GitHub goes there
+/// first, with its replies; any other row is a thread delete.
+pub fn delete(content: &TabContent, id: String) -> Command {
+    let context = content.context.clone();
+    if posted(content, &id) {
+        Command::DeleteGithubComment { context, id }
+    } else {
+        Command::DeleteThread { context, id }
+    }
 }
 
 /// The post in flight landed: the draft clears. Answers the App's notice.

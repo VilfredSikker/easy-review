@@ -199,10 +199,10 @@ pub(crate) fn reply_to_github_thread(
     Ok((id, stored_comments(ctx)))
 }
 
-/// Deletes a posted comment and its posted replies on GitHub, root first as
-/// the App does, then removes the thread's local rows. A refused delete
-/// removes no row, so the thread still shows while GitHub holds any of it;
-/// a retry finds the already-deleted ones gone, which the port accepts.
+/// Deletes a posted comment's posted replies on GitHub, then the comment,
+/// then the thread's local rows. A refused delete removes no row, and since
+/// the root goes last a failure leaves it on GitHub with the thread whole. A
+/// retry finds the already-deleted replies gone, which the port accepts.
 pub(crate) fn delete_github_comment(
     deps: &WorkspaceDeps,
     ctx: &TabContext,
@@ -221,16 +221,37 @@ pub(crate) fn delete_github_comment(
                 "This comment's pull request is not recorded; pull comments first".to_string(),
             )
         })?;
-        let replies = comments
+        let ids: Vec<u64> = comments
             .comments
             .iter()
             .filter(|comment| comment.in_reply_to.as_deref() == Some(id))
-            .filter_map(|comment| comment.github_id);
+            .filter_map(|comment| comment.github_id)
+            .chain(std::iter::once(root_id))
+            .collect();
         let github = &deps.ports().github;
-        for github_id in std::iter::once(root_id).chain(replies) {
-            github.delete_comment(&pr.owner, &pr.repo, github_id, &ctx.repo_root)?;
+        let mut deleted = 0;
+        let mut refused = None;
+        for github_id in &ids {
+            match github.delete_comment(&pr.owner, &pr.repo, *github_id, &ctx.repo_root) {
+                Ok(()) => deleted += 1,
+                Err(error) => {
+                    refused = Some(error);
+                    break;
+                }
+            }
         }
-        github.invalidate_comments();
+        // The pull's cached list still holds whatever went.
+        if deleted > 0 {
+            github.invalidate_comments();
+        }
+        match refused {
+            Some(error) if deleted == 0 => return Err(error.into()),
+            Some(error) => return Err(WorkspaceError::Failed(format!(
+                "Deleted {deleted} of {} replies on GitHub; the comment and the rest stay: {error}",
+                ids.len() - 1
+            ))),
+            None => {}
+        }
     }
     crate::annotations::delete_thread(ctx, id)
 }

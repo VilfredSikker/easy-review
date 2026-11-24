@@ -60,18 +60,15 @@ pub enum Focus {
 }
 
 /// The focused question, note or comment, unless a write of the draft is in
-/// flight. A comment posted on GitHub answers `Unported`: its writes are
-/// P68's, and a local `DeleteThread` would leave it on GitHub.
+/// flight. A comment posted on GitHub takes the same keys: its writes go to
+/// GitHub where `github.rs` sends them.
 fn focused<'c>(state: &TabViewState, content: &'c TabContent) -> Result<CommentRef<'c>, Focus> {
     let id = state.focused_comment_id.as_deref().ok_or(Focus::Nothing)?;
     let comment = content.ai.state.find_comment(id).ok_or(Focus::Nothing)?;
     if state.sent.is_some() {
         return Err(Focus::Nothing);
     }
-    match comment {
-        CommentRef::GithubComment(row) if row.github_id.is_some() => Err(Focus::Unported),
-        comment => Ok(comment),
-    }
+    Ok(comment)
 }
 
 /// `r`: a reply draft under the focused top-level comment, placed and typed

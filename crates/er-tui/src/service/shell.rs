@@ -648,10 +648,10 @@ impl Shell {
             }
             TuiAction::Write(Write::DeleteComment) => {
                 self.view.input_mode = Mode::Normal;
+                let deleting = self.writing(key, After::Deleted);
                 let state = self.view.tab_mut(key, content);
-                if let Some(id) = state.deleting_comment.take() {
-                    let context = content.context.clone();
-                    let command = Command::DeleteThread { context, id };
+                if let Some(id) = state.deleting_comment.take().filter(|_| !deleting) {
+                    let command = github::delete(content, id);
                     self.post(key, workspace, command, After::Deleted);
                 }
                 return;

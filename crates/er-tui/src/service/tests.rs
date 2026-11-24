@@ -279,7 +279,21 @@ pub(super) fn plan(args: &Args) -> Start {
 }
 
 pub(super) fn shell(args: &Args, config_dir: &Path) -> Shell {
-    shell_on(Ports::cli(), &plan(args), config_dir)
+    shell_on(test_ports(), &plan(args), config_dir)
+}
+
+/// A GitHub that answers nothing it was not scripted to: the start's PR
+/// probe gets an error, which reads as unknown, and no test reaches `gh`.
+pub(super) fn fake_github() -> Arc<dyn er_github::GitHub> {
+    Arc::new(er_github::FakeGitHub::default())
+}
+
+/// The real git beside [`fake_github`].
+pub(super) fn test_ports() -> Ports {
+    Ports {
+        git: Ports::cli().git,
+        github: fake_github(),
+    }
 }
 
 pub(super) fn shell_on(ports: Ports, start: &Start, config_dir: &Path) -> Shell {
@@ -613,7 +627,7 @@ fn a_failed_first_load_shows_its_error_and_the_notices() {
     let start = plan(&args);
     std::fs::remove_dir_all(repo.path().join(".git")).unwrap_or_else(|e| panic!("{e}"));
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
-        let mut shell = shell_on(Ports::cli(), &start, storage.path());
+        let mut shell = shell_on(test_ports(), &start, storage.path());
         let mut hl = Highlighter::new();
         let mut text = |shell: &mut Shell| rows(&shell_frame(shell, &mut hl)).join("\n");
         let deadline = Instant::now() + WAIT;
@@ -649,7 +663,7 @@ fn tab_keys_load_later_tabs_and_leave_a_failed_one() {
     let start = plan(&args);
     std::fs::remove_dir_all(broken.path().join(".git")).unwrap_or_else(|e| panic!("{e}"));
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
-        let mut shell = shell_on(Ports::cli(), &start, storage.path());
+        let mut shell = shell_on(test_ports(), &start, storage.path());
         let mut hl = Highlighter::new();
         let mut text = |shell: &mut Shell| rows(&shell_frame(shell, &mut hl)).join("\n");
         let tabs = shell.host().registry().tabs_view();
@@ -698,4 +712,38 @@ fn tab_keys_load_later_tabs_and_leave_a_failed_one() {
         shell.handle_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL));
         assert!(shell.should_quit, "Ctrl+Q did not quit a failed tab");
     });
+}
+
+/// The service tests, as text.
+const TEST_SOURCES: [(&str, &str); 11] = [
+    ("config_hub_tests.rs", include_str!("config_hub_tests.rs")),
+    ("filter_tests.rs", include_str!("filter_tests.rs")),
+    ("github_tests.rs", include_str!("github_tests.rs")),
+    ("loop_tests.rs", include_str!("loop_tests.rs")),
+    ("reviewed_tests.rs", include_str!("reviewed_tests.rs")),
+    ("settings_tests.rs", include_str!("settings_tests.rs")),
+    (
+        "thread_writes_tests.rs",
+        include_str!("thread_writes_tests.rs"),
+    ),
+    ("threads_tests.rs", include_str!("threads_tests.rs")),
+    ("watched_tests.rs", include_str!("watched_tests.rs")),
+    ("worktree_tests.rs", include_str!("worktree_tests.rs")),
+    ("tests.rs", include_str!("tests.rs")),
+];
+
+/// No service test hands the shell the real GitHub: the start's PR probe
+/// would run `gh` in every fixture.
+#[test]
+fn service_tests_never_reach_the_real_github() {
+    let needles = [
+        concat!("Ports::cli()", ".github"),
+        concat!("shell_on(", "Ports::cli()"),
+    ];
+    for (name, text) in TEST_SOURCES {
+        let flat: String = text.split_whitespace().collect();
+        for needle in needles {
+            assert!(!flat.contains(needle), "{name} names {needle}");
+        }
+    }
 }

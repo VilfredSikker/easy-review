@@ -7,7 +7,6 @@ use std::time::{Duration, Instant};
 
 use crossterm::event::KeyCode;
 use er_engine::config::{ConfigFieldValue, ErConfig};
-use er_engine::ports::Ports;
 use er_service::SettingsCommand;
 
 use super::shell::Shell;
@@ -30,7 +29,7 @@ fn start(path: &str, config_dir: &Path) -> Shell {
         paths: vec![path.to_string()],
         ..Args::default()
     };
-    let mut shell = shell_on(Ports::cli(), &plan(&args), config_dir);
+    let mut shell = shell_on(super::tests::test_ports(), &plan(&args), config_dir);
     settle(&mut shell, loaded);
     shell
 }

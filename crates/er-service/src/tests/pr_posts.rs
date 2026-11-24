@@ -190,20 +190,23 @@ fn stored_ids(bucket: &str) -> anyhow::Result<Vec<String>> {
     Ok(stored.value.comments.into_iter().map(|c| c.id).collect())
 }
 
-/// A posted delete reaches GitHub for the root and its reply before the
-/// rows go, and a refused one keeps both rows.
+/// A posted delete reaches GitHub for the reply, then the root, before the
+/// rows go. A refused delete keeps both rows; one refused after the reply
+/// went keeps the root on GitHub, says what went, and drops the cache.
 #[test]
 fn a_posted_delete_removes_its_rows_only_once_github_has() -> anyhow::Result<()> {
-    for refused in [true, false] {
+    let refusal = || GhError::Forbidden {
+        message: "not yours".to_string(),
+    };
+    let cases = [
+        (vec![Err(refusal())], false),
+        (vec![Ok(()), Err(refusal())], false),
+        (vec![Ok(()), Ok(())], true),
+    ];
+    for (answers, gone) in cases {
         let (dir, bucket) = posted_thread()?;
-        let answer = if refused {
-            Err(GhError::Forbidden {
-                message: "not yours".to_string(),
-            })
-        } else {
-            Ok(())
-        };
-        let github = Arc::new(FakeGitHub::default().with_delete_comment(answer));
+        let tried = answers.len();
+        let github = Arc::new(FakeGitHub::default().with_delete_comment_answers(answers));
         er_engine::storage::with_process_test_storage_root(dir.path(), || {
             let handle = actor(&github);
             let delete = Command::DeleteGithubComment {
@@ -211,15 +214,33 @@ fn a_posted_delete_removes_its_rows_only_once_github_has() -> anyhow::Result<()>
                 id: "gh-11".to_string(),
             };
             let reply = handle.send_and_wait_with(delete, WAIT);
-            assert_eq!(reply.is_err(), refused, "{reply:?}");
+            assert_eq!(reply.is_ok(), gone, "{reply:?}");
             let left = stored_ids(&bucket)?;
-            let calls = calls_named(&github, &["delete_comment"]).len();
-            if refused {
-                assert_eq!(left, ["gh-11", "gh-12"], "a refused delete lost rows");
-                assert_eq!(calls, 1);
-            } else {
+            let calls = github.calls();
+            let deletes: Vec<&String> = calls
+                .iter()
+                .filter(|call| call.starts_with("delete_comment("))
+                .collect();
+            assert_eq!(deletes.len(), tried, "{calls:?}");
+            assert!(
+                deletes[0].contains("comment_id=12"),
+                "the root went first: {deletes:?}"
+            );
+            let dropped = calls
+                .iter()
+                .any(|call| call.starts_with("invalidate_comments"));
+            assert_eq!(dropped, tried > 1, "{calls:?}");
+            if gone {
                 assert!(left.is_empty(), "{left:?}");
-                assert_eq!(calls, 2, "{:?}", github.calls());
+            } else {
+                assert_eq!(left, ["gh-11", "gh-12"], "a refused delete lost rows");
+            }
+            if tried == 2 && !gone {
+                let said = reply
+                    .err()
+                    .map(|error| error.to_string())
+                    .unwrap_or_default();
+                assert!(said.starts_with("Deleted 1 of 1 replies"), "{said}");
             }
             Ok::<_, anyhow::Error>(())
         })?;

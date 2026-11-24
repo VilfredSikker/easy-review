@@ -460,56 +460,143 @@ fn a_github_line_comment_posts_like_the_app() {
     });
 }
 
-/// A reply drafted under a posted comment goes to its GitHub thread.
+/// Seeds a comment posted on acme/widgets#7 by `author`, with a posted
+/// reply, and focuses the comment with J.
+fn seed_posted(shell: &mut Shell, author: &str) -> String {
+    let content = shell.active_content().unwrap_or_else(|| panic!("gone"));
+    let dir = content.context.comments_dir.clone();
+    let row = |id: &str, github_id: u64, parent: Option<&str>| {
+        serde_json::json!({
+            "id": id, "timestamp": "2026-01-01T00:00:00Z", "file": "src/f000.rs",
+            "hunk_index": 0, "line_start": 4, "line_content": "c", "comment": "posted",
+            "author": author, "source": "github", "github_id": github_id,
+            "in_reply_to": parent, "side": "RIGHT"
+        })
+    };
+    write_sidecar_json::<ErGithubComments>(
+        Path::new(&dir),
+        serde_json::json!({
+            "version": 1, "diff_hash": content.context.branch_diff_hash,
+            "github": {"pr_number": 7, "owner": "acme", "repo": "widgets"},
+            "comments": [row("gh-11", 11, None), row("gh-12", 12, Some("gh-11"))]
+        }),
+    );
+    let moved = |shell: &Shell| {
+        shell
+            .active_content()
+            .is_some_and(|now| now.ai.revision > content.ai.revision)
+    };
+    let deadline = Instant::now() + WAIT;
+    let mut ahead = 0;
+    while !moved(shell) && Instant::now() < deadline {
+        ahead += 2;
+        shell.tick(Instant::now() + Duration::from_secs(ahead));
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(moved(shell), "the posted comment never loaded");
+    shell.handle_key(key(KeyCode::Char('J')));
+    assert_eq!(state(shell).focused_comment_id.as_deref(), Some("gh-11"));
+    dir
+}
+
+fn comment_ids(dir: &str) -> Vec<String> {
+    let rows = read_sidecar::<ErGithubComments>(Path::new(dir)).comments;
+    rows.into_iter().map(|row| row.id).collect()
+}
+
+/// `r` on a posted comment replies in its GitHub thread; an unknown outcome
+/// keeps the client id, so a resend posts no second copy.
 #[test]
-fn a_reply_under_a_posted_comment_goes_to_its_thread() {
+fn r_on_a_posted_comment_replies_in_its_thread() {
+    let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+    er_engine::storage::with_process_test_storage_root(storage.path(), || {
+        for refused in [false, true] {
+            let repo = fixture(1);
+            let answer = if refused {
+                Err(unknown_outcome())
+            } else {
+                Ok(created(13))
+            };
+            let github = Arc::new(on_pr_7().with_post_reply(answer));
+            let mut shell = working(&repo, &github, storage.path());
+            seed_posted(&mut shell, "reviewer");
+            shell.handle_key(key(KeyCode::Char('r')));
+            type_text(&mut shell, "Agreed");
+            let sends = if refused { 2 } else { 1 };
+            for _ in 0..sends {
+                shell.handle_key(key(KeyCode::Enter));
+                settle_replies(&mut shell);
+            }
+            let replies = calls(&github, "post_reply");
+            assert_eq!(replies.len(), 1, "{:?}", github.calls());
+            assert!(replies[0].contains("in_reply_to=11"), "{replies:?}");
+            if refused {
+                assert!(
+                    notice(&shell).ends_with(RETRY_TOO_EARLY),
+                    "{}",
+                    notice(&shell)
+                );
+            } else {
+                assert_eq!(notice(&shell), "Comment posted to GitHub");
+            }
+        }
+    });
+}
+
+/// `e` on your posted comment edits its local row, as the App does, and
+/// sends nothing to GitHub.
+#[test]
+fn e_on_a_posted_comment_edits_its_row() {
     let repo = fixture(1);
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
-    let github = Arc::new(on_pr_7().with_post_reply(Ok(created(12))));
+    let github = Arc::new(on_pr_7());
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
         let mut shell = working(&repo, &github, storage.path());
-        let content = shell.active_content().unwrap_or_else(|| panic!("gone"));
-        write_sidecar_json::<ErGithubComments>(
-            Path::new(&content.context.comments_dir),
-            serde_json::json!({
-                "version": 1, "diff_hash": content.context.branch_diff_hash,
-                "github": {"pr_number": 7, "owner": "acme", "repo": "widgets"},
-                "comments": [{
-                    "id": "gh-11", "timestamp": "2026-01-01T00:00:00Z",
-                    "file": "src/f000.rs", "hunk_index": 0, "line_start": 4,
-                    "line_content": "c", "comment": "posted", "author": "reviewer",
-                    "source": "github", "github_id": 11, "side": "RIGHT"
-                }]
-            }),
-        );
-        let posted = |shell: &Shell| {
-            shell
-                .active_content()
-                .is_some_and(|c| c.ai.state.find_comment("gh-11").is_some())
-        };
-        let deadline = Instant::now() + WAIT;
-        let mut ahead = 0;
-        while !posted(&shell) && Instant::now() < deadline {
-            ahead += 2;
-            shell.tick(Instant::now() + Duration::from_secs(ahead));
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        assert!(posted(&shell), "the posted comment never loaded");
-        let key_of = active_key(&shell);
-        if let Some(state) = shell.view_mut().tab_mut_if_open(key_of) {
-            state.draft.file = "src/f000.rs".into();
-            state.draft.reply_to = Some("gh-11".into());
-            state.draft.kind = er_engine::ai::CommentType::GitHubComment;
-        }
-        shell.view_mut().input_mode = Mode::Comment;
-        type_text(&mut shell, "Agreed");
+        let dir = seed_posted(&mut shell, "You");
+        shell.handle_key(key(KeyCode::Char('e')));
+        assert_eq!(shell.view().input_mode, Mode::Comment);
+        type_text(&mut shell, "Edited: ");
         shell.handle_key(key(KeyCode::Enter));
         settle_replies(&mut shell);
-        let replies = calls(&github, "post_reply");
-        assert_eq!(replies.len(), 1, "{:?}", github.calls());
-        assert!(replies[0].contains("in_reply_to=11"), "{replies:?}");
-        assert!(calls(&github, "post_line_comment").is_empty());
-        assert_eq!(notice(&shell), "Comment posted to GitHub");
+        let rows = read_sidecar::<ErGithubComments>(Path::new(&dir)).comments;
+        assert_eq!(rows[0].comment, "Edited: posted", "{rows:?}");
+        assert_eq!(rows.len(), 2);
+        assert!(calls(&github, "update_review_comment").is_empty());
+    });
+}
+
+/// `x`, `y` on your posted comment deletes its reply and it on GitHub, then the
+/// rows; a refused delete keeps both rows and says why.
+#[test]
+fn x_on_a_posted_comment_deletes_it_on_github_first() {
+    let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+    er_engine::storage::with_process_test_storage_root(storage.path(), || {
+        for refused in [false, true] {
+            let repo = fixture(1);
+            let answer = if refused {
+                Err(GhError::Forbidden {
+                    message: "not yours".into(),
+                })
+            } else {
+                Ok(())
+            };
+            let github = Arc::new(on_pr_7().with_delete_comment(answer));
+            let mut shell = working(&repo, &github, storage.path());
+            let dir = seed_posted(&mut shell, "You");
+            shell.handle_key(key(KeyCode::Char('x')));
+            shell.handle_key(key(KeyCode::Char('y')));
+            settle_replies(&mut shell);
+            let deletes = calls(&github, "delete_comment");
+            if refused {
+                assert_eq!(deletes.len(), 1, "{deletes:?}");
+                assert_eq!(comment_ids(&dir), ["gh-11", "gh-12"]);
+                assert!(notice(&shell).contains("not yours"), "{}", notice(&shell));
+            } else {
+                assert_eq!(deletes.len(), 2, "{deletes:?}");
+                assert!(comment_ids(&dir).is_empty());
+                assert_eq!(notice(&shell), "Comment deleted");
+            }
+        }
     });
 }
 
