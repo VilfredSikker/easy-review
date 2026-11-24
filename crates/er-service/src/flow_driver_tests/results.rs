@@ -60,10 +60,16 @@ fn fresh_diff(target: &BackgroundTaskTarget) -> String {
     filtered_review_diff(&raw, &target.repo_root, None)
 }
 
-/// A `feature` branch one commit ahead of `main`, and a finished flow whose
-/// run kept one finding and dropped another.
-fn fixture() -> Fixture {
+/// Runs `f` on a `feature` branch one commit ahead of `main` and a finished
+/// flow whose run kept one finding and dropped another, with storage rooted
+/// in the repo's directory.
+fn with_fixture(f: impl FnOnce(&Fixture)) {
     let repo = tempfile::tempdir().unwrap();
+    let storage = repo.path().to_path_buf();
+    er_engine::storage::with_test_storage_root(storage, || f(&fixture(repo)));
+}
+
+fn fixture(repo: TempDir) -> Fixture {
     let root = repo.path();
     git(root, &["init", "-b", "main"]);
     std::fs::write(root.join(".git/info/exclude"), ".er/\n").unwrap();
@@ -194,10 +200,6 @@ impl Fixture {
             .unwrap();
         result
     }
-
-    fn storage<R>(&self, f: impl FnOnce() -> R) -> R {
-        er_engine::storage::with_test_storage_root(self.repo.path(), f)
-    }
 }
 
 fn historical_run(fixture: &Fixture, id: &str, status: RunStatus) -> ArenaPaths {
@@ -221,8 +223,7 @@ fn already_in_use(error: &anyhow::Error) -> bool {
 #[test]
 fn acceptance_recovers_an_interrupted_history_run_in_the_captured_bucket() {
     for status in [RunStatus::Running { round: 1 }, RunStatus::Queued] {
-        let fixture = fixture();
-        fixture.storage(|| {
+        with_fixture(|fixture| {
             let paths = historical_run(&fixture, "interrupted", status.clone());
             let before = std::fs::read(paths.run_json()).unwrap();
             er_engine::arena::list_summaries(Path::new(&fixture.er_dir), None).unwrap();
@@ -240,8 +241,7 @@ fn acceptance_recovers_an_interrupted_history_run_in_the_captured_bucket() {
 #[test]
 fn recovery_preserves_registered_running_and_terminal_writers() {
     for status in [RunStatus::Running { round: 1 }, RunStatus::Cancelled] {
-        let fixture = fixture();
-        fixture.storage(|| {
+        with_fixture(|fixture| {
             let paths = historical_run(&fixture, "owned", RunStatus::Running { round: 1 });
             let before = std::fs::read(paths.run_json()).unwrap();
             let arena = fixture.harness.flows().host.arena.clone();
@@ -262,8 +262,7 @@ fn recovery_preserves_registered_running_and_terminal_writers() {
 #[test]
 fn recovery_incomplete_historical_manifests_allow_guarded_acceptance() {
     for malformed in [false, true] {
-        let fixture = fixture();
-        fixture.storage(|| {
+        with_fixture(|fixture| {
             let paths = ArenaPaths::for_run(Path::new(&fixture.er_dir), "orphan");
             paths.ensure_dirs().unwrap();
             std::fs::write(paths.diff_patch(), "recoverable input").unwrap();
@@ -282,8 +281,7 @@ fn recovery_incomplete_historical_manifests_allow_guarded_acceptance() {
 #[test]
 fn recovery_registered_incomplete_manifests_still_block_acceptance() {
     for malformed in [false, true] {
-        let fixture = fixture();
-        fixture.storage(|| {
+        with_fixture(|fixture| {
             let paths = ArenaPaths::for_run(Path::new(&fixture.er_dir), "owned-orphan");
             paths.ensure_dirs().unwrap();
             if malformed {
@@ -300,8 +298,7 @@ fn recovery_registered_incomplete_manifests_still_block_acceptance() {
 fn recovery_never_writes_through_manifest_or_temporary_symlinks() {
     use std::os::unix::fs::symlink;
     for temporary in [false, true] {
-        let fixture = fixture();
-        fixture.storage(|| {
+        with_fixture(|fixture| {
             let paths = historical_run(&fixture, "interrupted", RunStatus::Queued);
             let external = fixture.repo.path().join("outside.json");
             let before = std::fs::read(paths.run_json()).unwrap();
@@ -326,8 +323,7 @@ fn recovery_never_writes_through_manifest_or_temporary_symlinks() {
 
 #[test]
 fn recovery_manifest_directory_io_error_is_not_silenced() {
-    let fixture = fixture();
-    fixture.storage(|| {
+    with_fixture(|fixture| {
         let paths = ArenaPaths::for_run(Path::new(&fixture.er_dir), "unreadable");
         paths.ensure_dirs().unwrap();
         std::fs::create_dir(paths.run_json()).unwrap();
@@ -340,39 +336,41 @@ fn recovery_manifest_directory_io_error_is_not_silenced() {
 
 #[test]
 fn review_artifacts_do_not_change_diff_without_global_git_ignores() {
-    let fixture = fixture();
-    let root = fixture.repo.path();
-    let excludes = root.join(".git/empty-global-excludes");
-    std::fs::write(&excludes, "").unwrap();
-    git(
-        root,
-        &["config", "core.excludesFile", excludes.to_str().unwrap()],
-    );
+    with_fixture(|fixture| {
+        let root = fixture.repo.path();
+        let excludes = root.join(".git/empty-global-excludes");
+        std::fs::write(&excludes, "").unwrap();
+        git(
+            root,
+            &["config", "core.excludesFile", excludes.to_str().unwrap()],
+        );
 
-    let raw = fresh_diff(&fixture.target);
-    let run = load_run(&fixture.paths()).unwrap();
-    assert_eq!(er_engine::ai::compute_diff_hash(&raw), run.diff_hash);
-    assert!(!raw.contains(".er/"));
+        let raw = fresh_diff(&fixture.target);
+        let run = load_run(&fixture.paths()).unwrap();
+        assert_eq!(er_engine::ai::compute_diff_hash(&raw), run.diff_hash);
+        assert!(!raw.contains(".er/"));
+    });
 }
 
 #[test]
 fn opening_and_closing_results_is_read_only_and_run_identity_is_explicit() {
-    let fixture = fixture();
-    let paths = fixture.paths();
-    let run_before = std::fs::read(paths.run_json()).unwrap();
-    let results = fixture.results(&fixture.run_id).unwrap();
-    assert_eq!(results.findings.len(), 1);
-    assert_eq!(results.findings[0].id, "kept");
-    assert!(results.findings[0].selectable);
-    assert!(!Path::new(&fixture.er_dir).join("review.json").exists());
-    drop(results);
-    assert_eq!(std::fs::read(paths.run_json()).unwrap(), run_before);
-    assert!(fixture.results("unknown").is_err());
+    with_fixture(|fixture| {
+        let paths = fixture.paths();
+        let run_before = std::fs::read(paths.run_json()).unwrap();
+        let results = fixture.results(&fixture.run_id).unwrap();
+        assert_eq!(results.findings.len(), 1);
+        assert_eq!(results.findings[0].id, "kept");
+        assert!(results.findings[0].selectable);
+        assert!(!Path::new(&fixture.er_dir).join("review.json").exists());
+        drop(results);
+        assert_eq!(std::fs::read(paths.run_json()).unwrap(), run_before);
+        assert!(fixture.results("unknown").is_err());
 
-    let mut run = load_run(&paths).unwrap();
-    run.id = "wrong-generation".into();
-    save_run(&paths, &run).unwrap();
-    assert!(fixture.results(&fixture.run_id).is_err());
+        let mut run = load_run(&paths).unwrap();
+        run.id = "wrong-generation".into();
+        save_run(&paths, &run).unwrap();
+        assert!(fixture.results(&fixture.run_id).is_err());
+    });
 }
 
 /// A flow run's record says it is flow-owned, so the service's generic arena
@@ -380,8 +378,7 @@ fn opening_and_closing_results_is_read_only_and_run_identity_is_explicit() {
 /// memory, as after a restart.
 #[test]
 fn persisted_flow_run_cannot_use_generic_acceptance_after_restart() {
-    let fixture = fixture();
-    fixture.storage(|| {
+    with_fixture(|fixture| {
         let paths = fixture.paths();
         let mut run = load_run(&paths).unwrap();
         run.config.run_kind = ArenaRunKind::ReviewFlow;
@@ -408,22 +405,23 @@ fn persisted_flow_run_cannot_use_generic_acceptance_after_restart() {
 /// nothing.
 #[test]
 fn a_run_snapshot_keeps_a_seeded_verification_and_writes_nothing() {
-    let fixture = fixture();
-    let paths = fixture.paths();
-    let mut run = load_run(&paths).unwrap();
-    run.config.run_kind = ArenaRunKind::Seeded;
-    save_run(&paths, &run).unwrap();
-    let run_before = std::fs::read(paths.run_json()).unwrap();
-    let snapshot = er_engine::arena::run_snapshot_with_status(
-        &ErConfig::default(),
-        None,
-        Path::new(&fixture.er_dir),
-        &fixture.run_id,
-        crate::arena::is_flow_run,
-    )
-    .unwrap();
-    assert_eq!(snapshot.run.config.run_kind, ArenaRunKind::Seeded);
-    assert_eq!(std::fs::read(paths.run_json()).unwrap(), run_before);
+    with_fixture(|fixture| {
+        let paths = fixture.paths();
+        let mut run = load_run(&paths).unwrap();
+        run.config.run_kind = ArenaRunKind::Seeded;
+        save_run(&paths, &run).unwrap();
+        let run_before = std::fs::read(paths.run_json()).unwrap();
+        let snapshot = er_engine::arena::run_snapshot_with_status(
+            &ErConfig::default(),
+            None,
+            Path::new(&fixture.er_dir),
+            &fixture.run_id,
+            crate::arena::is_flow_run,
+        )
+        .unwrap();
+        assert_eq!(snapshot.run.config.run_kind, ArenaRunKind::Seeded);
+        assert_eq!(std::fs::read(paths.run_json()).unwrap(), run_before);
+    });
 }
 
 fn seed_old_overlay(fixture: &Fixture) -> Vec<u8> {
@@ -461,8 +459,7 @@ fn seed_old_overlay(fixture: &Fixture) -> Vec<u8> {
 
 #[test]
 fn acceptance_supersedes_old_overlay_but_allows_later_verification() {
-    let fixture = fixture();
-    fixture.storage(|| {
+    with_fixture(|fixture| {
         seed_old_overlay(&fixture);
         fixture.accept(&["kept"]).unwrap();
         let run = load_run(&fixture.paths()).unwrap();
@@ -548,8 +545,7 @@ fn save_refused(error: &anyhow::Error) -> bool {
 
 #[test]
 fn run_save_failure_restores_superseded_overlay_byte_for_byte() {
-    let fixture = fixture();
-    fixture.storage(|| {
+    with_fixture(|fixture| {
         let original = seed_old_overlay(&fixture);
         let _fail_save = fail_run_save(&fixture.paths());
         assert!(fixture.accept(&["kept"]).is_err());
@@ -573,8 +569,7 @@ fn run_save_failure_restores_superseded_overlay_byte_for_byte() {
 /// shows now, and records the accepted rows apart from `review.json`.
 #[test]
 fn acceptance_uses_the_captured_bucket_and_leaves_review_alone() {
-    let fixture = fixture();
-    fixture.storage(|| {
+    with_fixture(|fixture| {
         let review_path = Path::new(&fixture.er_dir).join("review.json");
         er_engine::test_support::write_sidecar_json::<er_engine::ai::ErReview>(
             Path::new(&fixture.er_dir),
@@ -618,8 +613,7 @@ fn acceptance_uses_the_captured_bucket_and_leaves_review_alone() {
 /// (ADR 0035). The accepted row is visible and the review stays stale.
 #[test]
 fn acceptance_does_not_restamp_the_general_review() {
-    let fixture = fixture();
-    fixture.storage(|| {
+    with_fixture(|fixture| {
         let review_path = Path::new(&fixture.er_dir).join("review.json");
         er_engine::test_support::write_sidecar_json::<er_engine::ai::ErReview>(
             Path::new(&fixture.er_dir),
@@ -656,8 +650,7 @@ fn acceptance_does_not_restamp_the_general_review() {
 
 #[test]
 fn acceptance_rejects_dropped_unknown_changed_and_stale_selection() {
-    let fixture = fixture();
-    fixture.storage(|| {
+    with_fixture(|fixture| {
         assert!(fixture.accept(&["dropped"]).is_err());
         assert!(fixture.accept(&["missing"]).is_err());
         assert!(!Path::new(&fixture.er_dir).join("review.json").exists());
@@ -678,8 +671,7 @@ fn acceptance_rejects_dropped_unknown_changed_and_stale_selection() {
 
 #[test]
 fn acceptance_rejects_a_changed_working_diff() {
-    let fixture = fixture();
-    fixture.storage(|| {
+    with_fixture(|fixture| {
         std::fs::write(
             fixture.repo.path().join("file.txt"),
             "changed after review\n",
@@ -694,8 +686,7 @@ fn acceptance_rejects_a_changed_working_diff() {
 /// With no open view of the target the command carries no fresh diff.
 #[test]
 fn acceptance_refuses_when_captured_target_is_closed() {
-    let fixture = fixture();
-    fixture.storage(|| {
+    with_fixture(|fixture| {
         let error = fixture.accept_with(None, &["kept"]).unwrap_err();
         assert!(error.to_string().contains("no longer open"), "{error:#}");
         assert!(!Path::new(&fixture.er_dir).join("review.json").exists());
@@ -704,8 +695,7 @@ fn acceptance_refuses_when_captured_target_is_closed() {
 
 #[test]
 fn run_save_failure_rolls_back_a_new_accepted_findings_artifact() {
-    let fixture = fixture();
-    fixture.storage(|| {
+    with_fixture(|fixture| {
         let paths = fixture.paths();
         let _fail_save = fail_run_save(&paths);
 
@@ -724,8 +714,7 @@ fn run_save_failure_rolls_back_a_new_accepted_findings_artifact() {
 
 #[test]
 fn run_save_failure_restores_a_previous_accepted_findings_artifact_byte_for_byte() {
-    let fixture = fixture();
-    fixture.storage(|| {
+    with_fixture(|fixture| {
         let paths = fixture.paths();
         er_engine::test_support::write_sidecar_json::<
             er_engine::ai::accepted_findings::AcceptedFindings,
