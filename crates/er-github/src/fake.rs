@@ -232,6 +232,12 @@ impl FakeGitHub {
         self
     }
 
+    /// Rescripts the pending review after the fake was handed out, as
+    /// another writer would change it.
+    pub fn set_pending_review(&self, value: Result<PendingReview, GhError>) {
+        self.lock().pending_review = Some(value);
+    }
+
     #[must_use]
     pub fn with_pending_review_add_comment(self, value: Result<(), GhError>) -> Self {
         self.lock().pending_review_add_comment = Some(value);

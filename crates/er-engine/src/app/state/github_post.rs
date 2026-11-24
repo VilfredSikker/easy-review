@@ -833,6 +833,33 @@ mod tests {
         });
     }
 
+    /// A draft the flag build saved as a pending-review comment is not
+    /// restored here, where Enter would post it as a single public comment.
+    #[test]
+    fn a_restored_review_draft_is_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let root = crate::paths::ErRoot::managed(dir.path().to_string_lossy().into_owned());
+            let mut app = App::new_for_test(vec![sample_file()]);
+            app.tab_mut().er_root = root.clone();
+            app.tab_mut().branch_diff_hash = "branch-hash".to_string();
+            app.tab_mut().comment_textarea = TextArea::new(vec!["for the review".to_string()]);
+            app.tab().save_session();
+            let store = crate::store_registry::store();
+            let scope = er_store::Scope::dir(root.er_dir()).unwrap();
+            let mut session = crate::session_store::load_session(&store, &scope).unwrap();
+            session.comment_draft_type = "review".to_string();
+            crate::session_store::save_session(&store, &scope, &session).unwrap();
+
+            let mut restored = App::new_for_test(vec![sample_file()]);
+            restored.tab_mut().er_root = root;
+            restored.tab_mut().branch_diff_hash = "branch-hash".to_string();
+            assert!(restored.tab_mut().restore_session());
+            assert!(restored.tab().comment_textarea.is_empty());
+            assert!(restored.github_comment_intent().is_none());
+        });
+    }
+
     #[test]
     fn a_4xx_refusal_is_not_posted_and_does_not_need_reconcile() {
         let mut f = fixture();

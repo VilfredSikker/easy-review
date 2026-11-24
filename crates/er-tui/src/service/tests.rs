@@ -38,6 +38,7 @@ pub(super) const SOURCES: [(&str, &str); 21] = [
     ("modes.rs", include_str!("modes.rs")),
     ("open_hub.rs", include_str!("open_hub.rs")),
     ("pr_probe.rs", include_str!("pr_probe.rs")),
+    ("review_hub.rs", include_str!("review_hub.rs")),
     ("reviewed.rs", include_str!("reviewed.rs")),
     ("session.rs", include_str!("session.rs")),
     ("settings.rs", include_str!("settings.rs")),
@@ -334,6 +335,14 @@ pub(super) fn settle_within(
 
 pub(super) fn key(code: KeyCode) -> KeyEvent {
     KeyEvent::new(code, KeyModifiers::NONE)
+}
+
+/// Takes the Git hub's review row out, so the hub draws as the App's,
+/// which has no review hub.
+pub(super) fn without_review_row(shell: &mut Shell) {
+    if let Some(super::tui_view::Overlay::GitHub(hub)) = shell.view_mut().overlay.as_mut() {
+        hub.drop_review_row();
+    }
 }
 
 pub(super) fn shell_frame(shell: &mut Shell, highlighter: &mut Highlighter) -> Buffer {
@@ -724,6 +733,7 @@ const TEST_SOURCES: [(&str, &str); 14] = [
     ("history_tests.rs", include_str!("history_tests.rs")),
     ("loop_tests.rs", include_str!("loop_tests.rs")),
     ("modes_tests.rs", include_str!("modes_tests.rs")),
+    ("review_hub_tests.rs", include_str!("review_hub_tests.rs")),
     ("reviewed_tests.rs", include_str!("reviewed_tests.rs")),
     ("settings_tests.rs", include_str!("settings_tests.rs")),
     (

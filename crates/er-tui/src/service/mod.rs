@@ -16,6 +16,7 @@ mod layers;
 mod modes;
 mod open_hub;
 mod pr_probe;
+mod review_hub;
 mod reviewed;
 mod session;
 mod settings;
@@ -48,6 +49,8 @@ mod history_tests;
 mod loop_tests;
 #[cfg(test)]
 mod modes_tests;
+#[cfg(test)]
+mod review_hub_tests;
 #[cfg(test)]
 mod reviewed_tests;
 #[cfg(test)]

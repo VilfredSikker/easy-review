@@ -71,6 +71,8 @@ pub fn execute(
         TuiAction::Commit(key) => execute_commit(app, key),
         TuiAction::RemoteUrl(key) => execute_remote_url(app, key),
         TuiAction::BaseBranch(key) => execute_base_branch(app, key),
+        // Only the flag path's review hub opens the summary.
+        TuiAction::ReviewSummary(_) => Ok(()),
         TuiAction::Comment(action) => execute_comment(app, action),
         TuiAction::Confirm(key) => execute_confirm(app, key),
         TuiAction::Write(write) => execute_write(app, write),
@@ -1001,6 +1003,8 @@ fn execute_write(app: &mut App, write: Write) -> Result<()> {
                 Err(e) => app.notify(&format!("Approve failed: {}", e)),
             }
         }
+        // Only the flag path's review hub asks this.
+        Write::RemoveReviewComment => {}
     }
     Ok(())
 }

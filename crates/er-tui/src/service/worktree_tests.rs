@@ -13,7 +13,7 @@ use super::shell::Shell;
 use super::startup::Args;
 use super::tests::{
     app_on, assert_parity, fixture, git, key, loaded, path_of, press_app, settle, shell,
-    shell_frame, WAIT,
+    shell_frame, without_review_row, WAIT,
 };
 use super::tui_view::Mode;
 use crate::ui::highlight::Highlighter;
@@ -223,6 +223,7 @@ fn the_git_hub_draws_like_the_app() {
         for code in [KeyCode::Char('g'), KeyCode::Char('j')] {
             press_app(&mut app, code);
             shell.handle_key(key(code));
+            without_review_row(&mut shell);
             let step = format!("{code:?}");
             assert_parity(&app, &shell_frame(&mut shell, &mut hl), &mut hl, &step);
         }
