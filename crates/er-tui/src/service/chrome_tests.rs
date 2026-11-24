@@ -140,21 +140,22 @@ fn the_width_keys_hold_the_apps_limits() {
         shell_frame(&mut shell, &mut hl);
         let mut codes = vec![KeyCode::Char('<'); 10];
         codes.extend([KeyCode::Char('>'); 25]);
+        codes.extend([KeyCode::Char('<'); 8]);
         codes.push(KeyCode::Char('p'));
         codes.extend([KeyCode::Char('}'); 12]);
-        codes.extend([KeyCode::Char('>'); 3]);
+        codes.extend([KeyCode::Char('>'); 12]);
         codes.extend([KeyCode::Char('{'); 14]);
+        let key = active_key(&shell);
         for code in codes {
             press(&mut app, &mut shell, &mut hl, code);
+            let view = state(&shell, key);
+            assert_eq!(
+                (view.file_tree_width, view.panel_width),
+                (app.tab().file_tree_width, app.tab().panel_width),
+                "{code:?}"
+            );
         }
-        let key = active_key(&shell);
-        assert_eq!(
-            (
-                state(&shell, key).file_tree_width,
-                state(&shell, key).panel_width
-            ),
-            (app.tab().file_tree_width, app.tab().panel_width)
-        );
+        assert!(state(&shell, key).panel.is_some(), "no panel to resize");
     });
 }
 
@@ -177,8 +178,6 @@ fn the_split_diff_focus_and_scroll_follow_the_app() {
             KeyCode::Char('l'),
             KeyCode::Char('l'),
             KeyCode::Char('h'),
-            KeyCode::Down,
-            KeyCode::Down,
             KeyCode::Down,
             KeyCode::Down,
             KeyCode::Home,
