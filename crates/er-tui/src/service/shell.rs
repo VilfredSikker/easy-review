@@ -728,6 +728,8 @@ impl Shell {
         let state = self.view.tab_mut(key, &content);
         if due && state.watched.is_shown(config) && !config.paths.is_empty() {
             self.watched.scan(key, &tab.repo_root, config);
+        } else if due {
+            state.watched.clear();
         }
         // Hidden opens on its first watched file, as the App's switch does.
         let first = state.watched.selected.is_none() && !state.watched.files.is_empty();

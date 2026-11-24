@@ -1,7 +1,9 @@
 //! The watched files on the flag path (P69.2). The list and the selected
 //! file's snapshot diff are read on one worker thread through er-git's read
-//! functions, so no key and no frame waits on the disk. A snapshot save or a
-//! delete is a service command; this module writes nothing.
+//! functions, so no key waits on the disk, and in snapshot mode no frame
+//! does. In content mode the shared renderer still reads the file during the
+//! draw, as the App's does (left from P63). A snapshot save or a delete is a
+//! service command; this module writes nothing.
 
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
@@ -217,9 +219,15 @@ impl TabWatched {
         if shown {
             return ("Watched files shown", true);
         }
+        self.clear();
+        ("Watched files hidden", false)
+    }
+
+    /// The list is gone: the section is hidden or the config lists no
+    /// paths, as the App's rescan clears it.
+    pub fn clear(&mut self) {
         self.files.clear();
         self.selected = None;
-        ("Watched files hidden", false)
     }
 
     /// A listing landed. The selection is clamped as the App's rescan does,

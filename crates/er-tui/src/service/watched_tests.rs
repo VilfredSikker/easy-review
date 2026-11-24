@@ -6,8 +6,9 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use crossterm::event::KeyCode;
+use er_engine::config::ConfigFieldValue;
 use er_engine::tab_identity::DiffMode;
-use er_service::Command;
+use er_service::{Command, SettingsCommand};
 
 use super::shell::Shell;
 use super::startup::Args;
@@ -220,5 +221,64 @@ fn a_watched_delete_writes_and_draws_like_the_app() {
         let flag_on = shell_frame(&mut shell, &mut hl);
         let _ = std::fs::remove_file(snapshot_of(&shell, "b.env"));
         assert_parity(&app, &flag_on, &mut hl, "deleted");
+    });
+}
+
+/// Sends a watched-paths patch through the settings actor, after a forced
+/// rescan, so the five-second rescan is not due for the next few seconds.
+fn patch_paths(shell: &mut Shell, key: &str, value: ConfigFieldValue) {
+    shell.tick(Instant::now() + Duration::from_secs(6));
+    shell.send_settings(SettingsCommand::ApplyConfigPatch {
+        key: key.into(),
+        value,
+    });
+}
+
+/// A hub edit that adds a watched path lists its files on the next ticks,
+/// without waiting for the five-second rescan.
+#[test]
+fn a_watched_path_added_in_the_hub_lists_at_once() {
+    let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+    let repo = watched_repo(storage.path());
+    std::fs::write(repo.path().join("n.log"), "N=1\n").unwrap_or_else(|e| panic!("{e}"));
+    let path = path_of(&repo);
+    er_engine::storage::with_process_test_storage_root(storage.path(), || {
+        let mut shell = start(&path, storage.path());
+        let pattern = ConfigFieldValue::String("*.log".into());
+        patch_paths(&mut shell, "watched.paths.add", pattern);
+        let listed = settle_within(&mut shell, Duration::from_secs(3), |shell| {
+            watched(shell).is_some_and(|w| w.files.iter().any(|f| f.path == "n.log"))
+        });
+        assert!(listed, "the new path waited for the rescan");
+    });
+}
+
+/// A hub edit that leaves no watched paths clears the shown list and its
+/// selection, as the App's rescan does.
+#[test]
+fn emptied_watched_paths_clear_the_list() {
+    let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+    let repo = watched_repo(storage.path());
+    let path = path_of(&repo);
+    er_engine::storage::with_process_test_storage_root(storage.path(), || {
+        let mut shell = start(&path, storage.path());
+        // Hidden, then shown again: `W` now decides, as after the App's `W`.
+        for code in [KeyCode::Char('W'), KeyCode::Char('W')] {
+            shell.handle_key(key(code));
+        }
+        settle(&mut shell, |shell| {
+            watched(shell).is_some_and(|w| !w.files.is_empty())
+        });
+        shell.handle_key(key(KeyCode::Char('k')));
+        assert!(watched(&shell).is_some_and(|w| w.selected.is_some()));
+        patch_paths(
+            &mut shell,
+            "watched.paths.remove",
+            ConfigFieldValue::Number(0),
+        );
+        let cleared = settle_within(&mut shell, Duration::from_secs(3), |shell| {
+            watched(shell).is_some_and(|w| w.files.is_empty() && w.selected.is_none())
+        });
+        assert!(cleared, "the old list still draws");
     });
 }

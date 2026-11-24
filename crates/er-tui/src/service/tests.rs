@@ -75,6 +75,16 @@ fn flag_on_modules_name_no_app_and_never_wait() {
             for write in WATCHED_WRITES {
                 assert!(!flat.contains(write), "{name} names {write}");
             }
+            let tokens = code_tokens(text);
+            for write in WATCHED_WRITE_NAMES {
+                assert!(!tokens.contains(&write), "{name} names {write}");
+            }
+            for statement in use_statements(text) {
+                assert!(
+                    !statement.iter().any(|token| token == "as"),
+                    "{name} renames an import: {statement:?}"
+                );
+            }
             for named in er_git_names(&flat) {
                 assert!(
                     WATCHED_READS.contains(&named),
@@ -107,19 +117,66 @@ fn flag_on_modules_name_no_app_and_never_wait() {
     }
 }
 
-/// The calls a write takes, matched as calls so an unrelated name with the
-/// same word passes.
-const WATCHED_WRITES: [&str; 9] = [
-    "save_snapshot(",
-    "delete_watched_file(",
-    "diff_watched_file_snapshot(",
-    "remove_file(",
+/// The calls the port's writes with common names take, whatever handle or
+/// path comes before them, and the file system, which the reader never
+/// names. Matched as calls, so a name that only contains `push` or `commit`
+/// passes.
+const WATCHED_WRITES: [&str; 12] = [
+    ".commit(",
+    "::commit(",
+    ".push(",
+    "::push(",
+    ".fetch(",
+    "::fetch(",
+    "Git::",
+    "std::fs",
+    "fs::",
+    "OpenOptions",
+    "File::",
     "remove_dir",
-    "fs::write(",
-    "fs::copy(",
-    "fs::rename(",
-    "File::create(",
 ];
+
+/// The writes with names nothing else uses, matched as whole identifiers in
+/// the code, so no handle, path or import spelling hides them.
+const WATCHED_WRITE_NAMES: [&str; 10] = [
+    "save_snapshot",
+    "delete_watched_file",
+    "diff_watched_file_snapshot",
+    "update_ref",
+    "shallow_clone",
+    "stage_file",
+    "unstage_file",
+    "stage_all",
+    "remove_file",
+    "fs",
+];
+
+/// A source's identifiers, outside `//` comments.
+fn code_tokens(text: &str) -> Vec<&str> {
+    text.lines()
+        .map(|line| line.split("//").next().unwrap_or_default())
+        .flat_map(|line| line.split(|c: char| !c.is_alphanumeric() && c != '_'))
+        .filter(|token| !token.is_empty())
+        .collect()
+}
+
+/// Each `use` statement's identifiers, so an import that renames a write
+/// (`as`) is seen whatever its layout.
+fn use_statements(text: &str) -> Vec<Vec<String>> {
+    let code: Vec<&str> = text
+        .lines()
+        .map(|line| line.split("//").next().unwrap_or_default())
+        .collect();
+    let code = code.join(" ");
+    code.split(';')
+        .filter_map(|piece| {
+            let tokens = code_tokens(piece);
+            let at = tokens.iter().rposition(|token| *token == "use")?;
+            let statement = tokens.get(at + 1..).unwrap_or_default();
+            Some(statement.iter().map(ToString::to_string).collect())
+        })
+        .collect()
+}
 
 /// The er-git names the watched-file reader may use.
 const WATCHED_READS: [&str; 5] = [
