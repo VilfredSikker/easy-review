@@ -2095,12 +2095,16 @@ pub fn save_config_to(path: &std::path::Path, config: &ErConfig) -> Result<()> {
 pub enum ConfigItem {
     SectionHeader(String),
     BoolToggle {
+        /// The `ApplyConfigPatch` key that writes this row's field.
+        key: &'static str,
         label: String,
         description: String,
         get: fn(&ErConfig) -> bool,
         set: fn(&mut ErConfig, bool),
     },
     StringCycle {
+        /// The `ApplyConfigPatch` key that writes this row's field.
+        key: &'static str,
         label: String,
         description: String,
         options: &'static [&'static str],
@@ -2108,6 +2112,8 @@ pub enum ConfigItem {
         set: fn(&mut ErConfig, String),
     },
     DynamicStringCycle {
+        /// The part of the default AI selection this row sets.
+        part: AiSelectionPart,
         label: String,
         description: String,
         options: fn(&ErConfig) -> Vec<String>,
@@ -2115,6 +2121,8 @@ pub enum ConfigItem {
         set: fn(&mut ErConfig, String),
     },
     StringEdit {
+        /// The `ApplyConfigPatch` key that writes this row's field.
+        key: &'static str,
         label: String,
         description: String,
         placeholder: String,
@@ -2122,6 +2130,8 @@ pub enum ConfigItem {
         set: fn(&mut ErConfig, String),
     },
     NumberEdit {
+        /// The `ApplyConfigPatch` key that writes this row's field.
+        key: &'static str,
         label: String,
         description: String,
         min: u8,
@@ -2130,10 +2140,14 @@ pub enum ConfigItem {
         set: fn(&mut ErConfig, u8),
     },
     ListEntry {
+        /// The patch key that removes this entry, by its index.
+        key: &'static str,
         label: String,
         index: usize,
     },
     ListAdd {
+        /// The patch key that adds the typed entry.
+        key: &'static str,
         label: String,
         section: String,
     },
@@ -2142,6 +2156,15 @@ pub enum ConfigItem {
         description: String,
         action_id: &'static str,
     },
+}
+
+/// Which part of the default AI selection a hub cycle sets. The selection is
+/// written as one resolved choice, so these rows carry no patch key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AiSelectionPart {
+    Provider,
+    Model,
+    Effort,
 }
 
 impl std::fmt::Debug for ConfigItem {
@@ -2155,10 +2178,10 @@ impl std::fmt::Debug for ConfigItem {
             }
             Self::StringEdit { label, .. } => write!(f, "StringEdit({:?})", label),
             Self::NumberEdit { label, .. } => write!(f, "NumberEdit({:?})", label),
-            Self::ListEntry { label, index } => {
+            Self::ListEntry { label, index, .. } => {
                 write!(f, "ListEntry({:?}, {})", label, index)
             }
-            Self::ListAdd { label, section } => {
+            Self::ListAdd { label, section, .. } => {
                 write!(f, "ListAdd({:?}, {:?})", label, section)
             }
             Self::Action { label, .. } => write!(f, "Action({:?})", label),
@@ -2187,6 +2210,7 @@ fn general_config_hub_items(config: &ErConfig) -> Vec<ConfigItem> {
         ConfigItem::SectionHeader("Commands".into()),
         ConfigItem::StringEdit {
             label: "Test".into(),
+            key: "commands.test",
             description: "Run tests".into(),
             placeholder: "e.g. cargo test".into(),
             get: |c| c.commands.test.clone().unwrap_or_default(),
@@ -2194,6 +2218,7 @@ fn general_config_hub_items(config: &ErConfig) -> Vec<ConfigItem> {
         },
         ConfigItem::StringEdit {
             label: "Lint".into(),
+            key: "commands.lint",
             description: "Run linter".into(),
             placeholder: "e.g. cargo clippy".into(),
             get: |c| c.commands.lint.clone().unwrap_or_default(),
@@ -2201,6 +2226,7 @@ fn general_config_hub_items(config: &ErConfig) -> Vec<ConfigItem> {
         },
         ConfigItem::StringEdit {
             label: "Typecheck".into(),
+            key: "commands.typecheck",
             description: "Run type checker".into(),
             placeholder: "e.g. tsc --noEmit".into(),
             get: |c| c.commands.typecheck.clone().unwrap_or_default(),
@@ -2208,6 +2234,7 @@ fn general_config_hub_items(config: &ErConfig) -> Vec<ConfigItem> {
         },
         ConfigItem::StringEdit {
             label: "Security".into(),
+            key: "commands.security",
             description: "Run security scan".into(),
             placeholder: "e.g. cargo audit".into(),
             get: |c| c.commands.security.clone().unwrap_or_default(),
@@ -2215,6 +2242,7 @@ fn general_config_hub_items(config: &ErConfig) -> Vec<ConfigItem> {
         },
         ConfigItem::BoolToggle {
             label: "Push summary to PR body".into(),
+            key: "summary.push_to_pr",
             description: "Auto-push summary to GitHub PR".into(),
             get: |c| c.summary.push_to_pr,
             set: |c, v| c.summary.push_to_pr = v,
@@ -2222,6 +2250,7 @@ fn general_config_hub_items(config: &ErConfig) -> Vec<ConfigItem> {
         ConfigItem::SectionHeader("Agent".into()),
         ConfigItem::StringEdit {
             label: "Command".into(),
+            key: "agent.command",
             description: "Agent executable".into(),
             placeholder: "e.g. claude".into(),
             get: |c| c.agent.command.clone(),
@@ -2233,6 +2262,7 @@ fn general_config_hub_items(config: &ErConfig) -> Vec<ConfigItem> {
         },
         ConfigItem::StringEdit {
             label: "Args".into(),
+            key: "agent.args",
             description: "Agent arguments (space-separated)".into(),
             placeholder: "e.g. --print -p {prompt}".into(),
             get: |c| c.agent.args.join(" "),
@@ -2241,6 +2271,7 @@ fn general_config_hub_items(config: &ErConfig) -> Vec<ConfigItem> {
         ConfigItem::SectionHeader("AI Hub".into()),
         ConfigItem::DynamicStringCycle {
             label: "Provider".into(),
+            part: AiSelectionPart::Provider,
             description: "Global AI Hub provider".into(),
             options: hub_provider_options,
             get: hub_provider_value,
@@ -2248,6 +2279,7 @@ fn general_config_hub_items(config: &ErConfig) -> Vec<ConfigItem> {
         },
         ConfigItem::DynamicStringCycle {
             label: "Model".into(),
+            part: AiSelectionPart::Model,
             description: "Model for the selected provider".into(),
             options: hub_model_options,
             get: hub_model_value,
@@ -2255,6 +2287,7 @@ fn general_config_hub_items(config: &ErConfig) -> Vec<ConfigItem> {
         },
         ConfigItem::DynamicStringCycle {
             label: "Effort / reasoning".into(),
+            part: AiSelectionPart::Effort,
             description: "Auto uses the provider default".into(),
             options: hub_effort_options,
             get: hub_effort_value,
@@ -2262,6 +2295,7 @@ fn general_config_hub_items(config: &ErConfig) -> Vec<ConfigItem> {
         },
         ConfigItem::BoolToggle {
             label: "Model discovery".into(),
+            key: "features.model_discovery",
             description: "List models from provider CLIs".into(),
             get: |c| c.features.model_discovery,
             set: |c, v| c.features.model_discovery = v,
@@ -2269,6 +2303,7 @@ fn general_config_hub_items(config: &ErConfig) -> Vec<ConfigItem> {
         ConfigItem::SectionHeader("Watched Paths".into()),
         ConfigItem::StringCycle {
             label: "Diff mode".into(),
+            key: "watched.diff_mode",
             description: "How to diff watched files".into(),
             options: &["content", "snapshot"],
             get: |c| c.watched.diff_mode.clone(),
@@ -2278,12 +2313,14 @@ fn general_config_hub_items(config: &ErConfig) -> Vec<ConfigItem> {
 
     for (i, path) in config.watched.paths.iter().enumerate() {
         items.push(ConfigItem::ListEntry {
+            key: "watched.paths.remove",
             label: path.clone(),
             index: i,
         });
     }
 
     items.push(ConfigItem::ListAdd {
+        key: "watched.paths.add",
         label: "Add pattern...".into(),
         section: "watched".into(),
     });
@@ -2383,42 +2420,49 @@ fn terminal_config_hub_items(_config: &ErConfig) -> Vec<ConfigItem> {
         ConfigItem::SectionHeader("Views".into()),
         ConfigItem::BoolToggle {
             label: "Branch diff (1)".into(),
+            key: "features.view_branch",
             description: "Show branch diff mode".into(),
             get: |c| c.features.view_branch,
             set: |c, v| c.features.view_branch = v,
         },
         ConfigItem::BoolToggle {
             label: "Unstaged changes (2)".into(),
+            key: "features.view_unstaged",
             description: "Show unstaged changes mode".into(),
             get: |c| c.features.view_unstaged,
             set: |c, v| c.features.view_unstaged = v,
         },
         ConfigItem::BoolToggle {
             label: "Staged changes (3)".into(),
+            key: "features.view_staged",
             description: "Show staged changes mode".into(),
             get: |c| c.features.view_staged,
             set: |c, v| c.features.view_staged = v,
         },
         ConfigItem::BoolToggle {
             label: "History (4)".into(),
+            key: "features.view_history",
             description: "Show commit history mode".into(),
             get: |c| c.features.view_history,
             set: |c, v| c.features.view_history = v,
         },
         ConfigItem::BoolToggle {
             label: "Conflicts (5)".into(),
+            key: "features.view_conflicts",
             description: "Show merge conflicts mode".into(),
             get: |c| c.features.view_conflicts,
             set: |c, v| c.features.view_conflicts = v,
         },
         ConfigItem::BoolToggle {
             label: "Hidden files (6)".into(),
+            key: "features.view_hidden",
             description: "Show hidden files mode".into(),
             get: |c| c.features.view_hidden,
             set: |c, v| c.features.view_hidden = v,
         },
         ConfigItem::BoolToggle {
             label: "Tour".into(),
+            key: "features.view_tour",
             description: "Show AI guided tour mode (when a tour exists)".into(),
             get: |c| c.features.view_tour,
             set: |c, v| c.features.view_tour = v,
@@ -2426,6 +2470,7 @@ fn terminal_config_hub_items(_config: &ErConfig) -> Vec<ConfigItem> {
         ConfigItem::SectionHeader("Display".into()),
         ConfigItem::StringCycle {
             label: "Theme".into(),
+            key: "display.theme",
             description: "Color theme".into(),
             options: THEME_OPTIONS,
             get: |c| c.display.theme.clone(),
@@ -2433,30 +2478,35 @@ fn terminal_config_hub_items(_config: &ErConfig) -> Vec<ConfigItem> {
         },
         ConfigItem::BoolToggle {
             label: "Line numbers".into(),
+            key: "display.line_numbers",
             description: "Show line numbers in diff".into(),
             get: |c| c.display.line_numbers,
             set: |c, v| c.display.line_numbers = v,
         },
         ConfigItem::BoolToggle {
             label: "Wrap lines".into(),
+            key: "display.wrap_lines",
             description: "Wrap long lines".into(),
             get: |c| c.display.wrap_lines,
             set: |c, v| c.display.wrap_lines = v,
         },
         ConfigItem::BoolToggle {
             label: "Split diff".into(),
+            key: "display.split_diff",
             description: "Side-by-side diff view".into(),
             get: |c| c.display.split_diff,
             set: |c, v| c.display.split_diff = v,
         },
         ConfigItem::BoolToggle {
             label: "Auto-expand context".into(),
+            key: "display.auto_context",
             description: "Pick unified context per file (small → more, big → less)".into(),
             get: |c| c.display.auto_context_threshold > 0,
             set: |c, v| c.display.auto_context_threshold = if v { 1 } else { 0 },
         },
         ConfigItem::NumberEdit {
             label: "Tab width".into(),
+            key: "display.tab_width",
             description: "Spaces per tab stop".into(),
             min: 1,
             max: 16,
@@ -2466,24 +2516,28 @@ fn terminal_config_hub_items(_config: &ErConfig) -> Vec<ConfigItem> {
         ConfigItem::SectionHeader("Key Hints".into()),
         ConfigItem::BoolToggle {
             label: "Navigation hints".into(),
+            key: "hints.navigation",
             description: "Show j/k, n/N, ␣, / hints".into(),
             get: |c| c.hints.navigation,
             set: |c, v| c.hints.navigation = v,
         },
         ConfigItem::BoolToggle {
             label: "Staging hints".into(),
+            key: "hints.staging",
             description: "Show s, c commit hints".into(),
             get: |c| c.hints.staging,
             set: |c, v| c.hints.staging = v,
         },
         ConfigItem::BoolToggle {
             label: "Comment hints".into(),
+            key: "hints.comments",
             description: "Show r, d comment action hints".into(),
             get: |c| c.hints.comments,
             set: |c, v| c.hints.comments = v,
         },
         ConfigItem::BoolToggle {
             label: "Verbose hints".into(),
+            key: "hints.verbose",
             description: "Show all key hints (resize, filters, etc)".into(),
             get: |c| c.hints.verbose,
             set: |c, v| c.hints.verbose = v,
@@ -3054,11 +3108,11 @@ mod tests {
             .filter(|i| matches!(i, ConfigItem::ListEntry { .. }))
             .collect();
         assert_eq!(list_entries.len(), 2);
-        if let ConfigItem::ListEntry { label, index } = &list_entries[0] {
+        if let ConfigItem::ListEntry { label, index, .. } = &list_entries[0] {
             assert_eq!(label, ".work/**");
             assert_eq!(*index, 0);
         }
-        if let ConfigItem::ListEntry { label, index } = &list_entries[1] {
+        if let ConfigItem::ListEntry { label, index, .. } = &list_entries[1] {
             assert_eq!(label, "logs/*.log");
             assert_eq!(*index, 1);
         }

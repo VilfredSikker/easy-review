@@ -19,7 +19,9 @@ use er_engine::TabKey;
 use er_service::TabContent;
 use tui_textarea::TextArea;
 
-use crate::screen::view::{InputMode, OverlayData, SplitSide};
+use super::ai_picker::Picker;
+use super::config_hub::ConfigHub;
+use crate::screen::view::{ConfigEditState, InputMode, OverlayData, SplitSide};
 use crate::screen::{Chrome, Screen, SectionData, TabData, TabView};
 
 /// What the flag-on loop shows: per tab its view state, and app wide the
@@ -32,13 +34,15 @@ pub struct TuiView {
     pub notification: Option<String>,
 }
 
-/// The overlays the flag-on path holds. No key opens one yet; each entry
-/// that ports an overlay's actions adds its variant.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// The overlays the flag-on path holds; each entry that ports an overlay's
+/// actions adds its variant.
 pub enum Overlay {
+    ConfigHub(ConfigHub),
+    /// The AI hub and its provider, model and effort pickers.
+    Picker(Picker),
     #[cfg_attr(
         not(test),
-        expect(dead_code, reason = "no key opens an overlay on this path yet")
+        expect(dead_code, reason = "no key opens the export picker on this path yet")
     )]
     ExportPicker {
         include_comments: bool,
@@ -50,8 +54,32 @@ pub enum Overlay {
 }
 
 impl Overlay {
+    /// Rebuilds a hub's rows from a newer settings view.
+    pub fn sync(&mut self, view: &er_service::SettingsView, ai_label: &str) {
+        match self {
+            Self::ConfigHub(hub) => hub.sync(view),
+            Self::Picker(picker) => picker.sync(view, ai_label),
+            Self::ExportPicker { .. } => {}
+        }
+    }
+
     fn data(&self) -> OverlayData<'_> {
         match *self {
+            Self::ConfigHub(ref hub) => OverlayData::ConfigHub {
+                tab: hub.scope,
+                items: &hub.items,
+                selected: hub.selected,
+                editing: hub.editing.as_ref().map(|edit| ConfigEditState {
+                    item_index: edit.item_index,
+                    buffer: &edit.buffer,
+                }),
+            },
+            Self::Picker(ref picker) => OverlayData::ModalHub {
+                kind: picker.kind(),
+                title: picker.title.as_deref(),
+                items: &picker.rows,
+                selected: picker.selected,
+            },
             Self::ExportPicker {
                 include_comments,
                 include_findings,

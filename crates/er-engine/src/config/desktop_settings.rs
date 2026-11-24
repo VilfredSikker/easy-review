@@ -334,6 +334,61 @@ mod tests {
     use crate::config::ErConfig;
     use crate::config::{risk_rules_view, RiskRuleSource, RiskRules, RiskTier};
 
+    /// A hub row's setter and the patch its key names change a config the
+    /// same way, so the TUI's hub writes through the settings actor with the
+    /// one field writer (ADR 0069).
+    #[test]
+    fn every_hub_row_key_patches_as_its_setter_sets() {
+        use crate::config::{config_hub_items, ConfigItem};
+
+        let mut base = ErConfig::default();
+        base.watched.paths = vec!["docs/**".into()];
+        let mut keyed = 0;
+        for item in config_hub_items(&base) {
+            let row = format!("{item:?}");
+            let (mut by_set, mut by_key) = (base.clone(), base.clone());
+            let (key, value) = match item {
+                ConfigItem::BoolToggle { key, get, set, .. } => {
+                    set(&mut by_set, !get(&base));
+                    (key, ConfigFieldValue::Bool(!get(&base)))
+                }
+                ConfigItem::StringCycle {
+                    key, options, set, ..
+                } => {
+                    let last = options[options.len() - 1].to_string();
+                    set(&mut by_set, last.clone());
+                    (key, ConfigFieldValue::String(last))
+                }
+                ConfigItem::StringEdit { key, set, .. } => {
+                    set(&mut by_set, "run --fast {prompt}".into());
+                    (key, ConfigFieldValue::String("run --fast {prompt}".into()))
+                }
+                ConfigItem::NumberEdit { key, set, max, .. } => {
+                    set(&mut by_set, max);
+                    (key, ConfigFieldValue::Number(u64::from(max)))
+                }
+                ConfigItem::ListAdd { key, .. } => {
+                    by_set.watched.paths.push("src/**".into());
+                    (key, ConfigFieldValue::String("src/**".into()))
+                }
+                ConfigItem::ListEntry { key, index, .. } => {
+                    by_set.watched.paths.remove(index);
+                    (key, ConfigFieldValue::Number(index as u64))
+                }
+                _ => continue,
+            };
+            keyed += 1;
+            apply_config_field(&mut by_key, key, value);
+            assert_ne!(
+                format!("{by_set:?}"),
+                format!("{base:?}"),
+                "{row} set nothing"
+            );
+            assert_eq!(format!("{by_set:?}"), format!("{by_key:?}"), "{row}: {key}");
+        }
+        assert_eq!(keyed, 28, "a keyed row was added or lost");
+    }
+
     #[test]
     fn the_cap_picker_offers_exactly_what_the_setter_accepts() {
         // These disagreed: the picker offered 1-6 while the write path
