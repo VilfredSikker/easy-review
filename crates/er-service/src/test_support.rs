@@ -4,7 +4,7 @@
 
 use std::path::{Path, PathBuf};
 
-pub use crate::run_worker::on_planning_worker;
+pub use crate::run_worker::{on_planning_worker, while_planning};
 
 /// The files a gated agent reads and writes.
 pub struct Agent {

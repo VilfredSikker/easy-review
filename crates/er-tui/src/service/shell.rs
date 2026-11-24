@@ -389,7 +389,15 @@ impl Shell {
                     self.redraw = true;
                     let tabs = self.host.registry().tabs_view();
                     let open = tabs.tabs.iter().map(|entry| entry.key).collect();
-                    agent_log::forget_closed(self.host.tasks(), &mut self.run_buckets, &open);
+                    let shown = (tabs.tabs.iter())
+                        .filter_map(|entry| {
+                            let workspace = entry.descriptor.workspace_key();
+                            self.host.content(&workspace, entry.key)
+                        })
+                        .map(|content| content.context.er_dir.clone())
+                        .collect();
+                    let tasks = self.host.tasks();
+                    agent_log::forget_closed(tasks, &mut self.run_buckets, &open, &shown);
                 }
                 Ok(_) => self.redraw = true,
                 Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
@@ -1011,6 +1019,9 @@ impl Shell {
                     Write::ClearAnswersAndRunQuestions => Rerun::Questions,
                     _ => Rerun::Notes,
                 };
+                if let Some(refused) = rerun.refused_before_clear(content) {
+                    return self.notify(refused);
+                }
                 let command = rerun.clear(content);
                 return self.post(key, workspace, command, After::Rerun(rerun));
             }

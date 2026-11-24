@@ -353,3 +353,98 @@ fn the_log_panel_and_running_badge_draw_like_the_app() {
         settle(&mut shell, |shell| log_of(shell, &dir).is_empty());
     });
 }
+
+/// Seeds a one-file review into `dir` and waits until the tab shows it.
+fn seed_review(shell: &mut Shell, dir: &str) {
+    std::fs::create_dir_all(dir).unwrap_or_else(|e| panic!("{e}"));
+    er_engine::test_support::write_sidecar_json::<er_engine::ai::ErReview>(
+        Path::new(dir),
+        serde_json::json!({"version": 1, "diff_hash": "h", "files": {
+            "src/f000.rs": {"risk": "high", "findings": []}
+        }}),
+    );
+    settle(shell, |shell| {
+        let content = shell.active_content();
+        content.is_some_and(|content| content.ai.state.review.is_some())
+    });
+}
+
+fn notice(shell: &Shell) -> String {
+    shell.view().notification.clone().unwrap_or_default()
+}
+
+/// A clear the bucket's lease refuses starts no run: the status line says
+/// why and the host lists no task.
+#[test]
+fn a_refused_clear_starts_no_run() {
+    let repo = fixture(1);
+    let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+    er_engine::storage::with_process_test_storage_root(storage.path(), || {
+        let agent = agent_with(storage.path(), "true", "");
+        let mut shell = shell_on(&[&repo], &agent);
+        let dir = er_dir(&shell);
+        seed_review(&mut shell, &dir);
+        let lease = super::clears_tests::take_lease(&dir);
+        choose(&mut shell, 'a', "Review work");
+        shell.handle_key(key(KeyCode::Char('y')));
+        settle(&mut shell, |shell| {
+            notice(shell).starts_with("Review not started: ")
+        });
+        settle_within(&mut shell, Duration::from_millis(500), |_| false);
+        assert_eq!(kinds(&shell), Vec::<String>::new(), "a refused clear ran");
+        drop(lease);
+        release(&mut shell, &agent);
+    });
+}
+
+/// `y` on a review rerun over a diff with no file says so and keeps the
+/// review, where clearing first would leave nothing.
+#[test]
+fn an_empty_diff_keeps_its_review_on_a_rerun() {
+    let repo = fixture(1);
+    let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+    er_engine::storage::with_process_test_storage_root(storage.path(), || {
+        let agent = agent_with(storage.path(), "true", "");
+        let mut shell = shell_on(&[&repo], &agent);
+        shell.handle_key(key(KeyCode::Char('2')));
+        settle(&mut shell, |shell| {
+            let content = shell.active_content();
+            content.is_some_and(|c| c.tab.mode == er_engine::tab_identity::DiffMode::Unstaged)
+        });
+        let dir = er_dir(&shell);
+        seed_review(&mut shell, &dir);
+        choose(&mut shell, 'a', "Review work");
+        shell.handle_key(key(KeyCode::Char('y')));
+        settle_within(&mut shell, Duration::from_millis(500), |_| false);
+        assert_eq!(notice(&shell), "Review not started: Nothing to review");
+        assert!(
+            Path::new(&dir).join("review.json").exists(),
+            "the review went"
+        );
+        release(&mut shell, &agent);
+    });
+}
+
+/// A test build refuses a provider CLI on `PATH`: with the default
+/// provider, `claude`, the spawn is refused and the run fails.
+#[test]
+fn a_test_build_never_starts_a_real_provider_cli() {
+    let repo = fixture(1);
+    let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+    er_engine::storage::with_process_test_storage_root(storage.path(), || {
+        let mut shell = shell(&args(vec![path_of(&repo)]), storage.path());
+        settle(&mut shell, loaded);
+        let view = shell.host().settings().view();
+        let provider = view
+            .config
+            .ai_hub
+            .resolve_default_selection(&view.config.agent);
+        assert_eq!(provider.provider_id.as_deref(), Some("claude"));
+        let before = er_agent::agent_run::real_cli_refusals();
+        choose(&mut shell, 'a', "Generate summary");
+        let failed = |shell: &Shell| notice(shell).contains("summary failed");
+        settle(&mut shell, failed);
+        let refused = er_agent::agent_run::real_cli_refusals();
+        assert!(refused > before, "the spawn was not refused");
+    });
+}

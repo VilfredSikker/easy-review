@@ -2,9 +2,10 @@
 //! service's task host for the tab's bucket. The host keeps each bucket's
 //! log after its tasks leave the list (ADR 0074), as the App keeps a tab's.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use er_engine::agent_log::{AgentLogEntry, AgentLogSource};
+use er_engine::TabKey;
 use er_service::TaskHost;
 
 use crate::screen::view;
@@ -49,27 +50,25 @@ fn running(tasks: &TaskHost, er_dir: &str) -> Vec<String> {
         .collect()
 }
 
-/// Forgets the logs of the buckets whose tabs closed, unless an open tab
-/// still shows that bucket. `buckets` maps each tab that ran something to
-/// its bucket; the closed tabs leave it.
+/// Forgets the log of each closed tab that ran something, unless an open
+/// tab still shows that bucket. `ran` maps each tab that ran something to
+/// its bucket, and the closed tabs leave it; `shown` is every open tab's
+/// bucket.
 pub fn forget_closed(
     tasks: &TaskHost,
-    buckets: &mut std::collections::HashMap<er_engine::TabKey, String>,
-    open: &HashSet<er_engine::TabKey>,
+    ran: &mut HashMap<TabKey, String>,
+    open: &HashSet<TabKey>,
+    shown: &HashSet<String>,
 ) {
-    let closed: Vec<_> = buckets
-        .keys()
-        .filter(|key| !open.contains(key))
-        .copied()
-        .collect();
-    for key in closed {
-        let Some(er_dir) = buckets.remove(&key) else {
-            continue;
-        };
-        if !buckets.values().any(|kept| *kept == er_dir) {
-            tasks.drop_bucket_log(&er_dir);
+    ran.retain(|key, er_dir| {
+        if open.contains(key) {
+            return true;
         }
-    }
+        if !shown.contains(er_dir.as_str()) {
+            tasks.drop_bucket_log(er_dir);
+        }
+        false
+    });
 }
 
 fn entry(entry: AgentLogEntry) -> view::AgentLogEntry {

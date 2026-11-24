@@ -88,6 +88,24 @@ pub fn catching_panics() -> bool {
     CATCHING.get()
 }
 
+/// Runs `during` on the calling thread while a planning job is held on a
+/// worker under its catch, and answers what `during` returned.
+#[cfg(any(test, feature = "test-support"))]
+pub fn while_planning<R>(during: impl FnOnce() -> R) -> R {
+    let (started_tx, started) = mpsc::channel();
+    let (release, held) = mpsc::channel::<()>();
+    let (tx, _answer) = mpsc::channel();
+    submit(&Worker::start(), tx, Err::<(), String>, move |_| {
+        let _ = started_tx.send(catching_panics());
+        let _ = held.recv();
+    });
+    let caught = started.recv().unwrap_or(false);
+    assert!(caught, "the held job ran without the catch");
+    let result = during();
+    let _ = release.send(());
+    result
+}
+
 /// Runs `job` on a planning worker as a plan runs, panic catch included, and
 /// answers what it returned, or the error a caught panic answers.
 #[cfg(any(test, feature = "test-support"))]
@@ -307,11 +325,14 @@ mod tests {
     }
 
     /// A job runs under the flag a front end's panic hook reads, and the
-    /// flag is off on other threads and once the job ends.
+    /// flag is off on other threads, the caller's among them while the job
+    /// is held, and once the job ends.
     #[test]
     fn a_planning_job_runs_under_the_catch_flag() {
         assert!(!catching_panics());
         assert_eq!(on_planning_worker(catching_panics), Ok(true));
+        let caller = while_planning(catching_panics);
+        assert!(!caller, "the caller read the held job's flag");
         let worker = Worker::start();
         let (tx, after) = mpsc::channel();
         submit(&worker, tx, Err::<bool, String>, |tx| {

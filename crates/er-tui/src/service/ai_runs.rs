@@ -41,6 +41,14 @@ impl Rerun {
         }
     }
 
+    /// Why `y` leaves the last output alone: a review of a diff with no
+    /// file would clear and then find nothing to review. An ignored-only
+    /// diff still clears first, since only the planner filters it.
+    pub fn refused_before_clear(self, content: &TabContent) -> Option<String> {
+        let empty = self == Self::Review && content.diff.files.is_empty();
+        empty.then(|| self.refused("Nothing to review"))
+    }
+
     /// What a refused clear says; the run does not start.
     pub fn refused(self, error: &str) -> String {
         let what = match self {

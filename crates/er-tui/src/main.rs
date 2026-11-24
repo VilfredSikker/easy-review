@@ -758,13 +758,15 @@ mod tests {
     use std::sync::mpsc;
 
     /// A panic the planning worker catches leaves the terminal as it is; any
-    /// other panic restores it.
+    /// other panic restores it, on this thread too while a plan runs.
     #[cfg(feature = "v1-service")]
     #[test]
     fn a_caught_planning_panic_leaves_the_screen_alone() {
         assert!(leaves_the_screen());
         let on_worker = er_service::test_support::on_planning_worker(leaves_the_screen);
         assert_eq!(on_worker, Ok(false), "the hook would leave the screen");
+        let here = er_service::test_support::while_planning(leaves_the_screen);
+        assert!(here, "a panic here while a plan runs would keep the screen");
     }
 
     // ── Test helpers ──

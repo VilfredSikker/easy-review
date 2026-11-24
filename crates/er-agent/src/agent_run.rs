@@ -75,6 +75,32 @@ impl std::fmt::Display for RunCancelled {
 impl std::error::Error for RunCancelled {}
 
 /// Build the [`RunCancelled`] error to bail out with.
+/// A test build refuses a provider CLI looked up on `PATH`, so no test can
+/// start a real agent: every agent and model listing spawns here. A fake
+/// named by its path still runs.
+#[cfg(any(test, feature = "test-support"))]
+fn refuse_real_cli(cmd: &Command) -> anyhow::Result<()> {
+    let program = cmd.get_program().to_string_lossy();
+    let bare = !program.contains(['/', '\\']);
+    let stem = program.trim_end_matches(".exe");
+    let family = ["claude", "codex", "cursor-agent", "agent", "opencode"].contains(&stem);
+    if bare && family {
+        REAL_CLI_REFUSALS.fetch_add(1, Ordering::SeqCst);
+        anyhow::bail!("a test build refuses the real provider CLI `{program}`");
+    }
+    Ok(())
+}
+
+#[cfg(any(test, feature = "test-support"))]
+static REAL_CLI_REFUSALS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// How many spawns this process refused as a real provider CLI, so a test
+/// can see the refusal through a launcher that words its own error.
+#[cfg(any(test, feature = "test-support"))]
+pub fn real_cli_refusals() -> usize {
+    REAL_CLI_REFUSALS.load(Ordering::SeqCst)
+}
+
 pub fn cancelled() -> anyhow::Error {
     anyhow::Error::new(RunCancelled)
 }
@@ -274,6 +300,8 @@ impl AgentRunHandle {
     #[cfg(unix)]
     pub fn spawn(&self, cmd: &mut Command) -> anyhow::Result<Child> {
         use std::os::unix::process::CommandExt;
+        #[cfg(any(test, feature = "test-support"))]
+        refuse_real_cli(cmd)?;
         // New process group; the child's pid becomes the group's id.
         cmd.process_group(0);
         let child = cmd.spawn()?;
@@ -288,6 +316,8 @@ impl AgentRunHandle {
     /// goes through `taskkill /T` and so still reaches the CLI's children.
     #[cfg(not(unix))]
     pub fn spawn(&self, cmd: &mut Command) -> anyhow::Result<Child> {
+        #[cfg(any(test, feature = "test-support"))]
+        refuse_real_cli(cmd)?;
         let child = cmd.spawn()?;
         self.record_pid(&child);
         Ok(child)
