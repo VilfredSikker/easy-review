@@ -389,10 +389,8 @@ fn tab_cancel_back_and_close_keys_match_the_apps() {
             settle_quietly(&mut shell, || read(&agents) == read(&app_agents));
             assert_eq!(read(&agents), read(&app_agents), "Left");
         }
-        for code in [KeyCode::Char('s')] {
-            press_app(&mut app, code);
-            shell.handle_key(key(code));
-        }
+        press_app(&mut app, KeyCode::Char('s'));
+        shell.handle_key(key(KeyCode::Char('s')));
         assert!(shell.view().overlay.is_none(), "s left the hub open");
         assert_parity(&app, &shell_frame(&mut shell, &mut hl), &mut hl, "closed");
     });
