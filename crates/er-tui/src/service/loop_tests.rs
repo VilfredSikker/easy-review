@@ -258,6 +258,8 @@ fn a_restored_draft_keeps_its_client_id() {
 pub(super) struct Gate {
     closed: Mutex<bool>,
     opened: Condvar,
+    /// Makes `diff_raw` panic, as a dying effect worker does.
+    pub(super) panics: std::sync::atomic::AtomicBool,
 }
 
 impl Gate {
@@ -294,6 +296,10 @@ impl Git for GatedGit {
         head_ref: Option<&str>,
     ) -> Result<String, GitError> {
         self.0.pass();
+        assert!(
+            !self.0.panics.load(std::sync::atomic::Ordering::SeqCst),
+            "the gate panics"
+        );
         CliGit.diff_raw(mode, base, repo_root, head_ref)
     }
 
