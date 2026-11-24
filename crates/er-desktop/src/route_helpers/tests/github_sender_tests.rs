@@ -179,7 +179,8 @@ fn the_comment_tick_syncs_the_active_pr() {
 }
 
 /// An edit of a comment posted on GitHub goes there before its row
-/// changes, as the App's edit does: GitHub refusing it keeps the row.
+/// changes, as the App's `update_comment_text` does: GitHub refusing it
+/// keeps the row.
 #[test]
 fn an_edit_of_a_posted_comment_reaches_github_first() {
     with_pr_tab(|state, key, github| {

@@ -173,7 +173,7 @@ fn a_pull_reads_github_and_moves_the_ai_section() {
 }
 
 /// A pull GitHub answers with "no PR" marks the tab, and the GitHub
-/// composer then refuses on it.
+/// composer and the review row then refuse on it.
 #[test]
 fn a_pull_with_no_pr_marks_the_tab_absent() {
     let repo = fixture(1);
@@ -188,6 +188,9 @@ fn a_pull_with_no_pr_marks_the_tab_absent() {
         assert_eq!(known(&shell), PrKnown::Absent);
         shell.handle_key(key(KeyCode::Char('c')));
         assert_eq!(shell.view().input_mode, Mode::Normal);
+        git_hub_row(&mut shell, 7);
+        assert_eq!(notice(&shell), "No PR for this branch");
+        assert!(shell.view().review.is_none());
     });
 }
 
@@ -545,7 +548,7 @@ fn r_on_a_posted_comment_replies_in_its_thread() {
 }
 
 /// `e` on your posted comment edits it on GitHub, then its row, as the
-/// App's edit does; a refused edit keeps the row and the composer, and a
+/// App's `update_comment_text` does; a refused edit keeps the row and the composer, and a
 /// second Enter while the edit is in flight sends nothing.
 #[test]
 fn e_on_a_posted_comment_edits_it_on_github_first() {

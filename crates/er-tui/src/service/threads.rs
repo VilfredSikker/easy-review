@@ -214,7 +214,7 @@ fn submit(state: &mut TabViewState, mode: &mut Mode, content: &TabContent) -> Co
     let context = content.context.clone();
     if let Some(id) = draft.edit_id.clone() {
         state.sent = Some(format!("Comment updated: {}", truncate(&body, 40)));
-        let edit = er_service::edit_message(content, id, body);
+        let edit = er_service::edit_message(context, id, body);
         return Composed::Send(Box::new(edit));
     }
     // A finding reply is P72's. A GitHub comment, or a reply under a posted

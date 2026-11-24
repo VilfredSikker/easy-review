@@ -264,9 +264,9 @@ pub(crate) fn delete_github_comment(
     crate::annotations::delete_thread(ctx, id)
 }
 
-/// Edits a comment on GitHub first, as the App's edit does, and writes the
-/// local row only once GitHub took it; a row with no PR recorded is edited
-/// locally, as on the App.
+/// Edits a comment on GitHub first, as the App's `update_comment_text`
+/// does, and writes the local row only once GitHub took it; a row that was
+/// never posted, or has no PR recorded, is edited locally.
 pub(crate) fn update_github_comment(
     deps: &WorkspaceDeps,
     ctx: &TabContext,
@@ -308,18 +308,15 @@ pub(crate) fn update_github_comment(
     crate::annotations::update_thread_message(ctx, id, text)
 }
 
-/// The edit of one thread message from `content`: a comment posted on
-/// GitHub is edited there first, any other message locally.
-pub fn edit_message(content: &crate::TabContent, id: String, body: String) -> Command {
-    let context = content.context.clone();
-    let posted = matches!(
-        content.ai.state.find_comment(&id),
-        Some(ai::CommentRef::GithubComment(row)) if row.github_id.is_some()
-    );
-    if posted {
-        Command::UpdateGithubComment { context, id, body }
-    } else {
+/// The edit of one thread message. A question or note is local; any other
+/// id is a comments-sidecar row, and its effect reads the stored row to
+/// decide whether GitHub is edited first, so a page or frame that has not
+/// loaded the row yet cannot skip GitHub.
+pub fn edit_message(context: TabContext, id: String, body: String) -> Command {
+    if id.starts_with("q-") || id.starts_with("n-") {
         Command::UpdateThreadMessage { context, id, body }
+    } else {
+        Command::UpdateGithubComment { context, id, body }
     }
 }
 

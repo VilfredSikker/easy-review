@@ -909,7 +909,8 @@ impl Shell {
                 return;
             }
             A::OpenGitHub => {
-                self.view.overlay = Some(Overlay::GitHub(GitHub::open(content)));
+                let known = self.view.pr_known(key, content);
+                self.view.overlay = Some(Overlay::GitHub(GitHub::open(content, known)));
                 return;
             }
             A::ToggleWatchedFiles => {

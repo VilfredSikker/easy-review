@@ -250,13 +250,15 @@ fn ctrl(c: char) -> KeyEvent {
     KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)
 }
 
-/// The composer's fourth kind adds the line to the pending review and posts
-/// no single comment; a refused add keeps the text.
+/// The composer's fourth kind adds the line to the pending review, on the
+/// side the line is on, and posts no single comment; a refused add keeps
+/// the text.
 #[test]
 fn the_review_kind_adds_to_the_pending_review() {
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
-        for refused in [false, true] {
+        // Four rows down is the deleted line 4, five the line added in its place.
+        for (downs, side, refused) in [(4, "LEFT", false), (5, "RIGHT", false), (4, "LEFT", true)] {
             let repo = fixture(1);
             let answer = if refused {
                 Err(GhError::Network {
@@ -267,7 +269,7 @@ fn the_review_kind_adds_to_the_pending_review() {
             };
             let github = Arc::new(two().with_pending_review_add_comment(answer));
             let mut shell = working(&repo, &github, storage.path());
-            for _ in 0..4 {
+            for _ in 0..downs {
                 shell.handle_key(key(KeyCode::Down));
             }
             shell.handle_key(key(KeyCode::Char('c')));
@@ -281,7 +283,10 @@ fn the_review_kind_adds_to_the_pending_review() {
             settle_replies(&mut shell);
             let added = calls(&github, "pending_review_add_comment");
             assert_eq!(added.len(), 1, "{:?}", github.calls());
-            assert!(added[0].contains("src/f000.rs"), "{added:?}");
+            let entry = format!(
+                "file: \"src/f000.rs\", line: 4, start_line: None, body: \"Join the review\", side: \"{side}\""
+            );
+            assert!(added[0].contains(&entry), "{added:?}");
             assert!(calls(&github, "post_line_comment").is_empty());
             let text = state(&shell).draft.textarea.lines().join("\n");
             if refused {

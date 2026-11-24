@@ -147,10 +147,11 @@ pub fn apply(desktop: &DesktopState, command: Command) -> Routed {
         } => (
             tab,
             view,
-            // A comment posted on GitHub is edited there first, as the App's
-            // edit does; a local-only edit would come back on the next pull.
-            Box::new(move |content: &TabContent| Ok(er_service::edit_message(content, id, body)))
-                as Box<dyn FnOnce(&TabContent) -> Result<er_service::Command, String>>,
+            // A comment posted on GitHub is edited there first; a local-only
+            // edit would come back on the next pull.
+            service(Box::new(move |context| {
+                er_service::edit_message(context, id, body)
+            })),
         ),
         Command::DeleteThread { tab, view, id } => {
             return Routed::Applied(delete_thread(desktop, tab, &view, id));
