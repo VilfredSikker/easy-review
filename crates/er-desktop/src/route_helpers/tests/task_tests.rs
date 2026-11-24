@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use er_engine::task_target::BackgroundTaskTarget;
 use er_engine::TabKey;
 use er_protocol::{Command, Resource, ResourceKey, TaskJob};
-use er_service::test_support::{open_gate, pid_alive, Agent};
+use er_service::test_support::{open_gate, Agent};
 use er_service::WorkspaceDeps;
 
 use super::ai_ask_tests::jobs;
@@ -124,6 +124,15 @@ fn launch(state: &DesktopState, dir: &Path, kind: &str, branch: &str) -> er_serv
 
 fn row(state: &DesktopState, id: &str) -> Option<TaskJob> {
     tasks(state).into_iter().find(|row| row.id == id)
+}
+
+#[cfg(test)]
+fn pid_alive(pid: &str) -> bool {
+    std::process::Command::new("kill")
+        .args(["-0", pid])
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
 }
 
 /// An output line lands in `task_log` and leaves `jobs`' version alone;

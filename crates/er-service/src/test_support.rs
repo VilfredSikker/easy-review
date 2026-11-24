@@ -75,6 +75,7 @@ pub fn open_gate(gate: &Path) {
     std::fs::write(gate, "").unwrap_or_else(|e| panic!("gate: {e}"));
 }
 
+#[cfg(test)]
 pub fn pid_alive(pid: &str) -> bool {
     std::process::Command::new("kill")
         .args(["-0", pid])
