@@ -355,6 +355,14 @@ pub enum Command {
     /// toggle does: their hunks leave the section, and the next loads parse
     /// them compacted.
     CompactFiles { key: TabKey, paths: Vec<String> },
+    /// Fetch one file of a loaded tab's diff again with `lines` of context,
+    /// as the App's `+` and `-` do. The count holds across reloads in the
+    /// same view and base. Refused for a remote tab and in History.
+    SetFileContext {
+        key: TabKey,
+        path: String,
+        lines: usize,
+    },
     /// Read a loaded tab's sidecars again when a writer outside the workspace
     /// moved them. A reload already running for the key answers at once.
     ReloadSidecars { key: TabKey },
@@ -804,6 +812,10 @@ pub enum Reply {
     FilesCompacted {
         key: TabKey,
         compacted: usize,
+    },
+    /// A file's context-line count was set.
+    ContextSet {
+        key: TabKey,
     },
     /// A closed tab's content left the view.
     ContentDropped {

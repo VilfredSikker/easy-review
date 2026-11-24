@@ -160,7 +160,7 @@ fn the_auto_unmark_keeps_a_toggle_saved_since_the_load_read() -> anyhow::Result<
         toggle_reviewed(&deps(), &context(&bucket), "src/b.rs")
             .map_err(|error| anyhow::anyhow!("toggle: {error}"))?;
         let files = er_engine::git::parse_diff(RAW);
-        let cleared = crate::effect::clear_moved_marks(
+        let (cleared, _) = crate::effect::clear_moved_marks(
             &mut read_by_the_load,
             RAW,
             &files,
@@ -229,7 +229,7 @@ fn an_auto_unmark_that_clears_nothing_takes_no_lock() -> anyhow::Result<()> {
         std::fs::remove_file(&lock)?;
         let mut read_by_the_load = session_store::load_reviewed(&store, &scope)?;
         let files = er_engine::git::parse_diff(RAW);
-        let cleared = crate::effect::clear_moved_marks(
+        let (cleared, _) = crate::effect::clear_moved_marks(
             &mut read_by_the_load,
             RAW,
             &files,

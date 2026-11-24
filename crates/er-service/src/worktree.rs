@@ -115,19 +115,20 @@ pub(crate) fn step(
         Ok(loaded) => {
             let key = written.key;
             let since = Some(since);
-            match state.apply_patch(ContentPatch::Loaded { key, since, loaded }) {
+            match state.apply_patch(ContentPatch::loaded(key, since, loaded)) {
                 Ok((revision, _)) => {
                     publish(view, state);
                     broadcast(subscribers, Event::ViewPublished { revision });
                 }
                 Err(PatchRefused::Moved) if written.tries < RELOAD_TRIES => {
+                    published(view, state, subscribers);
                     let Some(current) = state.view().tabs.get(&key).cloned() else {
                         return answer(written);
                     };
                     let tries = written.tries + 1;
                     return reload(deps, tx, Written { tries, ..written }, &current);
                 }
-                Err(PatchRefused::Moved) => {}
+                Err(PatchRefused::Moved) => published(view, state, subscribers),
             }
         }
         Err(error) => {
@@ -136,6 +137,18 @@ pub(crate) fn step(
         }
     }
     answer(written);
+}
+
+/// Publishes the view as it stands: a refused load may still have landed
+/// the marks its clear saved.
+fn published(
+    view: &RwLock<Arc<WorkspaceView>>,
+    state: &WorkspaceState,
+    subscribers: &Mutex<Vec<Sender<Event>>>,
+) {
+    let revision = state.view().revision;
+    publish(view, state);
+    broadcast(subscribers, Event::ViewPublished { revision });
 }
 
 fn answer(written: Written) {

@@ -6,6 +6,7 @@
 //! which row landed.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use er_engine::ai::{self, CommentType};
 use er_engine::annotations::{self, AnnotationInput, LineAnchor, ReplyAttribution, WrittenPayload};
@@ -13,7 +14,7 @@ use er_engine::diff_fetch::{fetch_branch_scope_raw, BranchScopeFetchInputs};
 use er_engine::git::{parse_diff, parse_diff_headers, DiffFile};
 use er_engine::session_store;
 use er_engine::store_registry;
-use er_store::{Loaded, Scope};
+use er_store::{ArtifactStore, Loaded, Scope};
 
 use crate::actor::WorkspaceDeps;
 use crate::content::ContentPatch;
@@ -28,16 +29,44 @@ fn sidecar(dir: &str, payload: WrittenPayload) -> ContentPatch {
     ContentPatch::stored_sidecar(dir, payload)
 }
 
+/// The last sequence a reviewed write took, process-wide.
+static MARKS_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// `session_store::update_reviewed`, with a sequence taken while the bucket's
+/// lock is held, so the sequences follow the order the writes saved in.
+pub(crate) fn update_marks(
+    store: &ArtifactStore,
+    scope: &Scope,
+    change: impl FnOnce(&mut HashMap<String, String>) -> usize,
+) -> Result<Marks, WorkspaceError> {
+    let mut seq = 0;
+    let (changed, map) = session_store::update_reviewed(store, scope, |map| {
+        seq = MARKS_SEQ.fetch_add(1, Ordering::SeqCst) + 1;
+        change(map)
+    })
+    .map_err(|error| failed("update the reviewed marks", error))?;
+    Ok(Marks { changed, map, seq })
+}
+
+/// What a reviewed write saved.
+pub(crate) struct Marks {
+    pub changed: usize,
+    pub map: HashMap<String, String>,
+    pub seq: u64,
+}
+
 /// The saved marks when a write changed them; nothing otherwise.
-fn marks_patch(ctx: &TabContext, changed: bool, marks: HashMap<String, String>) -> ContentPatch {
-    if changed {
+pub(crate) fn marks_patch(ctx: &TabContext, marks: Marks) -> Written<usize> {
+    let patch = if marks.changed > 0 {
         ContentPatch::Reviewed {
             er_dir: ctx.er_dir.clone(),
-            marks,
+            marks: marks.map,
+            seq: marks.seq,
         }
     } else {
         ContentPatch::Several(Vec::new())
-    }
+    };
+    Ok((marks.changed, patch))
 }
 
 pub(crate) fn failed(context: &str, error: impl std::fmt::Display) -> WorkspaceError {
@@ -883,7 +912,7 @@ pub(crate) fn bulk_review_pillar(
     let paths = reviewed_paths(&diff_paths, paths);
     let store = store_registry::store();
     let scope = bucket_scope(&ctx.er_dir)?;
-    let (changed, map) = session_store::update_reviewed(&store, &scope, |map| {
+    let marks = update_marks(&store, &scope, |map| {
         let mut changed = 0usize;
         for path in paths {
             let hash = ai::compute_per_file_hash(&raw, &path).unwrap_or_default();
@@ -892,9 +921,8 @@ pub(crate) fn bulk_review_pillar(
             }
         }
         changed
-    })
-    .map_err(|error| failed("update the reviewed marks", error))?;
-    Ok((changed, marks_patch(ctx, changed > 0, map)))
+    })?;
+    marks_patch(ctx, marks)
 }
 
 pub(crate) fn toggle_reviewed(
@@ -912,12 +940,11 @@ pub(crate) fn toggle_reviewed(
     let store = store_registry::store();
     let scope = bucket_scope(&ctx.er_dir)?;
     let hash = ai::compute_per_file_hash(&raw, path).unwrap_or_default();
-    let (changed, map) = session_store::update_reviewed(&store, &scope, |map| {
+    let marks = update_marks(&store, &scope, |map| {
         let reviewed = !map.contains_key(path);
         usize::from(annotations::apply_reviewed(map, path, hash, reviewed))
-    })
-    .map_err(|error| failed("update the reviewed marks", error))?;
-    Ok((changed, marks_patch(ctx, changed > 0, map)))
+    })?;
+    marks_patch(ctx, marks)
 }
 
 pub(crate) fn mark_reviewed(
@@ -934,9 +961,8 @@ pub(crate) fn mark_reviewed(
     let store = store_registry::store();
     let scope = bucket_scope(&ctx.er_dir)?;
     let hash = ai::compute_per_file_hash(&raw, path).unwrap_or_default();
-    let (changed, map) = session_store::update_reviewed(&store, &scope, |map| {
+    let marks = update_marks(&store, &scope, |map| {
         usize::from(annotations::apply_reviewed(map, path, hash, reviewed))
-    })
-    .map_err(|error| failed("update the reviewed marks", error))?;
-    Ok((changed, marks_patch(ctx, changed > 0, map)))
+    })?;
+    marks_patch(ctx, marks)
 }

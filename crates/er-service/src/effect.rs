@@ -164,6 +164,7 @@ pub(crate) fn first_load(
         prev_ai: None,
         prev_branch_diff_hash: String::new(),
         expanded: BTreeSet::new(),
+        context: HashMap::new(),
         prev_pr: None,
         refresh_pr: false,
         adopt_head_oid: None,
@@ -194,6 +195,8 @@ pub(crate) struct LoadInput {
     pub prev_branch_diff_hash: String,
     /// The compacted files the user expanded, which the load parses in full.
     pub expanded: BTreeSet<String>,
+    /// The context-line counts the load fetches their files with again.
+    pub context: HashMap<String, usize>,
     /// The PR section the tab held, carried unless `refresh_pr` is set.
     pub prev_pr: Option<Arc<PrSection>>,
     pub refresh_pr: bool,
@@ -419,7 +422,7 @@ pub(crate) fn load_tab(
         tab.mode.fetch_scope()
     };
     let expanded = input.expanded;
-    let (raw, preview_head_oid, parsed, history, own_pr) = match own {
+    let (raw, preview_head_oid, mut parsed, history, own_pr) = match own {
         Some((view, pr, preview)) => (view.raw, preview, view.parsed, view.history, Some(pr)),
         None => {
             let (raw, preview_head_oid) = fetch(diff_scope)?;
@@ -440,6 +443,7 @@ pub(crate) fn load_tab(
             (raw, preview_head_oid, parsed, history, None)
         }
     };
+    let context_lines = with_context(deps, &tab, &mut parsed.files, input.context);
     let own_view = own_pr.is_some();
     let stamps = capture_stamps(
         git,
@@ -533,7 +537,7 @@ pub(crate) fn load_tab(
         }
     }
 
-    let cleared = if input.auto_unmark && !own_view {
+    let (cleared, marks_seq) = if input.auto_unmark && !own_view {
         clear_moved_marks(
             &mut marks,
             &raw,
@@ -543,7 +547,7 @@ pub(crate) fn load_tab(
             &scope,
         )
     } else {
-        0
+        (0, None)
     };
     let file_hashes = diff_load::reviewed_file_hashes(&raw, &marks);
 
@@ -613,6 +617,7 @@ pub(crate) fn load_tab(
                 unresolved,
             },
             expanded,
+            context: context_lines,
         },
         marks,
         file_hashes,
@@ -623,6 +628,7 @@ pub(crate) fn load_tab(
         freshness,
         history,
         cleared,
+        marks_seq,
     })
 }
 
@@ -697,7 +703,7 @@ fn stamped_dirs(
 /// stays; `marks` becomes what was saved. Only a mark still as the load read
 /// it is judged: one toggled since was hashed against a newer diff than
 /// `raw`. When `marks` itself clears nothing, nothing is locked or saved.
-/// Answers how many were dropped.
+/// Answers how many were dropped, and the sequence a save took under the lock.
 pub(crate) fn clear_moved_marks(
     marks: &mut HashMap<String, String>,
     raw: &str,
@@ -705,7 +711,7 @@ pub(crate) fn clear_moved_marks(
     persists: bool,
     store: &er_store::ArtifactStore,
     scope: &er_store::Scope,
-) -> usize {
+) -> (usize, Option<u64>) {
     let read = marks.clone();
     let clear = |marks: &mut HashMap<String, String>| {
         let mut judged: HashMap<String, String> = marks
@@ -729,15 +735,85 @@ pub(crate) fn clear_moved_marks(
         gone.len()
     };
     if clear(&mut read.clone()) == 0 {
-        return 0;
+        return (0, None);
     }
     if persists {
-        if let Ok((cleared, saved)) = session_store::update_reviewed(store, scope, clear) {
-            *marks = saved;
-            return cleared;
+        if let Ok(saved) = crate::annotations::update_marks(store, scope, clear) {
+            *marks = saved.map;
+            return (saved.changed, (saved.changed > 0).then_some(saved.seq));
         }
     }
-    clear(marks)
+    (clear(marks), None)
+}
+
+/// Fetches each listed file again with its count, as the App's `+` does;
+/// answers the counts whose file the diff still holds and fetched.
+fn with_context(
+    deps: &WorkspaceDeps,
+    tab: &ResolvedTab,
+    files: &mut [DiffFile],
+    context: HashMap<String, usize>,
+) -> HashMap<String, usize> {
+    if context.is_empty() || !takes_context(tab) {
+        return HashMap::new();
+    }
+    let git = &*deps.ports().git;
+    context
+        .into_iter()
+        .filter(|(path, lines)| {
+            let Some(file) = files.iter_mut().find(|f| &f.path == path && !f.compacted) else {
+                return false;
+            };
+            fetch_context(git, tab, file, *lines).is_ok()
+        })
+        .collect()
+}
+
+/// Whether the tab's files can be fetched again with another count: a remote
+/// PR has no clone, and History's files are one commit's.
+fn takes_context(tab: &ResolvedTab) -> bool {
+    !tab.identity().is_remote() && tab.mode != DiffMode::History
+}
+
+fn fetch_context(
+    git: &dyn er_git::Git,
+    tab: &ResolvedTab,
+    file: &mut DiffFile,
+    lines: usize,
+) -> anyhow::Result<()> {
+    er_engine::git::refetch_file_with_context(
+        file,
+        git,
+        &tab.repo_root,
+        tab.mode.git_mode(),
+        &tab.base_branch,
+        lines,
+        tab.pr_head_ref.as_deref(),
+    )
+}
+
+/// `path` of `content`'s diff fetched again with `lines` of context.
+pub(crate) fn refetch_context(
+    deps: &WorkspaceDeps,
+    content: &TabContent,
+    path: &str,
+    lines: usize,
+) -> Result<DiffFile, WorkspaceError> {
+    if !takes_context(&content.tab) {
+        return Err(WorkspaceError::Failed(
+            "Context expansion not available in this view".into(),
+        ));
+    }
+    let mut file = content
+        .diff
+        .files
+        .iter()
+        .find(|file| file.path == path)
+        .map(|file| DiffFile::clone(file))
+        .ok_or_else(|| WorkspaceError::Failed(format!("{path} is not in the diff")))?;
+    fetch_context(&*deps.ports().git, &content.tab, &mut file, lines)
+        .map_err(|error| failed("fetch the file's context", error))?;
+    Ok(file)
 }
 
 /// Parses the named lazy files of a loaded diff, each on its own copy, and

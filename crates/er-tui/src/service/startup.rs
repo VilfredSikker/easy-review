@@ -164,6 +164,11 @@ pub enum After {
     },
     Refreshed(Refresh),
     BaseChanged,
+    /// A file's context-line count; an automatic pick's refusal is
+    /// silent, as the App's.
+    Context {
+        auto: bool,
+    },
     /// A History commit `k` or `j` picked: once it lands, the next queued
     /// press goes out.
     CommitSelected,
@@ -198,7 +203,8 @@ pub struct Pending {
     pub workspace: String,
     pub replies: ReplyReceiver,
     pub after: After,
-    /// A reload to resend if its tab moved, and its resends.
+    /// A reload to resend if its tab moved, and its resends; for a context
+    /// count, the command it sent.
     pub retry: Option<(Command, u8)>,
 }
 

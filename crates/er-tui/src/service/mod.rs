@@ -8,6 +8,7 @@
 
 mod ai_picker;
 mod config_hub;
+mod context;
 mod filter;
 mod github;
 mod history;
@@ -36,6 +37,8 @@ pub const RUNS_ON_SERVICE: bool = true;
 
 #[cfg(test)]
 mod config_hub_tests;
+#[cfg(test)]
+mod context_tests;
 #[cfg(test)]
 mod filter_tests;
 #[cfg(test)]
