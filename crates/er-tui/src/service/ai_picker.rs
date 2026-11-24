@@ -19,7 +19,6 @@ use super::layers::{HubRow, Layer};
 use super::tui_view::Overlay;
 use crate::input::keys::OverlayAction;
 use crate::screen::view::{HubItem, HubKind};
-use crate::screen::UNPORTED;
 
 /// The AI hub's rows as the App lists them with no review flow: a label and
 /// its key hint. `None` is the Advanced header.
@@ -145,7 +144,8 @@ enum Of {
 /// What choosing a row does.
 #[derive(Clone)]
 enum Pick {
-    Unported,
+    /// A header, or a row whose command is not set: it runs nothing.
+    Nothing,
     Layer(HubRow),
     Run(Start),
     Flow(Act),
@@ -170,6 +170,17 @@ pub struct Picker {
 }
 
 impl Picker {
+    /// The rows that are no header and run nothing.
+    #[cfg(test)]
+    pub fn inert_rows(&self) -> Vec<&str> {
+        self.rows
+            .iter()
+            .zip(&self.picks)
+            .filter(|(row, pick)| !row.is_header && matches!(pick, Pick::Nothing))
+            .map(|(row, _)| row.label.as_str())
+            .collect()
+    }
+
     pub fn kind(&self) -> HubKind {
         match self.of {
             Of::AiHub(_) => HubKind::Ai,
@@ -218,8 +229,10 @@ fn row(label: String, hint: &str, description: String, enabled: bool) -> HubItem
     }
 }
 
-/// A layer row, live by the App's rule, or a row with no route yet.
-fn layer_or_unported(label: &str, hint: &str, facts: &HubFacts, unported: &str) -> (HubItem, Pick) {
+/// A layer row, live by the App's rule. Every AI hub label is a run or a
+/// layer (`every_ai_hub_row_runs_or_toggles`); any other label is an empty
+/// row.
+fn layer(label: &str, hint: &str, facts: &HubFacts) -> (HubItem, Pick) {
     match LAYER_ROWS.iter().find(|row| row.0 == label) {
         Some(&(_, description, layer)) => {
             let enabled = facts.has_ai || !matches!(layer, HubRow::Layer(Layer::AiFindings));
@@ -228,10 +241,7 @@ fn layer_or_unported(label: &str, hint: &str, facts: &HubFacts, unported: &str) 
                 Pick::Layer(layer),
             )
         }
-        None => (
-            row(label.into(), hint, unported.into(), false),
-            Pick::Unported,
-        ),
+        None => (row(label.into(), hint, String::new(), false), Pick::Nothing),
     }
 }
 
@@ -242,7 +252,7 @@ fn listed(rows: Vec<ai_runs::Row>) -> (Vec<HubItem>, Vec<Pick>) {
             let pick = match listed.choice {
                 Some(Choice::Start(start)) => Pick::Run(start),
                 Some(Choice::Package(id)) => Pick::Package(id),
-                None => Pick::Unported,
+                None => Pick::Nothing,
             };
             let item = HubItem {
                 is_header: listed.header,
@@ -265,84 +275,81 @@ fn build(of: Of, view: &SettingsView, ai_label: &str) -> Option<Picker> {
     let mut selected = 0;
     let mut title = None;
     let (rows, picks): (Vec<HubItem>, Vec<Pick>) = match &of {
-        Of::AiHub(facts) => {
-            let unported = format!("That action is {UNPORTED}");
-            AI_HUB_ROWS
-                .iter()
-                .flat_map(|entry| match entry {
-                    Some(("Review", _)) => flows::rows(&facts.flow)
-                        .into_iter()
-                        .map(|(label, description, enabled, act)| {
-                            (row(label.into(), "", description, enabled), Pick::Flow(act))
-                        })
-                        .collect(),
-                    None => vec![(
-                        HubItem {
-                            is_header: true,
-                            ..row("── Advanced ──".into(), "", String::new(), false)
-                        },
-                        Pick::Unported,
-                    )],
-                    Some((CHANGE_SELECTION, hint)) => vec![(
-                        row(
-                            CHANGE_SELECTION.into(),
-                            hint,
-                            format!("Current: {ai_label}"),
-                            hub.has_presets(),
-                        ),
-                        Pick::ChangeSelection,
-                    )],
-                    Some((COPY_CONTEXT, hint)) => vec![(
-                        row(
-                            COPY_CONTEXT.into(),
-                            hint,
-                            "Copy diff context for agent terminal".into(),
-                            true,
-                        ),
-                        Pick::CopyContext,
-                    )],
-                    Some((CLEANUP_DRAFTS, hint)) => vec![(
-                        row(
-                            CLEANUP_DRAFTS.into(),
-                            hint,
-                            if facts.has_drafts {
-                                "Delete the question and note files"
-                            } else {
-                                "no questions or notes to clean up"
-                            }
-                            .into(),
-                            facts.has_drafts,
-                        ),
-                        Pick::Clear(Clear::QuestionsAndNotes),
-                    )],
-                    Some((CLEANUP_REVIEWS, hint)) => vec![(
-                        row(
-                            CLEANUP_REVIEWS.into(),
-                            hint,
-                            if facts.has_review {
-                                "Delete review sidecars (review.json, …)"
-                            } else {
-                                "no review data to clean up"
-                            }
-                            .into(),
-                            facts.has_review,
-                        ),
-                        Pick::Clear(Clear::Reviews),
-                    )],
-                    Some((SPECIALIZED, hint)) => vec![(
-                        row(SPECIALIZED.into(), hint, SPECIALIZED_ABOUT.into(), true),
-                        Pick::Experts,
-                    )],
-                    Some((label, hint)) => vec![match ai_runs::hub_row(label, facts, ai_label) {
-                        Some((description, enabled, start)) => (
-                            row((*label).into(), hint, description, enabled),
-                            Pick::Run(start),
-                        ),
-                        None => layer_or_unported(label, hint, facts, &unported),
-                    }],
-                })
-                .unzip()
-        }
+        Of::AiHub(facts) => AI_HUB_ROWS
+            .iter()
+            .flat_map(|entry| match entry {
+                Some(("Review", _)) => flows::rows(&facts.flow)
+                    .into_iter()
+                    .map(|(label, description, enabled, act)| {
+                        (row(label.into(), "", description, enabled), Pick::Flow(act))
+                    })
+                    .collect(),
+                None => vec![(
+                    HubItem {
+                        is_header: true,
+                        ..row("── Advanced ──".into(), "", String::new(), false)
+                    },
+                    Pick::Nothing,
+                )],
+                Some((CHANGE_SELECTION, hint)) => vec![(
+                    row(
+                        CHANGE_SELECTION.into(),
+                        hint,
+                        format!("Current: {ai_label}"),
+                        hub.has_presets(),
+                    ),
+                    Pick::ChangeSelection,
+                )],
+                Some((COPY_CONTEXT, hint)) => vec![(
+                    row(
+                        COPY_CONTEXT.into(),
+                        hint,
+                        "Copy diff context for agent terminal".into(),
+                        true,
+                    ),
+                    Pick::CopyContext,
+                )],
+                Some((CLEANUP_DRAFTS, hint)) => vec![(
+                    row(
+                        CLEANUP_DRAFTS.into(),
+                        hint,
+                        if facts.has_drafts {
+                            "Delete the question and note files"
+                        } else {
+                            "no questions or notes to clean up"
+                        }
+                        .into(),
+                        facts.has_drafts,
+                    ),
+                    Pick::Clear(Clear::QuestionsAndNotes),
+                )],
+                Some((CLEANUP_REVIEWS, hint)) => vec![(
+                    row(
+                        CLEANUP_REVIEWS.into(),
+                        hint,
+                        if facts.has_review {
+                            "Delete review sidecars (review.json, …)"
+                        } else {
+                            "no review data to clean up"
+                        }
+                        .into(),
+                        facts.has_review,
+                    ),
+                    Pick::Clear(Clear::Reviews),
+                )],
+                Some((SPECIALIZED, hint)) => vec![(
+                    row(SPECIALIZED.into(), hint, SPECIALIZED_ABOUT.into(), true),
+                    Pick::Experts,
+                )],
+                Some((label, hint)) => vec![match ai_runs::hub_row(label, facts, ai_label) {
+                    Some((description, enabled, start)) => (
+                        row((*label).into(), hint, description, enabled),
+                        Pick::Run(start),
+                    ),
+                    None => layer(label, hint, facts),
+                }],
+            })
+            .unzip(),
         Of::Experts => listed(ai_runs::expert_rows()),
         Of::Verify => {
             let rows = ai_runs::verify_rows(config);
@@ -559,7 +566,7 @@ fn select(picker: &Picker, view: &SettingsView, label: &str) -> Step {
     // A disabled row says why, as the App's, whatever it would run.
     match choice {
         _ if !row.enabled => Step::Notify(row.description.clone()),
-        Pick::Unported => Step::Unported,
+        Pick::Nothing => Step::Close,
         Pick::Layer(layer) => Step::Layer(*layer),
         Pick::Clear(clear) => Step::Clear(*clear),
         Pick::CopyContext => Step::Copy(super::copy::Pick::Context),

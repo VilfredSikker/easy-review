@@ -351,3 +351,21 @@ fn one_line_fields_take_backspace_and_esc_like_the_app() {
         }
     });
 }
+
+/// Every AI hub row runs, toggles or opens something: none is left with
+/// no route, so the hub has nothing that answers unported.
+#[test]
+fn every_ai_hub_row_runs_or_toggles() {
+    let repo = fixture(1);
+    let storage = storage();
+    er_engine::storage::with_process_test_storage_root(storage.path(), || {
+        let mut shell = shell(&args(vec![path_of(&repo)]), storage.path());
+        settle(&mut shell, loaded);
+        shell.handle_key(key(KeyCode::Char('a')));
+        let Some(super::tui_view::Overlay::Picker(picker)) = shell.view().overlay.as_ref() else {
+            panic!("no AI hub");
+        };
+        assert!(picker.rows.len() > 20, "the hub lost its rows");
+        assert_eq!(picker.inert_rows(), Vec::<&str>::new());
+    });
+}

@@ -2604,10 +2604,6 @@ impl Shell {
                 self.view.overlay = None;
                 return self.notify(message);
             }
-            Step::Unported => {
-                self.view.overlay = None;
-                return self.unported();
-            }
         };
         if close {
             self.view.overlay = None;
