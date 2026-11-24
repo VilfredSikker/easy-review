@@ -384,7 +384,7 @@ fn the_editor_opens_at_the_hunk_and_a_failure_shows() {
             repo_root: root,
             line,
         };
-        assert_eq!(shell.recorder.taken(), [opened.clone()]);
+        assert_eq!(shell.recorder.taken(), std::slice::from_ref(&opened));
 
         // A draft's write in flight leaves the editor to open.
         let sent = |shell: &mut Shell, sent: Option<String>| {
