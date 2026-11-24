@@ -719,6 +719,9 @@ pub(crate) fn reply_to_finding(
         return ai_follow_up_thread(deps, ctx, &state, &target, finding_id, client_id);
     }
     if let Some(root_id) = ai::find_finding_thread_root(&state, finding_id) {
+        // A retry after the root landed and its reply did not carries the
+        // root's own id; the reply then takes a fresh one.
+        let client_id = client_id.filter(|id| *id != root_id);
         let (reply_id, patch) = add_private(
             deps,
             ctx,

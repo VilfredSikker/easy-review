@@ -63,7 +63,6 @@ pub fn jump(state: &mut TabViewState, content: &TabContent, forward: bool) -> Op
     let (path, hunk, _, id) = &all[next];
     state.focused_finding_id = Some(id.clone());
     state.focused_comment_id = None;
-    state.commit_input.clear();
     let mut newly = None;
     if current != Some(path.as_str()) {
         let idx = files.iter().position(|file| &file.path == path)?;
@@ -79,7 +78,7 @@ pub fn jump(state: &mut TabViewState, content: &TabContent, forward: bool) -> Op
     }
     let file = files.get(state.selected_file).map(|file| &**file);
     if file.is_some_and(is_stub) {
-        state.place_on_parse = true;
+        state.place_on_parse = Some(state.selected_file);
     } else {
         place(state, ai, file);
     }
@@ -118,9 +117,17 @@ fn place(state: &mut TabViewState, ai: &AiState, file: Option<&DiffFile>) {
 /// A finding's file that was a stub has parsed: the cursor goes to the
 /// finding.
 pub fn place_if_parsed(state: &mut TabViewState, content: &TabContent) {
-    let file = content.diff.files.get(state.selected_file);
-    if state.place_on_parse && file.is_some_and(|file| !is_stub(file)) {
-        state.place_on_parse = false;
+    let Some(at) = state.place_on_parse else {
+        return;
+    };
+    // The selection moved on before the parse: the placement is dropped.
+    if at != state.selected_file {
+        state.place_on_parse = None;
+        return;
+    }
+    let file = content.diff.files.get(at);
+    if file.is_some_and(|file| !is_stub(file)) {
+        state.place_on_parse = None;
         place(state, &content.ai.state, file.map(|file| &**file));
     }
 }
@@ -336,7 +343,7 @@ fn section_offsets(ai: &AiState) -> (u16, u16) {
 
 /// Enter in the AI Summary panel: selects the file under the cursor and
 /// focuses its first anchored finding, as the App's `review_jump_to_file`
-/// does.
+/// does, among the findings the Gate shows.
 fn jump_to_file(state: &mut TabViewState, content: &TabContent) -> Summary {
     let ai = &content.ai.state;
     let path = match state.review_focus {
@@ -354,6 +361,7 @@ fn jump_to_file(state: &mut TabViewState, content: &TabContent) -> Summary {
         review
             .findings
             .iter()
+            .filter(|finding| finding.passes(&state.layers))
             .filter_map(|finding| Some((finding.hunk_index?, finding)))
             .min_by_key(|(hunk, finding)| (*hunk, finding.line_start))
     });

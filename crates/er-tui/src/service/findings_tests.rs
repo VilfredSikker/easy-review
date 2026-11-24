@@ -404,3 +404,130 @@ fn findings_keep_the_checklist_write_and_the_gate_rule_out_of_the_tui() {
         }
     }
 }
+
+/// Opens a finding reply on the second finding and types its body.
+fn compose_finding_reply(shell: &mut Shell) {
+    shell.handle_key(ctrl('k'));
+    shell.handle_key(key(KeyCode::Char('r')));
+    type_text(shell, "Looks wrong");
+}
+
+/// Enter pressed again while a finding reply is in flight sends nothing
+/// more: one root and one reply land.
+#[test]
+fn enter_while_a_finding_reply_is_in_flight_writes_one_thread() {
+    let repo = fixture(1);
+    let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+    er_engine::storage::with_process_test_storage_root(storage.path(), || {
+        let mut shell = shell(&args(vec![path_of(&repo)]), storage.path());
+        settle(&mut shell, loaded);
+        seed_shell(&mut shell, seed_findings);
+        compose_finding_reply(&mut shell);
+        shell.handle_key(key(KeyCode::Enter));
+        shell.handle_key(key(KeyCode::Enter));
+        settle_replies(&mut shell);
+        let content = shell
+            .active_content()
+            .unwrap_or_else(|| panic!("no content"));
+        let rows =
+            read_sidecar::<ErGithubComments>(Path::new(&content.context.comments_dir)).comments;
+        let texts: Vec<&str> = rows.iter().map(|row| row.comment.as_str()).collect();
+        assert_eq!(texts, ["Follow-up on this finding.", "Looks wrong"]);
+    });
+}
+
+/// A finding reply the service refuses keeps the composer, its text and
+/// its painted id, and frees the composer for the next Enter.
+#[test]
+fn a_refused_finding_reply_keeps_its_text_and_id() {
+    let repo = fixture(1);
+    let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+    er_engine::storage::with_process_test_storage_root(storage.path(), || {
+        let mut shell = shell(&args(vec![path_of(&repo)]), storage.path());
+        settle(&mut shell, loaded);
+        seed_shell(&mut shell, seed_findings);
+        let tab = active_key(&shell);
+        compose_finding_reply(&mut shell);
+        // The finding leaves the review before the reply goes out.
+        let content = shell
+            .active_content()
+            .unwrap_or_else(|| panic!("no content"));
+        let only = serde_json::json!({"src/f000.rs": {"risk": "high", "findings": [
+            finding("f1", 0, 4, "informational")
+        ]}});
+        write_review(
+            &content.context.er_dir,
+            &content.context.branch_diff_hash,
+            only,
+        );
+        shell.handle_key(key(KeyCode::Enter));
+        let painted = state(&shell, tab).draft.client_id.clone();
+        settle_replies(&mut shell);
+        assert_eq!(shell.view().input_mode, Mode::Comment);
+        assert_eq!(draft_text(&shell, tab), "Looks wrong");
+        assert!(state(&shell, tab).sent.is_none(), "the composer is stuck");
+        assert!(painted.as_deref().is_some_and(|id| id.starts_with("c-")));
+        assert_eq!(state(&shell, tab).draft.client_id, painted);
+        let notice = shell.view().notification.clone().unwrap_or_default();
+        assert!(notice.contains("Finding not found"), "{notice:?}");
+    });
+}
+
+/// Enter in the AI Summary panel onto a file still a stub selects it, and
+/// once it parses the diff draws where the App's in-place parse draws it.
+#[test]
+fn the_summary_jump_onto_a_stub_draws_like_the_app() {
+    let (app_repo, flag_repo) = (fixture(520), fixture(520));
+    let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+    er_engine::storage::with_process_test_storage_root(storage.path(), || {
+        let (mut app, mut shell) = both_on(&app_repo, &flag_repo, storage.path());
+        let stub = |shell: &Shell, idx: usize| {
+            shell
+                .active_content()
+                .is_some_and(|content| super::tui_view::is_stub(&content.diff.files[idx]))
+        };
+        settle_within(&mut shell, Duration::from_secs(5), |shell| !stub(shell, 0));
+        seed_both(&mut app, &mut shell, seed_findings);
+        assert!(stub(&shell, 1), "the second file loaded parsed");
+        let mut hl = Highlighter::new();
+        let codes = [
+            KeyCode::Char('p'),
+            KeyCode::Char('p'),
+            KeyCode::Tab,
+            KeyCode::Char('k'),
+            KeyCode::Enter,
+        ];
+        for code in codes {
+            step(&mut app, &mut shell, &mut hl, key(code));
+        }
+        settle_within(&mut shell, Duration::from_secs(5), |shell| !stub(shell, 1));
+        let frame = shell_frame(&mut shell, &mut hl);
+        assert_parity(&app, &frame, &mut hl, "summary enter onto stub");
+    });
+}
+
+/// Enter in the AI Summary panel focuses the first anchored finding the
+/// Gate shows, as Ctrl+j/k does; the App focuses the first one whatever the
+/// Gate.
+#[test]
+fn the_summary_jump_focuses_the_first_finding_the_gate_shows() {
+    let (app_repo, flag_repo) = (fixture(1), fixture(1));
+    let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+    er_engine::storage::with_process_test_storage_root(storage.path(), || {
+        let (mut app, mut shell) = both_on(&app_repo, &flag_repo, storage.path());
+        seed_both(&mut app, &mut shell, seed_gated);
+        let codes = [
+            KeyCode::Char('T'),
+            KeyCode::Char('p'),
+            KeyCode::Char('p'),
+            KeyCode::Tab,
+            KeyCode::Enter,
+        ];
+        for code in codes {
+            super::tests::press_app(&mut app, code);
+            shell.handle_key(key(code));
+        }
+        assert_eq!(focused(&shell).as_deref(), Some("kept"));
+        assert_eq!(app.tab().focused_finding_id.as_deref(), Some("low"));
+    });
+}

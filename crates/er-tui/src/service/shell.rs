@@ -479,6 +479,7 @@ impl Shell {
                                 | After::ReviewRead
                                 | After::ReviewEdit
                                 | After::ReviewSubmit
+                                | After::Checklist { .. }
                         ) =>
                 {
                     let lost = er_service::WorkspaceError::Failed(

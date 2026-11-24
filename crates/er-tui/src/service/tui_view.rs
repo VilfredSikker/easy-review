@@ -276,9 +276,9 @@ pub struct TabViewState {
     pub review_cursor: usize,
     /// The AI revision the finding focus and the review cursor last checked.
     pub findings_followed: Option<u64>,
-    /// A Ctrl+j/k landed on a stub: once it parses, the cursor goes to the
+    /// The stub a Ctrl+j/k landed on: once it parses, the cursor goes to the
     /// finding's line, as the App's in-place parse lets it.
-    pub place_on_parse: bool,
+    pub place_on_parse: Option<usize>,
     /// The AI revision the Gate last followed; a new one sets it again
     /// unless it was set by hand.
     pub gate_followed: Option<u64>,
@@ -332,7 +332,7 @@ impl Default for TabViewState {
             review_focus: ReviewFocus::Files,
             review_cursor: 0,
             findings_followed: None,
-            place_on_parse: false,
+            place_on_parse: None,
             gate_followed: None,
             sent: None,
             deleting_comment: None,

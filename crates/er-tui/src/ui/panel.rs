@@ -437,13 +437,11 @@ fn render_file_findings(lines: &mut Vec<Line<'_>>, area: Rect, screen: &Screen, 
     // The count describes what the list is about to draw, and names
     // what it is not drawing. A number that counts hidden rows is
     // how a filter stops being trusted.
-    let filtered: Vec<&er_engine::ai::Finding> = sorted_findings
+    let passing = sorted_findings
         .iter()
-        .copied()
         .filter(|f| f.passes(tab.layers))
-        .collect();
-    let visible = project_file_findings(path, filtered.iter().copied(), &ai.arbiter_graded_keys);
-    let (security, ordinary) = security_first(&visible);
+        .count();
+    let (security, ordinary) = file_finding_rows(ai, tab.layers, path, fr);
     let resolved_count = sorted_findings.iter().filter(|f| f.resolved).count();
     let dropped_count = sorted_findings
         .iter()
@@ -451,8 +449,8 @@ fn render_file_findings(lines: &mut Vec<Line<'_>>, area: Rect, screen: &Screen, 
         .count();
     let below_gate = sorted_findings
         .len()
-        .saturating_sub(filtered.len() + resolved_count + dropped_count);
-    let mut header = format!(" Findings ({})", visible.len());
+        .saturating_sub(passing + resolved_count + dropped_count);
+    let mut header = format!(" Findings ({})", security.len() + ordinary.len());
     if below_gate > 0 {
         header.push_str(&format!(" · {} below gate", below_gate));
     }
@@ -530,13 +528,31 @@ pub fn drawn_file_findings<'a>(
     let Some(fr) = ai.file_review(path).filter(|_| layers.show_ai_findings) else {
         return Vec::new();
     };
-    let filtered = sorted_file_findings(fr)
-        .into_iter()
-        .filter(|f| f.passes(layers));
-    let visible = project_file_findings(path, filtered, &ai.arbiter_graded_keys);
-    let (security, ordinary) = security_first(&visible);
+    let (security, ordinary) = file_finding_rows(ai, layers, path, fr);
     security.into_iter().chain(ordinary).collect()
 }
+
+/// The File panel's finding rows for `path`, as the security group and the
+/// rest: the findings that pass the Gate, in the panel's order, with
+/// duplicates collapsed. The renderer draws these, and the flag path's j/k
+/// steps through them.
+fn file_finding_rows<'a>(
+    ai: &'a er_engine::ai::AiState,
+    layers: &er_engine::ai::InlineLayers,
+    path: &'a str,
+    fr: &'a er_engine::ai::ErFileReview,
+) -> FindingRows<'a> {
+    let passing = sorted_file_findings(fr)
+        .into_iter()
+        .filter(|f| f.passes(layers));
+    let visible = project_file_findings(path, passing, &ai.arbiter_graded_keys);
+    security_first(&visible)
+}
+
+type FindingRows<'a> = (
+    Vec<&'a er_engine::ai::Finding>,
+    Vec<&'a er_engine::ai::Finding>,
+);
 
 fn project_file_findings<'a>(
     path: &'a str,
@@ -1592,6 +1608,111 @@ mod tests {
             "confidence": confidence,
         }))
         .unwrap()
+    }
+
+    /// The rows the File panel draws for a file, top to bottom, are the list
+    /// the flag path's j/k steps through: the Gate, the order, the collapsed
+    /// duplicate and the security group come from one place.
+    #[cfg(feature = "v1-service")]
+    #[test]
+    fn the_drawn_finding_rows_are_the_step_list() {
+        use ratatui::{backend::TestBackend, Terminal};
+        let mut app = crate::golden::base_app();
+        let rows = [
+            (
+                "general-row",
+                "general",
+                "Shared claim",
+                2,
+                "confirmed",
+                false,
+            ),
+            (
+                "security-row",
+                "security",
+                "Shared claim",
+                2,
+                "confirmed",
+                false,
+            ),
+            (
+                "ordinary-row",
+                "general",
+                "Other claim",
+                3,
+                "tentative",
+                false,
+            ),
+            (
+                "plain-row",
+                "general",
+                "Plain claim",
+                1,
+                "informational",
+                false,
+            ),
+            ("done-row", "general", "Closed claim", 4, "confirmed", true),
+            (
+                "dropped-row",
+                "security",
+                "Dropped claim",
+                5,
+                "dropped",
+                false,
+            ),
+        ];
+        let findings: Vec<_> = rows
+            .iter()
+            .map(|(id, lens, title, line, confidence, resolved)| {
+                serde_json::json!({
+                    "id": id, "severity": "high", "lens": lens, "category": "correctness",
+                    "title": title, "hunk_index": 0, "line_start": line,
+                    "raised_by": ["general", "security"], "confidence": confidence,
+                    "resolved": resolved
+                })
+            })
+            .collect();
+        let tab = app.tab_mut();
+        tab.ai.review = Some(
+            serde_json::from_value(serde_json::json!({
+                "version": 1, "diff_hash": "hash",
+                "files": {"src/auth.rs": {"risk": "high", "findings": findings}}
+            }))
+            .unwrap(),
+        );
+        tab.ai.arbiter_graded_keys = HashSet::from([er_engine::ai::identity::finding_key(
+            "src/auth.rs",
+            Some(2),
+            "Shared claim",
+        )]);
+        tab.layers.min_trust = Confidence::Tentative;
+        tab.panel = Some(PanelContent::FileDetail);
+        let mut cache = crate::screen::ViewCache::default();
+        let screen = crate::screen::from_app(&app, &mut cache);
+        let mut terminal = Terminal::new(TestBackend::new(80, 40)).unwrap();
+        terminal.draw(|f| render(f, f.area(), &screen)).unwrap();
+        let titles = [
+            "Shared claim",
+            "Other claim",
+            "Plain claim",
+            "Closed claim",
+            "Dropped claim",
+        ];
+        let drawn: Vec<&str> = terminal
+            .backend()
+            .buffer()
+            .content
+            .chunks(80)
+            .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
+            .filter_map(|row| titles.into_iter().find(|title| row.contains(title)))
+            .collect();
+        let tab = app.tab();
+        let steps: Vec<&str> = drawn_file_findings(&tab.ai, &tab.layers, "src/auth.rs")
+            .iter()
+            .map(|finding| finding.title.as_str())
+            .collect();
+        assert_eq!(drawn, steps);
+        assert_eq!(steps, ["Shared claim", "Other claim"]);
     }
 
     fn reach_text(reach: &er_engine::ai::TriageReach) -> Option<String> {

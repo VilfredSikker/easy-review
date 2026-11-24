@@ -342,3 +342,37 @@ fn a_finding_reply_reuses_the_thread_in_a_separate_comments_bucket() -> anyhow::
         Ok(())
     })
 }
+
+/// A retry of a plain finding reply whose root landed and whose reply did
+/// not carries the root's id; it writes the reply alone, under its own id.
+#[test]
+fn a_finding_reply_retried_after_its_root_landed_writes_one_reply() -> anyhow::Result<()> {
+    in_bucket(|bucket, path| {
+        write_finding(path);
+        let handle = actor();
+        let reply = || Command::ReplyToFinding {
+            context: context(bucket, bucket),
+            finding_id: "f-1".to_string(),
+            body: "Looks wrong".to_string(),
+            ai_assist: false,
+            client_id: Some("c-retry".to_string()),
+        };
+        handle.send_and_wait_with(reply(), WAIT)?;
+        // The state a failed reply write leaves: the root alone.
+        let mut rows = github_rows(bucket)?.ok_or_else(|| anyhow::anyhow!("no rows"))?;
+        rows.comments.retain(|row| row.in_reply_to.is_none());
+        er_engine::test_support::write_sidecar(path, &rows);
+
+        let again = handle.send_and_wait_with(reply(), WAIT)?;
+        let Reply::FindingReplied { root_id, reply_id } = again else {
+            anyhow::bail!("got {again:?}");
+        };
+        assert_eq!(root_id, "c-retry");
+        assert_ne!(reply_id, root_id);
+        let rows = github_rows(bucket)?.map_or_else(Vec::new, |c| c.comments);
+        let ids: Vec<&str> = rows.iter().map(|row| row.id.as_str()).collect();
+        assert_eq!(ids, ["c-retry", reply_id.as_str()], "{rows:?}");
+        assert_eq!(rows[1].in_reply_to.as_deref(), Some("c-retry"));
+        Ok(())
+    })
+}
