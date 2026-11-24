@@ -158,6 +158,34 @@ fn a_repeated_failure_shows_once_per_command() {
     });
 }
 
+/// A failed first load's reply, kept for the tab's error, takes its event's
+/// place, so a later reply-only failure with the same text still shows.
+#[test]
+fn a_kept_load_reply_pairs_with_its_own_event() {
+    let repo = fixture(1);
+    let storage = temp();
+    let start = plan(&args(&path_of(&repo)));
+    std::fs::remove_dir_all(repo.path().join(".git")).unwrap_or_else(|e| panic!("{e}"));
+    er_engine::storage::with_process_test_storage_root(storage.path(), || {
+        let mut shell = shell_on(Ports::cli(), &start, storage.path());
+        let mut hl = Highlighter::new();
+        settle(&mut shell, |shell| shell.view().notification.is_some());
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while !rows(&shell_frame(&mut shell, &mut hl))
+            .join("\n")
+            .contains("did not load")
+            && Instant::now() < deadline
+        {
+            shell.tick(Instant::now());
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let message = shell.view().notification.clone().unwrap_or_default();
+        assert_eq!(shell.settings().times_shown(&message), 1, "{message}");
+        shell.land_failed_reply(message.clone());
+        assert_eq!(shell.settings().times_shown(&message), 2, "{message}");
+    });
+}
+
 /// A config that fails to load shows its full message once at start, then
 /// keeps the file's banner up, as the App does.
 #[test]
@@ -171,8 +199,12 @@ fn a_failed_load_draws_the_apps_notice_and_banner() {
         let mut app = app_on(&path);
         let mut shell = shell_on(Ports::cli(), &plan(&args(&path)), storage.path());
         settle(&mut shell, loaded);
+        let shown_at = Instant::now();
         let mut hl = Highlighter::new();
         assert_parity(&app, &shell_frame(&mut shell, &mut hl), &mut hl, "notice");
+        // The App's long notice stays up 5 s; a short one would be gone.
+        shell.tick(shown_at + Duration::from_millis(4000));
+        assert!(shell.view().notification.is_some(), "the notice left early");
         app.clear_notification();
         shell.tick(Instant::now() + Duration::from_secs(60));
         assert_parity(&app, &shell_frame(&mut shell, &mut hl), &mut hl, "banner");
