@@ -116,7 +116,7 @@ fn flag_on_runs_go_through_the_host() {
 
 /// Each AI hub run row, the expert picker and both Verify hubs list a row
 /// of their kind on the tab's bucket. The host refuses importance for a
-/// custom CLI, and the row ends failed.
+/// custom CLI, and its notice says why on the status line.
 #[test]
 fn each_run_row_runs_its_kind() {
     let repo = fixture(1);
@@ -139,6 +139,14 @@ fn each_run_row_runs_its_kind() {
             let listed = |shell: &Shell| kinds(shell).iter().any(|k| k == kind);
             let found = settle_within(&mut shell, Duration::from_secs(20), listed);
             assert!(found, "{label} listed {:?}, not {kind}", kinds(&shell));
+            if kind == "importance" {
+                // The host's refusal reaches the status line as its notice.
+                let told = |shell: &Shell| {
+                    let notice = shell.view().notification.as_deref();
+                    notice.is_some_and(|text| text.contains("custom CLI"))
+                };
+                settle(&mut shell, told);
+            }
         }
         choose(&mut shell, 'a', "Specialized review");
         let expert = er_engine::ai::EXPERTS[0];
@@ -149,11 +157,6 @@ fn each_run_row_runs_its_kind() {
         let listed = |shell: &Shell| expected.iter().all(|kind| kinds(shell).contains(kind));
         let found = settle_within(&mut shell, Duration::from_secs(20), listed);
         assert!(found, "{:?}", kinds(&shell));
-        settle(&mut shell, |shell| {
-            let rows = shell.host().tasks().rows();
-            rows.iter()
-                .any(|row| row.kind == "importance" && row.status == "failed")
-        });
         let bucket = er_dir(&shell);
         let rows = shell.host().tasks().rows();
         let elsewhere: Vec<_> = rows.iter().filter(|row| row.er_dir != bucket).collect();
