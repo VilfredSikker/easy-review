@@ -16,7 +16,7 @@ use er_engine::test_support::write_sidecar_json;
 use super::findings_tests::seed_both;
 use super::handoff::Launched;
 use super::shell::Shell;
-use super::tests::{fixture, key, loaded, path_of, plan, settle, shell, shell_on, SOURCES};
+use super::tests::{fixture, git, key, loaded, path_of, plan, settle, shell, shell_on, SOURCES};
 use super::threads_tests::{args, both_on, er_dir, settle_replies, step, type_text};
 use super::tui_view::Overlay;
 use crate::ui::highlight::Highlighter;
@@ -205,6 +205,12 @@ fn the_export_picker_toggles_and_renders_like_the_app() {
 #[test]
 fn a_copy_after_a_move_reads_the_new_file() {
     let repo = fixture(2);
+    // The second file's first hunk reads apart from the first file's.
+    let second = repo.path().join("src/f001.rs");
+    let text = std::fs::read_to_string(&second).unwrap_or_else(|e| panic!("{e}"));
+    let text = text.replace("changed_3", "second_3");
+    std::fs::write(&second, text).unwrap_or_else(|e| panic!("{e}"));
+    git(repo.path(), &["commit", "-q", "-am", "second"]);
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
         let mut shell = shell(&args(vec![path_of(&repo)]), storage.path());
@@ -217,8 +223,9 @@ fn a_copy_after_a_move_reads_the_new_file() {
         let content = shell
             .active_content()
             .unwrap_or_else(|| panic!("no content"));
-        assert_eq!(content.diff.files[1].path, "src/f001.rs");
-        let want = copy_text::hunk(Some(&content.diff.files[1]), 0);
+        let [first, second] = [0, 1].map(|at| copy_text::hunk(Some(&content.diff.files[at]), 0));
+        assert_ne!(first, second, "the two hunks read alike");
+        let want = second;
         assert_copied(&shell, want, "hunk");
     });
 }
