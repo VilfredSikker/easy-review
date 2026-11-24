@@ -787,14 +787,12 @@ impl Shell {
             A::ExpandContext | A::CollapseContext => {
                 let expand = action == A::ExpandContext;
                 return match context::step(key, state, content, file, expand) {
-                    context::Step::Send(command @ Command::ParseFiles { .. }) => {
+                    Ok(Some(command @ Command::ParseFiles { .. })) => {
                         self.post(key, workspace, command, After::Nothing);
                     }
-                    context::Step::Send(command) => {
-                        self.post(key, workspace, command, After::Context);
-                    }
-                    context::Step::Notice(message) => self.notify(message),
-                    context::Step::Nothing => {}
+                    Ok(Some(command)) => self.post(key, workspace, command, After::Context),
+                    Ok(None) => {}
+                    Err(message) => self.notify(message),
                 };
             }
             A::NextUnreviewedFile => match state.next_unreviewed(content) {

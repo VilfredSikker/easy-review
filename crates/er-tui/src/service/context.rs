@@ -8,13 +8,6 @@ use er_service::{Command, TabContent};
 
 use super::tui_view::TabViewState;
 
-/// What a `+` or `-` asks for.
-pub enum Step {
-    Send(Command),
-    Notice(String),
-    Nothing,
-}
-
 /// The count `path` shows once the sends in flight land.
 fn current(state: &TabViewState, content: &TabContent, path: &str) -> Option<usize> {
     let sent = state.context_sent.get(path);
@@ -27,31 +20,28 @@ fn send(key: TabKey, state: &mut TabViewState, path: &str, lines: usize) -> Comm
     Command::SetFileContext { key, path, lines }
 }
 
-/// `+` or `-` on the selected file, with the App's guards.
+/// `+` or `-` on the selected file, with the App's guards: the command to
+/// send, none, or why there is none.
 pub fn step(
     key: TabKey,
     state: &mut TabViewState,
     content: &TabContent,
     file: Option<&DiffFile>,
     expand: bool,
-) -> Step {
+) -> Result<Option<Command>, String> {
     if content.tab.identity().is_remote() {
-        return Step::Notice("Context expansion not available in remote mode".into());
+        return Err("Context expansion not available in remote mode".into());
     }
     let Some(file) = file.filter(|_| content.tab.mode != DiffMode::History) else {
-        return Step::Nothing;
+        return Ok(None);
     };
     if file.compacted {
         // `+` on a compacted file expands it, as Enter does.
-        return if expand {
-            let paths = vec![file.path.clone()];
-            Step::Send(Command::ParseFiles { key, paths, expand })
-        } else {
-            Step::Nothing
-        };
+        let paths = vec![file.path.clone()];
+        return Ok(expand.then_some(Command::ParseFiles { key, paths, expand }));
     }
     if expand && git::shows_whole_file(file) {
-        return Step::Nothing;
+        return Ok(None);
     }
     let at = current(state, content, &file.path).unwrap_or(DEFAULT_CONTEXT_LINES);
     let to = if expand {
@@ -59,9 +49,7 @@ pub fn step(
     } else {
         git::prev_context_step(at)
     };
-    to.map_or(Step::Nothing, |lines| {
-        Step::Send(send(key, state, &file.path, lines))
-    })
+    Ok(to.map(|lines| send(key, state, &file.path, lines)))
 }
 
 /// The automatic pick for the file a move selected, as the App's
