@@ -562,3 +562,57 @@ fn a_refresh_that_moves_the_file_keeps_its_selection() {
         assert_copied(&shell, want, "after the refresh");
     });
 }
+
+/// Findings on both files' first hunks, for jumps away and back.
+fn seed_both_files(dir: &str, hash: &str) {
+    let finding = |id: &str| {
+        serde_json::json!({
+            "id": id, "severity": "medium", "title": format!("Finding {id}"),
+            "suggestion": "", "hunk_index": 0, "line_start": 4,
+            "confidence": "informational"
+        })
+    };
+    std::fs::create_dir_all(dir).unwrap_or_else(|e| panic!("{e}"));
+    write_sidecar_json::<ErReview>(
+        Path::new(dir),
+        serde_json::json!({"version": 1, "diff_hash": hash, "files": {
+            "src/f000.rs": {"risk": "high", "findings": [finding("f1")]},
+            "src/f001.rs": {"risk": "high", "findings": [finding("f2")]}
+        }}),
+    );
+}
+
+/// A finding jump to another file and back leaves no selection, as the
+/// App clears it on each jump that changes file.
+#[test]
+fn a_jump_away_and_back_leaves_no_selection() {
+    let (app_repo, flag_repo) = (fixture(2), fixture(2));
+    let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+    er_engine::storage::with_process_test_storage_root(storage.path(), || {
+        let (mut app, mut shell) = both_on(&app_repo, &flag_repo, storage.path());
+        seed_both(&mut app, &mut shell, seed_both_files);
+        let mut hl = Highlighter::new();
+        let ctrl = |c: char| KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL);
+        for event in [key(KeyCode::Down), shift(KeyCode::Down)] {
+            step(&mut app, &mut shell, &mut hl, event);
+        }
+        for _ in 0..3 {
+            if app.tab().selected_file == 1 {
+                break;
+            }
+            step(&mut app, &mut shell, &mut hl, ctrl('k'));
+        }
+        assert_eq!(
+            app.tab().selected_file,
+            1,
+            "the jumps did not reach src/f001.rs"
+        );
+        step(&mut app, &mut shell, &mut hl, ctrl('j'));
+        assert_eq!(app.tab().selected_file, 0, "the jump did not come back");
+        let want = app_copy(&app, 4);
+        let notice_of = want.clone().map(|c| c.notice);
+        assert_eq!(notice_of, Ok("Copied line (1 lines)".to_string()));
+        copy_context(&mut shell);
+        assert_copied(&shell, want, "after the jumps");
+    });
+}
