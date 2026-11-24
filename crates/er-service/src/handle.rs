@@ -141,6 +141,8 @@ pub(crate) enum ActorMsg {
     Reloaded(Box<crate::sidecar_reload::Reloaded>),
     /// A flow stage finished; the flows advance.
     FlowTick,
+    /// A working-tree write ran, or its reload finished.
+    Worktree(Box<crate::worktree::Step>),
 }
 
 /// A handle to one workspace actor.

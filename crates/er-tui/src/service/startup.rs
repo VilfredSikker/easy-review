@@ -127,6 +127,8 @@ pub enum After {
     Nothing,
     /// Fetch the PR's head and base refs on the service, as a sync does.
     FetchPrRefs,
+    /// A commit: once it lands, the commit input closes.
+    Commit,
 }
 
 /// A command in flight. The loop drains its receiver each tick.

@@ -1779,6 +1779,28 @@ pub fn config_pair_load_failed(config_path: &std::path::Path) -> bool {
     config_load_failed(config_path) || agents::agents_load_failed(&agents_path(config_path))
 }
 
+/// The banner a refused save shows: it names the file of the pair whose load
+/// failed, `config.toml` first. `None` when neither failed.
+pub fn config_pair_load_banner(config_path: &std::path::Path) -> Option<String> {
+    let agents = agents_path(config_path);
+    let failed = if config_load_failed(config_path) {
+        config_path
+    } else if agents::agents_load_failed(&agents) {
+        agents.as_path()
+    } else {
+        return None;
+    };
+    Some(load_banner(failed))
+}
+
+fn load_banner(path: &std::path::Path) -> String {
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("config.toml");
+    format!("{name} failed to load; saving is disabled until it is reloaded")
+}
+
 /// Why a config file could not be loaded.
 ///
 /// The file is left untouched. [`save_config_to`] refuses to overwrite it
@@ -1814,12 +1836,7 @@ impl std::error::Error for ConfigLoadError {}
 impl ConfigLoadError {
     /// The one-line banner a front end shows, naming the file that failed.
     pub fn banner(&self) -> String {
-        let name = self
-            .path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("config.toml");
-        format!("{name} failed to load; saving is disabled until it is reloaded")
+        load_banner(&self.path)
     }
 }
 

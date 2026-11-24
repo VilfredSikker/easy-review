@@ -346,6 +346,20 @@ pub enum Command {
     /// Read a loaded tab's `gh stack` again into its PR section. The lookup
     /// runs off the actor; a tab with nowhere to read a stack is refused.
     RefreshStack { key: TabKey },
+
+    // ── Working-tree commands (P69) ──
+    /// Stage one path of a loaded tab's checkout, then reload the tab. In
+    /// Conflicts this marks the path resolved.
+    StageFile { key: TabKey, path: String },
+    /// Unstage one path, then reload the tab.
+    UnstageFile { key: TabKey, path: String },
+    /// Stage every change in the checkout, then reload the tab.
+    StageAll { key: TabKey },
+    /// Commit what is staged, then show the commit in Staged until a push or
+    /// new staged changes.
+    Commit { key: TabKey, message: String },
+    /// Push the checkout's branch, then reload the tab.
+    Push { key: TabKey },
 }
 
 /// What started a comment sync, which decides how fresh the read must be.
@@ -780,6 +794,12 @@ pub enum Reply {
     /// A stack lookup landed in the tab's PR section.
     StackRead {
         key: TabKey,
+    },
+    /// A working-tree write landed and the tab reloaded; `notice` is what the
+    /// status line says.
+    WorktreeWritten {
+        key: TabKey,
+        notice: String,
     },
 }
 

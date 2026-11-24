@@ -53,6 +53,7 @@ pub mod tasks;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
 mod workspace;
+mod worktree;
 
 pub use actor::{spawn, WorkspaceDeps};
 pub use ai_extras::{AiExtras, OtherBucketFacts};
