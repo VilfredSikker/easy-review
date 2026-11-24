@@ -77,7 +77,7 @@ pub struct DesktopState {
     /// have moved.
     pub live_tabs: LiveTabs,
     /// The background agent tasks the flag path runs, which `jobs` lists.
-    pub tasks: crate::tasks::TaskHost,
+    pub tasks: er_service::TaskHost,
 }
 
 impl DesktopState {

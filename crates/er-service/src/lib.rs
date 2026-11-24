@@ -35,6 +35,7 @@ mod handle;
 mod history;
 mod host;
 mod hunks;
+mod job_rows;
 mod jobs;
 mod pending_review;
 mod pr_posts;
@@ -45,6 +46,9 @@ mod settings;
 mod settings_wire;
 mod sidecar_reload;
 mod tab_pr;
+pub mod tasks;
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;
 mod workspace;
 
 pub use actor::{spawn, WorkspaceDeps};
@@ -68,6 +72,7 @@ pub use freshness::{BaseBehind, Divergence, Freshness, RemoteTips};
 pub use handle::{WorkspaceError, WorkspaceHandle, REPLY_TIMEOUT};
 pub use host::{ReplyReceiver, ServiceHost};
 pub use hunks::{file_hunks, read_hunks, HunkRead};
+pub use job_rows::{job_rows, run_status, JobRows};
 pub use pending_review::{read_pending_review, OWN_PR_APPROVAL_REFUSED};
 pub use pr_resource::{pr_resource, pr_version};
 pub use protocol::{
@@ -80,6 +85,7 @@ pub use reviewed_resource::{
 };
 pub use settings::{spawn_settings, SettingsCommand, SettingsHandle, SettingsReply, SettingsView};
 pub use settings_wire::{risk_resource, settings_command, settings_resource};
+pub use tasks::{Finished, Launch, TaskClock, TaskHooks, TaskHost};
 pub use workspace::{LiveArenaRun, LiveReviewFlow, LoadError, WorkspaceTarget, WorkspaceView};
 
 #[cfg(test)]
@@ -88,6 +94,8 @@ mod flow_tests;
 mod job_tests;
 #[cfg(test)]
 mod settings_tests;
+#[cfg(test)]
+mod task_tests;
 #[cfg(test)]
 mod tests;
 

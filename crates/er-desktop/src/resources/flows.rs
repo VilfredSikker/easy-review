@@ -14,14 +14,10 @@ use crate::flow_service::{self, Control};
 use crate::page_view::ReviewFlowSnapshot;
 use crate::state::DesktopState;
 
-/// Every review flow the started actors publish, by bucket, each as the
-/// snapshot the flag-off page reads.
-pub fn live_flows(desktop: &DesktopState) -> Vec<ReviewFlowJob> {
-    let mut flows: Vec<ReviewFlowJob> = desktop
-        .service
-        .published_views()
+/// The review flows' rows, each as the snapshot the flag-off page reads.
+pub fn live_flows(flows: &[er_service::LiveReviewFlow]) -> Vec<ReviewFlowJob> {
+    flows
         .iter()
-        .flat_map(|view| view.review_flows.iter())
         .filter_map(|live| {
             let snapshot = ReviewFlowSnapshot::from_flow(&live.flow, live.draining);
             let json = serde_json::to_string(&snapshot).ok()?;
@@ -30,9 +26,7 @@ pub fn live_flows(desktop: &DesktopState) -> Vec<ReviewFlowJob> {
                 json,
             })
         })
-        .collect();
-    flows.sort_by(|a, b| a.er_dir.cmp(&b.er_dir));
-    flows
+        .collect()
 }
 
 /// A flow's run, read from the bucket it captured on the actor that runs

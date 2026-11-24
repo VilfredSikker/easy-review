@@ -32,7 +32,7 @@ pub mod state;
 pub mod status_loop;
 pub mod store_registry;
 pub mod tabs;
-pub mod tasks;
+pub mod task_hooks;
 pub mod terminal;
 pub mod view_state;
 pub mod watcher;

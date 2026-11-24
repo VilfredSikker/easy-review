@@ -40,15 +40,15 @@ pub fn apply(desktop: &DesktopState, command: Command) -> Routed {
         } => {
             let ctx = crate::route_helpers::triage_ctx(desktop);
             crate::route_helpers::pr_triage(desktop, &ctx, &project_id, pr_number)
-                .map_err(crate::tasks::refused)
+                .map_err(crate::task_hooks::refused)
         }
         Command::RunBranchTriage { project_id, branch } => {
             let ctx = crate::route_helpers::triage_ctx(desktop);
             crate::route_helpers::branch_triage(desktop, &ctx, &project_id, &branch)
-                .map_err(crate::tasks::refused)
+                .map_err(crate::task_hooks::refused)
         }
-        Command::CancelQueuedTask { id } => crate::tasks::cancel_queued(desktop, &id),
-        Command::CancelRunningTask { id } => crate::tasks::cancel_running(desktop, &id),
+        Command::CancelQueuedTask { id } => crate::task_hooks::cancel_queued(desktop, &id),
+        Command::CancelRunningTask { id } => crate::task_hooks::cancel_running(desktop, &id),
         other => return Routed::Other(other),
     };
     Routed::Applied(ran.map(|()| Ack {
