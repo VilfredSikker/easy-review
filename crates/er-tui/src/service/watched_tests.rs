@@ -20,6 +20,16 @@ use super::watched::TabWatched;
 use crate::screen::watched::SnapshotDiff;
 use crate::ui::highlight::Highlighter;
 
+/// Sets `path`'s mtime `secs` back. A watched row draws its age, so an age
+/// in minutes keeps the App's frame and the flag frame on the same text
+/// while a second passes between them.
+pub(super) fn aged(path: &Path, secs: u64) {
+    let at = std::time::SystemTime::now() - Duration::from_secs(secs);
+    let file = std::fs::File::options().write(true).open(path);
+    file.and_then(|file| file.set_modified(at))
+        .unwrap_or_else(|e| panic!("{e}"));
+}
+
 /// A repo with one changed file, and `a.env` and an older `b.env` that git
 /// ignores and the config watches in snapshot mode. The list is newest
 /// first, so `a.env` leads it and stays first when it is edited.
@@ -27,13 +37,10 @@ pub(super) fn watched_repo(storage: &Path) -> tempfile::TempDir {
     let repo = fixture(1);
     std::fs::write(repo.path().join(".git/info/exclude"), "*.env\n")
         .unwrap_or_else(|e| panic!("{e}"));
-    for (name, age) in [("a.env", 0), ("b.env", 3600)] {
+    for (name, age) in [("a.env", 1800), ("b.env", 3600)] {
         let path = repo.path().join(name);
         std::fs::write(&path, "A=1\n").unwrap_or_else(|e| panic!("{e}"));
-        let at = std::time::SystemTime::now() - Duration::from_secs(age);
-        let file = std::fs::File::options().write(true).open(&path);
-        file.and_then(|file| file.set_modified(at))
-            .unwrap_or_else(|e| panic!("{e}"));
+        aged(&path, age);
     }
     let config = "[watched]\npaths = [\"*.env\"]\ndiff_mode = \"snapshot\"\n";
     std::fs::write(storage.join("config.toml"), config).unwrap_or_else(|e| panic!("{e}"));
@@ -120,6 +127,7 @@ fn the_watched_files_draw_like_the_app() {
         );
 
         std::fs::write(repo.path().join(&selected), "A=2\n").unwrap_or_else(|e| panic!("{e}"));
+        aged(&repo.path().join(&selected), 1200);
         // Both rescan, the App as its loop does every five seconds.
         app.tab_mut().refresh_watched_files();
         shell.tick(Instant::now() + Duration::from_secs(6));
@@ -194,6 +202,7 @@ fn a_watched_delete_writes_and_draws_like_the_app() {
         press_app(&mut app, KeyCode::Char('y'));
         assert!(!a_env.exists(), "the App did not delete");
         std::fs::write(&a_env, "A=1\n").unwrap_or_else(|e| panic!("{e}"));
+        aged(&a_env, 1800);
 
         let mut shell = start(&path, storage.path());
         let tabs = shell.host().registry().tabs_view();

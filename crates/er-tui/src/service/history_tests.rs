@@ -397,6 +397,7 @@ fn hidden_shows_the_watched_files_like_the_app() {
         std::fs::write(repo.path().join(".git/info/exclude"), "*.env\n")
             .unwrap_or_else(|e| panic!("{e}"));
         std::fs::write(repo.path().join("a.env"), "A=1\n").unwrap_or_else(|e| panic!("{e}"));
+        super::watched_tests::aged(&repo.path().join("a.env"), 1800);
         repo
     };
     let (app_repo, flag_repo) = (make(), make());
