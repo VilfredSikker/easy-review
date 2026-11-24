@@ -223,7 +223,7 @@ impl JobRunner {
                     progress: progress.clone(),
                     timer: timer.as_deref_mut(),
                 },
-                handle.cancel_flag(),
+                &handle,
             );
             drop(watch);
             if attempt >= self.retry.retries || !Self::retryable(&result) {
@@ -241,7 +241,7 @@ impl JobRunner {
         &self,
         spec: &JobSpec,
         run: JobRun<'_>,
-        abort: &std::sync::atomic::AtomicBool,
+        control: &AgentRunHandle,
     ) -> Result<JobOutput, JobError> {
         let JobRun {
             handle,
@@ -250,8 +250,16 @@ impl JobRunner {
         } = run;
         // The caller's flag aborts the wait for a slot directly; the attempt
         // handle only starts mattering once the child exists.
-        let _slot = agent_slots::acquire(spec.workload, self.slot_cap, self.ceiling, abort)
-            .ok_or(JobError::Cancelled)?;
+        let _slot = agent_slots::acquire(
+            spec.workload,
+            self.slot_cap,
+            self.ceiling,
+            control.cancel_flag(),
+        )
+        .ok_or(JobError::Cancelled)?;
+        if !control.begin_launch() {
+            return Err(JobError::Cancelled);
+        }
         if let Some(timer) = timer.as_mut() {
             timer.mark_slot_acquired();
         }
