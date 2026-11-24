@@ -356,8 +356,9 @@ fn a_posted_edit_writes_its_row_only_once_github_has() -> anyhow::Result<()> {
 }
 
 /// Every id but a question's or a note's is edited through
-/// `UpdateGithubComment`, whose effect reads the stored row: a posted
-/// comment no loaded content knows of still goes to GitHub first.
+/// `UpdateGithubComment`, whose effect reads the stored row: a comment never
+/// posted stays local, and a posted one no loaded content knows of still
+/// goes to GitHub first.
 #[test]
 fn an_edit_is_routed_by_its_id_and_the_stored_row() -> anyhow::Result<()> {
     let (dir, bucket) = posted_thread()?;
@@ -367,6 +368,25 @@ fn an_edit_is_routed_by_its_id_and_the_stored_row() -> anyhow::Result<()> {
         assert!(matches!(local, Command::UpdateThreadMessage { .. }), "{id}");
     }
     er_engine::storage::with_process_test_storage_root(dir.path(), || {
+        // A comment never posted, in the same PR's bucket: edited locally.
+        let path = std::path::Path::new(&bucket);
+        let mut stored =
+            er_engine::test_support::read_sidecar::<er_engine::ai::ErGithubComments>(path);
+        let mut local = stored.comments[0].clone();
+        (local.id, local.github_id) = ("c-9".to_string(), None);
+        stored.comments.push(local);
+        let value = serde_json::to_value(&stored)?;
+        er_engine::test_support::write_sidecar_json::<er_engine::ai::ErGithubComments>(path, value);
+        let edit = crate::edit_message(pr_tab(&bucket), "c-9".into(), "kept here".into());
+        let reply = actor(&github).send_and_wait_with(edit, WAIT);
+        assert!(reply.is_ok(), "{reply:?}");
+        assert!(
+            github.calls().is_empty(),
+            "an unposted edit reached GitHub: {:?}",
+            github.calls()
+        );
+        assert_eq!(stored_text(&bucket, "c-9")?, "kept here");
+
         let edit = crate::edit_message(pr_tab(&bucket), "gh-11".into(), "edited".into());
         let reply = actor(&github).send_and_wait_with(edit, WAIT);
         assert!(reply.is_ok(), "{reply:?}");

@@ -257,8 +257,15 @@ fn ctrl(c: char) -> KeyEvent {
 fn the_review_kind_adds_to_the_pending_review() {
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
-        // Four rows down is the deleted line 4, five the line added in its place.
-        for (downs, side, refused) in [(4, "LEFT", false), (5, "RIGHT", false), (4, "LEFT", true)] {
+        // Four rows down is the deleted line 4, five the line added in its
+        // place; a draft restored with a range ends on line 5.
+        let cases = [
+            (4, "LEFT", None, false),
+            (5, "RIGHT", None, false),
+            (5, "RIGHT", Some(5), false),
+            (4, "LEFT", None, true),
+        ];
+        for (downs, side, end, refused) in cases {
             let repo = fixture(1);
             let answer = if refused {
                 Err(GhError::Network {
@@ -278,13 +285,22 @@ fn the_review_kind_adds_to_the_pending_review() {
                 state(&shell).draft.review,
                 "Ctrl+T did not reach the review kind"
             );
+            let tab = shell.host().registry().tabs_view().active;
+            let tab = tab.unwrap_or_else(|| panic!("no active tab"));
+            if let Some(state) = shell.view_mut().tab_mut_if_open(tab) {
+                state.draft.line_end = end;
+            }
             type_text(&mut shell, "Join the review");
             shell.handle_key(key(KeyCode::Enter));
             settle_replies(&mut shell);
             let added = calls(&github, "pending_review_add_comment");
             assert_eq!(added.len(), 1, "{:?}", github.calls());
+            let lines = match end {
+                Some(end) => format!("line: {end}, start_line: Some(4)"),
+                None => "line: 4, start_line: None".to_string(),
+            };
             let entry = format!(
-                "file: \"src/f000.rs\", line: 4, start_line: None, body: \"Join the review\", side: \"{side}\""
+                "file: \"src/f000.rs\", {lines}, body: \"Join the review\", side: \"{side}\""
             );
             assert!(added[0].contains(&entry), "{added:?}");
             assert!(calls(&github, "post_line_comment").is_empty());
