@@ -289,7 +289,9 @@ fn the_ai_hub_draws_like_the_app_in_each_flow_state() {
             }
             _ => panic!("the App's results are not open"),
         };
+        let published = live(&shell).and_then(|live| live.flow.arena_run_id);
         if let Some(Overlay::FlowResults(results)) = shell.view_mut().overlay.as_mut() {
+            assert_eq!(Some(&results.found.run_id), published.as_ref());
             results.found.run_id = app_run;
         }
         assert_parity(&app, &shell_frame(&mut shell, &mut hl), &mut hl, "results");
@@ -319,9 +321,11 @@ fn an_interrupted_flow_shows_and_reruns_like_the_app() {
         hub_to(&mut app, &mut shell, "Review task progress");
         enter_both(&mut app, &mut shell);
         // Each path's bucket is under its own repo.
+        let bucket = er_dir(&shell);
         let Some(Overlay::FlowProgress(progress)) = shell.view_mut().overlay.as_mut() else {
             panic!("the progress is not open");
         };
+        assert_eq!(progress.er_dir, bucket);
         let own = std::mem::replace(&mut progress.er_dir, app.tab().er_dir());
         assert_parity(&app, &shell_frame(&mut shell, &mut hl), &mut hl, "progress");
         if let Some(Overlay::FlowProgress(progress)) = shell.view_mut().overlay.as_mut() {
