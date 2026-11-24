@@ -305,9 +305,10 @@ fn seed(dir: &str, hash: &str, graded: bool) {
         let verdicts = [serde_json::json!({
             "id": id, "file": "src/f000.rs", "verdict": "kept", "confidence": "tentative"
         })];
-        let body = serde_json::json!({"version": 1, "diff_hash": hash, "verdicts": verdicts});
-        std::fs::write(dir.join("arbiter.json"), body.to_string())
-            .unwrap_or_else(|e| panic!("{e}"));
+        write_sidecar_json::<er_engine::ai::ArbiterReview>(
+            dir,
+            serde_json::json!({"version": 1, "diff_hash": hash, "verdicts": verdicts}),
+        );
     }
 }
 
@@ -385,6 +386,12 @@ fn the_gate_follows_the_review_like_the_app() {
         let frame = shell_frame(&mut shell, &mut hl);
         assert_parity(&app, &frame, &mut hl, "ungraded");
         seed_both(&mut app, &mut shell, true);
+        assert_eq!(
+            app.tab().layers.min_trust,
+            er_engine::ai::Confidence::Tentative,
+            "the arbiter's grade did not move the App's Gate: {:?}",
+            app.tab().ai.arbiter_effect
+        );
         let frame = shell_frame(&mut shell, &mut hl);
         assert_parity(&app, &frame, &mut hl, "graded");
         for _ in 0..3 {
