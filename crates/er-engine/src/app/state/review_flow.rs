@@ -86,11 +86,6 @@ impl App {
         self.with_review_flows(|flows, host| flows.advance_review_flows(host));
     }
 
-    #[cfg(test)]
-    pub(crate) fn advance_review_flow(&mut self, key: &str) {
-        self.with_review_flows(|flows, host| flows.advance_review_flow(host, key));
-    }
-
     pub fn review_flow_for(&self, er_dir: &str) -> Option<&ReviewFlow> {
         self.review_flows.review_flow_for(er_dir)
     }
