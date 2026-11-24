@@ -14,16 +14,18 @@ use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use er_engine::TabKey;
-use er_service::{Command, Event, Reply, ServiceHost, TabContent};
+use er_service::{Command, Event, Reply, ServiceHost, SettingsCommand, TabContent};
 use ratatui::backend::{Backend, CrosstermBackend};
 use ratatui::text::Line;
 use ratatui::widgets::Paragraph;
 use ratatui::Terminal;
 
-use super::settings::{SettingsBridge, Side};
+use super::ai_picker;
+use super::config_hub::{self, ConfigHub, Step};
+use super::settings::{SettingsBridge, Side, Then};
 use super::startup::{self, After, Args, Pending, Start, StartTab};
-use super::tui_view::{self, TuiView};
-use crate::input::keys::{key_action, NormalAction, TuiAction};
+use super::tui_view::{self, Overlay, TuiView};
+use crate::input::keys::{key_action, NormalAction, OverlayAction, TuiAction};
 use crate::screen::UNPORTED;
 use crate::ui::highlight::Highlighter;
 
@@ -159,7 +161,8 @@ impl Shell {
 
     #[cfg(test)]
     pub fn send_settings(&mut self, command: er_service::SettingsCommand) {
-        self.settings.send(&self.host.settings(), command);
+        self.settings
+            .send(&self.host.settings(), command, Then::Nothing);
     }
 
     #[cfg(test)]
@@ -219,7 +222,21 @@ impl Shell {
         for message in landed.failures {
             self.failure(Side::Reply, message);
         }
-        for message in landed.messages {
+        let view = self.host.settings().view();
+        let picked = landed.picked.then(|| {
+            let label = self.settings.ai_label(&view);
+            format!("AI target: {label}")
+        });
+        let still_failed = view.load_error.clone().filter(|_| landed.reloaded);
+        if let Some(overlay) = self.view.overlay.as_mut() {
+            overlay.sync(&view, &self.settings.ai_label(&view));
+        }
+        for message in landed
+            .messages
+            .into_iter()
+            .chain(picked)
+            .chain(still_failed)
+        {
             self.settings.admit_message(&message);
             self.notify(message);
         }
@@ -375,6 +392,9 @@ impl Shell {
     ) -> Option<R> {
         let settings = self.host.settings().view();
         let ai_selection_label = self.settings.ai_label(&settings);
+        if let Some(overlay) = self.view.overlay.as_mut() {
+            overlay.sync(&settings, &ai_selection_label);
+        }
         let (tab_names, active_tab) = self.tab_names();
         self.view.tab_mut(key, content);
         let state = self.view.tab(key)?;
@@ -394,6 +414,7 @@ impl Shell {
         let action = match action {
             TuiAction::Noop => return,
             TuiAction::Normal(action) => action,
+            TuiAction::Overlay(action) => return self.overlay_key(action),
             _ => return self.unported(),
         };
         let state = self.view.tab_mut(key, content);
@@ -454,12 +475,78 @@ impl Shell {
                 state.h_scroll = 0;
                 None
             }
+            A::OpenConfigHub => return self.open_config_hub(),
+            A::OpenAiHub => {
+                let view = self.host.settings().view();
+                let label = self.settings.ai_label(&view);
+                return self.run_step(ai_picker::open_ai_hub(&view, &label));
+            }
             A::NextTab => return self.step_tab(true),
             A::PrevTab => return self.step_tab(false),
             _ => return self.unported(),
         };
         if let Some(index) = selected {
             self.parse_if_stub(key, workspace, content, index);
+        }
+    }
+
+    /// Opens the config hub on the settings view, and asks the actor to
+    /// adopt a config file repaired since a failed load.
+    fn open_config_hub(&mut self) {
+        let settings = self.host.settings();
+        self.settings.send(
+            &settings,
+            SettingsCommand::ReloadIfFailed,
+            Then::ReportReload,
+        );
+        let hub = ConfigHub::open(&settings.view());
+        self.view.overlay = Some(Overlay::ConfigHub(hub));
+    }
+
+    /// Runs a key on the open overlay, against the latest settings view.
+    fn overlay_key(&mut self, action: OverlayAction) {
+        let view = self.host.settings().view();
+        let label = self.settings.ai_label(&view);
+        let step = match self.view.overlay.as_mut() {
+            Some(Overlay::ConfigHub(hub)) => {
+                hub.sync(&view);
+                config_hub::act(hub, action, &view)
+            }
+            Some(Overlay::Picker(picker)) => {
+                picker.sync(&view, &label);
+                ai_picker::act(picker, action, &view, &label)
+            }
+            _ => Step::Unported,
+        };
+        self.run_step(step);
+    }
+
+    fn run_step(&mut self, step: Step) {
+        let settings = self.host.settings();
+        let (close, send) = match step {
+            Step::Stay => (false, None),
+            Step::Close => (true, None),
+            Step::Send(command) => (false, Some((command, Then::Nothing))),
+            Step::Leave(command) => (true, Some((command, Then::Nothing))),
+            Step::Pick(command) => (true, Some((command, Then::AnnouncePick))),
+            Step::Open(overlay, also) => {
+                self.view.overlay = Some(*overlay);
+                (false, also.map(|command| (command, Then::Nothing)))
+            }
+            Step::Notify(message) => {
+                self.view.overlay = None;
+                return self.notify(message);
+            }
+            Step::Unported => {
+                self.view.overlay = None;
+                return self.unported();
+            }
+        };
+        if close {
+            self.view.overlay = None;
+        }
+        if let Some((command, then)) = send {
+            self.settings.send(&settings, command, then);
         }
     }
 

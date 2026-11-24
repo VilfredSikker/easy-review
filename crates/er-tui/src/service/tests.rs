@@ -27,7 +27,9 @@ const WIDTH: u16 = 120;
 const HEIGHT: u16 = 30;
 
 /// The flag-on modules, as text.
-const SOURCES: [(&str, &str); 6] = [
+const SOURCES: [(&str, &str); 8] = [
+    ("ai_picker.rs", include_str!("ai_picker.rs")),
+    ("config_hub.rs", include_str!("config_hub.rs")),
     ("mod.rs", include_str!("mod.rs")),
     ("session.rs", include_str!("session.rs")),
     ("settings.rs", include_str!("settings.rs")),
@@ -304,7 +306,7 @@ pub(super) fn app_on(path: &str) -> er_engine::app::App {
     app
 }
 
-fn press_app(app: &mut er_engine::app::App, code: KeyCode) {
+pub(super) fn press_app(app: &mut er_engine::app::App, code: KeyCode) {
     let (tx, _rx) = mpsc::channel();
     let mut cache = crate::screen::ViewCache::default();
     crate::handle_key(app, key(code), &tx, &mut None, &mut cache).unwrap_or_else(|e| panic!("{e}"));
