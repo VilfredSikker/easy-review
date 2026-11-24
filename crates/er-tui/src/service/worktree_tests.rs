@@ -106,17 +106,30 @@ fn a_refused_push_shows_the_ports_message() {
         );
 
         expire(&mut shell);
+        let typed = |shell: &Shell| {
+            let active = shell.host().registry().tabs_view().active;
+            let state = active.and_then(|key| shell.view().tab(key));
+            state.map(|state| state.commit_input.clone())
+        };
         for code in [KeyCode::Char('c'), KeyCode::Char('m'), KeyCode::Enter] {
             shell.handle_key(key(code));
         }
+        // In flight, the input takes no edits.
+        shell.handle_key(key(KeyCode::Char('x')));
+        assert_eq!(
+            typed(&shell).as_deref(),
+            Some("m"),
+            "an edit landed in flight"
+        );
         settle(&mut shell, |shell| !notice(shell).is_empty());
         let shown = notice(&shell);
         assert!(shown.starts_with("git commit failed"), "{shown:?}");
         assert_eq!(shell.view().input_mode, Mode::Commit);
-        let active = shell.host().registry().tabs_view().active;
-        let typed = active.and_then(|key| shell.view().tab(key));
-        let typed = typed.map(|state| state.commit_input.as_str());
-        assert_eq!(typed, Some("m"), "the refused commit lost its text");
+        assert_eq!(
+            typed(&shell).as_deref(),
+            Some("m"),
+            "the refused commit lost its text"
+        );
     });
 }
 

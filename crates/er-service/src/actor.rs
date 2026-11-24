@@ -168,6 +168,9 @@ fn run(
                 }
             }
             ActorMsg::FlowTick => flows.request_advance(),
+            ActorMsg::Worktree(step) => {
+                crate::worktree::step(&deps, &mut state, &tx, *step, &subscribers, &view);
+            }
             ActorMsg::FlowsChanged(update) => {
                 apply_flows(&mut state, &jobs, update, &subscribers, &view);
             }
@@ -247,7 +250,7 @@ fn spawn_fetch(
 
 /// Runs one command's blocking work off the actor thread and sends the typed
 /// result back.
-pub(crate) fn spawn_effect<R: Into<Effected>>(
+fn spawn_effect<R: Into<Effected>>(
     tx: &Sender<ActorMsg>,
     reply: ReplySender,
     work: impl FnOnce() -> Result<R, WorkspaceError> + Send + 'static,
