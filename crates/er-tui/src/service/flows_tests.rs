@@ -236,10 +236,10 @@ fn the_flow_rows_cancel_and_decline() {
         choose(&mut shell, 'a', "Cancel Deep review");
         settle(&mut shell, |shell| notice(shell).starts_with("Deep review"));
         assert_eq!(notice(&shell), "Deep review declined");
-        let waits = |shell: &Shell| {
-            live(shell).is_some_and(|live| live.flow.state == FlowState::AwaitingConfirmation)
-        };
-        assert!(!waits(&shell), "the flow still waits to confirm");
+        let declined = live(&shell).is_none_or(|live| {
+            live.flow.arena_run_id.is_none() && live.flow.state != FlowState::AwaitingConfirmation
+        });
+        assert!(declined, "{:?}", live(&shell).map(|live| live.flow.state));
     });
 }
 
