@@ -10,6 +10,7 @@ pub mod card_ai_context;
 pub mod card_job;
 pub mod checkout;
 pub mod config;
+pub mod copy_text;
 pub use config::{
     apply_config_field, config_hub_items_for_scope, ConfigFieldValue, ConfigHubFieldDto,
     SettingsScope,

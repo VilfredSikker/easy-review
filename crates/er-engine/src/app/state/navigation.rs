@@ -237,6 +237,15 @@ impl TabState {
         Some(anchor.min(current)..=anchor.max(current))
     }
 
+    /// The cursor a copy reads.
+    pub fn copy_cursor(&self) -> crate::copy_text::Cursor {
+        crate::copy_text::Cursor {
+            hunk: self.current_hunk,
+            line: self.current_line,
+            range: self.selected_range(),
+        }
+    }
+
     pub fn scroll_to_current_hunk(&mut self) {
         // Use precomputed hunk offsets if available (O(1) lookup)
         if let Some(ref offsets) = self.hunk_offsets {
