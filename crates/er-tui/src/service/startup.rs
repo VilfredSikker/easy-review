@@ -143,6 +143,13 @@ pub enum After {
     /// A create, reply or edit: once it lands, the draft of the tab it was
     /// written on clears; a refusal keeps it.
     Composed,
+    /// A GitHub post from the composer: as `Composed`, and a refusal that
+    /// adopted an earlier body drops the draft's client id.
+    Posted,
+    /// A pull of the PR's comments.
+    Synced,
+    /// An approval.
+    Approved,
     /// A thread delete: once it lands, the status line says so.
     Deleted,
     /// A mode switch; a refused PR diff says it is unavailable.

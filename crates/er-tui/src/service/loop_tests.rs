@@ -378,7 +378,7 @@ fn no_key_waits_while_an_effect_is_held() {
         let gate = Arc::new(Gate::default());
         let ports = Ports {
             git: Arc::new(GatedGit(Arc::clone(&gate))),
-            github: Ports::cli().github,
+            github: super::tests::fake_github(),
         };
         let mut shell = shell_on(ports, &start, storage.path());
         settle(&mut shell, loaded);

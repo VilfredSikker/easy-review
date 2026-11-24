@@ -86,6 +86,12 @@ impl ServiceHost {
         self
     }
 
+    /// The ports every actor reads through, for a front end's own reads that
+    /// no command covers, such as the TUI's start-up PR probe.
+    pub fn ports(&self) -> &Ports {
+        self.deps.ports()
+    }
+
     /// The one app registry. Its commands run on the caller's thread and
     /// touch no file.
     pub fn registry(&self) -> &Arc<AppRegistry> {

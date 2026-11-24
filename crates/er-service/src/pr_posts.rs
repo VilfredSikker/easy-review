@@ -3,9 +3,9 @@
 //!
 //! The two comments go through the shared post session, and the line poster's
 //! own pending-review check refuses a line comment GitHub would attach to a
-//! draft. The commands carry no client id, so each call takes a fresh one and a
-//! resend after an unknown outcome can post a second copy, as the flag-off
-//! desktop can.
+//! draft. A PR-wide comment sent with a client id reconciles a resend after an
+//! unknown outcome; a line comment and one sent with none take a fresh id, so
+//! such a resend can post a second copy, as the flag-off desktop can.
 
 use er_engine::git::{parse_diff, DiffFile};
 use er_engine::github_post::PrPostTarget;
@@ -39,12 +39,13 @@ pub(crate) fn post_pr_comment(
     deps: &WorkspaceDeps,
     context: TabContext,
     body: &str,
+    client_id: Option<String>,
 ) -> Result<Fetched, WorkspaceError> {
     let comment = post(
         deps,
         &context,
         NewGitHubComment::general(body.to_string()),
-        None,
+        client_id,
     )?;
     let pr = pr_ref(&comment.request.pr);
     Ok(posted(context, pr, false))
@@ -121,4 +122,32 @@ pub(crate) fn submit_decision(
         github.submit_review(&pr.owner, &pr.repo, pr.number, &[], root, event, summary)?;
     }
     Ok(posted(context, pr, true))
+}
+
+/// The wording for a failed review write. GitHub's classification picks the
+/// hints; no error text is read.
+pub fn review_write_message(error: WorkspaceError) -> String {
+    match error {
+        WorkspaceError::Github(gh) => {
+            let unprocessable = matches!(gh, er_engine::github::GhError::Unprocessable { .. });
+            with_review_hints(gh.to_string(), unprocessable)
+        }
+        other => other.to_string(),
+    }
+}
+
+/// A failed review write, with the likely causes of an unprocessable one.
+pub fn with_review_hints(raw: String, unprocessable: bool) -> String {
+    if !unprocessable {
+        return format!("GitHub review submission failed: {raw}");
+    }
+    let hints = [
+        "blank review payload",
+        "invalid or stale line anchor",
+        "comment position no longer matches PR head",
+    ];
+    format!(
+        "GitHub review submission failed: {raw}\nLikely causes: {}",
+        hints.join("; ")
+    )
 }

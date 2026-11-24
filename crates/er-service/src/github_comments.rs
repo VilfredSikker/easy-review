@@ -153,13 +153,16 @@ pub(crate) fn post_with(
     })
 }
 
+/// The refusal of a create whose retry adopted an earlier post with another
+/// body. A front end drops its client id on it, so sending the edit again
+/// posts it as a new comment.
+pub const EARLIER_VERSION_POSTED: &str = "Your earlier version was posted; this edit was not";
+
 /// A create reports an adopted earlier body, so the composer keeps the edit.
 /// The promotes ignore it: GitHub holds the comment and the source must go.
 fn created_id(posted: PostedComment) -> Result<String, WorkspaceError> {
     if posted.kept_earlier_body {
-        return Err(WorkspaceError::Failed(
-            "Your earlier version was posted; this edit was not".to_string(),
-        ));
+        return Err(WorkspaceError::Failed(EARLIER_VERSION_POSTED.to_string()));
     }
     Ok(posted.id)
 }
@@ -194,6 +197,71 @@ pub(crate) fn reply_to_github_thread(
     let intent = NewGitHubComment::reply(parent_id.to_string(), body.to_string());
     let id = post(deps, ctx, intent, client_id).and_then(created_id)?;
     Ok((id, stored_comments(ctx)))
+}
+
+/// Deletes a posted comment's posted replies on GitHub, then the comment,
+/// then the thread's local rows. A refused delete removes no row, and since
+/// the root goes last a failure leaves it on GitHub with the thread whole. A
+/// retry finds the already-deleted replies gone, which the port accepts.
+pub(crate) fn delete_github_comment(
+    deps: &WorkspaceDeps,
+    ctx: &TabContext,
+    id: &str,
+) -> Written<String> {
+    let comments = comments_payload(ctx)
+        .ok_or_else(|| WorkspaceError::Failed("the comments file is missing".to_string()))?;
+    let root = comments
+        .comments
+        .iter()
+        .find(|comment| comment.id == id)
+        .ok_or_else(|| WorkspaceError::Failed(format!("Comment not found: {id}")))?;
+    if let Some(root_id) = root.github_id {
+        let pr = comments.github.as_ref().ok_or_else(|| {
+            WorkspaceError::Failed(
+                "This comment's pull request is not recorded; pull comments first".to_string(),
+            )
+        })?;
+        let ids: Vec<u64> = comments
+            .comments
+            .iter()
+            .filter(|comment| comment.in_reply_to.as_deref() == Some(id))
+            .filter_map(|comment| comment.github_id)
+            .chain(std::iter::once(root_id))
+            .collect();
+        let github = &deps.ports().github;
+        let mut deleted = 0;
+        let mut refused = None;
+        for github_id in &ids {
+            match github.delete_comment(&pr.owner, &pr.repo, *github_id, &ctx.repo_root) {
+                Ok(()) => deleted += 1,
+                Err(error) => {
+                    refused = Some(error);
+                    break;
+                }
+            }
+        }
+        // The pull's cached list still holds whatever went.
+        if deleted > 0 {
+            github.invalidate_comments();
+        }
+        let replies = ids.len() - 1;
+        match refused {
+            // Only the comment was posted, so its refusal says enough.
+            Some(error) if replies == 0 => return Err(error.into()),
+            Some(error) if deleted == replies => {
+                return Err(WorkspaceError::Failed(format!(
+                    "Deleted {deleted} of {replies} replies on GitHub; GitHub refused the comment itself: {error}. Send the delete again to retry it."
+                )))
+            }
+            Some(error) => {
+                return Err(WorkspaceError::Failed(format!(
+                    "Deleted {deleted} of {replies} replies on GitHub; GitHub refused the next one, so it and the comment stay: {error}. Delete that reply on GitHub, then send the delete again."
+                )))
+            }
+            None => {}
+        }
+    }
+    crate::annotations::delete_thread(ctx, id)
 }
 
 fn private_items<'a>(
