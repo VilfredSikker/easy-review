@@ -119,6 +119,45 @@ fn a_refused_save_shows_once_and_raises_the_banner() {
     });
 }
 
+/// Sends a theme write the broken file refuses, waits for its event and its
+/// reply, and answers the failure.
+fn refused_write(shell: &mut Shell) -> String {
+    let before = revision(shell);
+    shell.send_settings(SettingsCommand::ApplyConfigPatch {
+        key: "display.theme".into(),
+        value: ConfigFieldValue::String("paper".into()),
+    });
+    settle(shell, |shell| revision(shell) > before);
+    let deadline = Instant::now() + Duration::from_millis(300);
+    while Instant::now() < deadline {
+        shell.tick(Instant::now());
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let view = shell.host().settings().view();
+    view.last_error.clone().unwrap_or_default()
+}
+
+/// One refused command shows once, though it answers as an event and as a
+/// reply; the same refusal from a second command shows again.
+#[test]
+fn a_repeated_failure_shows_once_per_command() {
+    let repo = fixture(1);
+    let (storage, config_dir) = (temp(), temp());
+    let path = path_of(&repo);
+    er_engine::storage::with_process_test_storage_root(storage.path(), || {
+        let mut shell = shell_on(Ports::cli(), &plan(&args(&path)), config_dir.path());
+        settle(&mut shell, loaded);
+        std::fs::write(config_dir.path().join("config.toml"), "not = = toml")
+            .unwrap_or_else(|e| panic!("{e}"));
+        // The first refusal finds the file broken; later ones name the mark.
+        refused_write(&mut shell);
+        let message = refused_write(&mut shell);
+        assert_eq!(shell.settings().times_shown(&message), 1, "{message}");
+        assert_eq!(refused_write(&mut shell), message);
+        assert_eq!(shell.settings().times_shown(&message), 2, "{message}");
+    });
+}
+
 /// A config that fails to load shows its full message once at start, then
 /// keeps the file's banner up, as the App does.
 #[test]

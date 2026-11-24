@@ -20,7 +20,7 @@ use ratatui::text::Line;
 use ratatui::widgets::Paragraph;
 use ratatui::Terminal;
 
-use super::settings::SettingsBridge;
+use super::settings::{SettingsBridge, Side};
 use super::startup::{self, After, Args, Pending, Start, StartTab};
 use super::tui_view::{self, TuiView};
 use crate::input::keys::{key_action, NormalAction, TuiAction};
@@ -116,7 +116,10 @@ impl Shell {
             shell.notify(notice);
         }
         if let Some(error) = shell.host.settings().view().load_error.clone() {
-            shell.notice(error);
+            let revision = shell.host.settings().view().revision;
+            if shell.settings.admit_once(revision, &error) {
+                shell.notify(error);
+            }
         }
         Ok(shell)
     }
@@ -186,14 +189,9 @@ impl Shell {
         self.redraw = true;
     }
 
-    /// Shows a message from an actor once per settings revision: a failure
-    /// arrives both as an event and as its reply.
-    fn notice(&mut self, message: String) {
-        let revision = self
-            .host
-            .settings_if_started()
-            .map_or(0, |settings| settings.view().revision);
-        if self.settings.admit(revision, &message) {
+    /// Shows an actor's failure, once for its event and its reply together.
+    fn failure(&mut self, side: Side, message: String) {
+        if self.settings.admit_failure(side, &message) {
             self.notify(message);
         }
     }
@@ -211,15 +209,19 @@ impl Shell {
     pub fn tick(&mut self, now: Instant) {
         loop {
             match self.events.try_recv() {
-                Ok(Event::CommandFailed { message }) => self.notice(message),
+                Ok(Event::CommandFailed { message }) => self.failure(Side::Event, message),
                 Ok(_) => self.redraw = true,
                 Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
             }
         }
         self.drain_replies();
-        for message in self.settings.drain() {
-            self.redraw = true;
-            self.notice(message);
+        let landed = self.settings.drain();
+        for message in landed.failures {
+            self.failure(Side::Reply, message);
+        }
+        for message in landed.messages {
+            self.settings.admit_message(&message);
+            self.notify(message);
         }
         if self
             .reloaded_at
@@ -326,7 +328,7 @@ impl Shell {
                 Err(error) if self.host.content(&workspace, key).is_none() => {
                     self.load_errors.insert(key, error.to_string());
                 }
-                Err(error) => self.notice(error.to_string()),
+                Err(error) => self.failure(Side::Reply, error.to_string()),
             }
         }
     }
