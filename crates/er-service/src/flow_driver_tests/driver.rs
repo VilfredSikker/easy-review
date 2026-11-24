@@ -417,6 +417,8 @@ fn running_cancellation_keeps_lease_until_writer_drains() {
             |flow| flow.state == FlowState::Finding,
         );
         assert!(harness.cancel(&dirs.bucket));
+        // The next advance sees the finder still writing.
+        harness.advance();
         assert!(harness.is_draining(&dirs.bucket));
         assert!(harness.start("branch").is_err());
         assert!(!admitted(&dirs.bucket), "the lease is held while draining");
