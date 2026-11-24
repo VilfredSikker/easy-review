@@ -385,6 +385,22 @@ impl Shell {
                     false
                 }
                 Err(TryRecvError::Empty) => true,
+                // A thread write whose worker died answers as a refusal, so
+                // its composer takes edits again and a delete says so.
+                Err(TryRecvError::Disconnected)
+                    if matches!(pending.after, After::Composed | After::Deleted) =>
+                {
+                    let lost = er_service::WorkspaceError::Failed(
+                        "The write stopped before it answered".into(),
+                    );
+                    landed.push((
+                        pending.key,
+                        pending.workspace.clone(),
+                        pending.after,
+                        Err(lost),
+                    ));
+                    false
+                }
                 Err(TryRecvError::Disconnected) => false,
             });
         for (key, workspace, after, reply) in landed {

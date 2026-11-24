@@ -185,6 +185,67 @@ fn a_create_lands_on_the_tab_it_was_written_on() {
     });
 }
 
+/// The shell on a gated git port, its first tab loaded.
+fn gated_shell(repo: &tempfile::TempDir, gate: &Arc<Gate>, config_dir: &Path) -> Shell {
+    let ports = Ports {
+        git: Arc::new(GatedGit(Arc::clone(gate))),
+        github: Ports::cli().github,
+    };
+    let mut shell = shell_on(ports, &plan(&args(vec![path_of(repo)])), config_dir);
+    settle(&mut shell, loaded);
+    shell
+}
+
+/// Enter pressed again while the create is held sends nothing more: the
+/// service appends every create it is sent, so one draft makes one row.
+#[test]
+fn enter_while_a_create_is_in_flight_writes_one_row() {
+    let repo = fixture(1);
+    let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+    er_engine::storage::with_process_test_storage_root(storage.path(), || {
+        let gate = Arc::new(Gate::default());
+        let mut shell = gated_shell(&repo, &gate, storage.path());
+        let dir = er_dir(&shell);
+        shell.handle_key(key(KeyCode::Char('q')));
+        type_text(&mut shell, "Once");
+        gate.set(true);
+        shell.handle_key(key(KeyCode::Enter));
+        shell.handle_key(key(KeyCode::Enter));
+        gate.set(false);
+        settle_replies(&mut shell);
+        let rows = read_sidecar::<ErQuestions>(Path::new(&dir)).questions;
+        assert_eq!(rows.len(), 1, "{rows:?}");
+    });
+}
+
+/// A create whose worker dies answers as a refusal: the composer keeps its
+/// text, says so, and takes the next Enter.
+#[test]
+fn a_create_that_never_answers_frees_the_composer() {
+    let repo = fixture(1);
+    let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+    er_engine::storage::with_process_test_storage_root(storage.path(), || {
+        let gate = Arc::new(Gate::default());
+        let mut shell = gated_shell(&repo, &gate, storage.path());
+        let (tab, dir) = (active_key(&shell), er_dir(&shell));
+        shell.handle_key(key(KeyCode::Char('q')));
+        type_text(&mut shell, "Lost");
+        gate.panics.store(true, std::sync::atomic::Ordering::SeqCst);
+        shell.handle_key(key(KeyCode::Enter));
+        settle_replies(&mut shell);
+        gate.panics
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        assert!(state(&shell, tab).sent.is_none(), "the composer is stuck");
+        assert_eq!(draft_text(&shell, tab), "Lost");
+        let notice = shell.view().notification.clone().unwrap_or_default();
+        assert!(notice.contains("stopped"), "{notice:?}");
+        shell.handle_key(key(KeyCode::Enter));
+        settle_replies(&mut shell);
+        let rows = read_sidecar::<ErQuestions>(Path::new(&dir)).questions;
+        assert_eq!(rows.len(), 1, "{rows:?}");
+    });
+}
+
 /// A row's fields, less the ones each write makes fresh.
 fn comparable(row: &PrivateAnnotation) -> serde_json::Value {
     let mut value = serde_json::to_value(row).unwrap_or_else(|e| panic!("{e}"));
@@ -212,6 +273,20 @@ pub(super) fn step(
     settle_replies(shell);
     let frame = shell_frame(shell, hl);
     assert_parity(app, &frame, hl, &format!("{event:?}"));
+}
+
+/// Waits for the start of a wall-clock second, so two writes a step apart
+/// draw the same seconds in their time stamps.
+fn early_in_a_second() {
+    let millis = || {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |since| since.subsec_millis())
+    };
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while millis() > 100 && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(5));
+    }
 }
 
 /// The App and the flag path, each on its own clone of one fixture.
@@ -243,6 +318,9 @@ fn the_composer_draws_and_writes_like_the_app() {
         keys.extend([key(KeyCode::Char('q')), key(KeyCode::Char('a'))]);
         keys.push(key(KeyCode::Enter));
         for event in keys {
+            if event.code == KeyCode::Enter {
+                early_in_a_second();
+            }
             step(&mut app, &mut shell, &mut hl, event);
         }
         let rows = |dir: &str| {
@@ -264,7 +342,7 @@ fn the_composer_draws_and_writes_like_the_app() {
 /// Seeds an open question, a resolved one with a reply, a note, and a
 /// review with an informational and a tentative finding; `graded` adds an
 /// arbiter's verdict, which moves the Gate's default.
-fn seed(dir: &str, hash: &str, graded: bool) {
+fn seed(dir: &str, hash: &str, graded: bool, note: &str) {
     let dir = Path::new(dir);
     std::fs::create_dir_all(dir).unwrap_or_else(|e| panic!("{e}"));
     let row = |id: &str, file: &str, line: usize, text: &str, resolved: bool| {
@@ -284,7 +362,7 @@ fn seed(dir: &str, hash: &str, graded: bool) {
         dir,
         serde_json::json!({"version": 1, "diff_hash": hash, "questions": questions}),
     );
-    let notes = [row("n1", "src/f000.rs", 31, "A note", false)];
+    let notes = [row("n1", "src/f000.rs", 31, note, false)];
     write_sidecar_json::<ErNotes>(
         dir,
         serde_json::json!({"version": 1, "diff_hash": hash, "notes": notes}),
@@ -319,9 +397,14 @@ fn seed(dir: &str, hash: &str, graded: bool) {
 
 /// Seeds both paths' buckets; the App reads them at once, and the flag path
 /// on its reload tick.
-pub(super) fn seed_both(app: &mut er_engine::app::App, shell: &mut Shell, graded: bool) {
+pub(super) fn seed_both(
+    app: &mut er_engine::app::App,
+    shell: &mut Shell,
+    graded: bool,
+    note: &str,
+) {
     let hash = app.tab().branch_diff_hash.clone();
-    seed(&app.tab().er_dir(), &hash, graded);
+    seed(&app.tab().er_dir(), &hash, graded, note);
     app.tab_mut().reload_ai_state();
     app.clear_notification();
     let before = shell
@@ -331,14 +414,24 @@ pub(super) fn seed_both(app: &mut er_engine::app::App, shell: &mut Shell, graded
         &before.context.er_dir,
         &before.context.branch_diff_hash,
         graded,
+        note,
     );
     let moved = |shell: &Shell| {
         shell
             .active_content()
             .is_some_and(|now| now.ai.revision > before.ai.revision)
     };
+    // A step's tick may have run the clock ahead, so the reload tick runs
+    // on a clock that keeps moving past it.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut ahead = 3600;
+    while !moved(shell) && Instant::now() < deadline {
+        ahead += 1;
+        shell.tick(Instant::now() + Duration::from_secs(ahead));
+        std::thread::sleep(Duration::from_millis(10));
+    }
     assert!(
-        settle_within(shell, Duration::from_secs(10), moved),
+        moved(shell),
         "the seeded sidecars never reached the AI section"
     );
 }
@@ -351,7 +444,7 @@ fn threads_layers_and_hints_draw_like_the_app() {
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
         let (mut app, mut shell) = both_on(&app_repo, &flag_repo, storage.path());
-        seed_both(&mut app, &mut shell, false);
+        seed_both(&mut app, &mut shell, false, "A note");
         let mut hl = Highlighter::new();
         let frame = shell_frame(&mut shell, &mut hl);
         assert_parity(&app, &frame, &mut hl, "seeded");
@@ -386,11 +479,11 @@ fn the_gate_follows_the_review_like_the_app() {
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
         let (mut app, mut shell) = both_on(&app_repo, &flag_repo, storage.path());
-        seed_both(&mut app, &mut shell, false);
+        seed_both(&mut app, &mut shell, false, "A note");
         let mut hl = Highlighter::new();
         let frame = shell_frame(&mut shell, &mut hl);
         assert_parity(&app, &frame, &mut hl, "ungraded");
-        seed_both(&mut app, &mut shell, true);
+        seed_both(&mut app, &mut shell, true, "A note");
         assert_eq!(
             app.tab().layers.min_trust,
             er_engine::ai::Confidence::Tentative,
@@ -399,9 +492,17 @@ fn the_gate_follows_the_review_like_the_app() {
         );
         let frame = shell_frame(&mut shell, &mut hl);
         assert_parity(&app, &frame, &mut hl, "graded");
-        for _ in 0..3 {
+        for _ in 0..2 {
             step(&mut app, &mut shell, &mut hl, key(KeyCode::Char('T')));
         }
+        // A Gate set by hand holds through the next AI revision.
+        seed_both(&mut app, &mut shell, true, "A later note");
+        let informational = er_engine::ai::Confidence::Informational;
+        assert_eq!(app.tab().layers.min_trust, informational);
+        let tab = active_key(&shell);
+        assert_eq!(state(&shell, tab).layers.min_trust, informational);
+        let frame = shell_frame(&mut shell, &mut hl);
+        assert_parity(&app, &frame, &mut hl, "pinned");
     });
 }
 
@@ -413,7 +514,7 @@ fn a_hint_on_a_stub_scrolls_once_it_parses() {
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
         let (mut app, mut shell) = both_on(&app_repo, &flag_repo, storage.path());
-        seed_both(&mut app, &mut shell, false);
+        seed_both(&mut app, &mut shell, false, "A note");
         let stub = |shell: &Shell| {
             shell
                 .active_content()

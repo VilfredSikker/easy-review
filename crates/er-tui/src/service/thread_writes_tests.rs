@@ -292,7 +292,7 @@ fn the_hub_layer_rows_act_like_the_app() {
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
         let (mut app, mut shell) = both_on(&app_repo, &flag_repo, storage.path());
-        seed_both(&mut app, &mut shell, false);
+        seed_both(&mut app, &mut shell, false, "A note");
         let mut hl = Highlighter::new();
         let labels = [
             "Toggle AI findings",

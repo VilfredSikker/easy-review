@@ -42,6 +42,10 @@ use crate::handle::{ActorMsg, WorkspaceError};
 use crate::protocol::{AcceptanceDiff, FlowCommand, FlowContext, Reply};
 use crate::workspace::LiveReviewFlow;
 
+#[cfg(test)]
+#[path = "flow_driver_tests/mod.rs"]
+mod driver_tests;
+
 /// What one flow call changed, sent to the actor to publish.
 pub(crate) struct FlowsUpdate {
     pub(crate) flows: Vec<LiveReviewFlow>,
