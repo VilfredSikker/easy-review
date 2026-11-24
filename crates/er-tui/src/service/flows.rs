@@ -332,8 +332,10 @@ pub fn results_key(results: &mut Results, action: OverlayAction) -> Then {
             Then::Notify("Select at least one finding to accept")
         }
         OverlayAction::AcceptFlowFindings => {
-            let mut finding_ids: Vec<String> = results.selected_ids.iter().cloned().collect();
-            finding_ids.sort();
+            // In id order, as the App sends them; a set orders them, since no
+            // flag-on module sorts (the thread scan).
+            let ordered: std::collections::BTreeSet<_> = results.selected_ids.iter().collect();
+            let finding_ids: Vec<String> = ordered.into_iter().cloned().collect();
             let (er_dir, run_id) = (&results.found.er_dir, &results.found.run_id);
             Then::Send {
                 request: FlowRequest::Accept {
