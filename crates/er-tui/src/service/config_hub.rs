@@ -34,6 +34,8 @@ pub enum Step {
     Clear(super::clears::Clear),
     /// Closes the overlay and copies from the active tab.
     Copy(super::copy::Pick),
+    /// Closes the overlay and starts an AI hub or Verify run.
+    Run(super::ai_runs::Start),
 }
 
 pub struct ConfigHub {

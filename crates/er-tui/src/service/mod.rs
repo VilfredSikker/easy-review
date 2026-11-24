@@ -6,7 +6,9 @@
 //! domain state goes to the service as a command, sent without waiting. An
 //! action no service route covers yet says so on the status line.
 
+mod agent_log;
 mod ai_picker;
+mod ai_runs;
 mod clears;
 mod config_hub;
 mod context;
@@ -42,6 +44,8 @@ pub use startup::Args;
 /// stays reachable and compiled in this build until the flag is removed.
 pub const RUNS_ON_SERVICE: bool = true;
 
+#[cfg(test)]
+mod ai_runs_tests;
 #[cfg(test)]
 mod clears_tests;
 #[cfg(test)]

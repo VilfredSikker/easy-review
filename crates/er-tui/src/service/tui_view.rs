@@ -22,6 +22,7 @@ use er_service::{SettingsView, TabContent};
 use tui_textarea::TextArea;
 
 use super::ai_picker::Picker;
+use super::ai_runs::Rerun;
 use super::config_hub::ConfigHub;
 use super::copy::CopyHub;
 use super::history::HistoryPos;
@@ -210,6 +211,8 @@ pub enum Ask {
     CleanupReviews {
         count: usize,
     },
+    /// Whether to clear a run's last output before running it again.
+    Rerun(super::ai_runs::Rerun),
 }
 
 impl TuiView {
@@ -791,6 +794,8 @@ pub struct Frame<'a> {
     /// Reviewed and total files, from the reviewed builder.
     pub reviewed_count: (usize, usize),
     pub watching: bool,
+    /// The tab's bucket log and its running commands, from the task host.
+    pub jobs: &'a super::agent_log::Jobs,
 }
 
 /// The frame's read model, from the active tab's published content and its
@@ -839,6 +844,11 @@ pub fn screen<'a>(view: &'a TuiView, state: &'a TabViewState, frame: Frame<'a>) 
                 Mode::Confirm(Ask::CleanupReviews { count }) => {
                     InputMode::Confirm(ConfirmAction::CleanupReviews { count })
                 }
+                Mode::Confirm(Ask::Rerun(rerun)) => InputMode::Confirm(match rerun {
+                    Rerun::Review => ConfirmAction::RunAgentReview,
+                    Rerun::Questions => ConfirmAction::RunAgentQuestions,
+                    Rerun::Notes => ConfirmAction::RunAgentNotes,
+                }),
                 Mode::Confirm(Ask::DeleteWatchedFile) => {
                     InputMode::Confirm(ConfirmAction::DeleteWatchedFile {
                         path: watched.deleting.as_deref().unwrap_or_default(),
@@ -938,6 +948,8 @@ pub fn screen<'a>(view: &'a TuiView, state: &'a TabViewState, frame: Frame<'a>) 
             filtered_reviewed_count: state.filtered_reviewed_count(content),
             history: super::history::view(&state.history, content, &state.search_query),
             tour: super::tour::view(&state.tour, content),
+            agent_log: &frame.jobs.log,
+            running_commands: frame.jobs.running.iter().map(String::as_str).collect(),
         }),
     }
 }

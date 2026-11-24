@@ -182,8 +182,8 @@ pub struct MemoryBudget {
 }
 
 /// The service's published sections, and what the ported builders computed
-/// from them. The Refs and Log panels draw `UNPORTED` until the entries that
-/// port them.
+/// from them. The Refs panel draws `UNPORTED` until the entry that ports
+/// it.
 #[cfg(feature = "v1-service")]
 pub struct SectionData<'a> {
     pub files: &'a [std::sync::Arc<DiffFile>],
@@ -201,6 +201,10 @@ pub struct SectionData<'a> {
     /// The tour's pillars and files, from the service's tour builder, in
     /// Tour only.
     pub tour: Option<TourView<'a>>,
+    /// The tab's bucket log, from the service's task host.
+    pub agent_log: &'a [view::AgentLogEntry],
+    /// The commands running on the tab's bucket.
+    pub running_commands: Vec<&'a str>,
 }
 
 /// What an area the service path does not draw yet shows instead.
@@ -251,7 +255,21 @@ impl<'a> TabData<'a> {
         match self {
             Self::App(data) => &data.running_commands,
             #[cfg(feature = "v1-service")]
-            Self::Sections(_) => &[],
+            Self::Sections(data) => &data.running_commands,
+        }
+    }
+
+    /// The agent log the Log panel draws, and how many commands run. The
+    /// flag path's log always follows its tail, as the App's does.
+    pub fn agent_log(&self) -> (&'a [view::AgentLogEntry], bool, usize) {
+        match self {
+            Self::App(data) => (
+                data.agent_log,
+                data.agent_log_auto_scroll,
+                data.running_command_count,
+            ),
+            #[cfg(feature = "v1-service")]
+            Self::Sections(data) => (data.agent_log, true, data.running_commands.len()),
         }
     }
 
@@ -342,6 +360,8 @@ mod tests {
             filtered_reviewed_count: None,
             history: None,
             tour: None,
+            agent_log: &[],
+            running_commands: Vec::new(),
         });
         let mut terminal = Terminal::new(TestBackend::new(120, 12)).unwrap();
         let mut hl = crate::ui::highlight::Highlighter::new();
@@ -382,6 +402,8 @@ mod tests {
             filtered_reviewed_count: None,
             history: None,
             tour: None,
+            agent_log: &[],
+            running_commands: Vec::new(),
         });
         let mut terminal = Terminal::new(TestBackend::new(140, 12)).unwrap();
         let mut hl = crate::ui::highlight::Highlighter::new();
