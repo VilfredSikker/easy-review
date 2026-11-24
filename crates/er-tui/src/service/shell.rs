@@ -82,7 +82,6 @@ pub fn run(args: &Args) -> anyhow::Result<()> {
     result
 }
 
-/// A reply's command as it was sent, for the drain.
 struct Landing {
     key: TabKey,
     workspace: String,
@@ -130,13 +129,17 @@ pub struct Shell {
     reviewed: ReviewedCache,
     /// The watched files' reader, a worker thread that only reads.
     watched: Reader,
-    /// The file watcher on the active tab's checkout.
     watch: Watch,
     /// The start's PR probe, the other one, until it answers; then its
     /// answer, until the tab it probed has content.
     probe: Option<Probe>,
     probed: Option<(TabKey, BranchPrProbe)>,
     pub should_quit: bool,
+    /// The refusal every reload gets in a test, and the reloads it refused.
+    #[cfg(test)]
+    pub refuse_reloads: Option<String>,
+    #[cfg(test)]
+    pub reload_sends: usize,
 }
 
 impl Shell {
@@ -184,6 +187,10 @@ impl Shell {
             probe,
             probed: None,
             should_quit: false,
+            #[cfg(test)]
+            refuse_reloads: None,
+            #[cfg(test)]
+            reload_sends: 0,
         };
         if !start.notices.is_empty() {
             let notice = start.notices.join("; ");
@@ -508,7 +515,7 @@ impl Shell {
                         if tries < RELOAD_TRIES
                             && er_service::refused_as_moved(&error.to_string()) =>
                     {
-                        let replies = self.host.post(&workspace, command.clone());
+                        let replies = self.send_reload(&workspace, command.clone(), after);
                         self.pending.push(Pending {
                             key,
                             workspace,
@@ -993,7 +1000,7 @@ impl Shell {
     /// Sends a command for `key`'s tab; its reply lands on a later tick.
     fn post(&mut self, key: TabKey, workspace: &str, command: Command, after: After) {
         let retry = after.follows().then(|| (command.clone(), 0));
-        let replies = self.host.post(workspace, command);
+        let replies = self.send_reload(workspace, command, after);
         self.pending.push(Pending {
             key,
             workspace: workspace.to_string(),
@@ -1001,6 +1008,19 @@ impl Shell {
             after,
             retry,
         });
+    }
+
+    /// Posts a command; a test may refuse every reload as moved here.
+    fn send_reload(&mut self, workspace: &str, command: Command, after: After) -> ReplyReceiver {
+        #[cfg(test)]
+        if let Some(moved) = self.refuse_reloads.clone().filter(|_| after.follows()) {
+            self.reload_sends += 1;
+            let (tx, rx) = std::sync::mpsc::channel();
+            let _ = tx.send(Err(er_service::WorkspaceError::Failed(moved)));
+            return rx;
+        }
+        let _ = after;
+        self.host.post(workspace, command)
     }
 
     /// Runs a composer key on the tab's draft, and sends the write Submit
@@ -1408,7 +1428,6 @@ impl Shell {
         self.notify(message);
     }
 
-    /// One key in the base input; Enter sends the base change.
     fn base_key(&mut self, edit: Edit, key: TabKey, workspace: &str, content: &TabContent) {
         let step = modes::base_key(&mut self.view.base_input, edit);
         let BaseStep::Send(base) = step else {
@@ -1429,7 +1448,6 @@ impl Shell {
         );
     }
 
-    /// A key on the Open hub; "Change compare base" opens the base input.
     fn open_hub_key(&mut self, action: OverlayAction) {
         let Some(Overlay::Open(hub)) = self.view.overlay.as_mut() else {
             return;
@@ -1473,7 +1491,6 @@ impl Shell {
         }
     }
 
-    /// Sends a waiting session's switch once.
     fn send_restore(&mut self) {
         let Some((key, workspace, Some(content))) = self.active() else {
             return;

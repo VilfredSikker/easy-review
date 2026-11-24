@@ -59,9 +59,7 @@ pub fn diff_version(content: &TabContent) -> u64 {
         .max(content.freshness.revision)
 }
 
-/// The files a tab's list shows, with their index in the diff: those `view`
-/// keeps, newest first by the mtimes the load stamped when `sort_by_mtime`.
-/// Both front ends list files in this order.
+/// The files a tab's list shows, in the order both front ends use.
 pub fn listed_files<'f>(
     content: &'f TabContent,
     view: &FileListView<'_>,

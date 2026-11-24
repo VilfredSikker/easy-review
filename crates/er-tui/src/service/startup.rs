@@ -156,9 +156,7 @@ pub enum After {
     ModeSwitched {
         pr_diff: bool,
     },
-    /// A refresh, and what it was for.
     Refreshed(Refresh),
-    /// A base change, which the registry keeps.
     BaseChanged,
     /// A History commit `k` or `j` picked: once it lands, the next queued
     /// press goes out.
@@ -180,12 +178,12 @@ impl After {
 /// Why a refresh went out, for its notice.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Refresh {
-    /// `R`: "Refreshed".
     Key,
     /// `m`: the sort's notice went at the press.
     Sort,
-    /// The watcher saw `files` changes.
-    Watched { files: usize },
+    Watched {
+        files: usize,
+    },
 }
 
 /// A command in flight. The loop drains its receiver each tick.

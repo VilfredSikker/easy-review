@@ -154,7 +154,6 @@ pub fn refreshed(state: &mut TabViewState, follow: Follow, content: &TabContent)
     Some(state.selected_file)
 }
 
-/// What the base input asks once a key ran.
 pub enum BaseStep {
     Stay,
     Close,
