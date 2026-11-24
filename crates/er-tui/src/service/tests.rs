@@ -26,17 +26,20 @@ const WIDTH: u16 = 120;
 const HEIGHT: u16 = 30;
 
 /// The flag-on modules, as text.
-pub(super) const SOURCES: [(&str, &str); 29] = [
+pub(super) const SOURCES: [(&str, &str); 32] = [
     ("agent_log.rs", include_str!("agent_log.rs")),
     ("ai_picker.rs", include_str!("ai_picker.rs")),
     ("ai_runs.rs", include_str!("ai_runs.rs")),
     ("clears.rs", include_str!("clears.rs")),
     ("config_hub.rs", include_str!("config_hub.rs")),
     ("context.rs", include_str!("context.rs")),
+    ("copy.rs", include_str!("copy.rs")),
+    ("export.rs", include_str!("export.rs")),
     ("filter.rs", include_str!("filter.rs")),
     ("findings.rs", include_str!("findings.rs")),
     ("flows.rs", include_str!("flows.rs")),
     ("github.rs", include_str!("github.rs")),
+    ("handoff.rs", include_str!("handoff.rs")),
     ("history.rs", include_str!("history.rs")),
     ("layers.rs", include_str!("layers.rs")),
     ("mod.rs", include_str!("mod.rs")),
@@ -736,11 +739,12 @@ fn tab_keys_load_later_tabs_and_leave_a_failed_one() {
 }
 
 /// The service tests, as text.
-const TEST_SOURCES: [(&str, &str); 21] = [
+const TEST_SOURCES: [(&str, &str); 22] = [
     ("ai_runs_tests.rs", include_str!("ai_runs_tests.rs")),
     ("clears_tests.rs", include_str!("clears_tests.rs")),
     ("config_hub_tests.rs", include_str!("config_hub_tests.rs")),
     ("context_tests.rs", include_str!("context_tests.rs")),
+    ("copy_tests.rs", include_str!("copy_tests.rs")),
     ("filter_tests.rs", include_str!("filter_tests.rs")),
     ("findings_tests.rs", include_str!("findings_tests.rs")),
     ("flows_tests.rs", include_str!("flows_tests.rs")),

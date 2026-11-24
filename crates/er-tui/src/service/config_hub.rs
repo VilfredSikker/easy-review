@@ -8,6 +8,7 @@ use er_engine::config::{
 };
 use er_service::{SettingsCommand, SettingsView};
 
+use super::copy::Pick;
 use super::tui_view::Overlay;
 use crate::input::keys::{Edit, OverlayAction};
 
@@ -31,6 +32,8 @@ pub enum Step {
     Layer(super::layers::HubRow),
     /// Closes the overlay and asks before a Cleanup row's clear.
     Clear(super::clears::Clear),
+    /// Closes the overlay and copies from the active tab.
+    Copy(super::copy::Pick),
     /// Closes the overlay and starts an AI hub or Verify run.
     Run(super::ai_runs::Start),
     /// Closes the overlay and runs a Review row.
@@ -196,7 +199,11 @@ fn activate(hub: &mut ConfigHub, config: &ErConfig, forward: bool) -> Step {
             hub.editing = Some(edit_from(String::new()));
             Step::Stay
         }
-        ConfigItem::Action { .. } if forward => Step::Unported,
+        ConfigItem::Action { action_id, .. } if forward => match *action_id {
+            "copy_review_json" => Step::Copy(Pick::ReviewJson),
+            "copy_questions_json" => Step::Copy(Pick::QuestionsJson),
+            _ => Step::Close,
+        },
         _ => Step::Stay,
     }
 }

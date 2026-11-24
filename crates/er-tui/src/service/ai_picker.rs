@@ -3,9 +3,9 @@
 //! default selection through the settings actor (decision 11), and a model
 //! refresh is the actor's `RefreshAiModels`.
 //!
-//! The run rows plan on the service (P74.2) and the Review rows send flow
-//! requests (P74.3); the context copy has no service route on this path yet.
-//! The Specialized review and the Verify hubs are pickers here too.
+//! The run rows plan on the service (P74.2), "Copy context" copies from the
+//! tab (P75.1), and the Review rows send flow requests (P74.3). The
+//! Specialized review and the Verify hubs are pickers here too.
 
 use er_engine::ai::AiState;
 use er_engine::config::{effort_display_label, AiHubConfig, ErConfig};
@@ -36,7 +36,7 @@ const AI_HUB_ROWS: [Option<(&str, &str)>; 22] = [
     Some(("Answer questions", "")),
     Some(("Address notes", "")),
     Some((CHANGE_SELECTION, "")),
-    Some(("Copy context to clipboard", "")),
+    Some((COPY_CONTEXT, "")),
     Some(("Toggle AI findings", "A")),
     Some(("Toggle comments", "")),
     Some(("Toggle questions", "")),
@@ -49,6 +49,7 @@ const AI_HUB_ROWS: [Option<(&str, &str)>; 22] = [
 ];
 
 const CHANGE_SELECTION: &str = "Change agent/model";
+const COPY_CONTEXT: &str = "Copy context to clipboard";
 const SPECIALIZED: &str = "Specialized review";
 const SPECIALIZED_ABOUT: &str = "Focused expert lens — security, patterns, testing, …";
 const CLEANUP_DRAFTS: &str = "Cleanup questions & notes";
@@ -156,6 +157,7 @@ enum Pick {
     Effort(String, String, String),
     Refresh(String),
     Clear(Clear),
+    CopyContext,
 }
 
 pub struct Picker {
@@ -289,6 +291,15 @@ fn build(of: Of, view: &SettingsView, ai_label: &str) -> Option<Picker> {
                             hub.has_presets(),
                         ),
                         Pick::ChangeSelection,
+                    )],
+                    Some((COPY_CONTEXT, hint)) => vec![(
+                        row(
+                            COPY_CONTEXT.into(),
+                            hint,
+                            "Copy diff context for agent terminal".into(),
+                            true,
+                        ),
+                        Pick::CopyContext,
                     )],
                     Some((CLEANUP_DRAFTS, hint)) => vec![(
                         row(
@@ -550,6 +561,7 @@ fn select(picker: &Picker, view: &SettingsView, label: &str) -> Step {
         _ if !row.enabled => Step::Notify(row.description.clone()),
         Pick::Layer(layer) => Step::Layer(*layer),
         Pick::Clear(clear) => Step::Clear(*clear),
+        Pick::CopyContext => Step::Copy(super::copy::Pick::Context),
         Pick::Run(start) => Step::Run(start.clone()),
         Pick::Flow(act) => Step::Flow(act.clone()),
         Pick::Experts => opened(Of::Experts, view, label, None),

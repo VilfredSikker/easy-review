@@ -127,24 +127,12 @@ fn app_until(app: &mut er_engine::app::App, what: &str, done: impl Fn(&FlowState
     }
 }
 
-/// Opens the AI hub on both paths and compares the frames. "Copy context to
-/// clipboard" is P75.1's (#743); until it lands, the flag row reads as the
-/// App's.
+/// Opens the AI hub on both paths and compares the frames.
 fn hub_parity(app: &mut er_engine::app::App, shell: &mut Shell, hl: &mut Highlighter, at: &str) {
     app.clear_notification();
     shell.view_mut().notification = None;
     press_app(app, KeyCode::Char('a'));
     shell.handle_key(key(KeyCode::Char('a')));
-    if let Some(Overlay::Picker(picker)) = shell.view_mut().overlay.as_mut() {
-        let copy = picker.rows.iter_mut();
-        if let Some(row) = copy
-            .into_iter()
-            .find(|row| row.label.starts_with("Copy context"))
-        {
-            row.description = "Copy diff context for agent terminal".into();
-            row.enabled = true;
-        }
-    }
     assert_parity(app, &shell_frame(shell, hl), hl, at);
 }
 
