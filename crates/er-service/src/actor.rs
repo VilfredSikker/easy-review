@@ -168,6 +168,9 @@ fn run(
                 }
             }
             ActorMsg::FlowTick => flows.request_advance(),
+            ActorMsg::Worktree(step) => {
+                crate::worktree::step(&deps, &mut state, &tx, *step, &subscribers, &view);
+            }
             ActorMsg::FlowsChanged(update) => {
                 apply_flows(&mut state, &jobs, update, &subscribers, &view);
             }

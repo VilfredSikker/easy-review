@@ -14,6 +14,7 @@ use er_github::FakeGitHub;
 use super::{actor_over, content_of, load, with_root, working_tab, RAW, WAIT};
 use crate::actor::WorkspaceDeps;
 use crate::protocol::{Command, Reply};
+use crate::worktree::Write;
 use crate::{spawn, WorkspaceHandle};
 
 // The lint gate reads this file alone, without the module's `cfg(test)`.
@@ -196,7 +197,7 @@ fn a_stage_moves_the_diff_revision() -> anyhow::Result<()> {
 }
 
 /// After a commit, Staged shows the last commit until a push, as the App
-/// does; a mode switch clears it too.
+/// does; new staged changes and a mode switch clear it too.
 #[test]
 fn a_commit_shows_the_last_commit_until_push() -> anyhow::Result<()> {
     with_root(|repo| {
@@ -240,11 +241,20 @@ fn a_commit_shows_the_last_commit_until_push() -> anyhow::Result<()> {
             "Staged still shows the commit"
         );
 
+        // New staged changes end the committed view.
         commit(&handle, "three\n");
         assert!(
             committed(&handle),
             "the second commit did not mark the view"
         );
+        write(repo, "src/b.rs", "new\n");
+        run_git(repo, &["add", "src/b.rs"]);
+        send(&handle, super::refresh(key));
+        assert!(!committed(&handle), "new staged changes kept the mark");
+        assert_eq!(paths(&handle, key), ["src/b.rs"], "Staged is not the index");
+
+        commit(&handle, "four\n");
+        assert!(committed(&handle), "the third commit did not mark the view");
         let mode = |mode| Command::SetDiffMode {
             key,
             mode,
@@ -259,6 +269,111 @@ fn a_commit_shows_the_last_commit_until_push() -> anyhow::Result<()> {
         );
         Ok(())
     })
+}
+
+/// With no `HEAD~1` to read, Staged leaves the committed view.
+#[test]
+fn an_unreadable_parent_clears_the_committed_view() -> anyhow::Result<()> {
+    with_root(|repo| {
+        repo_at(repo);
+        write(repo, "src/a.rs", "two\n");
+        run_git(repo, &["add", "."]);
+        let handle = cli_actor();
+        let key = TabKey::next();
+        load_in(&handle, key, repo, DiffMode::Staged);
+        let message = "next".to_string();
+        send(&handle, Command::Commit { key, message });
+        let committed = || content_of(&handle.view(), key).map(|c| c.diff.meta.committed_unpushed);
+        assert!(committed()?, "the commit did not mark the view");
+
+        // The same tree as a root commit, which has no parent.
+        run_git(repo, &["checkout", "-q", "--orphan", "root"]);
+        run_git(repo, &["commit", "-q", "-m", "root"]);
+        send(&handle, super::refresh(key));
+        assert!(!committed()?, "a missing HEAD~1 kept the mark");
+        Ok(())
+    })
+}
+
+/// A write that lands while another load moves the tab still answers with
+/// its notice, and the tab still shows its committed view.
+#[test]
+fn a_write_survives_a_reload_that_lands_meanwhile() -> anyhow::Result<()> {
+    with_root(|repo| {
+        repo_at(repo);
+        let hook = Path::new(repo).join(".git/hooks/pre-commit");
+        std::fs::write(&hook, "#!/bin/sh\nsleep 1\n")?;
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755))?;
+        write(repo, "src/a.rs", "two\n");
+        run_git(repo, &["add", "."]);
+        let handle = cli_actor();
+        let key = TabKey::next();
+        load_in(&handle, key, repo, DiffMode::Staged);
+
+        let message = "next".to_string();
+        let pending = handle.send(Command::Commit { key, message });
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        send(&handle, super::refresh(key));
+        let reply = pending.recv_timeout(WAIT)?;
+
+        assert_eq!(reply, Ok(written(key, "Committed! Ctrl+P to push")));
+        let content = content_of(&handle.view(), key)?;
+        assert!(
+            content.diff.meta.committed_unpushed,
+            "the reload lost the mark"
+        );
+        assert_eq!(
+            paths(&handle, key),
+            ["src/a.rs"],
+            "Staged is not the commit"
+        );
+        Ok(())
+    })
+}
+
+/// A remote PR, and a branch view checked out nowhere, have no working tree:
+/// the write is refused before any port write.
+#[test]
+fn a_tab_with_no_working_tree_refuses_every_write() -> anyhow::Result<()> {
+    let fake = Arc::new(er_git::FakeGit::default());
+    let git: Arc<dyn er_git::Git> = Arc::clone(&fake) as Arc<dyn er_git::Git>;
+    let deps = WorkspaceDeps::new(Ports {
+        git,
+        github: Arc::new(FakeGitHub::default()),
+    });
+    let mut remote = super::loaded_tab("/repo");
+    remote.tab.remote_repo = Some("acme/widgets".into());
+    remote.tab.pr_number = Some(7);
+    let mut branch = super::loaded_tab("/repo");
+    branch.tab.local_branch_view = Some("topic".into());
+    for loaded in [remote, branch] {
+        let mut state = crate::workspace::WorkspaceState::new();
+        let key = TabKey::next();
+        let since = None;
+        state
+            .apply_patch(crate::content::ContentPatch::Loaded { key, since, loaded })
+            .map_err(|refused| anyhow::anyhow!("{refused}"))?;
+        let content = content_of(state.view(), key)?;
+        for write in [
+            Write::Stage("src/a.rs".into()),
+            Write::Commit("m".into()),
+            Write::Push,
+        ] {
+            let refused = crate::worktree::run(&deps, &content, write).err();
+            let message = refused.map(|error| error.to_string());
+            assert_eq!(
+                message.as_deref(),
+                Some("This tab has no working tree to write in")
+            );
+        }
+    }
+    assert!(
+        fake.calls().is_empty(),
+        "a write reached the port: {:?}",
+        fake.calls()
+    );
+    Ok(())
 }
 
 /// A watched-file delete stays inside the repo: `..` and a symlinked

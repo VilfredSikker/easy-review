@@ -395,9 +395,12 @@ pub(crate) fn load_tab(
             .remote_repo
             .as_deref()
             .is_some_and(|slug| slug.split('/').count() == 2);
-    // Any other view clears it, so a mode switch does too.
-    let committed_unpushed =
-        input.committed_unpushed && tab.mode == DiffMode::Staged && shows_last_commit(git, &tab);
+    // Any other view clears it, so a mode switch does too; a branch view
+    // never shows the last commit.
+    let committed_unpushed = input.committed_unpushed
+        && tab.mode == DiffMode::Staged
+        && tab.local_branch_view.is_none()
+        && shows_last_commit(git, &tab);
     let fetch = |scope: &str| {
         diff_load::fetch_raw_with_preview_head(ports, &id, scope, committed_unpushed)
             .map_err(|error| failed("fetch the diff", error))
