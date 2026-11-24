@@ -2,8 +2,8 @@
 //! routes to Quick, Standard, Deep or a skip, finders run and verification
 //! waits for its run's final record; a cancel keeps the lease until the
 //! writer drains; a re-run resumes only the unfinished stages. Moved from
-//! the driver's `mod.rs` and `tests/review_flow_standard.rs`, where they ran
-//! on the App.
+//! the driver's `mod.rs` and the engine's Quick-flow integration test,
+//! where they ran on the App.
 
 use std::path::Path;
 use std::time::Duration;
