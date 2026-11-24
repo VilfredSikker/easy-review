@@ -206,9 +206,41 @@ fn a_clear_is_refused_while_a_flow_holds_the_bucket() {
     });
 }
 
-/// With the bucket's write lock held, `z` holds the bucket's admission while
-/// it waits, so no flow can take the bucket mid-clear; once the wait runs
-/// out, the clear is refused, its files stay, and the status line says so.
+/// Presses `code`, then `y`, with the bucket's write lock held. While the
+/// clear waits on the lock it holds the bucket's admission, so an admission
+/// check made then is refused and names the clear; once the wait runs out
+/// the clear is refused and the status line says `said`.
+fn clear_while_busy(shell: &mut Shell, code: char, said: &str) {
+    let dir = er_dir(shell);
+    let scope = er_store::Scope::dir(&dir).unwrap_or_else(|e| panic!("{e}"));
+    let lock = er_engine::store_registry::store()
+        .lock_scope(&scope, Duration::ZERO)
+        .unwrap_or_else(|e| panic!("{e}"));
+    shell.handle_key(key(KeyCode::Char(code)));
+    shell.handle_key(key(KeyCode::Char('y')));
+    // The clear waits out the lock for seconds; the check only touches the
+    // lease, for less time than the clear's own admission waits.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut refusal = None;
+    while refusal.is_none() && Instant::now() < deadline {
+        refusal = er_engine::arena::check_bucket_admission(&dir).err();
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let refusal = refusal.map(|error| error.to_string());
+    assert_eq!(
+        refusal.as_deref(),
+        Some("A clear is already using this review bucket"),
+        "the {code} clear never held the bucket's admission"
+    );
+    settle_replies(shell);
+    drop(lock);
+    let shown = notice(shell).unwrap_or_default().to_string();
+    assert!(shown.starts_with(said), "{shown}");
+}
+
+/// `z` and `Z` on a busy bucket each hold the bucket's admission through the
+/// clear, are refused once the lock wait runs out, keep their files, and
+/// say so.
 #[test]
 fn a_busy_bucket_refuses_the_clear_and_says_so() {
     let repo = fixture(1);
@@ -218,29 +250,10 @@ fn a_busy_bucket_refuses_the_clear_and_says_so() {
         settle(&mut shell, loaded);
         seed_shell(&mut shell, seed_drafts);
         let dir = er_dir(&shell);
-        let scope = er_store::Scope::dir(&dir).unwrap_or_else(|e| panic!("{e}"));
-        let store = er_engine::store_registry::store();
-        let lock = store
-            .lock_scope(&scope, Duration::ZERO)
-            .unwrap_or_else(|e| panic!("{e}"));
-
-        shell.handle_key(key(KeyCode::Char('z')));
-        shell.handle_key(key(KeyCode::Char('y')));
-        let deadline = Instant::now() + Duration::from_secs(4);
-        let mut held = false;
-        while !held && Instant::now() < deadline {
-            held = store.lease(&scope, Duration::ZERO, "flow-1").is_err();
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        assert!(held, "the clear never held the bucket's admission");
-        settle_replies(&mut shell);
-        drop(lock);
-        let shown = notice(&shell).unwrap_or_default().to_string();
-        assert!(
-            shown.starts_with("Questions & notes clear skipped:"),
-            "{shown}"
-        );
+        clear_while_busy(&mut shell, 'z', "Questions & notes clear skipped:");
         assert_eq!(present(&dir, &DRAFTS), DRAFTS);
+        clear_while_busy(&mut shell, 'Z', "Review clear skipped:");
+        assert_eq!(present(&dir, &["review.json"]), ["review.json"]);
     });
 }
 
@@ -270,8 +283,8 @@ fn the_keys_open_no_clear_prompt_on_a_remote_tab() {
     });
 }
 
-/// The AI hub's two Cleanup rows open the clears' prompts, and the frame
-/// draws the prompt.
+/// The AI hub's two Cleanup rows open their own clears' prompts, with the
+/// App's counts, and the frame draws the prompt.
 #[test]
 fn the_hub_cleanup_rows_ask_before_their_clears() {
     let repo = fixture(1);
@@ -281,7 +294,22 @@ fn the_hub_cleanup_rows_ask_before_their_clears() {
         settle(&mut shell, loaded);
         seed_shell(&mut shell, seed_drafts);
         let mut hl = Highlighter::new();
-        // Open the AI hub, go to its last row (Cleanup reviews), choose it.
+        let drafts = shell
+            .active_content()
+            .map_or(0, |content| content.ai.state.local_draft_count());
+        assert_eq!(drafts, 2);
+        // The row before last is "Cleanup questions & notes".
+        shell.handle_key(key(KeyCode::Char('a')));
+        for _ in 0..30 {
+            shell.handle_key(key(KeyCode::Char('j')));
+        }
+        shell.handle_key(key(KeyCode::Char('k')));
+        shell.handle_key(key(KeyCode::Enter));
+        let mode = shell.view().input_mode;
+        let asked = Ask::CleanupQuestions { count: drafts };
+        assert_eq!(mode, super::tui_view::Mode::Confirm(asked));
+        shell.handle_key(key(KeyCode::Char('n')));
+        // The last row is "Cleanup reviews".
         shell.handle_key(key(KeyCode::Char('a')));
         for _ in 0..30 {
             shell.handle_key(key(KeyCode::Char('j')));

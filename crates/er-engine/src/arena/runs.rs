@@ -17,15 +17,32 @@ use std::time::Duration;
 /// Reject ordinary actions only while a workflow owns this exact bucket. The
 /// probe does not wait: a held lease answers at once.
 pub fn check_bucket_admission(er_dir: &str) -> Result<()> {
-    hold_bucket_admission(er_dir).map(drop)
+    admission(er_dir, Duration::ZERO, "admission").map(drop)
 }
 
+/// How long a clear waits for another brief holder, such as a probe, to let
+/// the lease go before it is refused.
+const CLEAR_ADMISSION_WAIT: Duration = Duration::from_millis(200);
+
 /// [`check_bucket_admission`] that keeps the lease, so no workflow can take
-/// the bucket until the guard drops. A clear holds it while it deletes.
+/// the bucket until the guard drops. A clear holds it while it deletes, under
+/// its own label, so a refusal it causes names the clear.
 pub fn hold_bucket_admission(er_dir: &str) -> Result<er_store::LeaseGuard> {
+    admission(er_dir, CLEAR_ADMISSION_WAIT, CLEAR_LABEL)
+}
+
+const CLEAR_LABEL: &str = "clear";
+
+fn admission(er_dir: &str, wait: Duration, label: &str) -> Result<er_store::LeaseGuard> {
     let scope = er_store::Scope::dir(er_dir)?;
-    match crate::store_registry::store().lease(&scope, Duration::ZERO, "admission") {
+    match crate::store_registry::store().lease(&scope, wait, label) {
         Ok(guard) => Ok(guard),
+        Err(StoreError::LeaseHeld {
+            holder: Some(holder),
+            ..
+        }) if holder.label == CLEAR_LABEL => {
+            bail!("A clear is already using this review bucket")
+        }
         Err(StoreError::LeaseHeld { .. } | StoreError::AlreadyLocked { .. }) => {
             bail!("A review flow is already using this review bucket")
         }

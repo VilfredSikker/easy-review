@@ -49,6 +49,7 @@ fn cleanup_sidecars(er_dir: &str, artifacts: bool) -> Result<(), er_store::Store
         crate::store_registry::store().lock_scope(&scope, er_store::DEFAULT_LOCK_TIMEOUT)?;
     delete_common_sidecars(&scope, &guard);
     if artifacts {
+        unlink_linked_dirs(er_dir);
         delete_review_artifacts(&scope, &guard);
     }
     if let Ok(file) = er_store::RelPath::new("summary.md") {
@@ -60,6 +61,19 @@ fn cleanup_sidecars(er_dir: &str, artifacts: bool) -> Result<(), er_store::Store
         }
     }
     Ok(())
+}
+
+/// A linked `experts` or `scoped` directory points outside the bucket, so
+/// the cleanup removes the link itself and never lists or walks through it.
+fn unlink_linked_dirs(er_dir: &str) {
+    let bucket = std::path::Path::new(er_dir);
+    // `scoped` goes first: once it is a link, nothing under it is looked at.
+    for dir in ["experts", "scoped", "scoped/experts"] {
+        let path = bucket.join(dir);
+        if std::fs::symlink_metadata(&path).is_ok_and(|meta| meta.file_type().is_symlink()) {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
 }
 
 fn delete_common_sidecars(scope: &er_store::Scope, guard: &er_store::ScopeGuard) {
@@ -110,5 +124,45 @@ fn delete_review_artifacts(scope: &er_store::Scope, guard: &er_store::ScopeGuard
                 let _ = store.delete_locked(guard, &key);
             }
         }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    /// A bucket whose `experts` and `scoped/experts` are links to directories
+    /// outside it: the full cleanup removes the links and every file outside
+    /// survives, the ones named like expert results included.
+    #[test]
+    fn a_linked_expert_directory_is_unlinked_and_never_walked() {
+        let dir = tempfile::tempdir().unwrap();
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let (bucket, outside) = (dir.path().join("bucket"), dir.path().join("outside"));
+            let (experts, scoped) = (outside.join("experts"), outside.join("scoped"));
+            for at in [&bucket.join("scoped"), &experts, &scoped] {
+                std::fs::create_dir_all(at).unwrap();
+            }
+            for file in [
+                experts.join("sec.json"),
+                experts.join("keep.json"),
+                scoped.join("sec.json"),
+            ] {
+                std::fs::write(file, "{}").unwrap();
+            }
+            std::os::unix::fs::symlink(&experts, bucket.join("experts")).unwrap();
+            std::os::unix::fs::symlink(&scoped, bucket.join("scoped/experts")).unwrap();
+
+            cleanup_review_artifacts(bucket.to_str().unwrap()).unwrap();
+
+            assert!(std::fs::symlink_metadata(bucket.join("experts")).is_err());
+            assert!(!bucket.join("scoped").exists());
+            for kept in ["experts/sec.json", "experts/keep.json", "scoped/sec.json"] {
+                assert!(
+                    outside.join(kept).exists(),
+                    "{kept} outside the bucket was deleted"
+                );
+            }
+        });
     }
 }
