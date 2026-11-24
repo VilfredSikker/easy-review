@@ -191,6 +191,54 @@ impl TaskHost {
             .map(|log| log.iter().cloned().collect())
             .unwrap_or_default()
     }
+
+    /// Forgets `er_dir`'s log, as a closed tab's goes.
+    pub fn drop_bucket_log(&self, er_dir: &str) {
+        lock(&self.logs).remove(er_dir);
+    }
+}
+
+/// Has the settings view read the repo's rules again after an importance run
+/// committed them, so `risk(key)` moves, and refreshes every loaded tab on
+/// the repo through `refresh`, so its diff reads the new table at once, as
+/// the App's `sync_repo_rules_to_tabs` hands them on. A load replaces the
+/// paths the view resolves, so it sends a loaded tab's paths on that repo,
+/// the active tab's first. It waits on the settings actor, so it runs on the
+/// task's worker, never on a front end's loop. A failed load is answered
+/// after the refreshes.
+pub fn reload_risk_rules(
+    tabs: &crate::TabsView,
+    target: &BackgroundTaskTarget,
+    settings: &crate::SettingsHandle,
+    content: impl Fn(&crate::TabEntry) -> Option<Arc<crate::TabContent>>,
+    refresh: impl Fn(&crate::TabEntry),
+) -> Result<(), crate::WorkspaceError> {
+    let mut on_repo: Vec<_> = tabs
+        .tabs
+        .iter()
+        .filter(|entry| entry.descriptor.repo_root == target.repo_root)
+        .collect();
+    on_repo.sort_by_key(|entry| Some(entry.key) != tabs.active);
+    let paths = on_repo
+        .iter()
+        .find_map(|entry| content(entry))
+        .map(|content| content.diff.files.iter().map(|f| f.path.clone()).collect())
+        .unwrap_or_default();
+    let load = crate::SettingsCommand::LoadRiskRules {
+        repo_root: target.repo_root.clone(),
+        remote_repo: target.remote_repo.clone(),
+        paths,
+    };
+    let loaded = settings.send_and_wait(load);
+    for entry in on_repo {
+        refresh(entry);
+    }
+    loaded.map(drop)
+}
+
+/// Whether `row` is an importance run that committed its table.
+pub fn committed_importance(row: &TaskJob) -> bool {
+    row.kind == er_engine::ai::prompts::IMPORTANCE_TASK_KIND && row.status == "done"
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {

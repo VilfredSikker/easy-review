@@ -93,13 +93,27 @@ enum Commands {
 
 /// Restore the terminal before the default panic handler runs, so a panic
 /// inside the event loop doesn't leave the shell in raw mode with no cursor.
+/// A panic the service's planning worker catches stands the hook down: the
+/// worker answers it as the run's error, and the TUI keeps drawing.
 fn install_panic_hook() {
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
+        if !leaves_the_screen() {
+            return;
+        }
         let _ = disable_raw_mode();
         let _ = execute!(io::stdout(), LeaveAlternateScreen, Show);
         default_hook(info);
     }));
+}
+
+/// Whether a panic here now ends the TUI, so the hook restores the terminal.
+fn leaves_the_screen() -> bool {
+    #[cfg(feature = "v1-service")]
+    if er_service::catching_panics() {
+        return false;
+    }
+    true
 }
 
 fn run_uninstall(yes: bool, dry_run: bool, opts: uninstall::UninstallOptions) -> Result<()> {
@@ -742,6 +756,16 @@ mod tests {
     use er_engine::app::{ConfirmAction, InputMode};
     use er_engine::git::{DiffFile, DiffHunk, DiffLine, FileStatus, LineType};
     use std::sync::mpsc;
+
+    /// A panic the planning worker catches leaves the terminal as it is; any
+    /// other panic restores it.
+    #[cfg(feature = "v1-service")]
+    #[test]
+    fn a_caught_planning_panic_leaves_the_screen_alone() {
+        assert!(leaves_the_screen());
+        let on_worker = er_service::test_support::on_planning_worker(leaves_the_screen);
+        assert_eq!(on_worker, Ok(false), "the hook would leave the screen");
+    }
 
     // ── Test helpers ──
 

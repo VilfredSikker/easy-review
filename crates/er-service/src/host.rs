@@ -40,7 +40,7 @@ pub type ReplyReceiver = Receiver<Result<Reply, WorkspaceError>>;
 pub struct ServiceHost {
     deps: WorkspaceDeps,
     registry: Arc<AppRegistry>,
-    handles: Mutex<HashMap<String, WorkspaceHandle>>,
+    handles: Arc<Mutex<HashMap<String, WorkspaceHandle>>>,
     settings: OnceLock<SettingsHandle>,
     settings_path: PathBuf,
     events: Option<Sender<Event>>,
@@ -66,7 +66,7 @@ impl ServiceHost {
         Self {
             deps: deps.with_app_registry(Arc::clone(&registry)),
             registry,
-            handles: Mutex::new(HashMap::new()),
+            handles: Arc::default(),
             settings: OnceLock::new(),
             settings_path,
             events: None,
@@ -166,17 +166,50 @@ impl ServiceHost {
     }
 
     /// What a task on this host reads and tells: the settings view's config,
-    /// and `TaskNotice` events for its messages.
+    /// and `TaskNotice` events for its messages. A committed importance run
+    /// reloads its repo's risk rules and refreshes the loaded tabs on it.
     pub fn task_hooks(&self) -> TaskHooks {
         let settings = self.settings();
         let events = Arc::clone(&self.task_events);
+        let notify = Arc::new(move |message, long| {
+            send(&events, Event::TaskNotice { message, long });
+        });
+        let (registry, handles) = (Arc::clone(&self.registry), Arc::clone(&self.handles));
+        let (rules, told) = (settings.clone(), Arc::clone(&notify));
         TaskHooks {
             ports: self.deps.ports().clone(),
             config: Arc::new(move || Arc::clone(&settings.view().config)),
-            notify: Arc::new(move |message, long| {
-                send(&events, Event::TaskNotice { message, long });
+            notify,
+            finished: Arc::new(move |task| {
+                if !crate::tasks::committed_importance(task.row) {
+                    return;
+                }
+                let handle = |entry: &crate::TabEntry| {
+                    lock(&handles)
+                        .get(&entry.descriptor.workspace_key())
+                        .cloned()
+                };
+                let reloaded = crate::tasks::reload_risk_rules(
+                    &registry.tabs_view(),
+                    task.target,
+                    &rules,
+                    |entry| handle(entry)?.view().tab(entry.key).cloned(),
+                    |entry| {
+                        if let Some(handle) = handle(entry) {
+                            let _ = handle.send(Command::RefreshDiff {
+                                key: entry.key,
+                                force: false,
+                                adopt_head_oid: None,
+                            });
+                        }
+                    },
+                );
+                let message = match reloaded {
+                    Ok(()) => "Risk rules committed — see the task log for its report".into(),
+                    Err(error) => format!("Risk rules committed, but not reloaded: {error}"),
+                };
+                told(message, true);
             }),
-            finished: Arc::new(|_| {}),
         }
     }
 

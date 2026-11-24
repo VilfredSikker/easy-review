@@ -31,6 +31,8 @@ pub enum Step {
     Layer(super::layers::HubRow),
     /// Closes the overlay and asks before a Cleanup row's clear.
     Clear(super::clears::Clear),
+    /// Closes the overlay and starts an AI hub or Verify run.
+    Run(super::ai_runs::Start),
 }
 
 pub struct ConfigHub {

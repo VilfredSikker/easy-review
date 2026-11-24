@@ -262,3 +262,54 @@ fn the_task_events_reach_the_sender() -> anyhow::Result<()> {
         Ok(())
     })
 }
+
+/// A committed importance run has the host's settings view read the repo's
+/// rules again, as the desktop's does, so a TUI importance run moves
+/// `risk(key)` too. The table is committed by hand: a run that commits one
+/// needs a real provider CLI.
+#[test]
+fn a_committed_importance_run_reloads_the_risk_rules() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    er_engine::storage::with_process_test_storage_root(dir.path().join("storage"), || {
+        let host = ServiceHost::new(Ports::for_test(), dir.path().join("config.toml"));
+        let repo_root = "/projects/widgets";
+        assert!(host.settings().view().risk_for(repo_root, None).is_none());
+        let committed = er_engine::config::RiskRuleProposal {
+            repo: "widgets".into(),
+            rules: [("src/f2.rs".to_string(), "low".into())].into(),
+            ..Default::default()
+        };
+        let store = er_engine::store_registry::store();
+        committed.commit_to_store("widgets", &store)?;
+        let row = er_protocol::TaskJob {
+            id: "importance-1".into(),
+            label: "Importance".into(),
+            kind: er_engine::ai::prompts::IMPORTANCE_TASK_KIND.into(),
+            target_label: "widgets".into(),
+            scope: "branch".into(),
+            repo_root: repo_root.into(),
+            branch_label: "feature".into(),
+            pr_number: None,
+            remote_repo: None,
+            er_dir: "/bucket".into(),
+            status: "done".into(),
+            error: None,
+            started_at_ms: 0,
+            finished_at_ms: Some(1),
+        };
+        let target = BackgroundTaskTarget {
+            repo_root: repo_root.into(),
+            ..target("/bucket")
+        };
+        (host.task_hooks().finished)(crate::Finished {
+            row: &row,
+            target: &target,
+            agent: false,
+        });
+        assert!(
+            host.settings().view().risk_for(repo_root, None).is_some(),
+            "the rules were not reloaded"
+        );
+        Ok(())
+    })
+}

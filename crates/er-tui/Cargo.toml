@@ -48,6 +48,8 @@ v1-service = ["dep:er-service", "dep:er-store", "dep:er-protocol"]
 er-engine = { path = "../er-engine", features = ["test-support"] }
 # The scripted GitHub port, for the flag-on `--pr` start.
 er-github = { path = "../er-github" }
+# The gated fake agent and the planning worker, for the flag-on run tests.
+er-service = { path = "../er-service", features = ["test-support"] }
 
 [lints]
 workspace = true

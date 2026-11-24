@@ -17,13 +17,18 @@ use er_engine::github::BranchPrProbe;
 use er_engine::tab_identity::DiffMode;
 use er_engine::tabs_record::TabKind;
 use er_engine::TabKey;
-use er_service::{Command, Event, Reply, ReplyReceiver, ServiceHost, SettingsCommand, TabContent};
+use er_service::{
+    Command, Event, Reply, ReplyReceiver, RunReceiver, RunRequest, ServiceHost, SettingsCommand,
+    TabContent,
+};
 use ratatui::backend::{Backend, CrosstermBackend};
 use ratatui::text::Line;
 use ratatui::widgets::Paragraph;
 use ratatui::Terminal;
 
+use super::agent_log::{self, Jobs};
 use super::ai_picker;
+use super::ai_runs::{self, Next, Rerun};
 use super::clears::{self, Clear};
 use super::config_hub::{self, ConfigHub, Step};
 use super::context;
@@ -144,6 +149,11 @@ pub struct Shell {
     branch_prs: HashMap<TabKey, (u64, String)>,
     /// The tabs with a stack lookup on the way.
     stacks_reading: HashSet<TabKey>,
+    /// The runs the host is planning, with the notice each says once taken.
+    runs: Vec<(RunReceiver, Option<String>)>,
+    /// The bucket each tab that ran something showed, so a closed tab's log
+    /// goes.
+    run_buckets: HashMap<TabKey, String>,
     pub should_quit: bool,
     /// The refusal every reload gets in a test, and the reloads it refused.
     #[cfg(test)]
@@ -201,6 +211,8 @@ impl Shell {
             probed: None,
             branch_prs: HashMap::new(),
             stacks_reading: HashSet::new(),
+            runs: Vec::new(),
+            run_buckets: HashMap::new(),
             should_quit: false,
             #[cfg(test)]
             refuse_reloads: None,
@@ -362,11 +374,25 @@ impl Shell {
                     self.redraw = true;
                     self.review_changed(&context);
                 }
+                Ok(Event::TaskNotice { message, long }) => {
+                    self.notify(message);
+                    if long {
+                        self.dwell = NOTIFICATION_DWELL_LONG;
+                    }
+                }
+                Ok(Event::TabsChanged { .. }) => {
+                    self.redraw = true;
+                    let tabs = self.host.registry().tabs_view();
+                    let open = tabs.tabs.iter().map(|entry| entry.key).collect();
+                    agent_log::forget_closed(self.host.tasks(), &mut self.run_buckets, &open);
+                }
                 Ok(_) => self.redraw = true,
                 Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
             }
         }
         self.drain_replies();
+        self.drain_runs();
+        self.sync_tasks();
         self.sync_watch(now);
         self.sync_probe();
         self.sync_watched(now);
@@ -415,6 +441,63 @@ impl Shell {
         {
             self.notified_at = None;
             self.view.notification = None;
+            self.redraw = true;
+        }
+    }
+
+    /// Asks the host to plan `request` on `key`'s tab. The reply lands on a
+    /// later tick; nothing here waits on it.
+    fn start_run(&mut self, key: TabKey, request: RunRequest) {
+        if let Some(content) = self
+            .workspace_of(key)
+            .and_then(|workspace| self.host.content(&workspace, key))
+        {
+            self.run_buckets.insert(key, content.context.er_dir.clone());
+        }
+        let started = ai_runs::started(&request);
+        self.runs.push((self.host.run(key, request), started));
+    }
+
+    /// A run the planner refused says why; a tab command it took says the
+    /// App's start notice, since the host tells none for it.
+    fn drain_runs(&mut self) {
+        let mut said = Vec::new();
+        self.runs.retain(|(replies, started)| match replies.try_recv() {
+            Ok(Ok(())) => {
+                said.extend(started.clone());
+                false
+            }
+            Ok(Err(error)) => {
+                said.push(error.message);
+                false
+            }
+            Err(TryRecvError::Empty) => true,
+            Err(TryRecvError::Disconnected) => {
+                said.push("The run stopped before it answered".into());
+                false
+            }
+        });
+        for message in said {
+            self.notify(message);
+        }
+    }
+
+    /// Retires finished tasks and starts what the queue can, as the
+    /// desktop's tick does, and draws each tick while a command runs on the
+    /// tab whose Log panel is open, since an output line sends no event.
+    fn sync_tasks(&mut self) {
+        let tasks = self.host.tasks();
+        if tasks.rows().is_empty() {
+            return;
+        }
+        er_service::tasks::poll(tasks, &self.host.task_hooks());
+        let Some((key, _, Some(content))) = self.active() else {
+            return;
+        };
+        let shows_log = self.view.tab(key).is_some_and(|state| {
+            state.panel == Some(er_engine::ai::PanelContent::AgentLog)
+        });
+        if shows_log && agent_log::any_running(self.host.tasks(), &content.context.er_dir) {
             self.redraw = true;
         }
     }
@@ -508,6 +591,7 @@ impl Shell {
                                 | After::StackRead
                                 | After::PrRefreshed { .. }
                                 | After::Cleared(_)
+                                | After::Rerun(_)
                         ) =>
                 {
                     let lost = er_service::WorkspaceError::Failed(
@@ -655,6 +739,16 @@ impl Shell {
                         self.notify(clears::landed(clear).into());
                     }
                 }
+                Ok(_) if matches!(after, After::Rerun(_)) => {
+                    if let After::Rerun(rerun) = after {
+                        self.start_run(key, rerun.request());
+                    }
+                }
+                Err(error) if matches!(after, After::Rerun(_)) => {
+                    if let After::Rerun(rerun) = after {
+                        self.notify(rerun.refused(&error.to_string()));
+                    }
+                }
                 Err(error) if matches!(after, After::Cleared(_)) => {
                     if let After::Cleared(clear) = after {
                         self.notify(clears::refused(clear, &error.to_string()));
@@ -775,6 +869,8 @@ impl Shell {
             hub.follow(content, reading);
         }
         let state = self.view.tab(key)?;
+        let shows_log = state.panel == Some(er_engine::ai::PanelContent::AgentLog);
+        let jobs: Jobs = agent_log::read(self.host.tasks(), &content.context.er_dir, shows_log);
         let frame = tui_view::Frame {
             tab_names,
             active_tab,
@@ -784,6 +880,7 @@ impl Shell {
             ai_selection_label,
             reviewed_count,
             watching: self.watch.watching(),
+            jobs: &jobs,
         };
         Some(read(&tui_view::screen(&self.view, state, frame)))
     }
@@ -896,6 +993,33 @@ impl Shell {
                 let command = clears::command(clear, content);
                 return self.post(key, workspace, command, After::Cleared(clear));
             }
+            TuiAction::Write(
+                write @ (Write::ClearReviewAndRun
+                | Write::ClearAnswersAndRunQuestions
+                | Write::ClearRepliesAndRunNotes),
+            ) => {
+                self.view.input_mode = Mode::Normal;
+                let rerun = match write {
+                    Write::ClearReviewAndRun => Rerun::Review,
+                    Write::ClearAnswersAndRunQuestions => Rerun::Questions,
+                    _ => Rerun::Notes,
+                };
+                let command = rerun.clear(content);
+                return self.post(key, workspace, command, After::Rerun(rerun));
+            }
+            TuiAction::Confirm(
+                confirm @ (ConfirmKey::KeepAndRunReview
+                | ConfirmKey::KeepAndRunQuestions
+                | ConfirmKey::KeepAndRunNotes),
+            ) => {
+                self.view.input_mode = Mode::Normal;
+                let rerun = match confirm {
+                    ConfirmKey::KeepAndRunReview => Rerun::Review,
+                    ConfirmKey::KeepAndRunQuestions => Rerun::Questions,
+                    _ => Rerun::Notes,
+                };
+                return self.start_run(key, rerun.request());
+            }
             TuiAction::Confirm(ConfirmKey::Cancel) => {
                 if self.view.input_mode == Mode::Confirm(Ask::RemoveReviewComment) {
                     self.view.overlay = Some(Overlay::Review);
@@ -903,7 +1027,6 @@ impl Shell {
                 self.view.input_mode = Mode::Normal;
                 return;
             }
-            _ => return self.unported(),
         };
         let shown = self.watched_shown(key, content);
         let done = filter::normal(&mut self.view, key, content, shown, action.clone());
@@ -996,8 +1119,14 @@ impl Shell {
             A::OpenAiHub => {
                 let view = self.host.settings().view();
                 let label = self.settings.ai_label(&view);
-                let facts = ai_picker::HubFacts::of(&content.ai.state);
+                let has_diff = !content.diff.files.is_empty();
+                let facts = ai_picker::HubFacts::of(&content.ai.state, has_diff);
                 return self.run_step(ai_picker::open_ai_hub(&view, &label, facts));
+            }
+            A::OpenVerifyHub => {
+                let view = self.host.settings().view();
+                let label = self.settings.ai_label(&view);
+                return self.run_step(ai_picker::open_verify_hub(&view, &label));
             }
             A::AskClearQuestions | A::AskClearReviews => {
                 let clear = match action {
@@ -2098,6 +2227,13 @@ impl Shell {
             }
             return;
         }
+        if let Step::Run(start) = step {
+            self.view.overlay = None;
+            return match ai_runs::next(start, content) {
+                Next::Ask(rerun) => self.view.input_mode = Mode::Confirm(Ask::Rerun(rerun)),
+                Next::Run(request) => self.start_run(key, request),
+            };
+        }
         self.run_step(step);
     }
 
@@ -2105,7 +2241,7 @@ impl Shell {
         let settings = self.host.settings();
         let (close, send) = match step {
             Step::Stay => (false, None),
-            Step::Close | Step::Layer(_) | Step::Clear(_) => (true, None),
+            Step::Close | Step::Layer(_) | Step::Clear(_) | Step::Run(_) => (true, None),
             Step::Send(command) => (false, Some((command, Then::Nothing))),
             Step::Leave(command) => (true, Some((command, Then::Nothing))),
             Step::Pick(command) => (true, Some((command, Then::AnnouncePick))),

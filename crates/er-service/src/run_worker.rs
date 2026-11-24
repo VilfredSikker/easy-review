@@ -77,6 +77,31 @@ impl FlowRequest {
 
 type Job = Box<dyn FnOnce() + Send>;
 
+thread_local! {
+    static CATCHING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether a panic on this thread now is one the planning worker catches
+/// and answers as an error. A front end's panic hook stands down for it, so
+/// a caught planning panic leaves the terminal as it was.
+pub fn catching_panics() -> bool {
+    CATCHING.get()
+}
+
+/// Runs `job` on a planning worker as a plan runs, panic catch included, and
+/// answers what it returned, or the error a caught panic answers.
+#[cfg(any(test, feature = "test-support"))]
+pub fn on_planning_worker<T: Send + 'static>(
+    job: impl FnOnce() -> T + Send + 'static,
+) -> Result<T, String> {
+    let (tx, rx) = mpsc::channel();
+    submit(&Worker::start(), tx, Err, move |tx| {
+        let _ = tx.send(Ok(job()));
+    });
+    rx.recv()
+        .unwrap_or_else(|_| Err("the planning worker never answered".into()))
+}
+
 /// One thread, started on first use, that runs each job in turn.
 pub(crate) struct Worker(Sender<Job>);
 
@@ -108,7 +133,10 @@ fn submit<T: Send + 'static>(
 ) {
     let (panicked, gone) = (reply.clone(), reply.clone());
     let taken = worker.run(Box::new(move || {
-        if let Err(panic) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| job(reply))) {
+        CATCHING.set(true);
+        let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| job(reply)));
+        CATCHING.set(false);
+        if let Err(panic) = caught {
             let text = panic
                 .downcast_ref::<&str>()
                 .map(ToString::to_string)
@@ -276,5 +304,27 @@ mod tests {
             Ok(Ok(1))
         );
         Ok(())
+    }
+
+    /// A job runs under the flag a front end's panic hook reads, and the
+    /// flag is off on other threads and once the job ends.
+    #[test]
+    fn a_planning_job_runs_under_the_catch_flag() {
+        assert!(!catching_panics());
+        assert_eq!(on_planning_worker(catching_panics), Ok(true));
+        let worker = Worker::start();
+        let (tx, after) = mpsc::channel();
+        submit(&worker, tx, Err::<bool, String>, |tx| {
+            let _ = tx.send(Ok(CATCHING.get()));
+        });
+        assert_eq!(
+            after.recv_timeout(std::time::Duration::from_secs(5)),
+            Ok(Ok(true))
+        );
+        let (tx, plain) = mpsc::channel();
+        let _ = worker.run(Box::new(move || {
+            let _ = tx.send(catching_panics());
+        }));
+        assert_eq!(plain.recv_timeout(std::time::Duration::from_secs(5)), Ok(false));
     }
 }
