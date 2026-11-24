@@ -65,7 +65,9 @@ fn a_settings_write_goes_through_the_settings_actor() {
         shell.send_settings(codex_pick());
         settle(&mut shell, |_| {
             let saved = std::fs::read_to_string(config_dir.path().join("agents.toml"));
+            // `agents.toml` is written first, so `config.toml` ends the save.
             saved.is_ok_and(|text| text.contains("gpt-6-sol"))
+                && config_dir.path().join("config.toml").exists()
         });
         assert!(
             revision(&shell) > before,
@@ -149,6 +151,8 @@ fn the_theme_follows_the_settings_view() {
         let mut app = app_on(&path);
         let mut shell = shell_on(Ports::cli(), &plan(&args(&path)), storage.path());
         settle(&mut shell, loaded);
+        let mut hl = Highlighter::new();
+        assert_parity(&app, &shell_frame(&mut shell, &mut hl), &mut hl, "start");
         app.config.display.theme = "paper".into();
         shell.send_settings(SettingsCommand::ApplyConfigPatch {
             key: "display.theme".into(),
@@ -157,7 +161,6 @@ fn the_theme_follows_the_settings_view() {
         settle(&mut shell, |shell| {
             shell.host().settings().view().config.display.theme == "paper"
         });
-        let mut hl = Highlighter::new();
         assert_parity(&app, &shell_frame(&mut shell, &mut hl), &mut hl, "theme");
     });
 }
@@ -172,6 +175,8 @@ fn the_saved_selection_follows_the_view() {
         let mut app = app_on(&path);
         let mut shell = shell_on(Ports::cli(), &plan(&args(&path)), storage.path());
         settle(&mut shell, loaded);
+        let mut hl = Highlighter::new();
+        assert_parity(&app, &shell_frame(&mut shell, &mut hl), &mut hl, "start");
         app.set_ai_default_selection_with_effort("codex", Some("gpt-6-sol"), Some("high"))
             .unwrap_or_else(|e| panic!("{e}"));
         shell.send_settings(codex_pick());
@@ -179,7 +184,6 @@ fn the_saved_selection_follows_the_view() {
             let view = shell.host().settings().view();
             view.config.ai_hub.default_provider.as_deref() == Some("codex")
         });
-        let mut hl = Highlighter::new();
         assert_parity(&app, &shell_frame(&mut shell, &mut hl), &mut hl, "pick");
     });
 }
