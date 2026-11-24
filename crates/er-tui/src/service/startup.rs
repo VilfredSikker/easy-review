@@ -158,6 +158,8 @@ pub enum After {
     },
     Refreshed(Refresh),
     BaseChanged,
+    /// A file's context-line count.
+    Context,
 }
 
 impl After {

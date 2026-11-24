@@ -26,9 +26,10 @@ const WIDTH: u16 = 120;
 const HEIGHT: u16 = 30;
 
 /// The flag-on modules, as text.
-pub(super) const SOURCES: [(&str, &str); 19] = [
+pub(super) const SOURCES: [(&str, &str); 20] = [
     ("ai_picker.rs", include_str!("ai_picker.rs")),
     ("config_hub.rs", include_str!("config_hub.rs")),
+    ("context.rs", include_str!("context.rs")),
     ("filter.rs", include_str!("filter.rs")),
     ("github.rs", include_str!("github.rs")),
     ("layers.rs", include_str!("layers.rs")),
@@ -303,8 +304,10 @@ pub(super) fn shell_on(ports: Ports, start: &Start, config_dir: &Path) -> Shell 
     let git = Arc::clone(&ports.git);
     let host = ServiceHost::new(ports, config_dir.join("config.toml")).with_events(tx);
     let mut shell = Shell::start(host, events, start, git).unwrap_or_else(|e| panic!("{e:#}"));
-    // The App these tests compare against runs no watcher.
+    // The App these tests compare against runs no watcher and no automatic
+    // context pick.
     shell.watch_mut().on = false;
+    shell.auto_context = Some(0);
     shell
 }
 
@@ -388,8 +391,8 @@ pub(super) fn assert_parity(
     }
 }
 
-/// The App path, on the same repo, with context expansion off: that refetch
-/// is a service command no entry has ported yet.
+/// The App path, on the same repo, with the automatic context pick off, as
+/// the test shell has it.
 pub(super) fn app_on(path: &str) -> er_engine::app::App {
     let mut app = er_engine::app::App::new_with_args(&[path.to_string()], Ports::cli())
         .unwrap_or_else(|e| panic!("{e:#}"));
@@ -712,8 +715,9 @@ fn tab_keys_load_later_tabs_and_leave_a_failed_one() {
 }
 
 /// The service tests, as text.
-const TEST_SOURCES: [(&str, &str); 12] = [
+const TEST_SOURCES: [(&str, &str); 13] = [
     ("config_hub_tests.rs", include_str!("config_hub_tests.rs")),
+    ("context_tests.rs", include_str!("context_tests.rs")),
     ("filter_tests.rs", include_str!("filter_tests.rs")),
     ("github_tests.rs", include_str!("github_tests.rs")),
     ("loop_tests.rs", include_str!("loop_tests.rs")),

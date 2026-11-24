@@ -326,6 +326,7 @@ pub(crate) fn reload_input(content: &TabContent, mode: DiffMode) -> LoadInput {
         prev_ai: Some(Arc::clone(&content.ai)),
         prev_branch_diff_hash: content.diff.meta.branch_diff_hash.clone(),
         expanded: content.diff.expanded.clone(),
+        context: content.diff.context.clone(),
         prev_pr: Some(Arc::clone(&content.pr)),
         refresh_pr: false,
         adopt_head_oid: None,
@@ -357,6 +358,7 @@ fn mode_input(content: &TabContent, mode: DiffMode, pr_number: Option<u64>) -> L
     }
     input.auto_unmark = false;
     input.recheck_branch = false;
+    input.context.clear();
     // The first entry into a local PR's diff fetches its refs.
     input.fetch_pr_refs = mode == DiffMode::PrDiff
         && content.tab.mode != DiffMode::PrDiff
@@ -1073,6 +1075,7 @@ fn handle_command(
                 // holds; a local PR fetches its refs against the new base later.
                 input.auto_unmark = false;
                 input.pr_refs_fetched = false;
+                input.context.clear();
                 Ok(input)
             });
         }
@@ -1113,6 +1116,24 @@ fn handle_command(
                         key,
                         since: content.diff.revision,
                         paths,
+                    },
+                ))
+            });
+        }
+        Command::SetFileContext { key, path, lines } => {
+            let Some(content) = state.view().tabs.get(&key).cloned() else {
+                return refuse_unknown_tab(reply);
+            };
+            let deps = deps.clone();
+            spawn_effect(tx, reply, move || {
+                let file = crate::effect::refetch_context(&deps, &content, &path, lines)?;
+                Ok(Effected::patched(
+                    Reply::ContextSet { key },
+                    ContentPatch::Context {
+                        key,
+                        since: content.mode_revision,
+                        file,
+                        lines,
                     },
                 ))
             });

@@ -22,6 +22,7 @@ use crate::protocol::{AnnotationTarget, Command, Reply, TabContext};
 use crate::workspace::{WorkspaceState, WorkspaceView};
 use crate::{spawn, WorkspaceHandle};
 
+mod context;
 mod gaps;
 mod hunks;
 mod reviewed;
@@ -575,6 +576,7 @@ fn loaded_tab(repo: &str) -> Box<LoadedTab> {
                 committed_unpushed: false,
             },
             expanded: Default::default(),
+            context: HashMap::new(),
         },
         marks: HashMap::new(),
         file_hashes: HashMap::new(),

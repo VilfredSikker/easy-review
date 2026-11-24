@@ -93,3 +93,42 @@ fn a_painted_view_matches_only_the_view_the_content_shows() {
         );
     }
 }
+
+/// Two reviewed writes that publish in the other order than they saved in:
+/// the view ends on the newer marks.
+#[test]
+fn a_reviewed_write_finishing_late_drops_behind_the_newer_one() -> anyhow::Result<()> {
+    use crate::annotations::{marks_patch, update_marks};
+    let tmp = tempfile::tempdir()?;
+    let store = er_store::ArtifactStore::new(tmp.path());
+    let scope = er_store::Scope::dir(tmp.path())?;
+    let mark = |path: &'static str| {
+        update_marks(&store, &scope, |map| {
+            map.insert(path.to_string(), "h".to_string());
+            1
+        })
+    };
+    let (older, newer) = (mark("src/a.rs")?, mark("src/b.rs")?);
+    let saved = newer.map.clone();
+
+    let mut state = WorkspaceState::new();
+    let key = TabKey::next();
+    let loaded = loaded_tab("/repo");
+    let ctx = loaded.context.clone();
+    let first = ContentPatch::Loaded {
+        key,
+        since: None,
+        loaded,
+    };
+    for patch in [
+        first,
+        marks_patch(&ctx, newer)?.1,
+        marks_patch(&ctx, older)?.1,
+    ] {
+        state
+            .apply_patch(patch)
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+    }
+    assert_eq!(content_of(state.view(), key)?.reviewed.marks, saved);
+    Ok(())
+}

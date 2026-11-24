@@ -5,7 +5,7 @@
 //! the revision, and swaps the `Arc`; a reader that grabbed the previous view
 //! keeps rendering it until it asks again.
 
-use std::collections::{BTreeMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::fmt;
 use std::sync::Arc;
 
@@ -166,6 +166,8 @@ pub(crate) struct WorkspaceState {
     /// the app registry's list, so only the loads in flight need the set.
     closed: HashSet<TabKey>,
     closed_order: VecDeque<TabKey>,
+    /// The sequence of the last reviewed patch applied, per bucket.
+    marks_seq: HashMap<String, u64>,
 }
 
 /// How many closed keys the workspace remembers for the loads still in flight.
@@ -178,6 +180,7 @@ impl WorkspaceState {
             revision: 0,
             closed: HashSet::new(),
             closed_order: VecDeque::new(),
+            marks_seq: HashMap::new(),
         }
     }
 
@@ -248,7 +251,7 @@ impl WorkspaceState {
     /// Answers the revision and how many reviewed marks a load cleared.
     pub(crate) fn apply_patch(
         &mut self,
-        patch: ContentPatch,
+        mut patch: ContentPatch,
     ) -> Result<(u64, usize), PatchRefused> {
         let (mut loads, mut drops) = (Vec::new(), Vec::new());
         content::lifecycle_keys(&patch, &mut loads, &mut drops);
@@ -256,6 +259,7 @@ impl WorkspaceState {
             return Err(PatchRefused::Moved);
         }
         content::check(&self.view.tabs, &patch)?;
+        content::drop_stale_marks(&mut patch, &mut self.marks_seq);
         for key in loads.iter().chain(&drops) {
             self.view.load_errors.remove(key);
         }

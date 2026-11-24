@@ -266,7 +266,9 @@ pub struct TabViewState {
     pub filter_input: String,
     pub commit_input: String,
     pub watched: TabWatched,
-    context_overrides: HashMap<String, usize>,
+    /// Context-line counts sent and not yet shown, so a second `+` steps
+    /// from the first.
+    pub context_sent: HashMap<String, usize>,
     /// Where the selection stood when a mode switch or base change went out.
     pub follow: Option<Follow>,
     /// The same for a refresh, kept apart so one leaves a switch's alone.
@@ -307,7 +309,7 @@ impl Default for TabViewState {
             filter_input: String::new(),
             commit_input: String::new(),
             watched: TabWatched::default(),
-            context_overrides: HashMap::new(),
+            context_sent: HashMap::new(),
             follow: None,
             refresh_follow: None,
             restore: None,
@@ -780,7 +782,7 @@ pub fn screen<'a>(view: &'a TuiView, state: &'a TabViewState, frame: Frame<'a>) 
             h_scroll_old: state.h_scroll_old,
             h_scroll_new: state.h_scroll_new,
             split_focus: SplitSide::New,
-            context_overrides: &state.context_overrides,
+            context_overrides: &content.diff.context,
             mtime_cache: &content.diff.meta.stamps.mtimes,
             panel_scroll: state.panel_scroll,
             review_cursor: 0,
