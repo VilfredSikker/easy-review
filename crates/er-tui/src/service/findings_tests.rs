@@ -106,7 +106,7 @@ fn seed_gated(dir: &str, hash: &str) {
 
 /// Seeds the shell's active tab with `seed`, and waits for its AI section
 /// to move, on a clock the reload tick runs on.
-fn seed_shell(shell: &mut Shell, seed: impl Fn(&str, &str)) {
+pub(super) fn seed_shell(shell: &mut Shell, seed: impl Fn(&str, &str)) {
     let before = shell
         .active_content()
         .unwrap_or_else(|| panic!("no content"));
@@ -127,7 +127,11 @@ fn seed_shell(shell: &mut Shell, seed: impl Fn(&str, &str)) {
 }
 
 /// Seeds both paths with `seed`; the App reads it at once.
-fn seed_both(app: &mut er_engine::app::App, shell: &mut Shell, seed: impl Fn(&str, &str)) {
+pub(super) fn seed_both(
+    app: &mut er_engine::app::App,
+    shell: &mut Shell,
+    seed: impl Fn(&str, &str),
+) {
     let hash = app.tab().branch_diff_hash.clone();
     seed(&app.tab().er_dir(), &hash);
     app.tab_mut().reload_ai_state();

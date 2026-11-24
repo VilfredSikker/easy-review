@@ -204,6 +204,8 @@ pub enum After {
         github_count: usize,
         local_count: usize,
     },
+    /// A clear: once it lands, the status line says so; a refusal says why.
+    Cleared(super::clears::Clear),
 }
 
 impl After {
