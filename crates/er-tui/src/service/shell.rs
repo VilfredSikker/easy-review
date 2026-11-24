@@ -477,6 +477,15 @@ impl Shell {
             overlay.sync(&settings, &ai_selection_label);
         }
         let (tab_names, active_tab) = self.tab_names();
+        let open: Vec<TabKey> = self
+            .host
+            .registry()
+            .tabs_view()
+            .tabs
+            .iter()
+            .map(|tab| tab.key)
+            .collect();
+        self.reviewed.keep_open(&open);
         let reviewed_count = self.reviewed.count(key, content);
         self.view.tab_mut(key, content);
         let state = self.view.tab(key)?;

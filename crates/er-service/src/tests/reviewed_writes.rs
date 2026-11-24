@@ -1,5 +1,5 @@
-//! Two reviewed writes on one bucket keep both marks: each reads and saves
-//! under one hold of the scope lock.
+//! Reviewed writes on one bucket keep each other's marks: each, the load's
+//! auto-unmark included, reads and saves under one hold of the scope lock.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Barrier};
@@ -135,6 +135,46 @@ fn a_toggle_keeps_a_mark_saved_while_it_read() -> anyhow::Result<()> {
             marks.contains_key("src/a.rs"),
             "the toggle did not land: {marks:?}"
         );
+        Ok(())
+    })
+}
+
+/// A load's auto-unmark keeps a toggle saved after the load read the marks,
+/// on disk and in the marks the load publishes.
+#[test]
+fn the_auto_unmark_keeps_a_toggle_saved_since_the_load_read() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let bucket = dir.path().join("bucket");
+    std::fs::create_dir_all(&bucket)?;
+    let bucket = bucket.to_string_lossy().into_owned();
+    er_engine::storage::with_process_test_storage_root(dir.path(), || -> anyhow::Result<()> {
+        let store = er_engine::store_registry::store();
+        let scope = Scope::dir(&bucket)?;
+        let stale = HashMap::from([("src/a.rs".to_string(), "stale".to_string())]);
+        session_store::save_reviewed(&store, &scope, &stale)?;
+        let mut read_by_the_load = session_store::load_reviewed(&store, &scope)?;
+        toggle_reviewed(&deps(), &context(&bucket), "src/b.rs")
+            .map_err(|error| anyhow::anyhow!("toggle: {error}"))?;
+        let files = er_engine::git::parse_diff(RAW);
+        let cleared = crate::effect::clear_moved_marks(
+            &mut read_by_the_load,
+            RAW,
+            &files,
+            true,
+            &store,
+            &scope,
+        );
+        assert_eq!(cleared, 1, "the stale mark was not cleared");
+        let saved = marks(&bucket)?;
+        assert!(
+            saved.contains_key("src/b.rs"),
+            "the toggle was lost: {saved:?}"
+        );
+        assert!(
+            !saved.contains_key("src/a.rs"),
+            "the stale mark stayed: {saved:?}"
+        );
+        assert_eq!(read_by_the_load, saved, "the load publishes other marks");
         Ok(())
     })
 }

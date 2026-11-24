@@ -531,11 +531,10 @@ pub(crate) fn load_tab(
         }
     }
 
-    let file_hashes = diff_load::reviewed_file_hashes(&raw, &marks);
     let cleared = if input.auto_unmark && !own_view {
         clear_moved_marks(
             &mut marks,
-            &file_hashes,
+            &raw,
             &parsed.files,
             id.persists_reviewed(),
             &store,
@@ -544,6 +543,7 @@ pub(crate) fn load_tab(
     } else {
         0
     };
+    let file_hashes = diff_load::reviewed_file_hashes(&raw, &marks);
 
     let pr = match own_pr {
         Some(pr) => pr,
@@ -681,40 +681,41 @@ fn stamped_dirs(
     dirs
 }
 
-/// Drops the marks whose file left the diff or changed since it was marked,
-/// and saves what is left when any were dropped. Answers how many.
-fn clear_moved_marks(
+/// Drops the marks whose file left the diff or changed since it was marked.
+/// A tab that persists its marks drops them from the saved marks, read and
+/// saved under the scope lock, so a toggle saved since the load read `marks`
+/// stays; `marks` becomes what was saved. Answers how many were dropped.
+pub(crate) fn clear_moved_marks(
     marks: &mut HashMap<String, String>,
-    file_hashes: &HashMap<String, String>,
+    raw: &str,
     files: &[DiffFile],
     persists: bool,
     store: &er_store::ArtifactStore,
     scope: &er_store::Scope,
 ) -> usize {
-    let save = |marks: &HashMap<String, String>| {
-        if persists {
-            let _ = session_store::save_reviewed(store, scope, marks);
+    let clear = |marks: &mut HashMap<String, String>| {
+        let orphans = if files.is_empty() {
+            Vec::new()
+        } else {
+            diff_load::orphaned_reviewed(marks, files)
+        };
+        for path in &orphans {
+            marks.remove(path);
         }
+        let moved =
+            diff_load::changed_reviewed(marks, &diff_load::reviewed_file_hashes(raw, marks));
+        for path in &moved {
+            marks.remove(path);
+        }
+        orphans.len() + moved.len()
     };
-    let orphans = if files.is_empty() {
-        Vec::new()
-    } else {
-        diff_load::orphaned_reviewed(marks, files)
-    };
-    for path in &orphans {
-        marks.remove(path);
+    if persists {
+        if let Ok((cleared, saved)) = session_store::update_reviewed(store, scope, &clear) {
+            *marks = saved;
+            return cleared;
+        }
     }
-    if !orphans.is_empty() {
-        save(marks);
-    }
-    let moved = diff_load::changed_reviewed(marks, file_hashes);
-    for path in &moved {
-        marks.remove(path);
-    }
-    if !moved.is_empty() {
-        save(marks);
-    }
-    orphans.len() + moved.len()
+    clear(marks)
 }
 
 /// Parses the named lazy files of a loaded diff, each on its own copy, and

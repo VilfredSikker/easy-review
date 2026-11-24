@@ -16,6 +16,11 @@ pub struct ReviewedCache {
 }
 
 impl ReviewedCache {
+    /// Forgets the tabs `open` no longer lists.
+    pub fn keep_open(&mut self, open: &[TabKey]) {
+        self.tabs.retain(|key, _| open.contains(key));
+    }
+
     /// `key`'s reviewed and total file counts in `content`.
     pub fn count(&mut self, key: TabKey, content: &TabContent) -> (usize, usize) {
         let version = reviewed_version(content);

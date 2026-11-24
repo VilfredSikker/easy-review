@@ -893,7 +893,7 @@ pub(crate) fn bulk_review_pillar(
         }
         changed
     })
-    .map_err(|error| failed("save the reviewed marks", error))?;
+    .map_err(|error| failed("update the reviewed marks", error))?;
     Ok((changed, marks_patch(ctx, changed > 0, map)))
 }
 
@@ -916,7 +916,7 @@ pub(crate) fn toggle_reviewed(
         let reviewed = !map.contains_key(path);
         usize::from(annotations::apply_reviewed(map, path, hash, reviewed))
     })
-    .map_err(|error| failed("save the reviewed marks", error))?;
+    .map_err(|error| failed("update the reviewed marks", error))?;
     Ok((changed, marks_patch(ctx, changed > 0, map)))
 }
 
@@ -937,6 +937,6 @@ pub(crate) fn mark_reviewed(
     let (changed, map) = session_store::update_reviewed(&store, &scope, |map| {
         usize::from(annotations::apply_reviewed(map, path, hash, reviewed))
     })
-    .map_err(|error| failed("save the reviewed marks", error))?;
+    .map_err(|error| failed("update the reviewed marks", error))?;
     Ok((changed, marks_patch(ctx, changed > 0, map)))
 }
