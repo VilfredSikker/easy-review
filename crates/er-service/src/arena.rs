@@ -139,7 +139,7 @@ pub fn estimate_batch(
 }
 
 /// A run is flow-owned when its record says so, whichever host started it.
-fn is_flow_run(run: &er_engine::arena::ArenaRun) -> bool {
+pub(crate) fn is_flow_run(run: &er_engine::arena::ArenaRun) -> bool {
     run.config.run_kind == ArenaRunKind::ReviewFlow
 }
 

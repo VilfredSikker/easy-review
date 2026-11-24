@@ -183,16 +183,15 @@ mod tests {
                 tmp.path(),
                 serde_json::json!({"version":1,"diff_hash":"hash","items":[{"id":"c1","text":"first"}]}),
             );
-            let mut app = crate::app::App::new_for_test(vec![]);
-            app.tab_mut().er_root = crate::paths::ErRoot::managed(tmp.path().to_string_lossy());
-            app.tab_mut().ai.checklist = Some(loaded(&store, &scope));
+            let shown = loaded(&store, &scope);
             // The agent rewrites the checklist after the host loaded it.
             crate::test_support::write_sidecar_json::<ErChecklist>(
                 tmp.path(),
                 serde_json::json!({"version":1,"diff_hash":"hash","items":[{"id":"c1","text":"first"},{"id":"c2","text":"added by the agent"}]}),
             );
 
-            app.toggle_checklist_item_at(0).unwrap();
+            // The service toggles the item the page showed, from the stored flag.
+            toggle_checked(&store, &scope, &shown.items[0].id).unwrap();
 
             let after = loaded(&store, &scope);
             assert!(after.items[0].checked);
@@ -216,9 +215,7 @@ mod tests {
                 tmp.path(),
                 serde_json::json!({"version":1,"diff_hash":"hash","items":[{"id":"c1","text":"first"},{"id":"c2","text":"second"}]}),
             );
-            let mut app = crate::app::App::new_for_test(vec![]);
-            app.tab_mut().er_root = crate::paths::ErRoot::managed(tmp.path().to_string_lossy());
-            app.tab_mut().ai.checklist = Some(loaded(&store, &scope));
+            let shown = loaded(&store, &scope);
             // The agent rewrites the checklist without the item the host loaded.
             crate::test_support::write_sidecar_json::<ErChecklist>(
                 tmp.path(),
@@ -226,7 +223,10 @@ mod tests {
             );
             let rewritten = std::fs::read_to_string(&path).unwrap();
 
-            assert_eq!(app.toggle_checklist_item_at(1).unwrap(), None);
+            assert!(matches!(
+                toggle_checked(&store, &scope, &shown.items[1].id),
+                Err(UpdateError::Apply(ChecklistItemMissing))
+            ));
             assert_eq!(std::fs::read_to_string(&path).unwrap(), rewritten);
         });
     }
