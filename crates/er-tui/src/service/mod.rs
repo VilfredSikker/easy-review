@@ -11,6 +11,8 @@ mod config_hub;
 mod filter;
 mod github;
 mod layers;
+mod modes;
+mod open_hub;
 mod pr_probe;
 mod reviewed;
 mod session;
@@ -20,6 +22,7 @@ mod startup;
 mod threads;
 mod tui_view;
 mod watched;
+mod watcher;
 mod worktree;
 
 pub use shell::run;
@@ -37,6 +40,8 @@ mod filter_tests;
 mod github_tests;
 #[cfg(test)]
 mod loop_tests;
+#[cfg(test)]
+mod modes_tests;
 #[cfg(test)]
 mod reviewed_tests;
 #[cfg(test)]

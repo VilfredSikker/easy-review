@@ -28,13 +28,16 @@ use super::config_hub::{self, ConfigHub, Step};
 use super::filter::{self, Done};
 use super::github;
 use super::layers::{self, Layer};
+use super::modes::{self, BaseStep, Follow};
+use super::open_hub::{OpenHub, OpenStep};
 use super::pr_probe::Probe;
 use super::reviewed::ReviewedCache;
 use super::settings::{SettingsBridge, Side, Then};
-use super::startup::{self, After, Args, Pending, Start, StartTab};
+use super::startup::{self, After, Args, Pending, Refresh, Start, StartTab};
 use super::threads::{self, Composed};
 use super::tui_view::{self, Ask, Mode, Overlay, PrKnown, TuiView};
 use super::watched::{Landed, Reader};
+use super::watcher::Watch;
 use super::worktree::{self, GitHub, GitPick, HubStep};
 use crate::input::keys::{
     key_action, CommentAction, ConfirmKey, Edit, NormalAction, OverlayAction, TuiAction, Write,
@@ -53,6 +56,8 @@ const NOTIFICATION_DWELL_LONG: Duration = Duration::from_secs(5);
 const RELOAD_INTERVAL: Duration = Duration::from_secs(1);
 /// How long after the last key a tab's session is saved.
 const SESSION_SAVE_DELAY: Duration = Duration::from_secs(2);
+/// Resends of a reload refused as moved, as the service's worktree writes.
+const RELOAD_TRIES: u8 = 3;
 
 /// Opens the arguments' tabs on an in-process service and runs the loop
 /// until the user quits.
@@ -73,6 +78,24 @@ pub fn run(args: &Args) -> anyhow::Result<()> {
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;
     result
+}
+
+struct Landing {
+    key: TabKey,
+    workspace: String,
+    after: After,
+    retry: Option<(Command, u8)>,
+}
+
+impl Landing {
+    fn of(pending: &Pending) -> Self {
+        Self {
+            key: pending.key,
+            workspace: pending.workspace.clone(),
+            after: pending.after,
+            retry: pending.retry.clone(),
+        }
+    }
 }
 
 /// The loop's state: the host, the view state, and the commands in flight.
@@ -104,11 +127,17 @@ pub struct Shell {
     reviewed: ReviewedCache,
     /// The watched files' reader, a worker thread that only reads.
     watched: Reader,
+    watch: Watch,
     /// The start's PR probe, the other one, until it answers; then its
     /// answer, until the tab it probed has content.
     probe: Option<Probe>,
     probed: Option<(TabKey, BranchPrProbe)>,
     pub should_quit: bool,
+    /// The refusal every reload gets in a test, and the reloads it refused.
+    #[cfg(test)]
+    pub refuse_reloads: Option<String>,
+    #[cfg(test)]
+    pub reload_sends: usize,
 }
 
 impl Shell {
@@ -152,9 +181,14 @@ impl Shell {
             save_due: None,
             reviewed: ReviewedCache::default(),
             watched: Reader::spawn(git),
+            watch: Watch::default(),
             probe,
             probed: None,
             should_quit: false,
+            #[cfg(test)]
+            refuse_reloads: None,
+            #[cfg(test)]
+            reload_sends: 0,
         };
         if !start.notices.is_empty() {
             let notice = start.notices.join("; ");
@@ -226,6 +260,11 @@ impl Shell {
     }
 
     #[cfg(test)]
+    pub fn watch_mut(&mut self) -> &mut Watch {
+        &mut self.watch
+    }
+
+    #[cfg(test)]
     pub fn in_flight(&self) -> usize {
         self.pending.len()
     }
@@ -239,6 +278,7 @@ impl Shell {
             workspace,
             replies,
             after,
+            retry: None,
         });
     }
 
@@ -286,12 +326,15 @@ impl Shell {
     pub fn tick(&mut self, now: Instant) {
         loop {
             match self.events.try_recv() {
+                // A moved load is resent or its reply says so.
+                Ok(Event::CommandFailed { message }) if er_service::refused_as_moved(&message) => {}
                 Ok(Event::CommandFailed { message }) => self.failure(Side::Event, message),
                 Ok(_) => self.redraw = true,
                 Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
             }
         }
         self.drain_replies();
+        self.sync_watch(now);
         self.sync_probe();
         self.sync_watched(now);
         self.drain_reloads();
@@ -330,6 +373,7 @@ impl Shell {
             self.save_sessions();
         }
         let loaded = self.parse_selected_stub();
+        self.send_restore();
         if !loaded && self.notified_at.is_some() {
             self.notified_at = Some(now);
         } else if self
@@ -412,32 +456,33 @@ impl Shell {
         self.pending
             .retain(|pending| match pending.replies.try_recv() {
                 Ok(reply) => {
-                    landed.push((pending.key, pending.workspace.clone(), pending.after, reply));
+                    landed.push((Landing::of(pending), reply));
                     false
                 }
                 Err(TryRecvError::Empty) => true,
-                // A thread write whose worker died answers as a refusal, so
-                // its composer takes edits again and a delete says so.
+                // A dead write or reload answers as a refusal.
                 Err(TryRecvError::Disconnected)
-                    if matches!(
-                        pending.after,
-                        After::Composed | After::Deleted | After::Posted
-                    ) =>
+                    if pending.after.follows()
+                        || matches!(
+                            pending.after,
+                            After::Composed | After::Deleted | After::Posted
+                        ) =>
                 {
                     let lost = er_service::WorkspaceError::Failed(
                         "The write stopped before it answered".into(),
                     );
-                    landed.push((
-                        pending.key,
-                        pending.workspace.clone(),
-                        pending.after,
-                        Err(lost),
-                    ));
+                    landed.push((Landing::of(pending), Err(lost)));
                     false
                 }
                 Err(TryRecvError::Disconnected) => false,
             });
-        for (key, workspace, after, reply) in landed {
+        for (landing, reply) in landed {
+            let Landing {
+                key,
+                workspace,
+                after,
+                retry,
+            } = landing;
             self.redraw = true;
             match reply {
                 Ok(Reply::ContentLoaded { .. }) if after == After::FetchPrRefs => {
@@ -454,8 +499,28 @@ impl Shell {
                         workspace,
                         replies,
                         after: After::Nothing,
+                        retry: None,
                     });
                 }
+                Ok(Reply::ContentLoaded {
+                    reviewed_cleared, ..
+                }) if after.follows() => self.reloaded(key, &workspace, after, reviewed_cleared),
+                Err(error) if after.follows() => match retry {
+                    Some((command, tries))
+                        if tries < RELOAD_TRIES
+                            && er_service::refused_as_moved(&error.to_string()) =>
+                    {
+                        let replies = self.send_reload(&workspace, command.clone(), after);
+                        self.pending.push(Pending {
+                            key,
+                            workspace,
+                            replies,
+                            after,
+                            retry: Some((command, tries + 1)),
+                        });
+                    }
+                    _ => self.reload_refused(key, after, &error),
+                },
                 Ok(Reply::ReviewedChanged { .. }) => {
                     if let After::Reviewed {
                         advance_from: Some(position),
@@ -593,6 +658,7 @@ impl Shell {
             config_load_error: settings.load_banner.as_deref(),
             ai_selection_label,
             reviewed_count,
+            watching: self.watch.watching(),
         };
         Some(read(&tui_view::screen(&self.view, state, frame)))
     }
@@ -612,7 +678,11 @@ impl Shell {
                 let done = filter::history(&mut self.view, key, content, shown, action);
                 return self.filtered(key, workspace, content, done);
             }
+            TuiAction::Overlay(action) if matches!(self.view.overlay, Some(Overlay::Open(_))) => {
+                return self.open_hub_key(action)
+            }
             TuiAction::Overlay(action) => return self.overlay_key(action, key, content),
+            TuiAction::BaseBranch(edit) => return self.base_key(edit, key, workspace, content),
             TuiAction::Search(edit) => {
                 let shown = self.watched_shown(key, content);
                 let done = filter::search(&mut self.view, key, content, shown, edit);
@@ -825,6 +895,37 @@ impl Shell {
                 return self.focus(focus);
             }
             A::NextHint | A::PrevHint => threads::jump_hint(state, content, action == A::NextHint),
+            A::SwitchMode(mode) => {
+                match modes::switch(key, content, mode) {
+                    Ok(Some(command)) => {
+                        state.follow = Some(Follow::of(state, content));
+                        let pr_diff = mode == DiffMode::PrDiff;
+                        self.post(key, workspace, command, After::ModeSwitched { pr_diff });
+                    }
+                    Ok(None) => {}
+                    Err(message) => self.notify(message),
+                }
+                return;
+            }
+            A::Refresh => return self.refresh(key, workspace, content, Refresh::Key),
+            A::ToggleMtimeSort => {
+                state.sort_by_mtime = !state.sort_by_mtime;
+                let recent = state.sort_by_mtime;
+                self.notify(if recent {
+                    "Sort: recent first".into()
+                } else {
+                    "Sort: default".into()
+                });
+                return self.refresh(key, workspace, content, Refresh::Sort);
+            }
+            A::ToggleWatch => {
+                let message = self.watch.toggle(key, content);
+                return self.notify(message);
+            }
+            A::OpenOpenHub => {
+                self.view.overlay = Some(Overlay::Open(OpenHub::open(content)));
+                return;
+            }
             A::TogglePanel | A::TogglePanelReverse => {
                 layers::cycle_panel(state, content, action == A::TogglePanel);
                 return;
@@ -888,13 +989,28 @@ impl Shell {
 
     /// Sends a command for `key`'s tab; its reply lands on a later tick.
     fn post(&mut self, key: TabKey, workspace: &str, command: Command, after: After) {
-        let replies = self.host.post(workspace, command);
+        let retry = after.follows().then(|| (command.clone(), 0));
+        let replies = self.send_reload(workspace, command, after);
         self.pending.push(Pending {
             key,
             workspace: workspace.to_string(),
             replies,
             after,
+            retry,
         });
+    }
+
+    /// Posts a command; a test may refuse every reload as moved here.
+    fn send_reload(&mut self, workspace: &str, command: Command, after: After) -> ReplyReceiver {
+        #[cfg(test)]
+        if let Some(moved) = self.refuse_reloads.clone().filter(|_| after.follows()) {
+            self.reload_sends += 1;
+            let (tx, rx) = std::sync::mpsc::channel();
+            let _ = tx.send(Err(er_service::WorkspaceError::Failed(moved)));
+            return rx;
+        }
+        let _ = after;
+        self.host.post(workspace, command)
     }
 
     /// Runs a composer key on the tab's draft, and sends the write Submit
@@ -1109,7 +1225,6 @@ impl Shell {
         match step {
             HubStep::Stay | HubStep::Close => {}
             HubStep::Notify(message) => self.notify(message),
-            HubStep::Unported => self.unported(),
             HubStep::Run(GitPick::Push) => {
                 if content.tab.mode == DiffMode::Staged {
                     self.view.input_mode = Mode::Confirm(Ask::Push);
@@ -1119,6 +1234,7 @@ impl Shell {
             HubStep::Run(GitPick::StageAll) => {
                 self.post(key, workspace, Command::StageAll { key }, After::Nothing);
             }
+            HubStep::Run(GitPick::Refresh) => self.refresh(key, workspace, content, Refresh::Key),
             HubStep::Run(GitPick::PullComments) => self.pull_comments(key, workspace, content),
             HubStep::Run(GitPick::CommentOnPr) => {
                 let known = self.view.pr_known(key, content);
@@ -1129,7 +1245,188 @@ impl Shell {
             HubStep::Run(GitPick::ApprovePr) => {
                 self.view.input_mode = Mode::Confirm(Ask::ApprovePr);
             }
-            HubStep::Run(GitPick::Unported) => self.unported(),
+        }
+    }
+
+    /// A refresh with auto-unmark; the selection stays on its file.
+    fn refresh(&mut self, key: TabKey, workspace: &str, content: &TabContent, why: Refresh) {
+        let state = self.view.tab_mut(key, content);
+        state.refresh_follow = Some(Follow::of(state, content));
+        let command = Command::RefreshDiff {
+            key,
+            force: false,
+            adopt_head_oid: None,
+        };
+        self.post(key, workspace, command, After::Refreshed(why));
+    }
+
+    /// A reload landed: the App's selection rule, and its notice.
+    fn reloaded(&mut self, key: TabKey, workspace: &str, after: After, cleared: usize) {
+        if matches!(after, After::Refreshed(Refresh::Watched { .. })) {
+            self.watch.landed(key);
+        }
+        let Some(content) = self.host.content(workspace, key) else {
+            return;
+        };
+        let shown = self.watched_shown(key, &content);
+        let state = self.view.tab_mut(key, &content);
+        let selected = match after {
+            After::ModeSwitched { .. } => state
+                .follow
+                .take()
+                .and_then(|follow| modes::switched(state, follow, &content, shown)),
+            After::Refreshed(_) => state
+                .refresh_follow
+                .take()
+                .and_then(|follow| modes::refreshed(state, follow, &content)),
+            _ => state
+                .follow
+                .take()
+                .and_then(|follow| modes::refreshed(state, follow, &content)),
+        };
+        let sent = state.base_sent.take();
+        match after {
+            After::Refreshed(Refresh::Key) => self.notify("Refreshed".into()),
+            After::Refreshed(Refresh::Watched { files }) => {
+                if let Some(notice) = modes::watch_notice(cleared, files) {
+                    self.notify(notice);
+                }
+            }
+            After::BaseChanged => {
+                let base_ref = content.tab.base_branch.clone();
+                let saved = self
+                    .host
+                    .registry()
+                    .send(er_service::AppCommand::SetBaseRef { key, base_ref });
+                match (saved, sent) {
+                    (Err(error), _) => self.notify(error.to_string()),
+                    (Ok(_), Some(base)) => self.notify(format!("Base set to {base}")),
+                    (Ok(_), None) => {}
+                }
+            }
+            _ => {}
+        }
+        if let Some(index) = selected {
+            self.parse_if_stub(key, workspace, &content, index);
+        }
+    }
+
+    /// A reload was refused: its own waits let go, and a restore keeps its filter.
+    fn reload_refused(&mut self, key: TabKey, after: After, error: &er_service::WorkspaceError) {
+        if matches!(after, After::Refreshed(Refresh::Watched { .. })) {
+            self.watch.landed(key);
+        }
+        let workspace = self.workspace_of(key);
+        let content = workspace.and_then(|workspace| self.host.content(&workspace, key));
+        if let (Some(state), Some(content)) = (self.view.tab_mut_if_open(key), content) {
+            match after {
+                After::Refreshed(_) => state.refresh_follow = None,
+                After::ModeSwitched { .. } => {
+                    state.follow = None;
+                    if let Some(saved) = state.restore.take_if(|saved| saved.sent) {
+                        super::session::restore_in_view(state, saved.session, &content);
+                    }
+                }
+                _ => {
+                    state.follow = None;
+                    state.base_sent = None;
+                }
+            }
+        }
+        let message = match after {
+            After::ModeSwitched { pr_diff: true } => format!("PR diff unavailable: {error}"),
+            After::BaseChanged => format!("Could not change base: {error}"),
+            _ => error.to_string(),
+        };
+        self.notify(message);
+    }
+
+    fn base_key(&mut self, edit: Edit, key: TabKey, workspace: &str, content: &TabContent) {
+        let step = modes::base_key(&mut self.view.base_input, edit);
+        let BaseStep::Send(base) = step else {
+            if matches!(step, BaseStep::Close) {
+                self.view.input_mode = Mode::Normal;
+            }
+            return;
+        };
+        self.view.input_mode = Mode::Normal;
+        let state = self.view.tab_mut(key, content);
+        state.follow = Some(Follow::of(state, content));
+        state.base_sent = Some(base.clone());
+        self.post(
+            key,
+            workspace,
+            Command::ChangeBase { key, base },
+            After::BaseChanged,
+        );
+    }
+
+    fn open_hub_key(&mut self, action: OverlayAction) {
+        let Some(Overlay::Open(hub)) = self.view.overlay.as_mut() else {
+            return;
+        };
+        let step = hub.act(action);
+        if !matches!(step, OpenStep::Stay) {
+            self.view.overlay = None;
+        }
+        match step {
+            OpenStep::Stay | OpenStep::Close => {}
+            OpenStep::Notify(message) => self.notify(message),
+            OpenStep::Unported => self.unported(),
+            OpenStep::ChangeBase => {
+                self.view.base_input.clear();
+                self.view.input_mode = Mode::BaseBranch;
+            }
+        }
+    }
+
+    /// The watcher follows the active tab and refreshes settled changes.
+    fn sync_watch(&mut self, now: Instant) {
+        let active = self.active();
+        let shown = active
+            .as_ref()
+            .and_then(|(key, _, content)| Some((*key, &**content.as_ref()?)));
+        // Changes already queued belong to the tab watched when they came.
+        self.watch.count(now);
+        self.watch.follow(shown, now);
+        let Some((key, files)) = self.watch.ready(now) else {
+            return;
+        };
+        let workspace = self.workspace_of(key);
+        let content = workspace
+            .as_ref()
+            .and_then(|workspace| self.host.content(workspace, key));
+        match (workspace, content) {
+            (Some(workspace), Some(content)) => {
+                self.refresh(key, &workspace, &content, Refresh::Watched { files });
+            }
+            _ => self.watch.landed(key),
+        }
+    }
+
+    fn send_restore(&mut self) {
+        let Some((key, workspace, Some(content))) = self.active() else {
+            return;
+        };
+        let Some(state) = self.view.tab_mut_if_open(key) else {
+            return;
+        };
+        let Some(restore) = state.restore.as_mut().filter(|restore| !restore.sent) else {
+            return;
+        };
+        restore.sent = true;
+        let mode = restore.mode;
+        match modes::switch(key, &content, mode) {
+            Ok(Some(command)) => {
+                state.follow = Some(Follow::of(state, &content));
+                let after = After::ModeSwitched { pr_diff: false };
+                self.post(key, &workspace, command, after);
+            }
+            _ => {
+                if let Some(saved) = state.restore.take() {
+                    super::session::restore_in_view(state, saved.session, &content);
+                }
+            }
         }
     }
 
@@ -1301,6 +1598,7 @@ impl Shell {
             workspace: workspace.to_string(),
             replies,
             after: After::Nothing,
+            retry: None,
         });
     }
 
