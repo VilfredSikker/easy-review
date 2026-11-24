@@ -26,17 +26,29 @@ pub enum Side {
     Reply,
 }
 
-/// What a drain found: failures, which have a twin event, and other
-/// messages, which have none.
+/// What a reply asks of the loop once it lands, beyond its messages.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Then {
+    Nothing,
+    /// A picker's pick: the status line names the saved selection.
+    AnnouncePick,
+    /// The hub's reload: a file that still fails says why again.
+    ReportReload,
+}
+
+/// What a drain found: failures, which have a twin event, other messages,
+/// which have none, and whether a pick saved or a reload answered.
 #[derive(Default)]
 pub struct Landed {
     pub failures: Vec<String>,
     pub messages: Vec<String>,
+    pub picked: bool,
+    pub reloaded: bool,
 }
 
 #[derive(Default)]
 pub struct SettingsBridge {
-    replies: Vec<SettingsReceiver>,
+    replies: Vec<(Then, SettingsReceiver)>,
     /// The start notices shown, with the settings revision they came at.
     start_log: Vec<(u64, String)>,
     /// Failures that still wait for their twin, and whether that twin shows.
@@ -50,32 +62,35 @@ pub struct SettingsBridge {
 
 impl SettingsBridge {
     /// Sends `command` without waiting; its reply lands on a later drain.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the config hub sends through it in P66.2")
-    )]
-    pub fn send(&mut self, settings: &SettingsHandle, command: SettingsCommand) {
-        self.replies.push(settings.send(command));
+    pub fn send(&mut self, settings: &SettingsHandle, command: SettingsCommand, then: Then) {
+        self.replies.push((then, settings.send(command)));
     }
 
     /// The replies that landed: failures, a refresh's per-provider errors,
     /// and an editor's warnings.
     pub fn drain(&mut self) -> Landed {
         let mut landed = Landed::default();
-        self.replies.retain(|replies| match replies.try_recv() {
-            Ok(reply) => {
-                let messages = &mut landed.messages;
-                match reply {
-                    Err(error) => landed.failures.push(error.to_string()),
-                    Ok(SettingsReply::ModelsRefreshed { errors, .. }) => messages.extend(errors),
-                    Ok(SettingsReply::ConfigChanged { warnings, .. }) => messages.extend(warnings),
-                    Ok(_) => {}
+        self.replies
+            .retain(|(then, replies)| match replies.try_recv() {
+                Ok(reply) => {
+                    let messages = &mut landed.messages;
+                    landed.picked |= *then == Then::AnnouncePick && reply.is_ok();
+                    landed.reloaded |= *then == Then::ReportReload && reply.is_ok();
+                    match reply {
+                        Err(error) => landed.failures.push(error.to_string()),
+                        Ok(SettingsReply::ModelsRefreshed { errors, .. }) => {
+                            messages.extend(errors);
+                        }
+                        Ok(SettingsReply::ConfigChanged { warnings, .. }) => {
+                            messages.extend(warnings);
+                        }
+                        Ok(_) => {}
+                    }
+                    false
                 }
-                false
-            }
-            Err(TryRecvError::Empty) => true,
-            Err(TryRecvError::Disconnected) => false,
-        });
+                Err(TryRecvError::Empty) => true,
+                Err(TryRecvError::Disconnected) => false,
+            });
         landed
     }
 
