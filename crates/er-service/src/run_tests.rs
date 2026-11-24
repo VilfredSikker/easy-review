@@ -379,3 +379,52 @@ fn a_flow_acceptance_reaches_the_actor_holding_the_flow() -> anyhow::Result<()> 
         Ok(())
     })
 }
+
+/// Validate tells its start before it launches the agent, so a validation
+/// that fails at once tells its failure after the start, never under it.
+/// The only config read in `validate` is the launch's own.
+#[test]
+fn a_validation_tells_its_start_before_the_launch() -> anyhow::Result<()> {
+    with_repo(|dir, repo| {
+        let agent = Agent::in_dir(dir);
+        let host = ServiceHost::new(gated_ports(Arc::default()), agent.write_config(50));
+        let (_, content) = loaded(&host, repo)?;
+        er_engine::test_support::write_sidecar_json::<er_engine::ai::ErReview>(
+            std::path::Path::new(&content.context.er_dir),
+            serde_json::json!({"version": 1, "diff_hash": "h", "files": {}}),
+        );
+        let seen = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let mut hooks = host.task_hooks();
+        let (read, told, config) = (Arc::clone(&seen), Arc::clone(&seen), hooks.config);
+        hooks.config = Arc::new(move || {
+            read.lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push("launch".into());
+            config()
+        });
+        hooks.notify = Arc::new(move |message, _| {
+            told.lock().unwrap_or_else(|e| e.into_inner()).push(message);
+        });
+        let run = crate::runs::RunTab {
+            host: host.tasks(),
+            hooks: &hooks,
+            content: &content,
+        };
+        let planned = crate::runs::validate(&run, "current");
+        for row in host.tasks().rows() {
+            host.tasks().stop(&row.id);
+        }
+        crate::test_support::open_gate(&agent.first);
+        crate::test_support::open_gate(&agent.second);
+        planned.map_err(|error| anyhow::anyhow!(error.message))?;
+        let seen = seen.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let at = |what: &str| seen.iter().position(|message| message == what);
+        let (started, launched) = (at("Validation started (review)"), at("launch"));
+        assert!(started.is_some() && launched.is_some(), "{seen:?}");
+        assert!(
+            started < launched,
+            "the start was told after the launch: {seen:?}"
+        );
+        Ok(())
+    })
+}

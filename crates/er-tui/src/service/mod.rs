@@ -17,6 +17,7 @@ mod copy;
 mod export;
 mod filter;
 mod findings;
+mod flows;
 mod github;
 mod handoff;
 mod history;
@@ -63,6 +64,8 @@ mod duties_tests;
 mod filter_tests;
 #[cfg(test)]
 mod findings_tests;
+#[cfg(test)]
+mod flows_tests;
 #[cfg(test)]
 mod github_tests;
 #[cfg(test)]

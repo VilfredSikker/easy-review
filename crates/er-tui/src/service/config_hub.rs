@@ -36,6 +36,8 @@ pub enum Step {
     Copy(super::copy::Pick),
     /// Closes the overlay and starts an AI hub or Verify run.
     Run(super::ai_runs::Start),
+    /// Closes the overlay and runs a Review row.
+    Flow(super::flows::Act),
 }
 
 pub struct ConfigHub {

@@ -13,6 +13,8 @@ pub enum Layer {
     Questions,
     HideResolved,
     AiFindings,
+    /// The arbiter's drops, listed in the AI summary.
+    Dropped,
 }
 
 /// Flips `layer`; answers what the status line says, as the App's key does.
@@ -49,6 +51,14 @@ pub fn toggle(state: &mut TabViewState, layer: Layer) -> &'static str {
                 "AI findings: ON"
             } else {
                 "AI findings: OFF"
+            }
+        }
+        Layer::Dropped => {
+            layers.show_dropped = !layers.show_dropped;
+            if layers.show_dropped {
+                "Arbiter's drops: listed"
+            } else {
+                "Arbiter's drops: counted only"
             }
         }
     }

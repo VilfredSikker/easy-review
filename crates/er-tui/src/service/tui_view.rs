@@ -26,6 +26,7 @@ use super::ai_runs::Rerun;
 use super::chrome::HelpHub;
 use super::config_hub::ConfigHub;
 use super::copy::CopyHub;
+use super::flows::{Progress, Results};
 use super::history::HistoryPos;
 use super::modes::Follow;
 use super::open_hub::OpenHub;
@@ -81,6 +82,8 @@ pub enum Overlay {
     /// The review hub, which `TuiView::review` holds.
     Review,
     Open(OpenHub),
+    FlowProgress(Box<Progress>),
+    FlowResults(Box<Results>),
     /// The filter presets, then the tab's recent filters.
     FilterHistory {
         history: Vec<String>,
@@ -109,6 +112,8 @@ impl Overlay {
             | Self::GitHub(_)
             | Self::Review
             | Self::Open(_)
+            | Self::FlowProgress(_)
+            | Self::FlowResults(_)
             | Self::FilterHistory { .. } => {}
         }
     }
@@ -147,6 +152,18 @@ impl Overlay {
                 title: None,
                 items: &hub.rows,
                 selected: hub.selected,
+            },
+            Self::FlowProgress(ref progress) => OverlayData::ReviewFlowProgress {
+                er_dir: &progress.er_dir,
+                flow: &progress.flow,
+                selected: progress.selected,
+                detail_scroll: progress.detail_scroll,
+            },
+            Self::FlowResults(ref results) => OverlayData::ReviewFlowResults {
+                results: &results.found,
+                selected: results.selected,
+                selected_ids: &results.selected_ids,
+                detail_scroll: results.detail_scroll,
             },
             Self::Copy(ref hub) => OverlayData::ModalHub {
                 kind: HubKind::Copy,
