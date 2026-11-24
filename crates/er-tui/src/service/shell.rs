@@ -27,6 +27,7 @@ use super::ai_picker;
 use super::config_hub::{self, ConfigHub, Step};
 use super::context;
 use super::filter::{self, Done};
+use super::findings::{self, Summary};
 use super::github;
 use super::history;
 use super::layers::{self, Layer};
@@ -44,8 +45,8 @@ use super::watched::{Landed, Reader};
 use super::watcher::Watch;
 use super::worktree::{self, GitHub, GitPick, HubStep};
 use crate::input::keys::{
-    key_action, CommentAction, ConfirmKey, Edit, HistoryAction, NormalAction, OverlayAction,
-    TourAction, TuiAction, Write,
+    key_action, AiSummaryAction, CommentAction, ConfirmKey, Edit, HistoryAction, NormalAction,
+    OverlayAction, TourAction, TuiAction, Write,
 };
 use crate::screen::UNPORTED;
 use crate::ui::highlight::Highlighter;
@@ -495,6 +496,7 @@ impl Shell {
                                 | After::ReviewRead
                                 | After::ReviewEdit
                                 | After::ReviewSubmit
+                                | After::Checklist { .. }
                         ) =>
                 {
                     let lost = er_service::WorkspaceError::Failed(
@@ -577,9 +579,11 @@ impl Shell {
                         state.watched.reread();
                     }
                 }
-                Ok(Reply::AnnotationWritten { .. } | Reply::ThreadChanged { .. })
-                    if after == After::Composed =>
-                {
+                Ok(
+                    Reply::AnnotationWritten { .. }
+                    | Reply::ThreadChanged { .. }
+                    | Reply::FindingReplied { .. },
+                ) if after == After::Composed => {
                     self.composed(key);
                 }
                 Ok(
@@ -609,6 +613,11 @@ impl Shell {
                         self.view.learn_pr(key, known);
                     }
                     self.failure(Side::Reply, message);
+                }
+                Ok(Reply::AiWritten) if matches!(after, After::Checklist { .. }) => {
+                    if let After::Checklist { checked } = after {
+                        self.notify(findings::checklist_notice(checked).into());
+                    }
                 }
                 Ok(Reply::ReviewSubmitted { .. }) if after == After::Approved => {
                     self.notify("PR approved".into());
@@ -718,6 +727,8 @@ impl Shell {
         tour::follow(&mut state.tour, content);
         layers::follow(state, content);
         threads::scroll_if_parsed(state, content);
+        findings::follow(state, content);
+        findings::place_if_parsed(state, content);
         let state = self.view.tab(key)?;
         let frame = tui_view::Frame {
             tab_names,
@@ -796,6 +807,9 @@ impl Shell {
             TuiAction::History(action) => return self.history_key(action, key, workspace, content),
             TuiAction::Tour(action) => return self.tour_key(action, key, workspace, content),
             TuiAction::Comment(action) => return self.comment_key(action, key, workspace, content),
+            TuiAction::AiSummary(action) => {
+                return self.ai_summary_key(action, key, workspace, content)
+            }
             TuiAction::Write(Write::Push) => {
                 self.view.input_mode = Mode::Normal;
                 return self.post(key, workspace, Command::Push { key }, After::Nothing);
@@ -1012,6 +1026,10 @@ impl Shell {
                 self.view.input_mode = Mode::Comment;
                 return;
             }
+            A::Reply if state.focused_comment_id.is_none() => {
+                let focus = findings::start_reply(state, content);
+                return self.focus(focus);
+            }
             A::Reply | A::Edit | A::AskDeleteComment => {
                 let focus = match action {
                     A::Reply => threads::start_reply(state, content),
@@ -1021,6 +1039,19 @@ impl Shell {
                 return self.focus(focus);
             }
             A::NextHint | A::PrevHint => threads::jump_hint(state, content, action == A::NextHint),
+            A::NextFinding | A::PrevFinding => {
+                findings::jump(state, content, action == A::NextFinding)
+            }
+            A::NavigatePanelFinding(forward) => {
+                findings::step_panel(state, content, forward);
+                return;
+            }
+            A::JumpToFocusedFinding => {
+                if let Some(notice) = findings::jump_to_focused(state, content) {
+                    self.notify(notice);
+                }
+                return;
+            }
             A::SwitchMode(mode) => {
                 if let Some(command) = modes::switch(key, content, mode) {
                     state.follow = Some(Follow::of(state, content));
@@ -1072,6 +1103,7 @@ impl Shell {
             }
             A::UnfocusPanel => {
                 state.panel_focus = false;
+                state.focused_finding_id = None;
                 return;
             }
             A::ToggleComments
@@ -1163,7 +1195,29 @@ impl Shell {
             Composed::Stay => {}
             Composed::Send(command) => self.post(key, workspace, *command, After::Composed),
             Composed::Posted(command) => self.post(key, workspace, *command, After::Posted),
-            Composed::Unported => self.unported(),
+        }
+    }
+
+    /// Runs an AI Summary key; Space sends the checklist toggle, and Enter
+    /// parses the file it selected when that is a stub.
+    fn ai_summary_key(
+        &mut self,
+        action: AiSummaryAction,
+        key: TabKey,
+        workspace: &str,
+        content: &TabContent,
+    ) {
+        let state = self.view.tab_mut(key, content);
+        match findings::summary_key(state, content, action) {
+            Summary::Done => {}
+            Summary::Notice(notice) => self.notify(notice),
+            Summary::Jumped { index, notice } => {
+                self.notify(notice);
+                self.parse_if_stub(key, workspace, content, index);
+            }
+            Summary::Toggle { command, checked } => {
+                self.post(key, workspace, *command, After::Checklist { checked });
+            }
         }
     }
 
@@ -1176,6 +1230,7 @@ impl Shell {
                 self.view.input_mode = Mode::Confirm(Ask::DeleteComment);
             }
             threads::Focus::Unported => self.unported(),
+            threads::Focus::Refused(message) => self.notify(message.into()),
         }
     }
 

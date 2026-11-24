@@ -129,21 +129,17 @@ fn render_panel(f: &mut Frame, area: Rect, screen: &Screen, content: PanelConten
     match content {
         PanelContent::FileDetail => render_file_detail(&mut lines, area, screen),
         PanelContent::PrOverview => render_pr_overview(&mut lines, area, screen),
-        PanelContent::AiSummary | PanelContent::SymbolRefs | PanelContent::AgentLog => {
-            match (screen.data.app(), content) {
-                (Some(data), PanelContent::AiSummary) => {
-                    render_ai_summary(&mut lines, area, screen, data.ai);
-                }
-                (Some(data), PanelContent::SymbolRefs) => {
-                    render_symbol_refs(&mut lines, area, screen, data);
-                }
-                (Some(data), _) => render_agent_log(&mut lines, area, data),
-                (None, _) => lines.push(Line::from(Span::styled(
-                    UNPORTED,
-                    Style::default().fg(styles::MUTED()),
-                ))),
+        PanelContent::AiSummary => render_ai_summary(&mut lines, area, screen, ai),
+        PanelContent::SymbolRefs | PanelContent::AgentLog => match (screen.data.app(), content) {
+            (Some(data), PanelContent::SymbolRefs) => {
+                render_symbol_refs(&mut lines, area, screen, data);
             }
-        }
+            (Some(data), _) => render_agent_log(&mut lines, area, data),
+            (None, _) => lines.push(Line::from(Span::styled(
+                UNPORTED,
+                Style::default().fg(styles::MUTED()),
+            ))),
+        },
     }
 
     let border_style = if tab.panel_focus {
@@ -436,35 +432,16 @@ fn render_file_findings(lines: &mut Vec<Line<'_>>, area: Rect, screen: &Screen, 
     let file_stale = ai.is_file_stale(path);
     let max_w = area.width.saturating_sub(5) as usize;
 
-    let mut sorted_findings: Vec<&er_engine::ai::Finding> = fr.findings.iter().collect();
-    sorted_findings.sort_by(|a, b| {
-        let sev_ord = |r: &RiskLevel| match r {
-            RiskLevel::High => 0,
-            RiskLevel::Medium => 1,
-            RiskLevel::Low => 2,
-            RiskLevel::Info => 3,
-        };
-        // Resolved findings sink to the bottom; active ones sort by
-        // how much the grade can be trusted, then severity. The
-        // direction lives on the type (`trust_rank`), not here.
-        a.resolved
-            .cmp(&b.resolved)
-            .then_with(|| a.confidence.trust_rank().cmp(&b.confidence.trust_rank()))
-            .then_with(|| a.hunk_index.cmp(&b.hunk_index))
-            .then_with(|| a.line_start.cmp(&b.line_start))
-            .then_with(|| sev_ord(&a.severity).cmp(&sev_ord(&b.severity)))
-    });
+    let sorted_findings = sorted_file_findings(fr);
 
     // The count describes what the list is about to draw, and names
     // what it is not drawing. A number that counts hidden rows is
     // how a filter stops being trusted.
-    let filtered: Vec<&er_engine::ai::Finding> = sorted_findings
+    let passing = sorted_findings
         .iter()
-        .copied()
         .filter(|f| f.passes(tab.layers))
-        .collect();
-    let visible = project_file_findings(path, filtered.iter().copied(), &ai.arbiter_graded_keys);
-    let (security, ordinary) = security_first(&visible);
+        .count();
+    let (security, ordinary) = file_finding_rows(ai, tab.layers, path, fr);
     let resolved_count = sorted_findings.iter().filter(|f| f.resolved).count();
     let dropped_count = sorted_findings
         .iter()
@@ -472,8 +449,8 @@ fn render_file_findings(lines: &mut Vec<Line<'_>>, area: Rect, screen: &Screen, 
         .count();
     let below_gate = sorted_findings
         .len()
-        .saturating_sub(filtered.len() + resolved_count + dropped_count);
-    let mut header = format!(" Findings ({})", visible.len());
+        .saturating_sub(passing + resolved_count + dropped_count);
+    let mut header = format!(" Findings ({})", security.len() + ordinary.len());
     if below_gate > 0 {
         header.push_str(&format!(" · {} below gate", below_gate));
     }
@@ -514,6 +491,68 @@ fn render_file_findings(lines: &mut Vec<Line<'_>>, area: Rect, screen: &Screen, 
         }
     }
 }
+
+/// A file's findings in the File panel's order: resolved last, then by how
+/// much the grade can be trusted, the place and the severity.
+fn sorted_file_findings(fr: &er_engine::ai::ErFileReview) -> Vec<&er_engine::ai::Finding> {
+    let mut sorted_findings: Vec<&er_engine::ai::Finding> = fr.findings.iter().collect();
+    sorted_findings.sort_by(|a, b| {
+        let sev_ord = |r: &RiskLevel| match r {
+            RiskLevel::High => 0,
+            RiskLevel::Medium => 1,
+            RiskLevel::Low => 2,
+            RiskLevel::Info => 3,
+        };
+        // Resolved findings sink to the bottom; active ones sort by
+        // how much the grade can be trusted, then severity. The
+        // direction lives on the type (`trust_rank`), not here.
+        a.resolved
+            .cmp(&b.resolved)
+            .then_with(|| a.confidence.trust_rank().cmp(&b.confidence.trust_rank()))
+            .then_with(|| a.hunk_index.cmp(&b.hunk_index))
+            .then_with(|| a.line_start.cmp(&b.line_start))
+            .then_with(|| sev_ord(&a.severity).cmp(&sev_ord(&b.severity)))
+    });
+    sorted_findings
+}
+
+/// The findings the File panel draws for `path`, top to bottom: the rows
+/// that pass the Gate, with duplicates collapsed and security first. The
+/// flag path's panel j/k steps through this list.
+#[cfg(feature = "v1-service")]
+pub fn drawn_file_findings<'a>(
+    ai: &'a er_engine::ai::AiState,
+    layers: &er_engine::ai::InlineLayers,
+    path: &'a str,
+) -> Vec<&'a er_engine::ai::Finding> {
+    let Some(fr) = ai.file_review(path).filter(|_| layers.show_ai_findings) else {
+        return Vec::new();
+    };
+    let (security, ordinary) = file_finding_rows(ai, layers, path, fr);
+    security.into_iter().chain(ordinary).collect()
+}
+
+/// The File panel's finding rows for `path`, as the security group and the
+/// rest: the findings that pass the Gate, in the panel's order, with
+/// duplicates collapsed. The renderer draws these, and the flag path's j/k
+/// steps through them.
+fn file_finding_rows<'a>(
+    ai: &'a er_engine::ai::AiState,
+    layers: &er_engine::ai::InlineLayers,
+    path: &'a str,
+    fr: &'a er_engine::ai::ErFileReview,
+) -> FindingRows<'a> {
+    let passing = sorted_file_findings(fr)
+        .into_iter()
+        .filter(|f| f.passes(layers));
+    let visible = project_file_findings(path, passing, &ai.arbiter_graded_keys);
+    security_first(&visible)
+}
+
+type FindingRows<'a> = (
+    Vec<&'a er_engine::ai::Finding>,
+    Vec<&'a er_engine::ai::Finding>,
+);
 
 fn project_file_findings<'a>(
     path: &'a str,
@@ -1569,6 +1608,79 @@ mod tests {
             "confidence": confidence,
         }))
         .unwrap()
+    }
+
+    /// The rows the File panel draws for a file, top to bottom, are the list
+    /// the flag path's j/k steps through: the Gate, the order, the collapsed
+    /// duplicate and the security group come from one place.
+    #[cfg(feature = "v1-service")]
+    #[test]
+    fn the_drawn_finding_rows_are_the_step_list() {
+        use ratatui::{backend::TestBackend, Terminal};
+        let mut app = crate::golden::base_app();
+        let row = |id: &str, lens: &str, title: &str, line: usize, confidence: &str| {
+            let raised_by = if lens == "security" || title == "Shared claim" {
+                vec!["general", "security"]
+            } else {
+                vec!["general"]
+            };
+            serde_json::json!({
+                "id": id, "severity": "high", "lens": lens, "category": "correctness",
+                "title": title, "hunk_index": 0, "line_start": line,
+                "raised_by": raised_by, "confidence": confidence,
+                "resolved": id == "done-row"
+            })
+        };
+        // The ordinary row sorts first, and the security group draws first.
+        let findings = [
+            row("general-row", "general", "Shared claim", 2, "confirmed"),
+            row("security-row", "security", "Shared claim", 2, "confirmed"),
+            row("ordinary-row", "general", "Other claim", 1, "confirmed"),
+            row("plain-row", "general", "Plain claim", 3, "informational"),
+            row("done-row", "general", "Closed claim", 4, "confirmed"),
+            row("dropped-row", "security", "Dropped claim", 5, "dropped"),
+        ];
+        let tab = app.tab_mut();
+        tab.ai.review = Some(
+            serde_json::from_value(serde_json::json!({
+                "version": 1, "diff_hash": "hash",
+                "files": {"src/auth.rs": {"risk": "high", "findings": findings}}
+            }))
+            .unwrap(),
+        );
+        tab.ai.arbiter_graded_keys = HashSet::from([er_engine::ai::identity::finding_key(
+            "src/auth.rs",
+            Some(2),
+            "Shared claim",
+        )]);
+        tab.layers.min_trust = Confidence::Tentative;
+        tab.panel = Some(PanelContent::FileDetail);
+        let mut cache = crate::screen::ViewCache::default();
+        let screen = crate::screen::from_app(&app, &mut cache);
+        let mut terminal = Terminal::new(TestBackend::new(80, 40)).unwrap();
+        terminal.draw(|f| render(f, f.area(), &screen)).unwrap();
+        let titles = [
+            "Shared claim",
+            "Other claim",
+            "Plain claim",
+            "Closed claim",
+            "Dropped claim",
+        ];
+        let drawn: Vec<&str> = terminal
+            .backend()
+            .buffer()
+            .content
+            .chunks(80)
+            .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
+            .filter_map(|row| titles.into_iter().find(|title| row.contains(title)))
+            .collect();
+        let tab = app.tab();
+        let steps: Vec<&str> = drawn_file_findings(&tab.ai, &tab.layers, "src/auth.rs")
+            .iter()
+            .map(|finding| finding.title.as_str())
+            .collect();
+        assert_eq!(drawn, steps);
+        assert_eq!(steps, ["Shared claim", "Other claim"]);
     }
 
     fn reach_text(reach: &er_engine::ai::TriageReach) -> Option<String> {
