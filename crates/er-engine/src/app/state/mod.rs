@@ -4462,17 +4462,21 @@ impl TabState {
         self.show_unreviewed_only = session.show_unreviewed_only;
         self.sort_by_mtime = session.sort_by_mtime;
 
-        // Restore comment draft if non-empty
-        if !session.comment_draft.is_empty() {
+        // Restore comment draft if non-empty. A kind this build does not
+        // know, such as the flag build's pending-review comment, is skipped:
+        // posting it as a single comment would make it public.
+        let kind = match session.comment_draft_type.as_str() {
+            "question" => Some(CommentType::Question),
+            "note" => Some(CommentType::Note),
+            "github" | "" => Some(CommentType::GitHubComment),
+            _ => None,
+        };
+        if let (false, Some(kind)) = (session.comment_draft.is_empty(), kind) {
             self.comment_textarea = TextArea::new(vec![session.comment_draft]);
             self.comment_file = session.comment_draft_file;
             self.comment_hunk = session.comment_draft_hunk;
             self.comment_line_num = session.comment_draft_line;
-            self.comment_type = match session.comment_draft_type.as_str() {
-                "question" => CommentType::Question,
-                "note" => CommentType::Note,
-                _ => CommentType::GitHubComment,
-            };
+            self.comment_type = kind;
             self.comment_reply_to = session.comment_draft_reply_to;
             self.comment_finding_ref = session.comment_draft_finding_ref;
             self.comment_edit_id = session.comment_draft_edit_id;

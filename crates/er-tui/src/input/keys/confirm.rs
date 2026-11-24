@@ -16,6 +16,7 @@ pub fn action(key: KeyEvent, asked: ConfirmAction) -> TuiAction {
             ConfirmAction::RunAgentQuestions => Write::ClearAnswersAndRunQuestions,
             ConfirmAction::RunAgentNotes => Write::ClearRepliesAndRunNotes,
             ConfirmAction::ApprovePR => Write::ApprovePr,
+            ConfirmAction::RemoveReviewComment => Write::RemoveReviewComment,
         }),
         KeyCode::Char('k') => match asked {
             ConfirmAction::RunAgentReview => TuiAction::Confirm(ConfirmKey::KeepAndRunReview),

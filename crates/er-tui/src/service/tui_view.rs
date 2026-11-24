@@ -26,6 +26,7 @@ use super::config_hub::ConfigHub;
 use super::history::HistoryPos;
 use super::modes::Follow;
 use super::open_hub::OpenHub;
+use super::review_hub::ReviewHub;
 use super::session::Restore;
 use super::watched::TabWatched;
 use super::worktree::GitHub;
@@ -50,6 +51,9 @@ pub struct TuiView {
     pub base_input: String,
     /// What the start's probe or a pull learned about a tab's PR.
     pr_known: HashMap<TabKey, PrKnown>,
+    /// The review hub, kept while its summary input or remove prompt hides
+    /// its overlay.
+    pub review: Option<ReviewHub>,
 }
 
 /// Whether a tab's branch has a pull request, as far as the TUI knows. Only
@@ -68,6 +72,8 @@ pub enum Overlay {
     /// The AI hub and its provider, model and effort pickers.
     Picker(Picker),
     GitHub(GitHub),
+    /// The review hub, which `TuiView::review` holds.
+    Review,
     Open(OpenHub),
     /// The filter presets, then the tab's recent filters.
     FilterHistory {
@@ -95,12 +101,13 @@ impl Overlay {
             Self::Picker(picker) => picker.sync(view, ai_label),
             Self::ExportPicker { .. }
             | Self::GitHub(_)
+            | Self::Review
             | Self::Open(_)
             | Self::FilterHistory { .. } => {}
         }
     }
 
-    fn data(&self) -> OverlayData<'_> {
+    fn data<'a>(&'a self, review: Option<&'a ReviewHub>) -> OverlayData<'a> {
         match *self {
             Self::ConfigHub(ref hub) => OverlayData::ConfigHub {
                 tab: hub.scope,
@@ -122,6 +129,12 @@ impl Overlay {
                 title: None,
                 items: &hub.rows,
                 selected: hub.selected,
+            },
+            Self::Review => OverlayData::ModalHub {
+                kind: HubKind::Git,
+                title: Some("REVIEW"),
+                items: review.map_or(&[], |hub| &hub.rows),
+                selected: review.map_or(0, |hub| hub.selected),
             },
             Self::Open(ref hub) => OverlayData::ModalHub {
                 kind: HubKind::Open,
@@ -165,6 +178,8 @@ pub enum Mode {
     Commit,
     /// The composer: the active tab's draft takes the keys.
     Comment,
+    /// The review hub's summary input.
+    ReviewSummary,
     Confirm(Ask),
     /// The compare-base input, opened from the Open hub.
     BaseBranch,
@@ -177,6 +192,7 @@ pub enum Ask {
     DeleteWatchedFile,
     ApprovePr,
     DeleteComment,
+    RemoveReviewComment,
 }
 
 impl TuiView {
@@ -326,6 +342,8 @@ pub struct Draft {
     pub hunk: usize,
     pub line: Option<usize>,
     pub kind: CommentType,
+    /// A GitHub comment that joins the viewer's pending review (D3).
+    pub review: bool,
     pub reply_to: Option<String>,
     pub finding_ref: Option<String>,
     pub edit_id: Option<String>,
@@ -346,6 +364,7 @@ impl Default for Draft {
             hunk: 0,
             line: None,
             kind: CommentType::GitHubComment,
+            review: false,
             reply_to: None,
             finding_ref: None,
             edit_id: None,
@@ -709,6 +728,10 @@ pub fn screen<'a>(view: &'a TuiView, state: &'a TabViewState, frame: Frame<'a>) 
                 Mode::Filter => InputMode::Filter,
                 Mode::Commit => InputMode::Commit,
                 Mode::Comment => InputMode::Comment,
+                Mode::ReviewSummary => InputMode::ReviewSummary,
+                Mode::Confirm(Ask::RemoveReviewComment) => {
+                    InputMode::Confirm(ConfirmAction::RemoveReviewComment)
+                }
                 Mode::BaseBranch => InputMode::BaseBranch,
                 Mode::Confirm(Ask::Push) => InputMode::Confirm(ConfirmAction::Push),
                 Mode::Confirm(Ask::ApprovePr) => InputMode::Confirm(ConfirmAction::ApprovePR),
@@ -721,8 +744,15 @@ pub fn screen<'a>(view: &'a TuiView, state: &'a TabViewState, frame: Frame<'a>) 
                     })
                 }
             },
-            overlay: view.overlay.as_ref().map(Overlay::data),
-            remote_url_input: &view.base_input,
+            overlay: view
+                .overlay
+                .as_ref()
+                .map(|overlay| overlay.data(view.review.as_ref())),
+            // The summary input and the base input share the one-line field.
+            remote_url_input: match (view.input_mode, view.review.as_ref()) {
+                (Mode::ReviewSummary, Some(hub)) => &hub.summary,
+                _ => &view.base_input,
+            },
             ai_selection_label: frame.ai_selection_label,
             has_comment_draft: !state.draft.textarea.is_empty() && view.input_mode != Mode::Comment,
             can_toggle_comment_type: state.draft.can_toggle_kind(),
@@ -763,6 +793,7 @@ pub fn screen<'a>(view: &'a TuiView, state: &'a TabViewState, frame: Frame<'a>) 
             watched_count: watched.files.len(),
             lazy_mode: content.diff.meta.lazy,
             comment_type: state.draft.kind,
+            comment_review: state.draft.review,
             comment_reply_to: state.draft.reply_to.as_deref(),
             comment_finding_ref: state.draft.finding_ref.as_deref(),
             comment_file: &state.draft.file,

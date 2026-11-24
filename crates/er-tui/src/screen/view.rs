@@ -59,20 +59,39 @@ pub enum InputMode<'a> {
     Commit,
     RemoteUrl,
     BaseBranch,
+    /// The pending review's summary; only the flag path's review hub asks
+    /// for it.
+    #[cfg_attr(
+        all(not(feature = "v1-service"), not(test)),
+        expect(dead_code, reason = "only the flag path's review hub opens it")
+    )]
+    ReviewSummary,
 }
 
 /// The action a y/n prompt is asking about.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConfirmAction<'a> {
     DeleteComment,
-    DeleteWatchedFile { path: &'a str },
+    DeleteWatchedFile {
+        path: &'a str,
+    },
     Push,
-    CleanupQuestions { count: usize },
-    CleanupReviews { count: usize },
+    CleanupQuestions {
+        count: usize,
+    },
+    CleanupReviews {
+        count: usize,
+    },
     RunAgentReview,
     RunAgentQuestions,
     RunAgentNotes,
     ApprovePR,
+    /// A comment of the pending review; only the flag path asks.
+    #[cfg_attr(
+        all(not(feature = "v1-service"), not(test)),
+        expect(dead_code, reason = "only the flag path's review hub asks it")
+    )]
+    RemoveReviewComment,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

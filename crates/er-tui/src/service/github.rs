@@ -7,7 +7,8 @@
 use er_engine::ai::{annotation_store, CommentRef, CommentType};
 use er_engine::github_post::NO_PR_FOR_COMMENT;
 use er_service::{
-    AnnotationTarget, Command, ReviewEvent, SyncSource, TabContent, EARLIER_VERSION_POSTED,
+    AnnotationTarget, Command, ReviewEvent, ReviewLineTarget, SyncSource, TabContent,
+    EARLIER_VERSION_POSTED,
 };
 use tui_textarea::TextArea;
 
@@ -46,13 +47,15 @@ pub fn start_general(state: &mut TabViewState, known: PrKnown) -> Result<bool, S
     draft.reply_to = None;
     draft.finding_ref = None;
     draft.kind = CommentType::GitHubComment;
+    draft.review = false;
     draft.edit_id = None;
     draft.client_id = None;
     Ok(true)
 }
 
-/// The GitHub composer's post: a reply under a posted comment, a PR-wide
-/// comment for a draft on no file, else a line comment. The client id is
+/// The GitHub composer's post: a line of the pending review for the review
+/// kind, a reply under a posted comment, a PR-wide comment for a draft on no
+/// file, else a line comment. The client id is
 /// painted on the first send and kept until one lands. Answers `None` for a
 /// reply under a row that is not on GitHub, which is a thread write.
 pub fn submit(state: &mut TabViewState, content: &TabContent, body: String) -> Option<Command> {
@@ -71,7 +74,20 @@ pub fn submit(state: &mut TabViewState, content: &TabContent, body: String) -> O
             .get_or_insert_with(|| annotation_store::new_annotation_id("c-"))
             .clone(),
     );
-    let command = if let Some(parent_id) = draft.reply_to.clone() {
+    let review_line = draft.line.filter(|_| draft.review);
+    let command = if let Some(line_num) = review_line {
+        // GitHub holds the draft review, so this add takes no client id.
+        Command::AddPendingReviewComment {
+            context,
+            target: ReviewLineTarget {
+                file: draft.file.clone(),
+                line_num,
+                line_num_end: draft.line_end,
+                side: draft.side.clone(),
+            },
+            body: body.clone(),
+        }
+    } else if let Some(parent_id) = draft.reply_to.clone() {
         Command::ReplyToGithubThread {
             context,
             parent_id,
@@ -120,12 +136,17 @@ pub fn delete(content: &TabContent, id: String) -> Command {
     }
 }
 
-/// The post in flight landed: the draft clears. Answers the App's notice.
+/// The post in flight landed: the draft clears. Answers the App's notice,
+/// or where a review comment went.
 pub fn landed(state: &mut TabViewState) -> Option<&'static str> {
     state.sent.take()?;
     state.draft.textarea = TextArea::default();
     state.draft.client_id = None;
-    Some("Comment posted to GitHub")
+    Some(if state.draft.review {
+        "Comment added to your pending review"
+    } else {
+        "Comment posted to GitHub"
+    })
 }
 
 /// The post in flight was refused: the draft keeps its text. When the retry

@@ -269,3 +269,130 @@ fn a_posted_delete_removes_its_rows_only_once_github_has() -> anyhow::Result<()>
     }
     Ok(())
 }
+
+fn stored_text(bucket: &str, id: &str) -> anyhow::Result<String> {
+    let store = er_engine::store_registry::store();
+    let scope = er_store::Scope::dir(bucket)?;
+    let er_store::Loaded::Found(stored) =
+        er_engine::ai::annotation_store::load_github_comments(&store, &scope)?
+    else {
+        anyhow::bail!("the comments file is gone");
+    };
+    let row = stored.value.comments.into_iter().find(|c| c.id == id);
+    Ok(row.map(|row| row.comment).unwrap_or_default())
+}
+
+fn edits(github: &FakeGitHub) -> usize {
+    let calls = github.calls();
+    calls
+        .iter()
+        .filter(|call| call.starts_with("update_review_comment("))
+        .count()
+}
+
+/// Gives `gh-12` another author, as a pull would record someone else's reply.
+fn authored(bucket: &str, author: &str) {
+    let dir = std::path::Path::new(bucket);
+    let mut stored = er_engine::test_support::read_sidecar::<er_engine::ai::ErGithubComments>(dir);
+    stored.comments[1].author = author.to_string();
+    let value = serde_json::to_value(&stored).unwrap_or_else(|e| panic!("{e}"));
+    er_engine::test_support::write_sidecar_json::<er_engine::ai::ErGithubComments>(dir, value);
+}
+
+/// An edit of a posted comment reaches GitHub before its row changes, and
+/// drops the pull's cached list, which still holds the old body; a refused
+/// edit keeps the row and says so in `update_comment_text`'s words. Another
+/// author's row and an AI row are refused before GitHub is asked.
+#[test]
+fn a_posted_edit_writes_its_row_only_once_github_has() -> anyhow::Result<()> {
+    let refused = GhError::Forbidden {
+        message: "not yours".to_string(),
+    };
+    let cases = [
+        ("You", Ok(()), None),
+        ("You", Err(refused), Some("Failed to update comment: ")),
+        ("reviewer", Ok(()), Some("Can only edit your own messages")),
+        ("ai", Ok(()), Some("Cannot edit AI-generated text")),
+    ];
+    for (author, answer, said) in cases {
+        let (dir, bucket) = posted_thread()?;
+        let github = Arc::new(FakeGitHub::default().with_update_review_comment(answer));
+        er_engine::storage::with_process_test_storage_root(dir.path(), || {
+            authored(&bucket, author);
+            let edit = Command::UpdateGithubComment {
+                context: pr_tab(&bucket),
+                id: "gh-12".to_string(),
+                body: " edited ".to_string(),
+            };
+            let reply = actor(&github).send_and_wait_with(edit, WAIT);
+            let calls = github.calls();
+            let asked = author == "You";
+            assert_eq!(edits(&github), usize::from(asked), "{author}: {calls:?}");
+            if asked {
+                let edit = calls
+                    .iter()
+                    .find(|c| c.starts_with("update_review_comment("));
+                let edit = edit.map(String::as_str).unwrap_or_default();
+                assert!(edit.contains("comment_id=12, body=\"edited\""), "{edit}");
+            }
+            let text = stored_text(&bucket, "gh-12")?;
+            match said {
+                None => {
+                    assert!(reply.is_ok(), "{reply:?}");
+                    assert_eq!(text, "edited");
+                    let dropped = calls.iter().any(|c| c.starts_with("invalidate_comments"));
+                    assert!(dropped, "the cached list keeps the old body: {calls:?}");
+                }
+                Some(prefix) => {
+                    assert_eq!(text, "posted", "{author}: a refused edit changed the row");
+                    let message = reply.err().map(|e| e.to_string()).unwrap_or_default();
+                    assert!(message.starts_with(prefix), "{author}: {message}");
+                }
+            }
+            Ok::<_, anyhow::Error>(())
+        })?;
+    }
+    Ok(())
+}
+
+/// Every id but a question's or a note's is edited through
+/// `UpdateGithubComment`, whose effect reads the stored row: a comment never
+/// posted stays local, and a posted one no loaded content knows of still
+/// goes to GitHub first.
+#[test]
+fn an_edit_is_routed_by_its_id_and_the_stored_row() -> anyhow::Result<()> {
+    let (dir, bucket) = posted_thread()?;
+    let github = Arc::new(FakeGitHub::default().with_update_review_comment(Ok(())));
+    for id in ["q-1", "n-1"] {
+        let local = crate::edit_message(pr_tab(&bucket), id.into(), "x".into());
+        assert!(matches!(local, Command::UpdateThreadMessage { .. }), "{id}");
+    }
+    er_engine::storage::with_process_test_storage_root(dir.path(), || {
+        // A comment never posted, in the same PR's bucket: edited locally.
+        let path = std::path::Path::new(&bucket);
+        let mut stored =
+            er_engine::test_support::read_sidecar::<er_engine::ai::ErGithubComments>(path);
+        let mut local = stored.comments[0].clone();
+        (local.id, local.github_id) = ("c-9".to_string(), None);
+        stored.comments.push(local);
+        let value = serde_json::to_value(&stored)?;
+        er_engine::test_support::write_sidecar_json::<er_engine::ai::ErGithubComments>(path, value);
+        let edit = crate::edit_message(pr_tab(&bucket), "c-9".into(), "kept here".into());
+        let reply = actor(&github).send_and_wait_with(edit, WAIT);
+        assert!(reply.is_ok(), "{reply:?}");
+        assert!(
+            github.calls().is_empty(),
+            "an unposted edit reached GitHub: {:?}",
+            github.calls()
+        );
+        assert_eq!(stored_text(&bucket, "c-9")?, "kept here");
+
+        let edit = crate::edit_message(pr_tab(&bucket), "gh-11".into(), "edited".into());
+        let reply = actor(&github).send_and_wait_with(edit, WAIT);
+        assert!(reply.is_ok(), "{reply:?}");
+        assert_eq!(edits(&github), 1, "{:?}", github.calls());
+        assert_eq!(stored_text(&bucket, "gh-11")?, "edited");
+        Ok::<_, anyhow::Error>(())
+    })?;
+    Ok(())
+}

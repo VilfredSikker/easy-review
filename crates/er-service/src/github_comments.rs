@@ -21,7 +21,7 @@ use crate::annotations::{failed, fetch_raw, Written};
 use crate::content::ContentPatch;
 use crate::github_sync::post_context;
 use crate::handle::WorkspaceError;
-use crate::protocol::{AnnotationTarget, TabContext};
+use crate::protocol::{AnnotationTarget, Command, TabContext};
 
 /// What one create left behind.
 pub(crate) struct PostedComment {
@@ -262,6 +262,62 @@ pub(crate) fn delete_github_comment(
         }
     }
     crate::annotations::delete_thread(ctx, id)
+}
+
+/// Edits a comment on GitHub first, as the App's `update_comment_text`
+/// does, and writes the local row only once GitHub took it; a row that was
+/// never posted, or has no PR recorded, is edited locally.
+pub(crate) fn update_github_comment(
+    deps: &WorkspaceDeps,
+    ctx: &TabContext,
+    id: &str,
+    body: &str,
+) -> Written<String> {
+    let text = body.trim();
+    if text.is_empty() {
+        return Err(WorkspaceError::Failed("Message cannot be empty".into()));
+    }
+    let comments = comments_payload(ctx)
+        .ok_or_else(|| WorkspaceError::Failed("the comments file is missing".to_string()))?;
+    let row = comments
+        .comments
+        .iter()
+        .find(|comment| comment.id == id)
+        .ok_or_else(|| WorkspaceError::Failed(format!("Comment not found: {id}")))?;
+    // The local write's own refusals, checked before GitHub is touched.
+    if row.author == "ai" {
+        return Err(WorkspaceError::Failed(
+            "Cannot edit AI-generated text".into(),
+        ));
+    }
+    if !row.author.is_empty() && row.author != "You" {
+        return Err(WorkspaceError::Failed(
+            "Can only edit your own messages".into(),
+        ));
+    }
+    if let (Some(github_id), Some(pr)) = (row.github_id, comments.github.as_ref()) {
+        let github = &deps.ports().github;
+        github
+            .update_review_comment(&pr.owner, &pr.repo, github_id, text, &ctx.repo_root)
+            .map_err(|error| {
+                WorkspaceError::Failed(format!("Failed to update comment: {error}"))
+            })?;
+        // The pull's cached list still holds the old body.
+        github.invalidate_comments();
+    }
+    crate::annotations::update_thread_message(ctx, id, text)
+}
+
+/// The edit of one thread message. A question or note is local; any other
+/// id is a comments-sidecar row, and its effect reads the stored row to
+/// decide whether GitHub is edited first, so a page or frame that has not
+/// loaded the row yet cannot skip GitHub.
+pub fn edit_message(context: TabContext, id: String, body: String) -> Command {
+    if id.starts_with("q-") || id.starts_with("n-") {
+        Command::UpdateThreadMessage { context, id, body }
+    } else {
+        Command::UpdateGithubComment { context, id, body }
+    }
 }
 
 fn private_items<'a>(

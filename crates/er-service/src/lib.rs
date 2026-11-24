@@ -77,7 +77,7 @@ pub use flow_view::{
 };
 pub use flows::read_flow_run;
 pub use freshness::{BaseBehind, Divergence, Freshness, RemoteTips};
-pub use github_comments::EARLIER_VERSION_POSTED;
+pub use github_comments::{edit_message, EARLIER_VERSION_POSTED};
 pub use handle::{WorkspaceError, WorkspaceHandle, REPLY_TIMEOUT};
 pub use host::{ReplyReceiver, ServiceHost};
 pub use hunks::{file_hunks, read_hunks, HunkRead};

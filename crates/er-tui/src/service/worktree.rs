@@ -6,7 +6,7 @@ use er_engine::tab_identity::DiffMode;
 use er_engine::TabKey;
 use er_service::{Command, TabContent};
 
-use super::tui_view::{Mode, TabViewState};
+use super::tui_view::{Mode, PrKnown, TabViewState};
 use crate::input::keys::{Edit, OverlayAction};
 use crate::screen::view::HubItem;
 
@@ -21,6 +21,8 @@ pub enum GitPick {
     PullComments,
     CommentOnPr,
     ApprovePr,
+    /// The review hub (P68.2), which the App path does not have.
+    Review,
 }
 
 /// The Git hub: the App's rows, with their labels, hints and enabled states.
@@ -51,8 +53,13 @@ fn row(label: &str, hint: &str, description: &str, enabled: bool) -> HubItem {
 
 impl GitHub {
     /// The hub as the App opens it on this tab.
-    pub fn open(content: &TabContent) -> Self {
+    pub fn open(content: &TabContent, known: PrKnown) -> Self {
         let tab = &content.tab;
+        let review = if known == PrKnown::Absent {
+            "No PR for this branch"
+        } else {
+            "List your pending review and submit it with a decision"
+        };
         let has_pr = tab.pr_number.is_some();
         let approve = if has_pr {
             "Submit approval review on GitHub"
@@ -105,12 +112,26 @@ impl GitHub {
                 GitPick::CommentOnPr,
             ),
             (row("Approve PR", "", approve, has_pr), GitPick::ApprovePr),
+            (
+                row("Review and submit…", "", review, known != PrKnown::Absent),
+                GitPick::Review,
+            ),
         ];
         let (rows, picks) = rows.into_iter().unzip();
         Self {
             rows,
             picks,
             selected: 0,
+        }
+    }
+
+    /// The hub as the App draws it: without the review row, which only
+    /// this path has.
+    #[cfg(test)]
+    pub fn drop_review_row(&mut self) {
+        if let Some(at) = self.picks.iter().position(|pick| *pick == GitPick::Review) {
+            self.rows.remove(at);
+            self.picks.remove(at);
         }
     }
 
