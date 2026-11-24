@@ -249,9 +249,8 @@ const COMMANDS: [(&str, &str); 4] = [
 fn command_row(label: &str, name: String, line: Option<String>, unset: &str) -> Row {
     let enabled = line.is_some();
     let description = line.clone().unwrap_or_else(|| unset.to_string());
-    let choice = line.map(|shell_cmd| {
-        Choice::Start(Start::Run(RunRequest::Command { name, shell_cmd }))
-    });
+    let choice =
+        line.map(|shell_cmd| Choice::Start(Start::Run(RunRequest::Command { name, shell_cmd })));
     row(label, description, enabled, choice)
 }
 

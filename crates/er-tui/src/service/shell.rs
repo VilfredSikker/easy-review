@@ -300,6 +300,11 @@ impl Shell {
         self.pending.len()
     }
 
+    #[cfg(test)]
+    pub fn runs_in_flight(&self) -> usize {
+        self.runs.len()
+    }
+
     /// A write on `key` whose worker died before it answered.
     #[cfg(test)]
     pub fn lose_write(&mut self, key: TabKey, workspace: String, after: After) {
@@ -462,21 +467,22 @@ impl Shell {
     /// App's start notice, since the host tells none for it.
     fn drain_runs(&mut self) {
         let mut said = Vec::new();
-        self.runs.retain(|(replies, started)| match replies.try_recv() {
-            Ok(Ok(())) => {
-                said.extend(started.clone());
-                false
-            }
-            Ok(Err(error)) => {
-                said.push(error.message);
-                false
-            }
-            Err(TryRecvError::Empty) => true,
-            Err(TryRecvError::Disconnected) => {
-                said.push("The run stopped before it answered".into());
-                false
-            }
-        });
+        self.runs
+            .retain(|(replies, started)| match replies.try_recv() {
+                Ok(Ok(())) => {
+                    said.extend(started.clone());
+                    false
+                }
+                Ok(Err(error)) => {
+                    said.push(error.message);
+                    false
+                }
+                Err(TryRecvError::Empty) => true,
+                Err(TryRecvError::Disconnected) => {
+                    said.push("The run stopped before it answered".into());
+                    false
+                }
+            });
         for message in said {
             self.notify(message);
         }
@@ -494,9 +500,10 @@ impl Shell {
         let Some((key, _, Some(content))) = self.active() else {
             return;
         };
-        let shows_log = self.view.tab(key).is_some_and(|state| {
-            state.panel == Some(er_engine::ai::PanelContent::AgentLog)
-        });
+        let shows_log = self
+            .view
+            .tab(key)
+            .is_some_and(|state| state.panel == Some(er_engine::ai::PanelContent::AgentLog));
         if shows_log && agent_log::any_running(self.host.tasks(), &content.context.er_dir) {
             self.redraw = true;
         }

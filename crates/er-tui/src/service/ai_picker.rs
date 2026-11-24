@@ -235,7 +235,12 @@ fn listed(rows: Vec<ai_runs::Row>) -> (Vec<HubItem>, Vec<Pick>) {
             };
             let item = HubItem {
                 is_header: listed.header,
-                ..row(listed.label, &listed.hint, listed.description, listed.enabled)
+                ..row(
+                    listed.label,
+                    &listed.hint,
+                    listed.description,
+                    listed.enabled,
+                )
             };
             (item, pick)
         })

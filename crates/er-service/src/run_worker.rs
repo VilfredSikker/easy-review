@@ -325,6 +325,9 @@ mod tests {
         let _ = worker.run(Box::new(move || {
             let _ = tx.send(catching_panics());
         }));
-        assert_eq!(plain.recv_timeout(std::time::Duration::from_secs(5)), Ok(false));
+        assert_eq!(
+            plain.recv_timeout(std::time::Duration::from_secs(5)),
+            Ok(false)
+        );
     }
 }

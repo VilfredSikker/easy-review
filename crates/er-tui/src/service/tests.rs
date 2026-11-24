@@ -364,7 +364,7 @@ pub(super) fn shell_frame(shell: &mut Shell, highlighter: &mut Highlighter) -> B
     terminal.backend().buffer().clone()
 }
 
-fn app_frame(app: &er_engine::app::App, highlighter: &mut Highlighter) -> Buffer {
+pub(super) fn app_frame(app: &er_engine::app::App, highlighter: &mut Highlighter) -> Buffer {
     let mut terminal =
         Terminal::new(TestBackend::new(WIDTH, HEIGHT)).unwrap_or_else(|e| panic!("{e}"));
     let mut cache = crate::screen::ViewCache::default();

@@ -42,9 +42,9 @@ pub use startup::Args;
 pub const RUNS_ON_SERVICE: bool = true;
 
 #[cfg(test)]
-mod clears_tests;
-#[cfg(test)]
 mod ai_runs_tests;
+#[cfg(test)]
+mod clears_tests;
 #[cfg(test)]
 mod config_hub_tests;
 #[cfg(test)]
