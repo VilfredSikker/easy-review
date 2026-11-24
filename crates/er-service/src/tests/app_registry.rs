@@ -632,3 +632,20 @@ fn a_workspace_error_maps_to_its_wire_kind() {
         assert_eq!(ErError::from(error), ErError { kind, message });
     }
 }
+
+/// One PR is the same whatever tab kind holds it: a remote tab and a local
+/// one naming acme/widgets#7 match, in any case, and another number does not.
+#[test]
+fn same_pr_matches_one_pr_across_tab_kinds() {
+    let pr = |kind, owner: &str, number| TabDescriptor {
+        kind,
+        pr_owner: Some(owner.to_string()),
+        pr_repo: Some("widgets".to_string()),
+        pr_number: Some(number),
+        ..working("/repo")
+    };
+    let remote = pr(TabKind::RemotePr, "acme", 7);
+    assert!(crate::same_pr(&pr(TabKind::LocalPr, "ACME", 7), &remote));
+    assert!(!crate::same_pr(&pr(TabKind::LocalPr, "acme", 8), &remote));
+    assert!(!crate::same_pr(&working("/repo"), &working("/repo")));
+}

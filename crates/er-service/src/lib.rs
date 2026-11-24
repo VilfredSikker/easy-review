@@ -60,8 +60,8 @@ pub use ai_extras::{AiExtras, OtherBucketFacts};
 pub use ai_labels::{ai_labels, AiLabels};
 pub use annotations_resource::{annotations_resource, annotations_version, tour_resource};
 pub use app_registry::{
-    live_tab_row, resolve_tab_key, tabs_resource, wire_tab_key, AppCommand, AppRegistry, CachedPr,
-    TabEntry, TabsView,
+    live_tab_row, resolve_tab_key, same_pr, tabs_resource, wire_tab_key, AppCommand, AppRegistry,
+    CachedPr, TabEntry, TabsView,
 };
 pub use ask_context::{ask_raw_diff, ask_scope};
 pub use content::{
@@ -96,6 +96,7 @@ pub use reviewed_resource::{
 pub use run_worker::{FlowRequest, RunReceiver, RunRequest};
 pub use settings::{spawn_settings, SettingsCommand, SettingsHandle, SettingsReply, SettingsView};
 pub use settings_wire::{risk_resource, settings_command, settings_resource};
+pub use tab_pr::stack_source_of;
 pub use tasks::{Finished, Launch, TaskClock, TaskHooks, TaskHost};
 pub use workspace::{LiveArenaRun, LiveReviewFlow, LoadError, WorkspaceTarget, WorkspaceView};
 

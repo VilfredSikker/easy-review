@@ -26,7 +26,7 @@ const WIDTH: u16 = 120;
 const HEIGHT: u16 = 30;
 
 /// The flag-on modules, as text.
-pub(super) const SOURCES: [(&str, &str); 25] = [
+pub(super) const SOURCES: [(&str, &str); 26] = [
     ("ai_picker.rs", include_str!("ai_picker.rs")),
     ("clears.rs", include_str!("clears.rs")),
     ("config_hub.rs", include_str!("config_hub.rs")),
@@ -39,6 +39,7 @@ pub(super) const SOURCES: [(&str, &str); 25] = [
     ("mod.rs", include_str!("mod.rs")),
     ("modes.rs", include_str!("modes.rs")),
     ("open_hub.rs", include_str!("open_hub.rs")),
+    ("open_pr.rs", include_str!("open_pr.rs")),
     ("pr_probe.rs", include_str!("pr_probe.rs")),
     ("review_hub.rs", include_str!("review_hub.rs")),
     ("reviewed.rs", include_str!("reviewed.rs")),
@@ -283,7 +284,11 @@ pub(super) fn path_of(dir: &tempfile::TempDir) -> String {
 }
 
 pub(super) fn plan(args: &Args) -> Start {
-    startup::plan(args, &*Ports::cli().git).unwrap_or_else(|e| panic!("{e:#}"))
+    plan_on(args, &test_ports())
+}
+
+pub(super) fn plan_on(args: &Args, ports: &Ports) -> Start {
+    startup::plan(args, ports).unwrap_or_else(|e| panic!("{e:#}"))
 }
 
 pub(super) fn shell(args: &Args, config_dir: &Path) -> Shell {
@@ -523,14 +528,14 @@ fn the_start_opens_listed_tabs_and_refuses_an_unlisted_load() {
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     let path = path_of(&repo);
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
-        let ports = Ports::cli();
+        let ports = test_ports();
         let pr = startup::plan(
             &Args {
                 paths: vec![path.clone()],
                 pr: Some(7),
                 ..Args::default()
             },
-            &*ports.git,
+            &ports,
         )
         .unwrap_or_else(|e| panic!("{e:#}"));
         assert_eq!(pr.tabs[0].tab.kind, TabKind::LocalPr);
@@ -542,7 +547,7 @@ fn the_start_opens_listed_tabs_and_refuses_an_unlisted_load() {
                 remote: true,
                 ..Args::default()
             },
-            &*ports.git,
+            &ports,
         )
         .unwrap_or_else(|e| panic!("{e:#}"));
         assert_eq!(remote.tabs[0].tab.kind, TabKind::RemotePr);
@@ -728,7 +733,7 @@ fn tab_keys_load_later_tabs_and_leave_a_failed_one() {
 }
 
 /// The service tests, as text.
-const TEST_SOURCES: [(&str, &str); 18] = [
+const TEST_SOURCES: [(&str, &str); 19] = [
     ("clears_tests.rs", include_str!("clears_tests.rs")),
     ("config_hub_tests.rs", include_str!("config_hub_tests.rs")),
     ("context_tests.rs", include_str!("context_tests.rs")),
@@ -738,6 +743,7 @@ const TEST_SOURCES: [(&str, &str); 18] = [
     ("history_tests.rs", include_str!("history_tests.rs")),
     ("loop_tests.rs", include_str!("loop_tests.rs")),
     ("modes_tests.rs", include_str!("modes_tests.rs")),
+    ("pr_stack_tests.rs", include_str!("pr_stack_tests.rs")),
     ("review_hub_tests.rs", include_str!("review_hub_tests.rs")),
     ("reviewed_tests.rs", include_str!("reviewed_tests.rs")),
     ("settings_tests.rs", include_str!("settings_tests.rs")),

@@ -76,6 +76,23 @@ pub(crate) fn stack_source(
     Some(StackSource::PrChain { repo, head })
 }
 
+/// Where `content`'s tab reads its stack, as `RefreshStack` finds it; none
+/// for a tab with nowhere to read one. Front ends pick their stack rows by it.
+pub fn stack_source_of(content: &crate::TabContent) -> Option<StackSource> {
+    stack_source(&content.tab, content.pr.overview.as_ref())
+}
+
+/// The overview of the PR `tab`'s branch has, through the GitHub port.
+/// Blocking; none when GitHub cannot describe it.
+pub(crate) fn branch_overview(
+    deps: &WorkspaceDeps,
+    tab: &ResolvedTab,
+    number: u64,
+) -> Option<PrOverviewData> {
+    let github = &deps.ports().github;
+    github.overview(&tab.repo_root, Some(number)).ok().flatten()
+}
+
 /// One stack lookup from `source`, through the GitHub port. Blocking.
 pub(crate) fn read_stack(
     deps: &WorkspaceDeps,
@@ -86,11 +103,15 @@ pub(crate) fn read_stack(
 
 /// The PR section of a load of `tab`.
 pub(crate) fn load_pr(deps: &WorkspaceDeps, tab: &ResolvedTab, load: PrLoad<'_>) -> LoadedPr {
+    // A working tab's branch PR is carried when the load applies.
     let Some(number) = tab.pr_number else {
         return LoadedPr::default();
     };
     let remote = remote_parts(tab);
-    let prev = load.prev.filter(|prev| prev.pr_number == Some(number));
+    // A branch PR's section holds no commits, so a PR tab reads its own.
+    let prev = load
+        .prev
+        .filter(|prev| prev.pr_number == Some(number) && prev.branch.is_none());
     let cached = || {
         deps.app_registry()
             .and_then(|registry| registry.cached_pr(remote, &tab.repo_root, number))
@@ -129,10 +150,11 @@ pub(crate) fn load_pr(deps: &WorkspaceDeps, tab: &ResolvedTab, load: PrLoad<'_>)
         .or_else(|| local_head(deps, tab, number))
         .or(cached_head);
     LoadedPr {
+        pr_number: Some(number),
         overview,
         commits,
         head_oid,
-        stack: None,
+        ..LoadedPr::default()
     }
 }
 

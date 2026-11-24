@@ -184,6 +184,9 @@ pub enum Mode {
     Confirm(Ask),
     /// The compare-base input, opened from the Open hub.
     BaseBranch,
+    /// The remote PR URL input, opened from the Open hub; it shares the
+    /// base input's text, as the App's two inputs share one field.
+    RemoteUrl,
 }
 
 /// What a y/n prompt asks before its write.
@@ -761,6 +764,7 @@ pub fn screen<'a>(view: &'a TuiView, state: &'a TabViewState, frame: Frame<'a>) 
                     InputMode::Confirm(ConfirmAction::RemoveReviewComment)
                 }
                 Mode::BaseBranch => InputMode::BaseBranch,
+                Mode::RemoteUrl => InputMode::RemoteUrl,
                 Mode::Confirm(Ask::Push) => InputMode::Confirm(ConfirmAction::Push),
                 Mode::Confirm(Ask::ApprovePr) => InputMode::Confirm(ConfirmAction::ApprovePR),
                 Mode::Confirm(Ask::DeleteComment) => {

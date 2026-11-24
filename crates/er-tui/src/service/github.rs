@@ -168,10 +168,15 @@ pub fn sync(content: &TabContent) -> Command {
     }
 }
 
-/// What a landed pull says. The App's notice also says the PR status was
-/// refreshed; the PR section's refresh is P73's.
-pub fn synced(github_count: usize, local_count: usize) -> String {
-    format!("GitHub sync: {github_count} from GitHub, {local_count} local kept")
+/// What a landed pull says, and, once the PR section was read again after
+/// it, that the PR status was refreshed, as the App's notice says.
+pub fn synced(github_count: usize, local_count: usize, refreshed: bool) -> String {
+    let notice = format!("GitHub sync: {github_count} from GitHub, {local_count} local kept");
+    if refreshed {
+        format!("{notice}, PR status refreshed")
+    } else {
+        notice
+    }
 }
 
 /// What a refused pull teaches about the tab's PR: only the no-PR refusal

@@ -1015,9 +1015,7 @@ fn handle_command(
             let Some(content) = state.view().tabs.get(&key).cloned() else {
                 return refuse_unknown_tab(reply);
             };
-            let Some(source) =
-                crate::tab_pr::stack_source(&content.tab, content.pr.overview.as_ref())
-            else {
+            let Some(source) = crate::tab_pr::stack_source_of(&content) else {
                 let _ = reply.send(Err(WorkspaceError::Failed(
                     "this tab has no stack to read".into(),
                 )));
@@ -1036,6 +1034,33 @@ fn handle_command(
                     Reply::StackRead { key },
                     ContentPatch::Stack { key, stack },
                 ))
+            });
+        }
+        Command::LoadBranchPr { key, number } => {
+            let Some(content) = state.view().tabs.get(&key).cloned() else {
+                return refuse_unknown_tab(reply);
+            };
+            if content.tab.pr_number.is_some() || content.tab.identity().is_remote() {
+                let _ = reply.send(Err(WorkspaceError::Failed(
+                    "this tab already reviews a PR".into(),
+                )));
+                return;
+            }
+            let deps = deps.clone();
+            spawn_effect(tx, reply, move || {
+                let tab = &content.tab;
+                let loaded = Reply::BranchPrLoaded { key };
+                // A PR GitHub cannot describe leaves the section as it was.
+                let Some(overview) = crate::tab_pr::branch_overview(&deps, tab, number) else {
+                    return Ok(Effected::from(loaded));
+                };
+                let patch = ContentPatch::BranchPr {
+                    key,
+                    number,
+                    branch: crate::tab_pr::viewed_branch(tab),
+                    overview: Box::new(overview),
+                };
+                Ok(Effected::patched(loaded, patch))
             });
         }
         Command::SetDiffMode {

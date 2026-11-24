@@ -423,6 +423,12 @@ impl FakeGitHub {
         self
     }
 
+    /// Rescripts the overview after the fake was handed out, as GitHub's
+    /// answer would change between two reads.
+    pub fn set_overview(&self, value: Result<Option<PrOverviewData>, GhError>) {
+        self.lock().overview = Some(value);
+    }
+
     #[must_use]
     pub fn with_overview_no_checks(self, value: Result<Option<PrOverviewData>, GhError>) -> Self {
         self.lock().overview_no_checks = Some(value);
@@ -577,6 +583,12 @@ impl FakeGitHub {
     pub fn with_stack_view_json(self, value: Result<String, GhError>) -> Self {
         self.lock().stack_view_json = Some(value);
         self
+    }
+
+    /// Rescripts `gh stack view` after the fake was handed out, as a stack
+    /// that gained a layer would answer.
+    pub fn set_stack_view_json(&self, value: Result<String, GhError>) {
+        self.lock().stack_view_json = Some(value);
     }
 
     #[must_use]
