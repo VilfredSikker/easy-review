@@ -442,9 +442,9 @@ fn a_test_build_never_starts_a_real_provider_cli() {
         assert_eq!(provider.provider_id.as_deref(), Some("claude"));
         let before = er_agent::agent_run::real_cli_refusals();
         choose(&mut shell, 'a', "Generate summary");
-        let failed = |shell: &Shell| notice(shell).contains("summary failed");
-        settle(&mut shell, failed);
-        let refused = er_agent::agent_run::real_cli_refusals();
-        assert!(refused > before, "the spawn was not refused");
+        let refused = |_: &Shell| er_agent::agent_run::real_cli_refusals() > before;
+        let seen = settle_within(&mut shell, Duration::from_secs(20), refused);
+        assert!(seen, "the spawn was not refused");
+        settle(&mut shell, |shell| notice(shell).contains("summary failed"));
     });
 }

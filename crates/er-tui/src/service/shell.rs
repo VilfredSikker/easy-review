@@ -375,6 +375,9 @@ impl Shell {
     /// cleared. A message holds while the active tab loads, so its dwell runs
     /// on frames that show the tab.
     pub fn tick(&mut self, now: Instant) {
+        // Before the events, so a run that fails at once tells its failure
+        // after its start, not under it.
+        self.drain_runs();
         loop {
             match self.events.try_recv() {
                 // A moved load is resent or its reply says so.
@@ -409,7 +412,6 @@ impl Shell {
             }
         }
         self.drain_replies();
-        self.drain_runs();
         self.sync_tasks();
         self.sync_watch(now);
         self.sync_probe();
