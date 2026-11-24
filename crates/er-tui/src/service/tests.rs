@@ -26,7 +26,7 @@ const WIDTH: u16 = 120;
 const HEIGHT: u16 = 30;
 
 /// The flag-on modules, as text.
-pub(super) const SOURCES: [(&str, &str); 22] = [
+pub(super) const SOURCES: [(&str, &str); 23] = [
     ("ai_picker.rs", include_str!("ai_picker.rs")),
     ("config_hub.rs", include_str!("config_hub.rs")),
     ("context.rs", include_str!("context.rs")),
@@ -45,6 +45,7 @@ pub(super) const SOURCES: [(&str, &str); 22] = [
     ("shell.rs", include_str!("shell.rs")),
     ("startup.rs", include_str!("startup.rs")),
     ("threads.rs", include_str!("threads.rs")),
+    ("tour.rs", include_str!("tour.rs")),
     ("tui_view.rs", include_str!("tui_view.rs")),
     ("watched.rs", include_str!("watched.rs")),
     ("watcher.rs", include_str!("watcher.rs")),
@@ -725,7 +726,7 @@ fn tab_keys_load_later_tabs_and_leave_a_failed_one() {
 }
 
 /// The service tests, as text.
-const TEST_SOURCES: [(&str, &str); 15] = [
+const TEST_SOURCES: [(&str, &str); 16] = [
     ("config_hub_tests.rs", include_str!("config_hub_tests.rs")),
     ("context_tests.rs", include_str!("context_tests.rs")),
     ("filter_tests.rs", include_str!("filter_tests.rs")),
@@ -741,6 +742,7 @@ const TEST_SOURCES: [(&str, &str); 15] = [
         include_str!("thread_writes_tests.rs"),
     ),
     ("threads_tests.rs", include_str!("threads_tests.rs")),
+    ("tour_tests.rs", include_str!("tour_tests.rs")),
     ("watched_tests.rs", include_str!("watched_tests.rs")),
     ("worktree_tests.rs", include_str!("worktree_tests.rs")),
     ("tests.rs", include_str!("tests.rs")),
