@@ -5,36 +5,16 @@
 //! live runs, and the page reads again when it moves.
 
 use er_engine::arena::{
-    AgentGroupStart, ArenaBatchStartParams, ArenaProgressState, ArenaRunSummary, ArenaStartParams,
-    ReviewerRef, RunStatus,
+    AgentGroupStart, ArenaBatchStartParams, ArenaRunSummary, ArenaStartParams, ReviewerRef,
 };
 use er_protocol::{
-    Ack, ArenaEstimate, ArenaPlan, ArenaReviewer, ArenaRun, ArenaRunJob, ArenaRunProgress,
-    ArenaRunRow, ArenaRunStatus, ArenaRuns, Command, ErError, ErErrorKind, Resource,
-    ResourceChanged, ResourceKey, ResourceVersion,
+    Ack, ArenaEstimate, ArenaPlan, ArenaReviewer, ArenaRun, ArenaRunRow, ArenaRuns, Command,
+    ErError, ErErrorKind, Resource, ResourceChanged, ResourceKey, ResourceVersion,
 };
 
 use super::tabs::Routed;
 use crate::arena_service::{self, ArenaTab, Plan};
 use crate::state::DesktopState;
-
-/// Every live arena run the started actors publish, by run id.
-pub fn live_runs(desktop: &DesktopState) -> Vec<ArenaRunJob> {
-    let mut runs: Vec<ArenaRunJob> = desktop
-        .service
-        .published_views()
-        .iter()
-        .flat_map(|view| view.arena_runs.iter())
-        .map(|run| ArenaRunJob {
-            run_id: run.run_id.clone(),
-            er_dir: run.er_dir.clone(),
-            status: status(&run.status),
-            progress: progress(&run.progress),
-        })
-        .collect();
-    runs.sort_by(|a, b| a.run_id.cmp(&b.run_id));
-    runs
-}
 
 /// What `plan` would cost on `wire`'s diff.
 pub fn estimate(
@@ -218,32 +198,12 @@ fn batch(plan: &ArenaPlan, confirm: bool, effort: Option<String>) -> ArenaBatchS
     }
 }
 
-fn status(status: &RunStatus) -> ArenaRunStatus {
-    match status {
-        RunStatus::Queued => ArenaRunStatus::Queued,
-        RunStatus::Running { round } => ArenaRunStatus::Running { round: *round },
-        RunStatus::Complete => ArenaRunStatus::Complete,
-        RunStatus::Cancelled => ArenaRunStatus::Cancelled,
-        RunStatus::Failed => ArenaRunStatus::Failed,
-    }
-}
-
-fn progress(progress: &ArenaProgressState) -> ArenaRunProgress {
-    ArenaRunProgress {
-        round: progress.round,
-        total_rounds: progress.total_rounds,
-        phase: progress.phase.clone(),
-        thinking: progress.thinking.clone(),
-        done: progress.done.clone(),
-    }
-}
-
 fn row(summary: &ArenaRunSummary) -> ArenaRunRow {
     ArenaRunRow {
         id: summary.id.clone(),
         title: summary.title.clone(),
         branch_ref: summary.branch_ref.clone(),
-        status: status(&summary.status),
+        status: er_service::run_status(&summary.status),
         created_at: summary.created_at.clone(),
         completed_at: summary.completed_at.clone(),
         reviewer_count: u32::try_from(summary.reviewer_count).unwrap_or(u32::MAX),

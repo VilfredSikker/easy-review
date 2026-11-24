@@ -9,8 +9,9 @@
 //!
 //! Nothing here waits on an actor. A command goes out with [`ServiceHost::post`],
 //! which answers the reply receiver at once; the caller drains it when it
-//! next looks. Events from every actor, the settings actor and the registry
-//! reach one sender, so a front end's loop can wake on any of them.
+//! next looks. Events from every actor, the settings actor, the registry and
+//! the task host reach one sender, so a front end's loop can wake on any of
+//! them.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -26,6 +27,7 @@ use crate::content::TabContent;
 use crate::handle::{WorkspaceError, WorkspaceHandle};
 use crate::protocol::{Command, Event, Reply};
 use crate::settings::{spawn_settings, SettingsHandle};
+use crate::tasks::{TaskHooks, TaskHost};
 use crate::workspace::WorkspaceView;
 
 /// What a posted command answers on, once.
@@ -39,6 +41,10 @@ pub struct ServiceHost {
     settings: OnceLock<SettingsHandle>,
     settings_path: PathBuf,
     events: Option<Sender<Event>>,
+    tasks: OnceLock<TaskHost>,
+    /// The sender the task host's events go to, read at each send, so a host
+    /// whose tasks started before `with_events` still sends them.
+    task_events: Arc<Mutex<Option<Sender<Event>>>>,
 }
 
 impl ServiceHost {
@@ -60,6 +66,8 @@ impl ServiceHost {
             settings: OnceLock::new(),
             settings_path,
             events: None,
+            tasks: OnceLock::new(),
+            task_events: Arc::default(),
         }
     }
 
@@ -68,6 +76,7 @@ impl ServiceHost {
     #[must_use]
     pub fn with_events(mut self, events: Sender<Event>) -> Self {
         forward(self.registry.subscribe(), events.clone());
+        *lock(&self.task_events) = Some(events.clone());
         self.events = Some(events);
         self
     }
@@ -135,6 +144,35 @@ impl ServiceHost {
     /// How many workspace actors this host has started.
     pub fn actor_count(&self) -> usize {
         lock(&self.handles).len()
+    }
+
+    /// The app's one task host. Each row change sends `TasksChanged`.
+    pub fn tasks(&self) -> &TaskHost {
+        self.tasks.get_or_init(|| {
+            let events = Arc::clone(&self.task_events);
+            TaskHost::new(move |revision| send(&events, Event::TasksChanged { revision }))
+        })
+    }
+
+    /// What a task on this host reads and tells: the settings view's config,
+    /// and `TaskNotice` events for its messages.
+    pub fn task_hooks(&self) -> TaskHooks {
+        let settings = self.settings();
+        let events = Arc::clone(&self.task_events);
+        TaskHooks {
+            ports: self.deps.ports().clone(),
+            config: Arc::new(move || Arc::clone(&settings.view().config)),
+            notify: Arc::new(move |message, long| {
+                send(&events, Event::TaskNotice { message, long });
+            }),
+            finished: Arc::new(|_| {}),
+        }
+    }
+}
+
+fn send(events: &Mutex<Option<Sender<Event>>>, event: Event) {
+    if let Some(events) = lock(events).as_ref() {
+        let _ = events.send(event);
     }
 }
 

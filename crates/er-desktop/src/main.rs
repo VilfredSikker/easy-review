@@ -858,7 +858,10 @@ fn main() {
         session: session.clone(),
         live_jobs: Default::default(),
         live_tabs: Default::default(),
-        tasks: er_desktop::tasks::TaskHost::new(session.clock()),
+        tasks: {
+            let clock = session.clock();
+            er_service::TaskHost::new(move |_| clock.bump())
+        },
     };
     let state = desktop.clone();
     er_desktop::app_owner::startup::read_inbox_prefs_from_settings(&desktop);

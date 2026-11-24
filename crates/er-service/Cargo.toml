@@ -8,7 +8,8 @@ description = "Workspace actor and use cases for easy-review"
 
 [features]
 # Compiles `Command::Stall` and `Command::Hold`; a dependent's test holds an
-# actor with them to show that a read never waits on it.
+# actor with them to show that a read never waits on it. Also the gated fake
+# agent the task tests run.
 test-support = []
 
 [dependencies]
