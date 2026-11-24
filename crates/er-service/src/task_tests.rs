@@ -57,7 +57,16 @@ fn quiet_hooks() -> TaskHooks {
 /// A launcher task on `bucket` whose agent printed `lines` lines and
 /// succeeded.
 fn printed(host: &TaskHost, bucket: &str, lines: usize) -> anyhow::Result<String> {
-    tasks::hold_agent(host, &quiet_hooks(), target(bucket), "notes", |log_tx| {
+    printed_with(host, &quiet_hooks(), bucket, lines)
+}
+
+fn printed_with(
+    host: &TaskHost,
+    hooks: &TaskHooks,
+    bucket: &str,
+    lines: usize,
+) -> anyhow::Result<String> {
+    tasks::hold_agent(host, hooks, target(bucket), "notes", |log_tx| {
         for n in 0..lines {
             let _ = log_tx.send(AgentLogEntry {
                 timestamp: Instant::now(),
@@ -216,4 +225,40 @@ fn the_job_rows_list_tasks_runs_and_flows() -> anyhow::Result<()> {
         .collect();
     assert_eq!(flows, ["/y", "/z"]);
     Ok(())
+}
+
+/// The host's row changes reach the events sender as `TasksChanged` with a
+/// rising revision, and a task's finish message as `TaskNotice`, even when
+/// the task host started before the sender was set.
+#[test]
+fn the_task_events_reach_the_sender() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    er_engine::storage::with_process_test_storage_root(dir.path().join("storage"), || {
+        let host = ServiceHost::new(Ports::for_test(), dir.path().join("config.toml"));
+        let _ = host.tasks();
+        let (tx, events) = std::sync::mpsc::channel();
+        let host = host.with_events(tx);
+        printed_with(host.tasks(), &host.task_hooks(), "/bucket", 1)?;
+
+        let mut revisions = Vec::new();
+        let deadline = Instant::now() + WAIT;
+        let notice = loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            match events.recv_timeout(left)? {
+                crate::Event::TasksChanged { revision } => revisions.push(revision),
+                crate::Event::TaskNotice { message, .. } => break message,
+                _ => {}
+            }
+        };
+        assert!(notice.contains("notes completed"), "{notice}");
+        assert!(
+            revisions.len() >= 2,
+            "{revisions:?}: no TasksChanged for the start and the finish"
+        );
+        assert!(
+            revisions.windows(2).all(|pair| pair[0] < pair[1]),
+            "{revisions:?}"
+        );
+        Ok(())
+    })
 }
