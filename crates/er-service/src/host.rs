@@ -201,6 +201,15 @@ impl ServiceHost {
         let Some(content) = self.content(&workspace_key, key) else {
             return failed_now("The tab has not loaded yet");
         };
+        if request
+            .controlled_bucket()
+            .is_some_and(|bucket| bucket != content.context.er_dir)
+        {
+            return failed_now(
+                "The active review bucket changed. Refresh before controlling this review.",
+            );
+        }
+        let actor = self.flow_actor(&workspace_key, &request);
         let contents = tabs
             .tabs
             .iter()
@@ -210,10 +219,23 @@ impl ServiceHost {
             ports: self.deps.ports().clone(),
             config: Arc::clone(&self.settings().view().config),
             content,
-            handle: self.handle_for(&workspace_key),
+            handle: self.handle_for(&actor),
             contents,
         };
         run_worker::flow(self.worker(), inputs, request)
+    }
+
+    /// The actor a flow request goes to: for an acceptance, the started
+    /// actor whose view holds the flow, since the user may have switched to a
+    /// tab of another project; otherwise, and when none holds it, the tab's.
+    pub(crate) fn flow_actor(&self, workspace_key: &str, request: &FlowRequest) -> String {
+        let FlowRequest::Accept { er_dir, .. } = request else {
+            return workspace_key.to_string();
+        };
+        lock(&self.handles)
+            .iter()
+            .find(|(_, handle)| handle.view().review_flow(er_dir).is_some())
+            .map_or_else(|| workspace_key.to_string(), |(key, _)| key.clone())
     }
 
     fn worker(&self) -> &Worker {

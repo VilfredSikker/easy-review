@@ -16,7 +16,7 @@ use er_github::FakeGitHub;
 use crate::app_registry::AppCommand;
 use crate::content::TabContent;
 use crate::protocol::{AnnotationTarget, Command, Reply};
-use crate::tab_commands::{tab_command_prompt, TabCommand};
+use crate::test_support::Agent;
 use crate::{RunRequest, ServiceHost};
 
 const WAIT: Duration = Duration::from_secs(10);
@@ -134,13 +134,16 @@ fn planning_that_reads_git_does_not_hold_the_caller() -> anyhow::Result<()> {
     })
 }
 
-/// A question added on the tab lands in the bucket file the questions
-/// run's prompt tells the agent to read.
+/// A question added on the tab lands in the bucket file the agent of a
+/// questions run, planned through the host, is told to read.
 #[test]
 fn a_questions_run_points_the_agent_at_the_new_question() -> anyhow::Result<()> {
     with_repo(|dir, repo| {
         let closed = Arc::new(AtomicBool::new(false));
-        let host = ServiceHost::new(gated_ports(closed), dir.join("config.toml"));
+        let agent = Agent::in_dir(dir);
+        // Cats the questions file its prompt names, as the agent would read it.
+        let script = r#"f=$(printf '%s' "$1" | grep -o "'[^']*'/questions.json" | head -n 1 | tr -d "'"); cat "$f""#;
+        let host = ServiceHost::new(gated_ports(closed), agent.write_script_config(script));
         let (key, content) = loaded(&host, repo)?;
         let add = Command::AddQuestion {
             context: content.context.clone(),
@@ -167,19 +170,82 @@ fn a_questions_run_points_the_agent_at_the_new_question() -> anyhow::Result<()> 
         let path = std::path::Path::new(&bucket).join("questions.json");
         assert!(std::fs::read_to_string(&path)?.contains("why-a-new"));
 
-        let content = host
-            .content(&workspace, key)
-            .ok_or_else(|| anyhow::anyhow!("no content"))?;
-        let prompt = tab_command_prompt(&content, TabCommand::Questions)
+        host.run(key, RunRequest::Questions)
+            .recv_timeout(WAIT)?
             .map_err(|error| anyhow::anyhow!(error.message))?;
-        let file = format!(
-            "{}/questions.json",
-            er_engine::ai::prompts::sanitize_for_shell(&bucket)
-        );
+        let read = || {
+            host.tasks()
+                .bucket_log(&bucket)
+                .iter()
+                .any(|line| line.text.contains("why-a-new"))
+        };
+        let deadline = Instant::now() + WAIT;
+        while !read() {
+            let log: Vec<_> = (host.tasks().bucket_log(&bucket).into_iter())
+                .map(|line| line.text)
+                .collect();
+            anyhow::ensure!(
+                Instant::now() < deadline,
+                "the agent never read the new question: {log:?}"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        Ok(())
+    })
+}
+
+/// A control for a bucket the tab no longer shows is refused before it
+/// reaches the actor, as the desktop's flow controls are.
+#[test]
+fn a_control_for_a_moved_bucket_is_refused() -> anyhow::Result<()> {
+    with_repo(|dir, repo| {
+        let host = ServiceHost::new(gated_ports(Arc::default()), dir.join("config.toml"));
+        let (key, _) = loaded(&host, repo)?;
+        let cancel = crate::FlowRequest::Cancel {
+            er_dir: "/another/bucket".into(),
+        };
+        let answer = host.flow(key, cancel).recv_timeout(WAIT)?;
         assert!(
-            prompt.contains(&format!("Read `{file}`")),
-            "the prompt names no {file}:\n{prompt}"
+            matches!(&answer, Err(crate::WorkspaceError::Failed(message))
+                if message.contains("active review bucket changed")),
+            "{answer:?}"
         );
         Ok(())
     })
+}
+
+/// An acceptance goes to the actor whose view holds the flow, even from a
+/// tab of another project; a control goes to the tab's own actor.
+#[test]
+fn an_acceptance_goes_to_the_actor_holding_the_flow() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let host = ServiceHost::new(Ports::for_test(), dir.path().join("config.toml"));
+    let holder = host.handle_for("/a");
+    host.handle_for("/b");
+    let flow = crate::LiveReviewFlow {
+        er_dir: "/flows/a".into(),
+        flow: er_engine::ai::review_flow::ReviewFlow::new("hash"),
+        draining: false,
+        run_targets: Vec::new(),
+        rerun_stages: Vec::new(),
+    };
+    *holder
+        .view
+        .write()
+        .map_err(|_| anyhow::anyhow!("poisoned view"))? = Arc::new(crate::WorkspaceView {
+        review_flows: vec![flow],
+        ..Default::default()
+    });
+
+    let accept = crate::FlowRequest::Accept {
+        er_dir: "/flows/a".into(),
+        run_id: "run".into(),
+        finding_ids: Vec::new(),
+    };
+    assert_eq!(host.flow_actor("/b", &accept), "/a");
+    let cancel = crate::FlowRequest::Cancel {
+        er_dir: "/flows/a".into(),
+    };
+    assert_eq!(host.flow_actor("/b", &cancel), "/b");
+    Ok(())
 }

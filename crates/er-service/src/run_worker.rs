@@ -76,6 +76,22 @@ pub enum FlowRequest {
     },
 }
 
+impl FlowRequest {
+    /// The bucket a control names, which must still be the tab's; none for
+    /// a start, which takes the tab's, or an acceptance, which goes to the
+    /// actor holding the flow.
+    pub(crate) fn controlled_bucket(&self) -> Option<&str> {
+        match self {
+            Self::Confirm { er_dir }
+            | Self::Decline { er_dir }
+            | Self::Rerun { er_dir }
+            | Self::Cancel { er_dir }
+            | Self::RunStandard { er_dir } => Some(er_dir),
+            Self::Start { .. } | Self::Accept { .. } => None,
+        }
+    }
+}
+
 type Job = Box<dyn FnOnce() + Send>;
 
 /// One thread, started on first use, that runs each job in turn.
@@ -93,8 +109,34 @@ impl Worker {
         Self(tx)
     }
 
-    fn run(&self, job: Job) {
-        let _ = self.0.send(job);
+    /// Answers whether the worker took the job.
+    fn run(&self, job: Job) -> bool {
+        self.0.send(job).is_ok()
+    }
+}
+
+/// Runs `job` on the worker with `reply`. A panic in it, or a worker that is
+/// gone, answers `failed` with the reason, and the worker stays up for the
+/// next job.
+fn submit<T: Send + 'static>(
+    worker: &Worker,
+    reply: Sender<T>,
+    failed: fn(String) -> T,
+    job: impl FnOnce(Sender<T>) + Send + 'static,
+) {
+    let (panicked, gone) = (reply.clone(), reply.clone());
+    let taken = worker.run(Box::new(move || {
+        if let Err(panic) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| job(reply))) {
+            let text = panic
+                .downcast_ref::<&str>()
+                .map(ToString::to_string)
+                .or_else(|| panic.downcast_ref::<String>().cloned())
+                .unwrap_or_default();
+            let _ = panicked.send(failed(format!("planning panicked: {text}")));
+        }
+    }));
+    if !taken {
+        let _ = gone.send(failed("the planning worker is not running".into()));
     }
 }
 
@@ -107,14 +149,15 @@ pub(crate) fn plan(
     request: RunRequest,
 ) -> RunReceiver {
     let (tx, rx) = mpsc::channel();
-    worker.run(Box::new(move || {
+    let failed = |message: String| Err(refused(message));
+    submit(worker, tx, failed, move |tx| {
         let run = RunTab {
             host: &host,
             hooks: &hooks,
             content: &content,
         };
         let _ = tx.send(planned(&run, request));
-    }));
+    });
     rx
 }
 
@@ -151,12 +194,15 @@ pub(crate) fn flow(
     request: FlowRequest,
 ) -> Receiver<Result<Reply, WorkspaceError>> {
     let (tx, rx) = mpsc::channel();
-    worker.run(Box::new(move || match flow_command(&inputs, request) {
-        Ok(command) => inputs.handle.send_to(Command::Flow(command), tx),
-        Err(error) => {
-            let _ = tx.send(Err(WorkspaceError::Failed(error.message)));
+    let failed = |message: String| Err(WorkspaceError::Failed(message));
+    submit(worker, tx, failed, move |tx| {
+        match flow_command(&inputs, request) {
+            Ok(command) => inputs.handle.send_to(Command::Flow(command), tx),
+            Err(error) => {
+                let _ = tx.send(Err(WorkspaceError::Failed(error.message)));
+            }
         }
-    }));
+    });
     rx
 }
 
@@ -223,4 +269,33 @@ pub(crate) fn refused_now(message: &str) -> RunReceiver {
     let (tx, rx) = mpsc::channel();
     let _ = tx.send(Err(refused(message)));
     rx
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A job that panics answers its caller with the panic's text, and the
+    /// next job still runs.
+    #[test]
+    fn a_panicking_plan_leaves_the_worker_up() -> anyhow::Result<()> {
+        let worker = Worker::start();
+        let failed = |message: String| Err::<u32, String>(message);
+        let (tx, panicked) = mpsc::channel();
+        submit(&worker, tx, failed, |_| panic!("the plan broke"));
+        let answer = panicked.recv_timeout(std::time::Duration::from_secs(5))?;
+        assert!(
+            answer.as_ref().is_err_and(|e| e.contains("the plan broke")),
+            "{answer:?}"
+        );
+        let (tx, next) = mpsc::channel();
+        submit(&worker, tx, failed, |tx| {
+            let _ = tx.send(Ok(1));
+        });
+        assert_eq!(
+            next.recv_timeout(std::time::Duration::from_secs(5)),
+            Ok(Ok(1))
+        );
+        Ok(())
+    }
 }
