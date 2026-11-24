@@ -4,8 +4,8 @@
 //! A local-branch tab starts with `pr_number = None`, so its comments land in
 //! the branch view bucket. Once the tab learns its PR number the PR bucket is
 //! authoritative, and the AI reload both front ends run
-//! (`ai::tab_ai::assemble_tab_ai`) must carry the early comments into it
-//! rather than orphan them.
+//! (`ai::tab_ai::assemble_tab_ai`) must carry the early comments into it,
+//! so none is left behind in the branch bucket.
 
 use std::path::Path;
 
