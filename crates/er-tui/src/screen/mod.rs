@@ -187,13 +187,16 @@ pub struct MemoryBudget {
 }
 
 /// The service's published sections, and what the ported builders computed
-/// from them. Values a builder not yet called computes (the AI projections)
-/// join as each area is ported; until then those areas draw `UNPORTED`.
+/// from them. The AI Summary, Refs and Log panels draw `UNPORTED` until the
+/// entries that port them.
 #[cfg(feature = "v1-service")]
 pub struct SectionData<'a> {
     pub files: &'a [std::sync::Arc<DiffFile>],
     pub reviewed: &'a HashMap<String, String>,
     pub pr: Option<&'a PrOverviewData>,
+    /// The published AI section's state: the threads, their order and counts
+    /// come from its engine methods, as on the App path.
+    pub ai: &'a AiState,
     /// Reviewed and total files, from the reviewed builder.
     pub reviewed_count: (usize, usize),
     /// The same among the files the filter keeps; `None` with no filter.
@@ -204,12 +207,12 @@ pub struct SectionData<'a> {
 pub const UNPORTED: &str = "not on this build yet";
 
 impl<'a> TabData<'a> {
-    /// The AI state, or `None` where the path does not carry it yet.
+    /// The AI state, or `None` where the path does not carry it.
     pub fn ai(&self) -> Option<&'a AiState> {
         match self {
             Self::App(data) => Some(data.ai),
             #[cfg(feature = "v1-service")]
-            Self::Sections(_) => None,
+            Self::Sections(data) => Some(data.ai),
         }
     }
 
@@ -334,6 +337,7 @@ mod tests {
             files: &files,
             reviewed: &reviewed,
             pr: None,
+            ai: &app.tab().ai,
             reviewed_count: (1, 2),
             filtered_reviewed_count: None,
         });
@@ -350,8 +354,8 @@ mod tests {
         assert!(!top.contains(UNPORTED), "{top}");
     }
 
-    /// The service path draws the AI panel as unported until a builder
-    /// projects the AI state.
+    /// The service path draws the AI Summary panel as unported until P72
+    /// ports it, though the threads draw from the same AI state.
     #[test]
     fn sections_draw_the_ai_panel_as_unported() {
         let mut app = crate::golden::base_app();
@@ -371,6 +375,7 @@ mod tests {
             files: &files,
             reviewed: &reviewed,
             pr: None,
+            ai: &app.tab().ai,
             reviewed_count: (0, 0),
             filtered_reviewed_count: None,
         });

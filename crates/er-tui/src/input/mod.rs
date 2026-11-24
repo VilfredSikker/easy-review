@@ -24,7 +24,7 @@ pub use normal::handle_normal_input;
 /// Phrasing for this surface, so it lives here rather than on the engine state:
 /// the desktop names the same three levels its own way, and both are sentences
 /// about a number neither front end owns.
-fn min_trust_label(level: er_engine::ai::Confidence) -> &'static str {
+pub fn min_trust_label(level: er_engine::ai::Confidence) -> &'static str {
     use er_engine::ai::Confidence;
     match level {
         Confidence::Informational => "all findings",

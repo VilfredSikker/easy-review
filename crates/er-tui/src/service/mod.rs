@@ -9,11 +9,13 @@
 mod ai_picker;
 mod config_hub;
 mod filter;
+mod layers;
 mod reviewed;
 mod session;
 mod settings;
 mod shell;
 mod startup;
+mod threads;
 mod tui_view;
 mod watched;
 mod worktree;
@@ -37,6 +39,8 @@ mod reviewed_tests;
 mod settings_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod threads_tests;
 #[cfg(test)]
 mod watched_tests;
 #[cfg(test)]

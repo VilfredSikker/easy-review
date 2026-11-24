@@ -24,14 +24,16 @@ use ratatui::Terminal;
 use super::ai_picker;
 use super::config_hub::{self, ConfigHub, Step};
 use super::filter::{self, Done};
+use super::layers::{self, Layer};
 use super::reviewed::ReviewedCache;
 use super::settings::{SettingsBridge, Side, Then};
 use super::startup::{self, After, Args, Pending, Start, StartTab};
+use super::threads::{self, Composed};
 use super::tui_view::{self, Ask, Mode, Overlay, TuiView};
 use super::watched::{Landed, Reader};
 use super::worktree::{self, GitHub, GitPick, HubStep};
 use crate::input::keys::{
-    key_action, ConfirmKey, Edit, NormalAction, OverlayAction, TuiAction, Write,
+    key_action, CommentAction, ConfirmKey, Edit, NormalAction, OverlayAction, TuiAction, Write,
 };
 use crate::screen::UNPORTED;
 use crate::ui::highlight::Highlighter;
@@ -383,6 +385,20 @@ impl Shell {
                     false
                 }
                 Err(TryRecvError::Empty) => true,
+                // A create whose worker died answers as a refusal, so its
+                // composer takes edits again.
+                Err(TryRecvError::Disconnected) if pending.after == After::Composed => {
+                    let lost = er_service::WorkspaceError::Failed(
+                        "The write stopped before it answered".into(),
+                    );
+                    landed.push((
+                        pending.key,
+                        pending.workspace.clone(),
+                        pending.after,
+                        Err(lost),
+                    ));
+                    false
+                }
                 Err(TryRecvError::Disconnected) => false,
             });
         for (key, workspace, after, reply) in landed {
@@ -416,6 +432,15 @@ impl Shell {
                     if let Some(state) = self.view.tab_mut_if_open(key) {
                         state.watched.reread();
                     }
+                }
+                Ok(Reply::AnnotationWritten { .. }) if after == After::Composed => {
+                    self.composed(key);
+                }
+                Err(error) if after == After::Composed => {
+                    if let Some(state) = self.view.tab_mut_if_open(key) {
+                        state.sent = None;
+                    }
+                    self.failure(Side::Reply, error.to_string());
                 }
                 Ok(Reply::WorktreeWritten { notice, .. }) => {
                     if after == After::Commit {
@@ -485,7 +510,9 @@ impl Shell {
         let (tab_names, active_tab, open) = self.tab_names();
         self.reviewed.keep_open(&open);
         let reviewed_count = self.reviewed.count(key, content);
-        self.view.tab_mut(key, content);
+        let state = self.view.tab_mut(key, content);
+        layers::follow(state, content);
+        threads::scroll_if_parsed(state, content);
         let state = self.view.tab(key)?;
         let frame = tui_view::Frame {
             tab_names,
@@ -526,6 +553,7 @@ impl Shell {
                 return self.filtered(key, workspace, content, done);
             }
             TuiAction::Commit(edit) => return self.commit_key(edit, key, workspace, content),
+            TuiAction::Comment(action) => return self.comment_key(action, key, workspace, content),
             TuiAction::Write(Write::Push) => {
                 self.view.input_mode = Mode::Normal;
                 return self.post(key, workspace, Command::Push { key }, After::Nothing);
@@ -681,6 +709,54 @@ impl Shell {
             }
             A::NextTab => return self.step_tab(true),
             A::PrevTab => return self.step_tab(false),
+            A::StartQuestion => {
+                if threads::start(state, content, er_engine::ai::CommentType::Question) {
+                    self.view.input_mode = Mode::Comment;
+                }
+                return;
+            }
+            A::ResumeComment => {
+                self.view.input_mode = Mode::Comment;
+                return;
+            }
+            A::NextHint | A::PrevHint => threads::jump_hint(state, content, action == A::NextHint),
+            A::TogglePanel | A::TogglePanelReverse => {
+                layers::cycle_panel(state, content, action == A::TogglePanel);
+                return;
+            }
+            A::TogglePanelFocus => {
+                state.panel_focus = state.panel.is_some() && !state.panel_focus;
+                return;
+            }
+            A::PanelLineDown => {
+                state.panel_scroll = state.panel_scroll.saturating_add(1).min(4096);
+                return;
+            }
+            A::PanelLineUp => {
+                state.panel_scroll = state.panel_scroll.saturating_sub(1);
+                return;
+            }
+            A::UnfocusPanel => {
+                state.panel_focus = false;
+                return;
+            }
+            A::ToggleComments
+            | A::ToggleQuestions
+            | A::ToggleHideResolved
+            | A::ToggleAiFindings => {
+                let layer = match action {
+                    A::ToggleComments => Layer::Comments,
+                    A::ToggleQuestions => Layer::Questions,
+                    A::ToggleHideResolved => Layer::HideResolved,
+                    _ => Layer::AiFindings,
+                };
+                let message = layers::toggle(state, layer);
+                return self.notify(message.into());
+            }
+            A::CycleMinTrust => {
+                let message = layers::cycle_gate(state, content);
+                return self.notify(message);
+            }
             _ => return self.unported(),
         };
         if let Some(index) = selected {
@@ -714,6 +790,39 @@ impl Shell {
             replies,
             after,
         });
+    }
+
+    /// Runs a composer key on the tab's draft, and sends the create Submit
+    /// builds; the draft keeps its text until the reply lands.
+    fn comment_key(
+        &mut self,
+        action: CommentAction,
+        key: TabKey,
+        workspace: &str,
+        content: &TabContent,
+    ) {
+        let mut mode = self.view.input_mode;
+        let state = self.view.tab_mut(key, content);
+        let composed = threads::key(state, &mut mode, action, content);
+        self.view.input_mode = mode;
+        match composed {
+            Composed::Stay => {}
+            Composed::Send(command) => self.post(key, workspace, *command, After::Composed),
+            Composed::Unported => self.unported(),
+        }
+    }
+
+    /// A create landed on `key`'s tab: its draft clears, and the composer
+    /// closes if that tab is still the one composing.
+    fn composed(&mut self, key: TabKey) {
+        let active = self.active().map(|(active, ..)| active);
+        let Some(message) = self.view.tab_mut_if_open(key).and_then(threads::landed) else {
+            return;
+        };
+        if active == Some(key) && self.view.input_mode == Mode::Comment {
+            self.view.input_mode = Mode::Normal;
+        }
+        self.notify(message);
     }
 
     fn toggle_staged(&mut self, key: TabKey, workspace: &str, content: &TabContent) {

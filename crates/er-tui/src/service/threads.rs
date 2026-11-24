@@ -1,0 +1,245 @@
+//! The flag-on threads: J and K over the published AI state's hints, and the
+//! composer, whose question and note creates go to the actor of the tab they
+//! were written on. The threads, their order and their counts come from the
+//! engine's `AiState` methods, as on the App path; nothing here orders them.
+
+use er_engine::ai::{annotation_store, CommentType, HintType};
+use er_engine::git::DiffFile;
+use er_service::{AnnotationTarget, Command, TabContent};
+use tui_textarea::TextArea;
+
+use super::tui_view::{is_stub, Mode, TabViewState};
+use crate::input::keys::CommentAction;
+
+/// The diff file the composer and the hints act on: none while a watched
+/// file is selected.
+fn selected<'c>(state: &TabViewState, content: &'c TabContent) -> Option<&'c DiffFile> {
+    content
+        .diff
+        .files
+        .get(state.selected_file)
+        .filter(|_| state.watched.selected.is_none())
+        .map(|file| &**file)
+}
+
+/// Opens the composer on the cursor's line of the selected file, as the
+/// App's `start_comment` does. A draft whose write is in flight stays.
+/// Answers whether it opened.
+pub fn start(state: &mut TabViewState, content: &TabContent, kind: CommentType) -> bool {
+    let Some(file) = selected(state, content).filter(|_| state.sent.is_none()) else {
+        return false;
+    };
+    let line = file
+        .hunks
+        .get(state.current_hunk)
+        .zip(state.current_line)
+        .and_then(|(hunk, line)| hunk.lines.get(line));
+    let draft = &mut state.draft;
+    draft.textarea = TextArea::default();
+    draft.file.clone_from(&file.path);
+    draft.hunk = state.current_hunk;
+    draft.line = line.and_then(|line| line.new_num.or(line.old_num));
+    draft.reply_to = None;
+    draft.finding_ref = None;
+    draft.kind = kind;
+    draft.client_id = None;
+    let deleted = line.is_some_and(|line| line.new_num.is_none());
+    draft.side = Some(if deleted { "LEFT" } else { "RIGHT" }.to_string());
+    true
+}
+
+/// What a composer key asks of the loop.
+pub enum Composed {
+    Stay,
+    Send(Box<Command>),
+    Unported,
+}
+
+/// Runs a composer key on the active tab's draft. Submit builds the create
+/// and keeps the text until its reply lands; while it is in flight the
+/// draft takes no edit.
+pub fn key(
+    state: &mut TabViewState,
+    mode: &mut Mode,
+    action: CommentAction,
+    content: &TabContent,
+) -> Composed {
+    let sending = state.sent.is_some();
+    let draft = &mut state.draft;
+    match action {
+        CommentAction::NewLine if !sending => draft.textarea.insert_newline(),
+        CommentAction::Type(key) if !sending => {
+            draft.textarea.input(key);
+        }
+        CommentAction::ToggleType if !sending && draft.can_toggle_kind() => {
+            draft.kind = match draft.kind {
+                CommentType::Question => CommentType::Note,
+                CommentType::Note => CommentType::GitHubComment,
+                CommentType::GitHubComment => CommentType::Question,
+            };
+            // The painted id names its kind, so a new kind paints a new one.
+            draft.client_id = None;
+        }
+        CommentAction::Cancel => {
+            draft.textarea = TextArea::default();
+            draft.edit_id = None;
+            draft.client_id = None;
+            *mode = Mode::Normal;
+        }
+        CommentAction::Pause => *mode = Mode::Normal,
+        CommentAction::ScrollDown(rows) => {
+            state.scroll(selected(state, content), i32::from(rows));
+        }
+        CommentAction::ScrollUp(rows) => {
+            state.scroll(selected(state, content), -i32::from(rows));
+        }
+        CommentAction::Submit if !sending => return submit(state, mode, content),
+        _ => {}
+    }
+    Composed::Stay
+}
+
+fn submit(state: &mut TabViewState, mode: &mut Mode, content: &TabContent) -> Composed {
+    let draft = &mut state.draft;
+    let body = draft.textarea.lines().join("\n").trim().to_string();
+    if body.is_empty() {
+        *mode = Mode::Normal;
+        return Composed::Stay;
+    }
+    // Edits and replies are P67.2's, and a GitHub comment is P68's.
+    let new_thread = draft.edit_id.is_none() && draft.reply_to.is_none();
+    if !new_thread || draft.finding_ref.is_some() || draft.kind == CommentType::GitHubComment {
+        return Composed::Unported;
+    }
+    let prefix = if draft.kind == CommentType::Note {
+        "n-"
+    } else {
+        "q-"
+    };
+    let client_id = draft
+        .client_id
+        .get_or_insert_with(|| annotation_store::new_annotation_id(prefix))
+        .clone();
+    let context = content.context.clone();
+    let target = AnnotationTarget {
+        file: draft.file.clone(),
+        hunk_idx: draft.hunk,
+        line_num: draft.line,
+        line_num_end: draft.line_end,
+    };
+    let side = draft.side.clone();
+    let kind = draft.kind;
+    state.sent = Some(body.clone());
+    let (client_id, reply_to, finding_ref) = (Some(client_id), None, None);
+    Composed::Send(Box::new(if kind == CommentType::Note {
+        Command::AddNote {
+            context,
+            target,
+            body,
+            side,
+            client_id,
+            reply_to,
+            finding_ref,
+        }
+    } else {
+        Command::AddQuestion {
+            context,
+            target,
+            body,
+            side,
+            client_id,
+            reply_to,
+            finding_ref,
+        }
+    }))
+}
+
+/// The create in flight landed: the draft clears. Answers what the status
+/// line says, as the App's write does.
+pub fn landed(state: &mut TabViewState) -> Option<String> {
+    let body = state.sent.take()?;
+    let draft = &mut state.draft;
+    draft.textarea = TextArea::default();
+    draft.client_id = None;
+    draft.side = None;
+    let label = if draft.kind == CommentType::Note {
+        "Note"
+    } else {
+        "Question"
+    };
+    Some(format!("{label} added: {}", truncate(&body, 40)))
+}
+
+fn truncate(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_string();
+    }
+    let kept: String = text.chars().take(max.saturating_sub(1)).collect();
+    format!("{kept}…")
+}
+
+/// Moves the focus to the next or previous question, note or comment, in
+/// the order the AI state gives, wrapping, and selects its file and hunk as
+/// the App's `jump_hint` does. Answers the file it newly selected.
+pub fn jump_hint(state: &mut TabViewState, content: &TabContent, forward: bool) -> Option<usize> {
+    let hints: Vec<_> = content
+        .ai
+        .state
+        .all_hints_ordered()
+        .into_iter()
+        .filter(|hint| hint.4 != HintType::Finding)
+        .collect();
+    let last = hints.len().checked_sub(1)?;
+    let files = &content.diff.files;
+    let current_path = files.get(state.selected_file).map(|file| &file.path);
+    let at = state
+        .focused_comment_id
+        .as_ref()
+        .and_then(|id| hints.iter().position(|hint| &hint.3 == id))
+        .or_else(|| {
+            let path = current_path?;
+            if forward {
+                hints.iter().position(|hint| &hint.0 == path)
+            } else {
+                hints.iter().rposition(|hint| &hint.0 == path)
+            }
+        });
+    let next = match (at, forward) {
+        (Some(at), true) if at < last => at + 1,
+        (Some(_) | None, true) => 0,
+        (Some(at), false) if at > 0 => at - 1,
+        (Some(_) | None, false) => last,
+    };
+    let (path, hunk, _, id, _) = &hints[next];
+    state.focused_comment_id = Some(id.clone());
+    let mut newly = None;
+    if current_path != Some(path) {
+        if let Some(idx) = files.iter().position(|file| &file.path == path) {
+            state.selected_file = idx;
+            state.current_hunk = hunk.unwrap_or(0);
+            state.current_line = None;
+            state.diff_scroll = 0;
+            state.h_scroll = 0;
+            newly = Some(idx);
+        }
+    } else if let Some(hunk) = hunk {
+        state.current_hunk = *hunk;
+        state.current_line = None;
+    }
+    let file = files.get(state.selected_file).map(|file| &**file);
+    if file.is_some_and(is_stub) {
+        state.scroll_on_parse = true;
+    } else {
+        state.scroll_to_cursor(file);
+    }
+    newly
+}
+
+/// A hint's file that was a stub has parsed: the diff scrolls to its hunk.
+pub fn scroll_if_parsed(state: &mut TabViewState, content: &TabContent) {
+    let file = content.diff.files.get(state.selected_file);
+    if state.scroll_on_parse && file.is_some_and(|file| !is_stub(file)) {
+        state.scroll_on_parse = false;
+        state.scroll_to_cursor(file.map(|file| &**file));
+    }
+}
