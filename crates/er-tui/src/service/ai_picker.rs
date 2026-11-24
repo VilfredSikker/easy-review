@@ -4,9 +4,9 @@
 //! refresh is the actor's `RefreshAiModels`.
 //!
 //! Until P74 ports the AI hub, its live rows are "Change agent/model", the
-//! layer rows, which act on the tab's view alone, and the two Cleanup rows,
-//! which ask before their clear; no other row has a service route on this
-//! path yet.
+//! layer rows, which act on the tab's view alone, "Copy context", and the two
+//! Cleanup rows, which ask before their clear; no other row has a service
+//! route on this path yet.
 
 use er_engine::ai::AiState;
 use er_engine::config::{effort_display_label, AiHubConfig, ErConfig};
@@ -35,7 +35,7 @@ const AI_HUB_ROWS: [Option<(&str, &str)>; 22] = [
     Some(("Answer questions", "")),
     Some(("Address notes", "")),
     Some((CHANGE_SELECTION, "")),
-    Some(("Copy context to clipboard", "")),
+    Some((COPY_CONTEXT, "")),
     Some(("Toggle AI findings", "A")),
     Some(("Toggle comments", "")),
     Some(("Toggle questions", "")),
@@ -48,6 +48,7 @@ const AI_HUB_ROWS: [Option<(&str, &str)>; 22] = [
 ];
 
 const CHANGE_SELECTION: &str = "Change agent/model";
+const COPY_CONTEXT: &str = "Copy context to clipboard";
 const CLEANUP_DRAFTS: &str = "Cleanup questions & notes";
 const CLEANUP_REVIEWS: &str = "Cleanup reviews";
 
@@ -124,6 +125,7 @@ enum Pick {
     Effort(String, String, String),
     Refresh(String),
     Clear(Clear),
+    CopyContext,
 }
 
 pub struct Picker {
@@ -208,6 +210,15 @@ fn build(of: Of, view: &SettingsView, ai_label: &str) -> Option<Picker> {
                             hub.has_presets(),
                         ),
                         Pick::ChangeSelection,
+                    ),
+                    Some((COPY_CONTEXT, hint)) => (
+                        row(
+                            COPY_CONTEXT.into(),
+                            hint,
+                            "Copy diff context for agent terminal".into(),
+                            true,
+                        ),
+                        Pick::CopyContext,
                     ),
                     Some((CLEANUP_DRAFTS, hint)) => (
                         row(
@@ -455,6 +466,7 @@ fn select(picker: &Picker, view: &SettingsView, label: &str) -> Step {
         _ if !row.enabled => Step::Notify(row.description.clone()),
         Pick::Layer(layer) => Step::Layer(*layer),
         Pick::Clear(clear) => Step::Clear(*clear),
+        Pick::CopyContext => Step::Copy(super::copy::Pick::Context),
         Pick::ChangeSelection => open_providers(view, label),
         Pick::Provider(provider_id) => {
             let Some(provider) = view.config.ai_hub.providers.get(provider_id) else {

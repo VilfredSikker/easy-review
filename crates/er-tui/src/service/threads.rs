@@ -56,8 +56,8 @@ pub enum Focus {
     Opened,
     /// A delete waits on the y/n prompt.
     AskDelete,
-    /// The key's write is another entry's.
-    Unported,
+    /// `e` with no comment of yours focused: the file opens in the editor.
+    Editor,
     /// The key does not act here, and says why.
     Refused(&'static str),
 }
@@ -98,14 +98,14 @@ pub fn start_reply(state: &mut TabViewState, content: &TabContent) -> Focus {
 
 /// `e`: an edit draft of your own focused top-level comment, prefilled with
 /// its text, as the App's `start_edit_comment` does. Anything else opens the
-/// editor, which P75 ports.
+/// editor.
 pub fn start_edit(state: &mut TabViewState, content: &TabContent) -> Focus {
     if state.sent.is_some() {
         return Focus::Nothing;
     }
     let comment = match focused(state, content) {
         Ok(comment) if comment.author() == "You" && comment.can_reply() => comment,
-        Err(Focus::Nothing) | Ok(_) => return Focus::Unported,
+        Err(Focus::Nothing) | Ok(_) => return Focus::Editor,
         Err(focus) => return focus,
     };
     let Some(file) = selected(state, content) else {

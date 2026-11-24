@@ -10,9 +10,12 @@ mod ai_picker;
 mod clears;
 mod config_hub;
 mod context;
+mod copy;
+mod export;
 mod filter;
 mod findings;
 mod github;
+mod handoff;
 mod history;
 mod layers;
 mod modes;
@@ -45,6 +48,8 @@ mod clears_tests;
 mod config_hub_tests;
 #[cfg(test)]
 mod context_tests;
+#[cfg(test)]
+mod copy_tests;
 #[cfg(test)]
 mod filter_tests;
 #[cfg(test)]

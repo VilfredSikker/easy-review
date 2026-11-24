@@ -38,7 +38,7 @@ fn log_dropped_edits(
 
 /// Read a registered text sidecar through the store. The raw text is what a
 /// caller copies or posts, so it is not parsed.
-pub(crate) fn stored_text(er_dir: &str, file: &str) -> Result<er_store::Loaded<String>> {
+pub fn stored_text(er_dir: &str, file: &str) -> Result<er_store::Loaded<String>> {
     let store = crate::store_registry::store();
     let scope = er_store::Scope::dir(er_dir)?;
     let file = er_store::RelPath::new(file)?;

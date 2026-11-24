@@ -23,6 +23,7 @@ use tui_textarea::TextArea;
 
 use super::ai_picker::Picker;
 use super::config_hub::ConfigHub;
+use super::copy::CopyHub;
 use super::history::HistoryPos;
 use super::modes::Follow;
 use super::open_hub::OpenHub;
@@ -81,10 +82,7 @@ pub enum Overlay {
         history: Vec<String>,
         selected: usize,
     },
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "no key opens the export picker on this path yet")
-    )]
+    Copy(CopyHub),
     ExportPicker {
         include_comments: bool,
         include_findings: bool,
@@ -101,6 +99,7 @@ impl Overlay {
             Self::ConfigHub(hub) => hub.sync(view),
             Self::Picker(picker) => picker.sync(view, ai_label),
             Self::ExportPicker { .. }
+            | Self::Copy(_)
             | Self::GitHub(_)
             | Self::Review
             | Self::Open(_)
@@ -139,6 +138,12 @@ impl Overlay {
             },
             Self::Open(ref hub) => OverlayData::ModalHub {
                 kind: HubKind::Open,
+                title: None,
+                items: &hub.rows,
+                selected: hub.selected,
+            },
+            Self::Copy(ref hub) => OverlayData::ModalHub {
+                kind: HubKind::Copy,
                 title: None,
                 items: &hub.rows,
                 selected: hub.selected,
@@ -256,6 +261,10 @@ pub struct TabViewState {
     pub selected_file: usize,
     pub current_hunk: usize,
     pub current_line: Option<usize>,
+    /// Where a shift-arrow selection started: the file and the line in the
+    /// current hunk. A move the App clears it on clears it, and it holds
+    /// only in its own file.
+    pub selection_anchor: Option<(usize, usize)>,
     pub diff_scroll: u16,
     pub h_scroll: u16,
     pub h_scroll_old: u16,
@@ -324,6 +333,7 @@ impl Default for TabViewState {
             selected_file: 0,
             current_hunk: 0,
             current_line: None,
+            selection_anchor: None,
             diff_scroll: 0,
             h_scroll: 0,
             h_scroll_old: 0,
@@ -580,6 +590,7 @@ impl TabViewState {
             FileMove::File(idx) => {
                 self.watched.selected = None;
                 self.current_line = None;
+                self.selection_anchor = None;
                 self.select_file_top(idx);
                 Some(idx)
             }
@@ -638,11 +649,13 @@ impl TabViewState {
         if let Some(hunk) = to {
             self.current_hunk = hunk;
             self.current_line = None;
+            self.selection_anchor = None;
             self.scroll_to_cursor(file);
         }
     }
 
     pub fn move_line(&mut self, file: Option<&DiffFile>, forward: bool) {
+        self.selection_anchor = None;
         let hunks: &[DiffHunk] = file.map_or(&[], |file| &file.hunks);
         let counts: Vec<usize> = hunks.iter().map(|hunk| hunk.lines.len()).collect();
         let is_fold = |hunk: usize, line: usize| {
@@ -669,6 +682,33 @@ impl TabViewState {
             }
             LineMove::Exit => self.current_line = None,
         }
+    }
+
+    /// Shift+arrow: anchors a selection at the cursor line, then moves the
+    /// cursor within the hunk, as the App does.
+    pub fn extend_selection(&mut self, file: Option<&DiffFile>, down: bool) {
+        if self.selection_anchor.is_none() {
+            let line = self.current_line.unwrap_or(0);
+            self.selection_anchor = Some((self.selected_file, line));
+        }
+        let lines = file
+            .and_then(|file| file.hunks.get(self.current_hunk))
+            .map_or(0, |hunk| hunk.lines.len());
+        let to = match self.current_line {
+            None if down && lines > 0 => Some(0),
+            Some(line) if down && line + 1 < lines => Some(line + 1),
+            Some(line) if !down && line > 0 => Some(line - 1),
+            _ => return,
+        };
+        self.current_line = to;
+        self.scroll_to_cursor(file);
+    }
+
+    /// The selected line range in the current hunk, from shift+arrow.
+    pub fn selected_range(&self) -> Option<std::ops::RangeInclusive<usize>> {
+        let (file, anchor) = self.selection_anchor?;
+        let current = self.current_line.filter(|_| file == self.selected_file)?;
+        Some(anchor.min(current)..=anchor.max(current))
     }
 
     /// Scrolls the diff to the cursor: two file header rows, then per hunk a
