@@ -248,3 +248,71 @@ fn a_refused_load_still_orders_the_marks_its_clear_saved() -> anyhow::Result<()>
     }
     Ok(())
 }
+
+/// A Branch tour reads the PR bucket's tour when its own bucket has none
+/// (`resolve_view_tour`). Reviewing a pillar marks the paths of the tour
+/// the tab shows, as the App reviews the pillar it draws.
+#[test]
+fn a_pillar_review_marks_the_tour_the_tab_shows_from_the_other_bucket() -> anyhow::Result<()> {
+    with_root(|repo| {
+        let git = Arc::new(
+            FakeGit::default()
+                .with_is_merge_in_progress(false)
+                .with_current_branch(Ok("feature".to_string()))
+                .with_diff_shortstat((0, 0, 0))
+                .with_diff_raw(Ok(RAW.to_string()))
+                .with_remote_url(Ok("git@github.com:acme/widgets.git".to_string())),
+        );
+        let slug = er_engine::storage::repo_storage_slug("acme", "widgets");
+        let pr_bucket = er_engine::storage::pr_bucket_dir(&slug, 9);
+        std::fs::create_dir_all(&pr_bucket)?;
+        er_engine::test_support::write_sidecar_json::<er_engine::ai::ErTour>(
+            &pr_bucket,
+            serde_json::json!({
+                "version": 1,
+                "diff_hash": "",
+                "pillars": [{"id": "p-1", "title": "One", "files": [{"path": "src/a.rs"}]}]
+            }),
+        );
+        let github = FakeGitHub::default().with_pr_diff(Ok(RAW.to_string()));
+        let handle = spawn(WorkspaceDeps::new(Ports {
+            git,
+            github: Arc::new(github),
+        }));
+        let key = TabKey::next();
+        load(&handle, key, repo)?;
+        let to_tour = Command::SetDiffMode {
+            key,
+            mode: DiffMode::Tour,
+            pr_number: Some(9),
+        };
+        handle.send_and_wait_with(to_tour, WAIT)?;
+        let content = content_of(&handle.view(), key)?;
+        let shown = content
+            .ai
+            .state
+            .tour
+            .as_ref()
+            .map(|tour| tour.pillars.len());
+        assert_eq!(shown, Some(1), "the tab shows no tour from the PR bucket");
+        assert_ne!(
+            std::path::Path::new(&content.context.er_dir),
+            pr_bucket.as_path(),
+            "the tour came from the tab's own bucket"
+        );
+
+        let review = Command::BulkReviewPillar {
+            context: content.context.clone(),
+            pillar_id: "p-1".to_string(),
+            reviewed: true,
+        };
+        let reply = handle.send_and_wait_with(review, WAIT)?;
+        assert_eq!(reply, Reply::ReviewedChanged { changed: 1 });
+        let store = er_engine::store_registry::store();
+        let scope = er_store::Scope::dir(&content.context.er_dir)?;
+        let marks = er_engine::session_store::load_reviewed(&store, &scope)?;
+        assert!(marks.contains_key("src/a.rs"), "{marks:?}");
+        assert!(!marks.contains_key("src/b.rs"), "{marks:?}");
+        Ok(())
+    })
+}
