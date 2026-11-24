@@ -190,9 +190,8 @@ mod tests {
                 serde_json::json!({"version":1,"diff_hash":"hash","items":[{"id":"c1","text":"first"},{"id":"c2","text":"added by the agent"}]}),
             );
 
-            // The host toggles the item it shows, from the flag it shows.
-            let item = &shown.items[0];
-            set_checked(&store, &scope, &item.id, !item.checked).unwrap();
+            // The service toggles the item the page showed, from the stored flag.
+            toggle_checked(&store, &scope, &shown.items[0].id).unwrap();
 
             let after = loaded(&store, &scope);
             assert!(after.items[0].checked);
@@ -224,9 +223,8 @@ mod tests {
             );
             let rewritten = std::fs::read_to_string(&path).unwrap();
 
-            let item = &shown.items[1];
             assert!(matches!(
-                set_checked(&store, &scope, &item.id, !item.checked),
+                toggle_checked(&store, &scope, &shown.items[1].id),
                 Err(UpdateError::Apply(ChecklistItemMissing))
             ));
             assert_eq!(std::fs::read_to_string(&path).unwrap(), rewritten);
