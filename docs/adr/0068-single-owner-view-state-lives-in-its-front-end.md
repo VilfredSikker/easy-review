@@ -56,3 +56,10 @@ Split ratio, annotate mode, tooltips and panels stay in memory, as before.
   er-desktop in phase 5. The engine's `navigation` functions stay for the TUI,
   and one fixture (`crates/er-engine/tests/fixtures/navigation_cases.json`)
   holds both to the same answers, so the two cannot drift.
+- The TUI's view state lives in er-tui on the `v1-service` path (ADR 0073).
+  Per tab key, `TuiView` holds what the App's `TabState` holds for the TUI
+  today: selection, cursor, scroll, panel, layers, filter, layout widths and
+  the comment draft. `session.json` stays the TUI's file in the tab's
+  bucket. The flag path saves it from the `TuiView` and restores it on the
+  same branch diff hash, with the draft's client id, so the App path and the
+  flag path read each other's sessions. The service never reads it.
