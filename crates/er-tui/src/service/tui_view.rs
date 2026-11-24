@@ -269,6 +269,16 @@ pub struct TabViewState {
     pub draft: Draft,
     /// The question, note or comment J and K last landed on.
     pub focused_comment_id: Option<String>,
+    /// The finding Ctrl+j/k or the File panel's j/k last landed on.
+    pub focused_finding_id: Option<String>,
+    /// The AI Summary panel's column and the row under its cursor.
+    pub review_focus: ReviewFocus,
+    pub review_cursor: usize,
+    /// The AI revision the finding focus and the review cursor last checked.
+    pub findings_followed: Option<u64>,
+    /// The stub a Ctrl+j/k landed on: once it parses, the cursor goes to the
+    /// finding's line, as the App's in-place parse lets it.
+    pub place_on_parse: Option<usize>,
     /// The AI revision the Gate last followed; a new one sets it again
     /// unless it was set by hand.
     pub gate_followed: Option<u64>,
@@ -320,6 +330,11 @@ impl Default for TabViewState {
             panel_width: 40,
             draft: Draft::default(),
             focused_comment_id: None,
+            focused_finding_id: None,
+            review_focus: ReviewFocus::Files,
+            review_cursor: 0,
+            findings_followed: None,
+            place_on_parse: None,
             gate_followed: None,
             sent: None,
             deleting_comment: None,
@@ -702,8 +717,8 @@ pub struct Frame<'a> {
 }
 
 /// The frame's read model, from the active tab's published content and its
-/// view state. Draws the section data, the threads and the reviewed count;
-/// the AI Summary panel shows the unported message.
+/// view state. Draws the section data, the threads, the findings, the AI
+/// Summary panel and the reviewed count.
 pub fn screen<'a>(view: &'a TuiView, state: &'a TabViewState, frame: Frame<'a>) -> Screen<'a> {
     let content = frame.content;
     let tab = &content.tab;
@@ -784,10 +799,10 @@ pub fn screen<'a>(view: &'a TuiView, state: &'a TabViewState, frame: Frame<'a>) 
             panel_focus: state.panel_focus,
             file_tree_width: state.file_tree_width,
             panel_width: state.panel_width,
-            review_focus: ReviewFocus::Files,
+            review_focus: state.review_focus,
             selected_file: state.selected_file,
             focused_comment_id: state.focused_comment_id.as_deref(),
-            focused_finding_id: None,
+            focused_finding_id: state.focused_finding_id.as_deref(),
             filter_expr: &state.filter_expr,
             search_query: &state.search_query,
             show_unreviewed_only: state.show_unreviewed_only,
@@ -819,7 +834,7 @@ pub fn screen<'a>(view: &'a TuiView, state: &'a TabViewState, frame: Frame<'a>) 
             context_overrides: &content.diff.context,
             mtime_cache: &content.diff.meta.stamps.mtimes,
             panel_scroll: state.panel_scroll,
-            review_cursor: 0,
+            review_cursor: state.review_cursor,
             branch_diff_hash: &content.diff.meta.branch_diff_hash,
             repo_root: &tab.repo_root,
             visible_watched: watched.visible(watched_shown, &state.search_query),

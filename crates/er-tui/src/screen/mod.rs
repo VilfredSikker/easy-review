@@ -189,8 +189,8 @@ pub struct MemoryBudget {
 }
 
 /// The service's published sections, and what the ported builders computed
-/// from them. The AI Summary, Refs and Log panels draw `UNPORTED` until the
-/// entries that port them.
+/// from them. The Refs and Log panels draw `UNPORTED` until the entries that
+/// port them.
 #[cfg(feature = "v1-service")]
 pub struct SectionData<'a> {
     pub files: &'a [std::sync::Arc<DiffFile>],
@@ -359,10 +359,10 @@ mod tests {
         assert!(!top.contains(UNPORTED), "{top}");
     }
 
-    /// The service path draws the AI Summary panel as unported until P72
-    /// ports it, though the threads draw from the same AI state.
+    /// The service path draws the AI Summary panel from the AI state it was
+    /// given.
     #[test]
-    fn sections_draw_the_ai_panel_as_unported() {
+    fn sections_draw_the_ai_summary_panel() {
         let mut app = crate::golden::base_app();
         app.tab_mut().ai.summary = Some("Reads the audience early.".into());
         app.tab_mut().panel = Some(PanelContent::AiSummary);
@@ -397,7 +397,7 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect();
-        assert!(drawn.contains(UNPORTED), "{drawn}");
-        assert!(!drawn.contains("audience early"), "{drawn}");
+        assert!(!drawn.contains(UNPORTED), "{drawn}");
+        assert!(drawn.contains("audience early"), "{drawn}");
     }
 }

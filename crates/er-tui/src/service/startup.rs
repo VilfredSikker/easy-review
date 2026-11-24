@@ -152,6 +152,11 @@ pub enum After {
     Approved,
     /// A thread delete: once it lands, the status line says so.
     Deleted,
+    /// A checklist toggle: once it lands, the status line says whether the
+    /// row is checked, as it read at the press.
+    Checklist {
+        checked: bool,
+    },
     /// A read of the pending review for the review hub.
     ReviewRead,
     /// A remove from the pending review; its reply reads the review back.
