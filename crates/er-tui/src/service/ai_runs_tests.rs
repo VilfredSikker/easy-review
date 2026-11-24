@@ -366,6 +366,7 @@ fn seed_review(shell: &mut Shell, dir: &str) {
         let content = shell.active_content();
         content.is_some_and(|content| content.ai.state.review.is_some())
     });
+    super::tests::let_the_reload_notice_go(shell);
 }
 
 pub(super) fn notice(shell: &Shell) -> String {

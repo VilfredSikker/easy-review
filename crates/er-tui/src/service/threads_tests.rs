@@ -434,6 +434,7 @@ pub(super) fn seed_both(
         moved(shell),
         "the seeded sidecars never reached the AI section"
     );
+    super::tests::let_the_reload_notice_go(shell);
 }
 
 /// The threads draw from the published AI state as the App draws them, and
