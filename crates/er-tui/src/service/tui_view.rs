@@ -3,8 +3,9 @@
 //! The service publishes each tab's content; what the user selected, scrolled
 //! or typed stays here, per tab key, as the desktop keeps its own in
 //! desktop-ui (ADR 0068). Each frame fills the `Screen` from the active tab's
-//! content and this state, and calls no builder: an area a builder computes
-//! draws the unported message until the entry that ports it.
+//! content and this state, and calls no builder itself: a builder's value
+//! comes in on the `Frame`, and an area no ported builder computes draws the
+//! unported message until the entry that ports it.
 
 use std::collections::HashMap;
 use std::time::SystemTime;
@@ -284,14 +285,56 @@ impl TabViewState {
         )
     }
 
+    fn visible_indices(&self, content: &TabContent) -> Vec<usize> {
+        self.visible(&content.diff.files, &content.reviewed.marks)
+            .iter()
+            .map(|(idx, _)| *idx)
+            .collect()
+    }
+
+    /// The selected file's place among the visible files, or the first.
+    pub fn visible_position(&self, content: &TabContent) -> usize {
+        let visible = self.visible_indices(content);
+        visible
+            .iter()
+            .position(|&idx| idx == self.selected_file)
+            .unwrap_or(0)
+    }
+
+    /// Selects the first visible file when the list hides the selected one,
+    /// as the App's snap does. Answers the file it selected.
+    pub fn snap(&mut self, content: &TabContent) -> Option<usize> {
+        let visible = self.visible_indices(content);
+        let first = *visible.first()?;
+        if visible.contains(&self.selected_file) {
+            return None;
+        }
+        self.select_file_cursor(first);
+        Some(first)
+    }
+
+    /// Selects the visible file at `position`, or the last, as the App does
+    /// once a mark hides the selected file under unreviewed-only.
+    pub fn advance_to(&mut self, content: &TabContent, position: usize) -> Option<usize> {
+        let visible = self.visible_indices(content);
+        let last = visible.len().checked_sub(1)?;
+        let idx = *visible.get(position.min(last))?;
+        self.select_file_cursor(idx);
+        Some(idx)
+    }
+
+    fn select_file_cursor(&mut self, idx: usize) {
+        self.selected_file = idx;
+        self.current_hunk = 0;
+        self.current_line = None;
+        self.diff_scroll = 0;
+        self.h_scroll = 0;
+    }
+
     /// Moves to the next or previous visible file. Answers the file it
     /// selected, which may still be a stub to parse.
     pub fn move_file(&mut self, content: &TabContent, forward: bool) -> Option<usize> {
-        let visible: Vec<usize> = self
-            .visible(&content.diff.files, &content.reviewed.marks)
-            .iter()
-            .map(|(idx, _)| *idx)
-            .collect();
+        let visible = self.visible_indices(content);
         let step = if forward {
             navigation::next_file
         } else {
@@ -326,11 +369,7 @@ impl TabViewState {
         let Some(idx) = navigation::next_unreviewed_file(self.selected_file, &visible) else {
             return Jump::AllReviewed;
         };
-        self.selected_file = idx;
-        self.current_hunk = 0;
-        self.current_line = None;
-        self.diff_scroll = 0;
-        self.h_scroll = 0;
+        self.select_file_cursor(idx);
         Jump::To(idx)
     }
 
@@ -439,11 +478,13 @@ pub struct Frame<'a> {
     pub config: &'a ErConfig,
     pub config_load_error: Option<&'a str>,
     pub ai_selection_label: String,
+    /// Reviewed and total files, from the reviewed builder.
+    pub reviewed_count: (usize, usize),
 }
 
 /// The frame's read model, from the active tab's published content and its
-/// view state. Draws the section data only; the reviewed count and the AI
-/// panels show the unported message.
+/// view state. Draws the section data and the reviewed count; the AI panels
+/// show the unported message.
 pub fn screen<'a>(view: &'a TuiView, state: &'a TabViewState, frame: Frame<'a>) -> Screen<'a> {
     let content = frame.content;
     let tab = &content.tab;
@@ -541,6 +582,7 @@ pub fn screen<'a>(view: &'a TuiView, state: &'a TabViewState, frame: Frame<'a>) 
             files,
             reviewed,
             pr: content.pr.overview.as_ref(),
+            reviewed_count: frame.reviewed_count,
         }),
     }
 }

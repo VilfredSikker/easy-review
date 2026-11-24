@@ -129,6 +129,11 @@ pub enum After {
     FetchPrRefs,
     /// A commit: once it lands, the commit input closes.
     Commit,
+    /// A reviewed toggle. A mark made under unreviewed-only moves the
+    /// selection to this place in the visible list once the marks publish.
+    Reviewed {
+        advance_from: Option<usize>,
+    },
 }
 
 /// A command in flight. The loop drains its receiver each tick.

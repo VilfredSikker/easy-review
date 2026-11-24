@@ -186,14 +186,16 @@ pub struct MemoryBudget {
     pub compacted_files: usize,
 }
 
-/// The service's published sections: the section data only. Values a
-/// service builder computes (the reviewed count, the AI projections) join
-/// as each area is ported; until then those areas draw `UNPORTED`.
+/// The service's published sections, and what the ported builders computed
+/// from them. Values a builder not yet called computes (the AI projections)
+/// join as each area is ported; until then those areas draw `UNPORTED`.
 #[cfg(feature = "v1-service")]
 pub struct SectionData<'a> {
     pub files: &'a [std::sync::Arc<DiffFile>],
     pub reviewed: &'a HashMap<String, String>,
     pub pr: Option<&'a PrOverviewData>,
+    /// Reviewed and total files, from the reviewed builder.
+    pub reviewed_count: (usize, usize),
 }
 
 /// What an area the service path does not draw yet shows instead.
@@ -248,12 +250,12 @@ impl<'a> TabData<'a> {
         }
     }
 
-    /// Reviewed and total files, or `None` where the path does not count them yet.
-    pub const fn reviewed_count(&self) -> Option<(usize, usize)> {
+    /// Reviewed and total files.
+    pub const fn reviewed_count(&self) -> (usize, usize) {
         match self {
-            Self::App(data) => Some(data.reviewed_count),
+            Self::App(data) => data.reviewed_count,
             #[cfg(feature = "v1-service")]
-            Self::Sections(_) => None,
+            Self::Sections(data) => data.reviewed_count,
         }
     }
 
@@ -312,10 +314,9 @@ mod tests {
     use super::*;
     use ratatui::{backend::TestBackend, Terminal};
 
-    /// The service path draws the reviewed count's area as unported until a
-    /// builder computes the count.
+    /// The service path draws the reviewed count it was given.
     #[test]
-    fn sections_draw_the_reviewed_count_as_unported() {
+    fn sections_draw_their_reviewed_count() {
         let app = crate::golden::base_app();
         let files: Vec<_> = app
             .tab()
@@ -331,6 +332,7 @@ mod tests {
             files: &files,
             reviewed: &reviewed,
             pr: None,
+            reviewed_count: (1, 2),
         });
         let mut terminal = Terminal::new(TestBackend::new(120, 12)).unwrap();
         let mut hl = crate::ui::highlight::Highlighter::new();
@@ -341,8 +343,8 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect();
-        assert!(top.contains(&format!("reviewed count {UNPORTED}")), "{top}");
-        assert!(!top.contains("/2 reviewed"), "{top}");
+        assert!(top.contains("1/2 reviewed"), "{top}");
+        assert!(!top.contains(UNPORTED), "{top}");
     }
 
     /// The service path draws the AI panel as unported until a builder
@@ -366,6 +368,7 @@ mod tests {
             files: &files,
             reviewed: &reviewed,
             pr: None,
+            reviewed_count: (0, 0),
         });
         let mut terminal = Terminal::new(TestBackend::new(140, 12)).unwrap();
         let mut hl = crate::ui::highlight::Highlighter::new();
@@ -379,9 +382,7 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect();
-        // The top bar draws its own unported reviewed count; look past it.
-        let outside_top_bar = drawn.replace(&format!("reviewed count {UNPORTED}"), "");
-        assert!(outside_top_bar.contains(UNPORTED), "{drawn}");
+        assert!(drawn.contains(UNPORTED), "{drawn}");
         assert!(!drawn.contains("audience early"), "{drawn}");
     }
 }

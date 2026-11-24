@@ -177,9 +177,36 @@ pub fn save_reviewed(
     scope: &Scope,
     files: &HashMap<String, String>,
 ) -> Result<(), StoreError> {
+    let guard = store.lock_scope(scope, DEFAULT_LOCK_TIMEOUT)?;
+    save_reviewed_locked(store, &guard, scope, files)
+}
+
+/// Reads the reviewed marks, runs `change` on them and saves them under one
+/// hold of the scope lock, so a write running beside it cannot read the old
+/// marks and save over this one. `change` answers how many marks it changed;
+/// with none changed nothing is saved. Answers that count and the marks.
+pub fn update_reviewed(
+    store: &ArtifactStore,
+    scope: &Scope,
+    change: impl FnOnce(&mut HashMap<String, String>) -> usize,
+) -> Result<(usize, HashMap<String, String>), StoreError> {
+    let guard = store.lock_scope(scope, DEFAULT_LOCK_TIMEOUT)?;
+    let mut files = load_reviewed(store, scope)?;
+    let changed = change(&mut files);
+    if changed > 0 {
+        save_reviewed_locked(store, &guard, scope, &files)?;
+    }
+    Ok((changed, files))
+}
+
+fn save_reviewed_locked(
+    store: &ArtifactStore,
+    guard: &er_store::ScopeGuard,
+    scope: &Scope,
+    files: &HashMap<String, String>,
+) -> Result<(), StoreError> {
     let key = key::<ReviewedFiles>(scope)?;
     if files.is_empty() {
-        let guard = store.lock_scope(scope, DEFAULT_LOCK_TIMEOUT)?;
         if let Loaded::Unreadable(Unreadable::NewerVersion { found }) = store.read(&key)? {
             return Err(StoreError::NewerVersion {
                 path: store.path(&key),
@@ -187,9 +214,10 @@ pub fn save_reviewed(
                 expected: ReviewedFiles::VERSION,
             });
         }
-        return store.delete_locked(&guard, &key);
+        return store.delete_locked(guard, &key);
     }
-    store.write(
+    store.write_locked(
+        guard,
         &key,
         &ReviewedFiles {
             files: files.clone(),

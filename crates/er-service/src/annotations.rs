@@ -883,19 +883,17 @@ pub(crate) fn bulk_review_pillar(
     let paths = reviewed_paths(&diff_paths, paths);
     let store = store_registry::store();
     let scope = bucket_scope(&ctx.er_dir)?;
-    let mut map = session_store::load_reviewed(&store, &scope)
-        .map_err(|error| failed("load the reviewed marks", error))?;
-    let mut changed = 0usize;
-    for path in paths {
-        let hash = ai::compute_per_file_hash(&raw, &path).unwrap_or_default();
-        if annotations::apply_reviewed(&mut map, &path, hash, reviewed) {
-            changed += 1;
+    let (changed, map) = session_store::update_reviewed(&store, &scope, |map| {
+        let mut changed = 0usize;
+        for path in paths {
+            let hash = ai::compute_per_file_hash(&raw, &path).unwrap_or_default();
+            if annotations::apply_reviewed(map, &path, hash, reviewed) {
+                changed += 1;
+            }
         }
-    }
-    if changed > 0 {
-        session_store::save_reviewed(&store, &scope, &map)
-            .map_err(|error| failed("save the reviewed marks", error))?;
-    }
+        changed
+    })
+    .map_err(|error| failed("save the reviewed marks", error))?;
     Ok((changed, marks_patch(ctx, changed > 0, map)))
 }
 
@@ -913,16 +911,13 @@ pub(crate) fn toggle_reviewed(
     }
     let store = store_registry::store();
     let scope = bucket_scope(&ctx.er_dir)?;
-    let mut map = session_store::load_reviewed(&store, &scope)
-        .map_err(|error| failed("load the reviewed marks", error))?;
-    let reviewed = !map.contains_key(path);
     let hash = ai::compute_per_file_hash(&raw, path).unwrap_or_default();
-    let changed = annotations::apply_reviewed(&mut map, path, hash, reviewed);
-    if changed {
-        session_store::save_reviewed(&store, &scope, &map)
-            .map_err(|error| failed("save the reviewed marks", error))?;
-    }
-    Ok((usize::from(changed), marks_patch(ctx, changed, map)))
+    let (changed, map) = session_store::update_reviewed(&store, &scope, |map| {
+        let reviewed = !map.contains_key(path);
+        usize::from(annotations::apply_reviewed(map, path, hash, reviewed))
+    })
+    .map_err(|error| failed("save the reviewed marks", error))?;
+    Ok((changed, marks_patch(ctx, changed > 0, map)))
 }
 
 pub(crate) fn mark_reviewed(
@@ -938,13 +933,10 @@ pub(crate) fn mark_reviewed(
     }
     let store = store_registry::store();
     let scope = bucket_scope(&ctx.er_dir)?;
-    let mut map = session_store::load_reviewed(&store, &scope)
-        .map_err(|error| failed("load the reviewed marks", error))?;
     let hash = ai::compute_per_file_hash(&raw, path).unwrap_or_default();
-    let changed = annotations::apply_reviewed(&mut map, path, hash, reviewed);
-    if changed {
-        session_store::save_reviewed(&store, &scope, &map)
-            .map_err(|error| failed("save the reviewed marks", error))?;
-    }
-    Ok((usize::from(changed), marks_patch(ctx, changed, map)))
+    let (changed, map) = session_store::update_reviewed(&store, &scope, |map| {
+        usize::from(annotations::apply_reviewed(map, path, hash, reviewed))
+    })
+    .map_err(|error| failed("save the reviewed marks", error))?;
+    Ok((changed, marks_patch(ctx, changed > 0, map)))
 }
