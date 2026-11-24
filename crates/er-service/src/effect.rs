@@ -710,7 +710,7 @@ pub(crate) fn clear_moved_marks(
         orphans.len() + moved.len()
     };
     if persists {
-        if let Ok((cleared, saved)) = session_store::update_reviewed(store, scope, &clear) {
+        if let Ok((cleared, saved)) = session_store::update_reviewed(store, scope, clear) {
             *marks = saved;
             return cleared;
         }
