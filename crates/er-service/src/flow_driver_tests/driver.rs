@@ -417,11 +417,18 @@ fn running_cancellation_keeps_lease_until_writer_drains() {
             |flow| flow.state == FlowState::Finding,
         );
         assert!(harness.cancel(&dirs.bucket));
+        let held = |when: &str| {
+            assert!(harness.is_draining(&dirs.bucket), "draining {when}");
+            assert!(
+                harness.start("branch").is_err(),
+                "a start is refused {when}"
+            );
+            assert!(!admitted(&dirs.bucket), "the lease is held {when}");
+        };
+        held("right after the cancel");
         // The next advance sees the finder still writing.
         harness.advance();
-        assert!(harness.is_draining(&dirs.bucket));
-        assert!(harness.start("branch").is_err());
-        assert!(!admitted(&dirs.bucket), "the lease is held while draining");
+        held("after the next advance");
 
         harness.drain(&dirs.bucket);
         assert!(admitted(&dirs.bucket));
@@ -433,27 +440,32 @@ fn running_cancellation_keeps_lease_until_writer_drains() {
 
 /// Every stage's script: triage picks a Quick general review, the general
 /// finder reports one finding so verification has work, and every arena call
-/// waits for `gate` before it answers.
+/// waits for `gate` before it answers. The wait also ends when the test's
+/// directory is gone or after 30 seconds, so a failed test leaves no provider
+/// running. `p77-gated-arbiter` marks the process for `pgrep`.
 fn gated_verification(bucket: &str, gate: &Path) -> ErConfig {
     let script = format!(
         "case \"$1\" in\n\
          *triage.json*) {preamble}; printf '{{\"version\":1,\"diff_hash\":\"%s\",\"verdict\":{{\"primary\":\"general\",\"experts\":[]}}}}' \"$h\" > \"$out/triage.json\" ;;\n\
          *review.json*) {preamble}; printf '{{\"version\":1,\"diff_hash\":\"%s\",\"files\":{{\"src/lib.rs\":{{\"risk\":\"high\",\"findings\":[{{\"id\":\"general:1\",\"severity\":\"high\",\"title\":\"Check the source\"}}]}}}}}}' \"$h\" > \"$out/review.json\"; printf '{{\"version\":1,\"diff_hash\":\"%s\",\"order\":[],\"groups\":{{}}}}' \"$h\" > \"$out/order.json\"; printf '{{\"version\":1,\"diff_hash\":\"%s\",\"items\":[]}}' \"$h\" > \"$out/checklist.json\"; printf 'summary\\n' > \"$out/summary.md\" ;;\n\
-         *) while [ ! -f '{gate}' ]; do sleep 0.05; done; printf '{{\"findings\":[],\"ballots\":[],\"verdicts\":[]}}' ;;\n\
+         *) : p77-gated-arbiter; i=0; while [ -d '{dir}' ] && [ ! -f '{gate}' ] && [ \"$i\" -lt 600 ]; do sleep 0.05; i=$((i+1)); done; printf '{{\"findings\":[],\"ballots\":[],\"verdicts\":[]}}' ;;\n\
          esac",
         preamble = er_engine::test_support::STAGING_PREAMBLE,
         gate = gate.display(),
+        dir = gate.parent().unwrap_or(gate).display(),
     );
     with_script(er_engine::test_support::staged_script(&script, bucket))
 }
 
 /// Opens the gate when the test ends, so a failed assertion leaves no
-/// provider waiting on it.
+/// provider waiting on it. Declared after the directory, so it drops first
+/// and the waiting provider sees the gate before the directory goes.
 struct OpenGate(std::path::PathBuf);
 
 impl Drop for OpenGate {
     fn drop(&mut self) {
         let _ = std::fs::write(&self.0, "");
+        std::thread::sleep(Duration::from_millis(200));
     }
 }
 
