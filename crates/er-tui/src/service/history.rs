@@ -33,6 +33,8 @@ pub struct HistoryPos {
     pub queued: VecDeque<bool>,
     /// Whether a commit load or a page is in flight.
     pub in_flight: bool,
+    /// How many times in a row the front press was refused as moved.
+    pub moved_tries: u8,
     /// Where the diff view stood when History was entered, which leaving
     /// History returns to.
     pub left: Option<Follow>,

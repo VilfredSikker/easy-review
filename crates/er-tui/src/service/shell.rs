@@ -906,6 +906,9 @@ impl Shell {
                 match modes::switch(key, content, mode) {
                     Ok(Some(command)) => {
                         state.follow = Some(Follow::of(state, content));
+                        // Queued commit moves would each move the tab under
+                        // the switch; the switch drops them.
+                        state.history.queued.clear();
                         if mode == DiffMode::History && content.tab.mode != DiffMode::History {
                             state.history.left = Some(Follow::of(state, content));
                         }
@@ -1013,7 +1016,11 @@ impl Shell {
     /// Posts a command; a test may refuse every reload as moved here.
     fn send_reload(&mut self, workspace: &str, command: Command, after: After) -> ReplyReceiver {
         #[cfg(test)]
-        if let Some(moved) = self.refuse_reloads.clone().filter(|_| after.follows()) {
+        if let Some(moved) = self
+            .refuse_reloads
+            .clone()
+            .filter(|_| after.follows() || after == After::CommitSelected)
+        {
             self.reload_sends += 1;
             let (tx, rx) = std::sync::mpsc::channel();
             let _ = tx.send(Err(er_service::WorkspaceError::Failed(moved)));
@@ -1361,12 +1368,19 @@ impl Shell {
             Command::LoadMoreHistory { .. } => After::MoreHistory,
             _ => After::CommitSelected,
         };
-        self.post(key, workspace, command, after);
+        let replies = self.send_reload(workspace, command, after);
+        self.pending.push(Pending {
+            key,
+            workspace: workspace.to_string(),
+            replies,
+            after,
+            retry: None,
+        });
     }
 
     /// A commit load or page landed: a commit shown takes its press off the
-    /// queue, a tab moved meanwhile sends it again, any other refusal drops
-    /// the rest, and the next press goes out.
+    /// queue, a tab moved meanwhile sends it again up to `RELOAD_TRIES`
+    /// times, any other refusal drops the rest, and the next press goes out.
     fn history_landed(
         &mut self,
         key: TabKey,
@@ -1381,16 +1395,23 @@ impl Shell {
         let pos = &mut state.history;
         pos.in_flight = false;
         let refused = match reply {
-            Ok(_) if after == After::CommitSelected => {
-                pos.queued.pop_front();
+            Err(error) => {
+                let moved = er_service::refused_as_moved(&error.to_string());
+                pos.moved_tries = pos.moved_tries.saturating_add(u8::from(moved));
+                (!moved || pos.moved_tries > RELOAD_TRIES).then(|| error.to_string())
+            }
+            Ok(_) => {
+                pos.moved_tries = 0;
+                if after == After::CommitSelected {
+                    pos.queued.pop_front();
+                }
                 None
             }
-            Err(error) if !er_service::refused_as_moved(&error.to_string()) => {
-                pos.queued.clear();
-                Some(error.to_string())
-            }
-            _ => None,
         };
+        if refused.is_some() {
+            pos.queued.clear();
+            pos.moved_tries = 0;
+        }
         let command = history::pump(pos, key, &content);
         if let Some(message) = refused {
             self.failure(Side::Reply, message);
@@ -1439,6 +1460,7 @@ impl Shell {
         self.view.input_mode = Mode::Normal;
         let state = self.view.tab_mut(key, content);
         state.follow = Some(Follow::of(state, content));
+        state.history.queued.clear();
         state.base_sent = Some(base.clone());
         self.post(
             key,

@@ -258,7 +258,6 @@ diff --git a/a.rs b/a.rs
 fn views_git() -> Arc<FakeGit> {
     Arc::new(
         FakeGit::default()
-            .with_is_merge_in_progress(false)
             .with_current_branch(Ok("feature".to_string()))
             .with_diff_shortstat((0, 0, 0))
             .with_diff_raw(Ok(RAW.to_string()))
