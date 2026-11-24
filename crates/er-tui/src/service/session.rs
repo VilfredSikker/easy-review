@@ -47,8 +47,8 @@ pub fn capture(content: &TabContent, state: &TabViewState) -> SessionState {
         diff_scroll: state.diff_scroll,
         h_scroll: state.h_scroll,
         diff_mode: content.tab.mode.git_mode().to_string(),
-        filter_expr: state.saved_filter.expr.clone(),
-        filter_history: state.saved_filter.history.clone(),
+        filter_expr: state.filter_expr.clone(),
+        filter_history: state.filter_history.clone(),
         show_unreviewed_only: state.show_unreviewed_only,
         sort_by_mtime: state.sort_by_mtime,
         comment_draft: draft.textarea.lines().join("\n").trim().to_string(),
@@ -77,14 +77,23 @@ pub fn capture(content: &TabContent, state: &TabViewState) -> SessionState {
 /// key has a service route yet. The draft comes back whole in any mode: its
 /// client id is what lets a retried post find the comment it already made
 /// (ADR 0053).
+///
+/// In the App's order: the position, then a saved filter, which replaces
+/// `--filter` and snaps, then the history, which replaces `--filter`'s. The
+/// unreviewed-only toggle comes back last, with no snap of its own.
 pub fn restore(state: &mut TabViewState, session: SessionState, content: &TabContent) {
     if session.diff_hash != content.diff.meta.branch_diff_hash {
         return;
     }
-    state.saved_filter.expr = session.filter_expr;
-    state.saved_filter.history = session.filter_history;
-    state.show_unreviewed_only = session.show_unreviewed_only;
-    state.sort_by_mtime = session.sort_by_mtime;
+    let toggles = (session.show_unreviewed_only, session.sort_by_mtime);
+    restore_position(state, &session, content);
+    if !content.diff.files.is_empty() {
+        if !session.filter_expr.is_empty() {
+            state.apply_filter(content, &session.filter_expr, false);
+        }
+        state.filter_history = session.filter_history;
+    }
+    (state.show_unreviewed_only, state.sort_by_mtime) = toggles;
     if !session.comment_draft.is_empty() {
         state.draft = Draft {
             textarea: TextArea::new(session.comment_draft.lines().map(String::from).collect()),
@@ -104,6 +113,9 @@ pub fn restore(state: &mut TabViewState, session: SessionState, content: &TabCon
             client_id: session.comment_draft_client_id,
         };
     }
+}
+
+fn restore_position(state: &mut TabViewState, session: &SessionState, content: &TabContent) {
     let saved_mode = match session.diff_mode.as_str() {
         "" => "branch",
         mode => mode,
