@@ -1618,60 +1618,28 @@ mod tests {
     fn the_drawn_finding_rows_are_the_step_list() {
         use ratatui::{backend::TestBackend, Terminal};
         let mut app = crate::golden::base_app();
-        let rows = [
-            (
-                "general-row",
-                "general",
-                "Shared claim",
-                2,
-                "confirmed",
-                false,
-            ),
-            (
-                "security-row",
-                "security",
-                "Shared claim",
-                2,
-                "confirmed",
-                false,
-            ),
-            (
-                "ordinary-row",
-                "general",
-                "Other claim",
-                3,
-                "tentative",
-                false,
-            ),
-            (
-                "plain-row",
-                "general",
-                "Plain claim",
-                1,
-                "informational",
-                false,
-            ),
-            ("done-row", "general", "Closed claim", 4, "confirmed", true),
-            (
-                "dropped-row",
-                "security",
-                "Dropped claim",
-                5,
-                "dropped",
-                false,
-            ),
-        ];
-        let findings: Vec<_> = rows
-            .iter()
-            .map(|(id, lens, title, line, confidence, resolved)| {
-                serde_json::json!({
-                    "id": id, "severity": "high", "lens": lens, "category": "correctness",
-                    "title": title, "hunk_index": 0, "line_start": line,
-                    "raised_by": ["general", "security"], "confidence": confidence,
-                    "resolved": resolved
-                })
+        let row = |id: &str, lens: &str, title: &str, line: usize, confidence: &str| {
+            let raised_by = if lens == "security" || title == "Shared claim" {
+                vec!["general", "security"]
+            } else {
+                vec!["general"]
+            };
+            serde_json::json!({
+                "id": id, "severity": "high", "lens": lens, "category": "correctness",
+                "title": title, "hunk_index": 0, "line_start": line,
+                "raised_by": raised_by, "confidence": confidence,
+                "resolved": id == "done-row"
             })
-            .collect();
+        };
+        // The ordinary row sorts first, and the security group draws first.
+        let findings = [
+            row("general-row", "general", "Shared claim", 2, "confirmed"),
+            row("security-row", "security", "Shared claim", 2, "confirmed"),
+            row("ordinary-row", "general", "Other claim", 1, "confirmed"),
+            row("plain-row", "general", "Plain claim", 3, "informational"),
+            row("done-row", "general", "Closed claim", 4, "confirmed"),
+            row("dropped-row", "security", "Dropped claim", 5, "dropped"),
+        ];
         let tab = app.tab_mut();
         tab.ai.review = Some(
             serde_json::from_value(serde_json::json!({
