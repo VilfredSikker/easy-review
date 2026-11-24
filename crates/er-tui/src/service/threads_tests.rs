@@ -150,7 +150,7 @@ fn a_create_lands_on_the_tab_it_was_written_on() {
         let gate = Arc::new(Gate::default());
         let ports = Ports {
             git: Arc::new(GatedGit(Arc::clone(&gate))),
-            github: Ports::cli().github,
+            github: super::tests::fake_github(),
         };
         let mut shell = shell_on(ports, &start, storage.path());
         settle(&mut shell, loaded);
@@ -189,7 +189,7 @@ fn a_create_lands_on_the_tab_it_was_written_on() {
 fn gated_shell(repo: &tempfile::TempDir, gate: &Arc<Gate>, config_dir: &Path) -> Shell {
     let ports = Ports {
         git: Arc::new(GatedGit(Arc::clone(gate))),
-        github: Ports::cli().github,
+        github: super::tests::fake_github(),
     };
     let mut shell = shell_on(ports, &plan(&args(vec![path_of(repo)])), config_dir);
     settle(&mut shell, loaded);

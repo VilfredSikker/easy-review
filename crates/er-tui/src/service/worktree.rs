@@ -16,6 +16,10 @@ pub enum GitPick {
     Push,
     StageFile,
     StageAll,
+    /// The GitHub rows (P68.1).
+    PullComments,
+    CommentOnPr,
+    ApprovePr,
     /// A row whose action has no service route on this path yet.
     Unported,
 }
@@ -48,8 +52,8 @@ fn row(label: &str, hint: &str, description: &str, enabled: bool) -> HubItem {
 }
 
 impl GitHub {
-    /// The hub as the App opens it on this tab. Refresh and the GitHub rows
-    /// wait for their entries (P68, P71).
+    /// The hub as the App opens it on this tab. Refresh waits for its entry
+    /// (P71).
     pub fn open(content: &TabContent) -> Self {
         let tab = &content.tab;
         let has_pr = tab.pr_number.is_some();
@@ -92,7 +96,7 @@ impl GitHub {
                     "Sync review comments from GitHub PR",
                     true,
                 ),
-                GitPick::Unported,
+                GitPick::PullComments,
             ),
             (
                 row(
@@ -101,9 +105,9 @@ impl GitHub {
                     "Post a general comment on the PR (not attached to a line)",
                     true,
                 ),
-                GitPick::Unported,
+                GitPick::CommentOnPr,
             ),
-            (row("Approve PR", "", approve, has_pr), GitPick::Unported),
+            (row("Approve PR", "", approve, has_pr), GitPick::ApprovePr),
         ];
         let (rows, picks) = rows.into_iter().unzip();
         Self {

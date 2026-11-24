@@ -6,7 +6,6 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use er_engine::config::{ConfigFieldValue, CONFIG_LOAD_BANNER};
-use er_engine::ports::Ports;
 use er_service::SettingsCommand;
 
 use super::shell::Shell;
@@ -59,7 +58,11 @@ fn a_settings_write_goes_through_the_settings_actor() {
     let (storage, config_dir) = (temp(), temp());
     let path = path_of(&repo);
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
-        let mut shell = shell_on(Ports::cli(), &plan(&args(&path)), config_dir.path());
+        let mut shell = shell_on(
+            super::tests::test_ports(),
+            &plan(&args(&path)),
+            config_dir.path(),
+        );
         settle(&mut shell, loaded);
         let before = revision(&shell);
         shell.send_settings(codex_pick());
@@ -90,7 +93,11 @@ fn a_refused_save_shows_once_and_raises_the_banner() {
     let (storage, config_dir) = (temp(), temp());
     let path = path_of(&repo);
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
-        let mut shell = shell_on(Ports::cli(), &plan(&args(&path)), config_dir.path());
+        let mut shell = shell_on(
+            super::tests::test_ports(),
+            &plan(&args(&path)),
+            config_dir.path(),
+        );
         settle(&mut shell, loaded);
         std::fs::write(config_dir.path().join("config.toml"), "not = = toml")
             .unwrap_or_else(|e| panic!("{e}"));
@@ -145,7 +152,11 @@ fn a_repeated_failure_shows_once_per_command() {
     let (storage, config_dir) = (temp(), temp());
     let path = path_of(&repo);
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
-        let mut shell = shell_on(Ports::cli(), &plan(&args(&path)), config_dir.path());
+        let mut shell = shell_on(
+            super::tests::test_ports(),
+            &plan(&args(&path)),
+            config_dir.path(),
+        );
         settle(&mut shell, loaded);
         std::fs::write(config_dir.path().join("config.toml"), "not = = toml")
             .unwrap_or_else(|e| panic!("{e}"));
@@ -167,7 +178,7 @@ fn a_kept_load_reply_pairs_with_its_own_event() {
     let start = plan(&args(&path_of(&repo)));
     std::fs::remove_dir_all(repo.path().join(".git")).unwrap_or_else(|e| panic!("{e}"));
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
-        let mut shell = shell_on(Ports::cli(), &start, storage.path());
+        let mut shell = shell_on(super::tests::test_ports(), &start, storage.path());
         let mut hl = Highlighter::new();
         settle(&mut shell, |shell| shell.view().notification.is_some());
         let deadline = Instant::now() + Duration::from_secs(20);
@@ -197,7 +208,11 @@ fn a_failed_load_draws_the_apps_notice_and_banner() {
         std::fs::write(storage.path().join("config.toml"), "not = = toml")
             .unwrap_or_else(|e| panic!("{e}"));
         let mut app = app_on(&path);
-        let mut shell = shell_on(Ports::cli(), &plan(&args(&path)), storage.path());
+        let mut shell = shell_on(
+            super::tests::test_ports(),
+            &plan(&args(&path)),
+            storage.path(),
+        );
         settle(&mut shell, loaded);
         let shown_at = Instant::now();
         let mut hl = Highlighter::new();
@@ -220,7 +235,11 @@ fn the_theme_follows_the_settings_view() {
     let path = path_of(&repo);
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
         let mut app = app_on(&path);
-        let mut shell = shell_on(Ports::cli(), &plan(&args(&path)), storage.path());
+        let mut shell = shell_on(
+            super::tests::test_ports(),
+            &plan(&args(&path)),
+            storage.path(),
+        );
         settle(&mut shell, loaded);
         let mut hl = Highlighter::new();
         assert_parity(&app, &shell_frame(&mut shell, &mut hl), &mut hl, "start");
@@ -244,7 +263,11 @@ fn the_saved_selection_follows_the_view() {
     let path = path_of(&repo);
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
         let mut app = app_on(&path);
-        let mut shell = shell_on(Ports::cli(), &plan(&args(&path)), storage.path());
+        let mut shell = shell_on(
+            super::tests::test_ports(),
+            &plan(&args(&path)),
+            storage.path(),
+        );
         settle(&mut shell, loaded);
         let mut hl = Highlighter::new();
         assert_parity(&app, &shell_frame(&mut shell, &mut hl), &mut hl, "start");
