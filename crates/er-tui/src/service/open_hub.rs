@@ -8,16 +8,13 @@ use crate::input::keys::OverlayAction;
 use crate::screen::view::HubItem;
 use crate::screen::UNPORTED;
 
-/// What a row does when chosen.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OpenPick {
-    /// A header or a row with nothing to run.
     Nothing,
     ChangeBase,
     Unported,
 }
 
-/// What a key on the hub asks the loop to do.
 pub enum OpenStep {
     Stay,
     Close,
@@ -26,7 +23,6 @@ pub enum OpenStep {
     ChangeBase,
 }
 
-/// The Open hub's rows and the selection.
 pub struct OpenHub {
     pub rows: Vec<HubItem>,
     picks: Vec<OpenPick>,
@@ -130,7 +126,6 @@ impl OpenHub {
         }
     }
 
-    /// One key, as the App's modal hub.
     pub fn act(&mut self, action: OverlayAction) -> OpenStep {
         let selectable = (0..self.rows.len()).filter(|&at| !self.rows[at].is_header);
         match action {

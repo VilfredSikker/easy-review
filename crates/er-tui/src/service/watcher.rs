@@ -24,9 +24,7 @@ pub struct Watch {
     rx: Receiver<WatchEvent>,
     /// Per tab, the changes counted and when their refresh is due.
     due: HashMap<TabKey, (Instant, usize)>,
-    /// The tabs with a watcher refresh out.
     out: HashSet<TabKey>,
-    /// The tabs the watcher has followed.
     seen: HashSet<TabKey>,
 }
 
@@ -56,7 +54,6 @@ fn root_of(content: &TabContent) -> Option<&str> {
 }
 
 impl Watch {
-    /// Whether a watcher is running, for the status bar.
     pub fn watching(&self) -> bool {
         self.watching.is_some()
     }
@@ -136,18 +133,15 @@ impl Watch {
         Some((key, files))
     }
 
-    /// `key`'s watcher refresh answered, landed or refused.
     pub fn landed(&mut self, key: TabKey) {
         self.out.remove(&key);
     }
 
-    /// The watched root, for a test.
     #[cfg(test)]
     pub fn root(&self) -> Option<&str> {
         self.watching.as_ref().map(|(root, _)| root.as_str())
     }
 
-    /// For a test to feed changes.
     #[cfg(test)]
     pub fn sender(&self) -> Sender<WatchEvent> {
         self.tx.clone()

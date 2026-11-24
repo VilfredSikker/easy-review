@@ -80,7 +80,6 @@ pub fn run(args: &Args) -> anyhow::Result<()> {
     result
 }
 
-/// A reply's command as it was sent, for the drain.
 struct Landing {
     key: TabKey,
     workspace: String,
@@ -128,7 +127,6 @@ pub struct Shell {
     reviewed: ReviewedCache,
     /// The watched files' reader, a worker thread that only reads.
     watched: Reader,
-    /// The file watcher on the active tab's checkout.
     watch: Watch,
     /// The start's PR probe, the other one, until it answers; then its
     /// answer, until the tab it probed has content.
@@ -1002,8 +1000,7 @@ impl Shell {
         });
     }
 
-    /// Posts a command. A test that has every reload refused as moved answers
-    /// it here and counts it.
+    /// Posts a command; a test may refuse every reload as moved here.
     fn send_reload(&mut self, workspace: &str, command: Command, after: After) -> ReplyReceiver {
         #[cfg(test)]
         if let Some(moved) = self.refuse_reloads.clone().filter(|_| after.follows()) {
@@ -1344,7 +1341,6 @@ impl Shell {
         self.notify(message);
     }
 
-    /// One key in the base input; Enter sends the base change.
     fn base_key(&mut self, edit: Edit, key: TabKey, workspace: &str, content: &TabContent) {
         let step = modes::base_key(&mut self.view.base_input, edit);
         let BaseStep::Send(base) = step else {
@@ -1365,7 +1361,6 @@ impl Shell {
         );
     }
 
-    /// A key on the Open hub; "Change compare base" opens the base input.
     fn open_hub_key(&mut self, action: OverlayAction) {
         let Some(Overlay::Open(hub)) = self.view.overlay.as_mut() else {
             return;
@@ -1409,7 +1404,6 @@ impl Shell {
         }
     }
 
-    /// Sends a waiting session's switch once.
     fn send_restore(&mut self) {
         let Some((key, workspace, Some(content))) = self.active() else {
             return;

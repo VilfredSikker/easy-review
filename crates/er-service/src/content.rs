@@ -622,8 +622,7 @@ impl fmt::Display for PatchRefused {
     }
 }
 
-/// Whether a failure's message is a load refused because its tab moved
-/// while it ran, which the caller may send again.
+/// Whether a failure is a load refused because its tab moved meanwhile.
 pub fn refused_as_moved(message: &str) -> bool {
     message == PatchRefused::Moved.to_string()
 }

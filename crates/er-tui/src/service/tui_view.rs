@@ -46,7 +46,6 @@ pub struct TuiView {
     pub settings: Option<Arc<SettingsView>>,
     /// `--filter`, for the first tab's view state once it is made.
     pub start_filter: Option<(TabKey, String)>,
-    /// The base input's text.
     pub base_input: String,
     /// What the start's probe or a pull learned about a tab's PR.
     pr_known: HashMap<TabKey, PrKnown>,
@@ -272,9 +271,7 @@ pub struct TabViewState {
     pub follow: Option<Follow>,
     /// The same for a refresh, kept apart so one leaves a switch's alone.
     pub refresh_follow: Option<Follow>,
-    /// A session saved in another view, waiting for its switch.
     pub restore: Option<Restore>,
-    /// The base the input sent, for the reply's notice.
     pub base_sent: Option<String>,
 }
 
@@ -677,7 +674,6 @@ pub struct Frame<'a> {
     pub ai_selection_label: String,
     /// Reviewed and total files, from the reviewed builder.
     pub reviewed_count: (usize, usize),
-    /// Whether the file watcher runs.
     pub watching: bool,
 }
 
