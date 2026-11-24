@@ -468,3 +468,24 @@ fn a_refused_restore_switch_keeps_the_filter_and_toggles() {
         assert!(state.show_unreviewed_only);
     });
 }
+
+/// A reload refused as moved every time is sent four times in all, then
+/// the refusal shows, and nothing more is sent.
+#[test]
+fn a_moved_reload_is_resent_three_times_at_most() {
+    let repo = fixture(1);
+    let storage = storage();
+    er_engine::storage::with_process_test_storage_root(storage.path(), || {
+        let mut shell = start(vec![path_of(&repo)], None, storage.path());
+        let moved = "the tab changed while it loaded; refresh it again";
+        assert!(er_service::refused_as_moved(moved));
+        shell.refuse_reloads = Some(moved.into());
+        shell.handle_key(key(KeyCode::Char('R')));
+        for _ in 0..10 {
+            shell.tick(Instant::now());
+        }
+        assert_eq!(shell.reload_sends, 4);
+        assert_eq!(shell.view().notification.as_deref(), Some(moved));
+        assert_eq!(shell.in_flight(), 0);
+    });
+}

@@ -135,6 +135,11 @@ pub struct Shell {
     probe: Option<Probe>,
     probed: Option<(TabKey, BranchPrProbe)>,
     pub should_quit: bool,
+    /// The refusal every reload gets in a test, and the reloads it refused.
+    #[cfg(test)]
+    pub refuse_reloads: Option<String>,
+    #[cfg(test)]
+    pub reload_sends: usize,
 }
 
 impl Shell {
@@ -182,6 +187,10 @@ impl Shell {
             probe,
             probed: None,
             should_quit: false,
+            #[cfg(test)]
+            refuse_reloads: None,
+            #[cfg(test)]
+            reload_sends: 0,
         };
         if !start.notices.is_empty() {
             let notice = start.notices.join("; ");
@@ -503,7 +512,7 @@ impl Shell {
                         if tries < RELOAD_TRIES
                             && er_service::refused_as_moved(&error.to_string()) =>
                     {
-                        let replies = self.host.post(&workspace, command.clone());
+                        let replies = self.send_reload(&workspace, command.clone(), after);
                         self.pending.push(Pending {
                             key,
                             workspace,
@@ -983,7 +992,7 @@ impl Shell {
     /// Sends a command for `key`'s tab; its reply lands on a later tick.
     fn post(&mut self, key: TabKey, workspace: &str, command: Command, after: After) {
         let retry = after.follows().then(|| (command.clone(), 0));
-        let replies = self.host.post(workspace, command);
+        let replies = self.send_reload(workspace, command, after);
         self.pending.push(Pending {
             key,
             workspace: workspace.to_string(),
@@ -991,6 +1000,20 @@ impl Shell {
             after,
             retry,
         });
+    }
+
+    /// Posts a command. A test that has every reload refused as moved answers
+    /// it here and counts it.
+    fn send_reload(&mut self, workspace: &str, command: Command, after: After) -> ReplyReceiver {
+        #[cfg(test)]
+        if let Some(moved) = self.refuse_reloads.clone().filter(|_| after.follows()) {
+            self.reload_sends += 1;
+            let (tx, rx) = std::sync::mpsc::channel();
+            let _ = tx.send(Err(er_service::WorkspaceError::Failed(moved)));
+            return rx;
+        }
+        let _ = after;
+        self.host.post(workspace, command)
     }
 
     /// Runs a composer key on the tab's draft, and sends the write Submit
