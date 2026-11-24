@@ -223,10 +223,8 @@ fn edit(hub: &mut ConfigHub, key: Edit) -> Step {
         return Step::Stay;
     };
     let before = |edit: &EditBuffer| {
-        edit.buffer[..edit.cursor]
-            .chars()
-            .next_back()
-            .map_or(0, char::len_utf8)
+        let head = edit.buffer.get(..edit.cursor).unwrap_or_default();
+        head.chars().next_back().map_or(0, char::len_utf8)
     };
     match key {
         Edit::Insert(c) => {
@@ -239,7 +237,8 @@ fn edit(hub: &mut ConfigHub, key: Edit) -> Step {
         }
         Edit::Left => edit.cursor -= before(edit),
         Edit::Right => {
-            let after = edit.buffer[edit.cursor..].chars().next();
+            let tail = edit.buffer.get(edit.cursor..).unwrap_or_default();
+            let after = tail.chars().next();
             edit.cursor += after.map_or(0, char::len_utf8);
         }
         Edit::Cancel => hub.editing = None,

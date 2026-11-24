@@ -77,10 +77,10 @@ impl SettingsBridge {
                     match reply {
                         Err(error) => landed.failures.push(error.to_string()),
                         Ok(SettingsReply::ModelsRefreshed { errors, .. }) => {
-                            messages.extend(errors)
+                            messages.extend(errors);
                         }
                         Ok(SettingsReply::ConfigChanged { warnings, .. }) => {
-                            messages.extend(warnings)
+                            messages.extend(warnings);
                         }
                         Ok(_) => {}
                     }
