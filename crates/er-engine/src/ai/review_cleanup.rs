@@ -155,14 +155,14 @@ mod tests {
 
             cleanup_review_artifacts(bucket.to_str().unwrap()).unwrap();
 
-            assert!(std::fs::symlink_metadata(bucket.join("experts")).is_err());
-            assert!(!bucket.join("scoped").exists());
             for kept in ["experts/sec.json", "experts/keep.json", "scoped/sec.json"] {
                 assert!(
                     outside.join(kept).exists(),
                     "{kept} outside the bucket was deleted"
                 );
             }
+            assert!(std::fs::symlink_metadata(bucket.join("experts")).is_err());
+            assert!(!bucket.join("scoped").exists());
         });
     }
 }
