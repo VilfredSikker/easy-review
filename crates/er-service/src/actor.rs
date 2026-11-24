@@ -483,10 +483,15 @@ fn handle_command(
             if !context_matches(state, &context) {
                 return refuse_stale(reply);
             }
-            // The tour the tab shows, which `resolve_view_tour` may have taken
-            // from the other tour bucket; the bucket's own file with no tab.
-            let shown = crate::sidecar_reload::readers(state, &context.er_dir)
-                .iter()
+            // The tour the sending tab shows, which `resolve_view_tour` may
+            // have taken from the other tour bucket: the reader whose context
+            // is the command's first, then any reader on the bucket. The
+            // bucket's own file only when no reader shows a tour.
+            let readers = crate::sidecar_reload::readers(state, &context.er_dir);
+            let sender = readers.iter().find(|content| content.context == context);
+            let shown = sender
+                .into_iter()
+                .chain(&readers)
                 .find_map(|content| content.ai.state.tour.clone());
             let deps = deps.clone();
             spawn_effect(tx, reply, move || {
