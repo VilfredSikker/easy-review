@@ -19,7 +19,6 @@ use ratatui::Terminal;
 use super::shell::Shell;
 use super::startup::{self, Args, Start};
 use super::tui_view::Overlay;
-use crate::screen::UNPORTED;
 use crate::ui::highlight::Highlighter;
 
 pub(super) const WAIT: Duration = Duration::from_secs(20);
@@ -27,13 +26,15 @@ const WIDTH: u16 = 120;
 const HEIGHT: u16 = 30;
 
 /// The flag-on modules, as text.
-pub(super) const SOURCES: [(&str, &str); 17] = [
+pub(super) const SOURCES: [(&str, &str); 20] = [
     ("ai_picker.rs", include_str!("ai_picker.rs")),
     ("config_hub.rs", include_str!("config_hub.rs")),
     ("filter.rs", include_str!("filter.rs")),
     ("github.rs", include_str!("github.rs")),
     ("layers.rs", include_str!("layers.rs")),
     ("mod.rs", include_str!("mod.rs")),
+    ("modes.rs", include_str!("modes.rs")),
+    ("open_hub.rs", include_str!("open_hub.rs")),
     ("pr_probe.rs", include_str!("pr_probe.rs")),
     ("review_hub.rs", include_str!("review_hub.rs")),
     ("reviewed.rs", include_str!("reviewed.rs")),
@@ -44,6 +45,7 @@ pub(super) const SOURCES: [(&str, &str); 17] = [
     ("threads.rs", include_str!("threads.rs")),
     ("tui_view.rs", include_str!("tui_view.rs")),
     ("watched.rs", include_str!("watched.rs")),
+    ("watcher.rs", include_str!("watcher.rs")),
     ("worktree.rs", include_str!("worktree.rs")),
 ];
 
@@ -301,7 +303,10 @@ pub(super) fn shell_on(ports: Ports, start: &Start, config_dir: &Path) -> Shell 
     let (tx, events) = mpsc::channel();
     let git = Arc::clone(&ports.git);
     let host = ServiceHost::new(ports, config_dir.join("config.toml")).with_events(tx);
-    Shell::start(host, events, start, git).unwrap_or_else(|e| panic!("{e:#}"))
+    let mut shell = Shell::start(host, events, start, git).unwrap_or_else(|e| panic!("{e:#}"));
+    // The App these tests compare against runs no watcher.
+    shell.watch_mut().on = false;
+    shell
 }
 
 /// Ticks the loop until `ready` holds.
@@ -503,10 +508,10 @@ fn a_selected_stub_parses_and_draws_like_the_app() {
     });
 }
 
-/// The start lists every tab and loads the first; a flag with no service
-/// route says so, and a load for a key the registry does not list is refused.
+/// The start lists every tab and loads the first, and a load for a key the
+/// registry does not list is refused.
 #[test]
-fn the_start_opens_listed_tabs_and_reports_unported_flags() {
+fn the_start_opens_listed_tabs_and_refuses_an_unlisted_load() {
     let repo = fixture(1);
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     let path = path_of(&repo);
@@ -541,15 +546,9 @@ fn the_start_opens_listed_tabs_and_reports_unported_flags() {
 
         let args = Args {
             paths: vec![path.clone(), path.clone()],
-            target: Some("develop".into()),
             ..Args::default()
         };
         let mut shell = shell(&args, storage.path());
-        let notice = shell.view().notification.clone().unwrap_or_default();
-        assert!(
-            notice.contains(&format!("--target is {UNPORTED}")),
-            "{notice:?}"
-        );
         let tabs = shell.host().registry().tabs_view();
         assert_eq!(tabs.tabs.len(), 2);
         assert_eq!(tabs.active, tabs.key_at(0));
@@ -630,10 +629,11 @@ fn a_failed_first_load_shows_its_error_and_the_notices() {
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     let args = Args {
         paths: vec![path_of(&repo)],
-        target: Some("develop".into()),
         ..Args::default()
     };
-    let start = plan(&args);
+    let mut start = plan(&args);
+    // No flag says anything at the start on this build; a notice stands in.
+    start.notices.push("A start notice".into());
     std::fs::remove_dir_all(repo.path().join(".git")).unwrap_or_else(|e| panic!("{e}"));
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
         let mut shell = shell_on(test_ports(), &start, storage.path());
@@ -651,10 +651,7 @@ fn a_failed_first_load_shows_its_error_and_the_notices() {
         );
         let frame = text(&mut shell);
         assert!(frame.contains("This tab did not load"), "{frame}");
-        assert!(
-            frame.contains(&format!("--target is {UNPORTED}")),
-            "{frame}"
-        );
+        assert!(frame.contains("A start notice"), "{frame}");
     });
 }
 
@@ -724,11 +721,12 @@ fn tab_keys_load_later_tabs_and_leave_a_failed_one() {
 }
 
 /// The service tests, as text.
-const TEST_SOURCES: [(&str, &str); 12] = [
+const TEST_SOURCES: [(&str, &str); 13] = [
     ("config_hub_tests.rs", include_str!("config_hub_tests.rs")),
     ("filter_tests.rs", include_str!("filter_tests.rs")),
     ("github_tests.rs", include_str!("github_tests.rs")),
     ("loop_tests.rs", include_str!("loop_tests.rs")),
+    ("modes_tests.rs", include_str!("modes_tests.rs")),
     ("review_hub_tests.rs", include_str!("review_hub_tests.rs")),
     ("reviewed_tests.rs", include_str!("reviewed_tests.rs")),
     ("settings_tests.rs", include_str!("settings_tests.rs")),

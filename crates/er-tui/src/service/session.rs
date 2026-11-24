@@ -7,6 +7,7 @@
 
 use er_engine::ai::CommentType;
 use er_engine::session_store::{self, SessionState};
+use er_engine::tab_identity::DiffMode;
 use er_service::TabContent;
 use tui_textarea::TextArea;
 
@@ -73,60 +74,108 @@ pub fn capture(content: &TabContent, state: &TabViewState) -> SessionState {
     }
 }
 
+/// A session waiting for the switch to its view.
+pub struct Restore {
+    pub mode: DiffMode,
+    pub session: SessionState,
+    /// Whether the switch has gone out.
+    pub sent: bool,
+}
+
+/// The App's mode mapping; History and Conflicts wait for P71.2.
+fn saved_mode(session: &SessionState) -> DiffMode {
+    match session.diff_mode.as_str() {
+        "unstaged" => DiffMode::Unstaged,
+        "staged" => DiffMode::Staged,
+        "history" => DiffMode::History,
+        "conflicts" => DiffMode::Conflicts,
+        _ => DiffMode::Branch,
+    }
+}
+
 /// Puts `session` back on a new tab's `state` when it was saved on this
 /// diff; a session from another diff would select a file that moved.
 ///
-/// The position comes back only in the mode it was saved in, since no mode
-/// key has a service route yet. The draft comes back whole in any mode: its
-/// client id is what lets a retried post find the comment it already made
-/// (ADR 0053).
-///
-/// In the App's order: the position, then a saved filter, which replaces
-/// `--filter` and snaps, then the history, which replaces `--filter`'s. The
-/// unreviewed-only toggle comes back last, with no snap of its own.
+/// The draft comes back at once (ADR 0053); a session from another view
+/// waits as a `Restore` for its switch.
 pub fn restore(state: &mut TabViewState, session: SessionState, content: &TabContent) {
     if session.diff_hash != content.diff.meta.branch_diff_hash {
         return;
     }
-    let toggles = (session.show_unreviewed_only, session.sort_by_mtime);
+    restore_draft(state, &session);
+    let mode = saved_mode(&session);
+    let ported = matches!(
+        mode,
+        DiffMode::Branch | DiffMode::Unstaged | DiffMode::Staged
+    );
+    if mode != content.tab.mode && ported {
+        state.restore = Some(Restore {
+            mode,
+            session,
+            sent: false,
+        });
+        return;
+    }
+    if mode == content.tab.mode {
+        restore_position(state, &session, content);
+    }
+    restore_filter(state, session, content);
+}
+
+/// The rest of a session once the tab shows the view it was saved in.
+pub fn restore_in_mode(state: &mut TabViewState, session: SessionState, content: &TabContent) {
     restore_position(state, &session, content);
+    restore_filter(state, session, content);
+}
+
+/// A session whose view could not be shown keeps its filter and toggles.
+pub fn restore_in_view(state: &mut TabViewState, session: SessionState, content: &TabContent) {
+    restore_filter(state, session, content);
+}
+
+/// In the App's order: a saved filter, which replaces `--filter` and snaps,
+/// then the history, which replaces `--filter`'s. The unreviewed-only
+/// toggle comes back last, with no snap of its own.
+fn restore_filter(state: &mut TabViewState, session: SessionState, content: &TabContent) {
     if !content.diff.files.is_empty() {
         if !session.filter_expr.is_empty() {
             state.apply_filter(content, &session.filter_expr, false);
         }
         state.filter_history = session.filter_history;
     }
-    (state.show_unreviewed_only, state.sort_by_mtime) = toggles;
-    if !session.comment_draft.is_empty() {
-        let review = session.comment_draft_type == "review";
-        state.draft = Draft {
-            textarea: TextArea::new(session.comment_draft.lines().map(String::from).collect()),
-            file: session.comment_draft_file,
-            hunk: session.comment_draft_hunk,
-            line: session.comment_draft_line,
-            kind: match session.comment_draft_type.as_str() {
-                "question" => CommentType::Question,
-                "note" => CommentType::Note,
-                _ => CommentType::GitHubComment,
-            },
-            review,
-            reply_to: session.comment_draft_reply_to,
-            finding_ref: session.comment_draft_finding_ref,
-            edit_id: session.comment_draft_edit_id,
-            side: session.comment_draft_side,
-            line_end: session.comment_draft_line_end,
-            client_id: session.comment_draft_client_id,
-        };
+    (state.show_unreviewed_only, state.sort_by_mtime) =
+        (session.show_unreviewed_only, session.sort_by_mtime);
+}
+
+fn restore_draft(state: &mut TabViewState, session: &SessionState) {
+    if session.comment_draft.is_empty() {
+        return;
     }
+    let session = session.clone();
+    let review = session.comment_draft_type == "review";
+    state.draft = Draft {
+        textarea: TextArea::new(session.comment_draft.lines().map(String::from).collect()),
+        file: session.comment_draft_file,
+        hunk: session.comment_draft_hunk,
+        line: session.comment_draft_line,
+        kind: match session.comment_draft_type.as_str() {
+            "question" => CommentType::Question,
+            "note" => CommentType::Note,
+            _ => CommentType::GitHubComment,
+        },
+        review,
+        reply_to: session.comment_draft_reply_to,
+        finding_ref: session.comment_draft_finding_ref,
+        edit_id: session.comment_draft_edit_id,
+        side: session.comment_draft_side,
+        line_end: session.comment_draft_line_end,
+        client_id: session.comment_draft_client_id,
+    };
 }
 
 fn restore_position(state: &mut TabViewState, session: &SessionState, content: &TabContent) {
-    let saved_mode = match session.diff_mode.as_str() {
-        "" => "branch",
-        mode => mode,
-    };
     let files = &content.diff.files;
-    if saved_mode != content.tab.mode.git_mode() || files.is_empty() {
+    if files.is_empty() {
         return;
     }
     state.selected_file = session.selected_file.min(files.len() - 1);

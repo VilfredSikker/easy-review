@@ -16,14 +16,13 @@ pub enum GitPick {
     Push,
     StageFile,
     StageAll,
+    Refresh,
     /// The GitHub rows (P68.1).
     PullComments,
     CommentOnPr,
     ApprovePr,
     /// The review hub (P68.2), which the App path does not have.
     Review,
-    /// A row whose action has no service route on this path yet.
-    Unported,
 }
 
 /// The Git hub: the App's rows, with their labels, hints and enabled states.
@@ -38,7 +37,6 @@ pub enum HubStep {
     Stay,
     Close,
     Notify(String),
-    Unported,
     Run(GitPick),
 }
 
@@ -54,8 +52,7 @@ fn row(label: &str, hint: &str, description: &str, enabled: bool) -> HubItem {
 }
 
 impl GitHub {
-    /// The hub as the App opens it on this tab. Refresh waits for its entry
-    /// (P71).
+    /// The hub as the App opens it on this tab.
     pub fn open(content: &TabContent) -> Self {
         let tab = &content.tab;
         let has_pr = tab.pr_number.is_some();
@@ -89,7 +86,7 @@ impl GitHub {
             ),
             (
                 row("Refresh diff", "R", "Re-run git diff and reload", true),
-                GitPick::Unported,
+                GitPick::Refresh,
             ),
             (
                 row(
@@ -155,7 +152,6 @@ impl GitHub {
                 };
                 return match pick {
                     _ if !row.enabled => HubStep::Notify(row.description.clone()),
-                    GitPick::Unported => HubStep::Unported,
                     pick => HubStep::Run(pick),
                 };
             }

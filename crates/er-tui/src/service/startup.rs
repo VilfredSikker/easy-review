@@ -7,8 +7,6 @@ use er_engine::tabs_record::{TabDescriptor, TabKind};
 use er_engine::TabKey;
 use er_service::{AppCommand, Command, Reply, ReplyReceiver, ServiceHost};
 
-use crate::screen::UNPORTED;
-
 /// The command line's targets and flags, as `main` parsed them.
 #[derive(Debug, Default)]
 pub struct Args {
@@ -45,9 +43,6 @@ pub fn plan(args: &Args, git: &dyn er_git::Git) -> anyhow::Result<Start> {
         filter: args.filter.clone(),
         ..Start::default()
     };
-    if args.target.is_some() {
-        start.notices.push(format!("--target is {UNPORTED}"));
-    }
     if args.remote {
         for url in args
             .paths
@@ -89,6 +84,10 @@ pub fn plan(args: &Args, git: &dyn er_git::Git) -> anyhow::Result<Start> {
     }
     if let (Some(number), Some(first)) = (args.pr, start.tabs.first_mut()) {
         *first = local_pr(first.tab.repo_root.clone(), number);
+    }
+    // `--target` is each tab's base from its first load, as the App's.
+    for start_tab in &mut start.tabs {
+        start_tab.tab.base_ref.clone_from(&args.target);
     }
     Ok(start)
 }
@@ -159,6 +158,33 @@ pub enum After {
     ReviewEdit,
     /// The review's submit: once it lands, the hub closes.
     ReviewSubmit,
+    /// A mode switch; a refused PR diff says it is unavailable.
+    ModeSwitched {
+        pr_diff: bool,
+    },
+    Refreshed(Refresh),
+    BaseChanged,
+}
+
+impl After {
+    /// A reload the selection follows.
+    pub const fn follows(self) -> bool {
+        matches!(
+            self,
+            Self::ModeSwitched { .. } | Self::Refreshed(_) | Self::BaseChanged
+        )
+    }
+}
+
+/// Why a refresh went out, for its notice.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Refresh {
+    Key,
+    /// `m`: the sort's notice went at the press.
+    Sort,
+    Watched {
+        files: usize,
+    },
 }
 
 /// A command in flight. The loop drains its receiver each tick.
@@ -167,6 +193,8 @@ pub struct Pending {
     pub workspace: String,
     pub replies: ReplyReceiver,
     pub after: After,
+    /// A reload to resend if its tab moved, and its resends.
+    pub retry: Option<(Command, u8)>,
 }
 
 /// Lists every tab in the registry, makes the first one active, and loads
@@ -212,5 +240,6 @@ pub fn load(host: &ServiceHost, key: TabKey, start_tab: &StartTab) -> Pending {
         workspace,
         replies,
         after,
+        retry: None,
     }
 }

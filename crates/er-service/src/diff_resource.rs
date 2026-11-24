@@ -59,6 +59,27 @@ pub fn diff_version(content: &TabContent) -> u64 {
         .max(content.freshness.revision)
 }
 
+/// The files a tab's list shows, in the order both front ends use.
+pub fn listed_files<'f>(
+    content: &'f TabContent,
+    view: &FileListView<'_>,
+    sort_by_mtime: bool,
+) -> Vec<(usize, &'f DiffFile)> {
+    let files = content.diff.files.iter().map(AsRef::as_ref);
+    let mut listed = visible_files(files, view);
+    if sort_by_mtime {
+        let mtimes = &content.diff.meta.stamps.mtimes;
+        let mtime = |file: &DiffFile| {
+            mtimes
+                .get(&file.path)
+                .copied()
+                .unwrap_or(SystemTime::UNIX_EPOCH)
+        };
+        listed.sort_by_key(|(_, file)| std::cmp::Reverse(mtime(file)));
+    }
+    listed
+}
+
 /// `content` as `diff(tab)` carries it.
 pub fn diff_resource(content: &TabContent, inputs: &DiffInputs<'_>) -> wire::TabDiff {
     let tab = &content.tab;
@@ -74,17 +95,7 @@ pub fn diff_resource(content: &TabContent, inputs: &DiffInputs<'_>) -> wire::Tab
         unreviewed_only: false,
         reviewed: &content.reviewed.marks,
     };
-    let mut listed = visible_files(files.iter().copied(), &view);
-    if inputs.sort_by_mtime {
-        let mtime = |file: &DiffFile| {
-            meta.stamps
-                .mtimes
-                .get(&file.path)
-                .copied()
-                .unwrap_or(SystemTime::UNIX_EPOCH)
-        };
-        listed.sort_by_key(|(_, file)| std::cmp::Reverse(mtime(file)));
-    }
+    let listed = listed_files(content, &view, inputs.sort_by_mtime);
     let keys = content.preview_key_inputs();
     let rows = listed
         .into_iter()

@@ -622,6 +622,11 @@ impl fmt::Display for PatchRefused {
     }
 }
 
+/// Whether a failure is a load refused because its tab moved meanwhile.
+pub fn refused_as_moved(message: &str) -> bool {
+    message == PatchRefused::Moved.to_string()
+}
+
 /// The keys `patch` loads into the view and the keys it drops from it.
 pub(crate) fn lifecycle_keys(
     patch: &ContentPatch,
