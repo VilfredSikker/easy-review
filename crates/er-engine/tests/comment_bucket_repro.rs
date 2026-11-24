@@ -29,8 +29,8 @@ fn write_comments(bucket: &Path, comments: &[serde_json::Value]) {
 }
 
 fn stored(bucket: &Path) -> Option<ErGithubComments> {
-    let scope = er_store::Scope::dir(bucket).unwrap();
-    match load_github_comments(&er_engine::store_registry::store(), &scope).unwrap() {
+    let scope = er_store::Scope::dir(bucket).ok()?;
+    match load_github_comments(&er_engine::store_registry::store(), &scope).ok()? {
         er_store::Loaded::Found(stored) => Some(stored.value),
         _ => None,
     }

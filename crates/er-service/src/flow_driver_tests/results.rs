@@ -28,6 +28,8 @@ struct Fixture {
     run_id: String,
 }
 
+// The lint gate reads this file alone, without the module's `cfg(test)`.
+#[cfg(test)]
 fn git(root: &Path, args: &[&str]) {
     let output = Command::new("git")
         .args(args)
@@ -224,7 +226,7 @@ fn already_in_use(error: &anyhow::Error) -> bool {
 fn acceptance_recovers_an_interrupted_history_run_in_the_captured_bucket() {
     for status in [RunStatus::Running { round: 1 }, RunStatus::Queued] {
         with_fixture(|fixture| {
-            let paths = historical_run(&fixture, "interrupted", status.clone());
+            let paths = historical_run(fixture, "interrupted", status.clone());
             let before = std::fs::read(paths.run_json()).unwrap();
             er_engine::arena::list_summaries(Path::new(&fixture.er_dir), None).unwrap();
             assert_eq!(std::fs::read(paths.run_json()).unwrap(), before);
@@ -242,7 +244,7 @@ fn acceptance_recovers_an_interrupted_history_run_in_the_captured_bucket() {
 fn recovery_preserves_registered_running_and_terminal_writers() {
     for status in [RunStatus::Running { round: 1 }, RunStatus::Cancelled] {
         with_fixture(|fixture| {
-            let paths = historical_run(&fixture, "owned", RunStatus::Running { round: 1 });
+            let paths = historical_run(fixture, "owned", RunStatus::Running { round: 1 });
             let before = std::fs::read(paths.run_json()).unwrap();
             let arena = fixture.harness.flows().host.arena.clone();
             arena.insert_for_test("owned", &fixture.er_dir, status);
@@ -299,7 +301,7 @@ fn recovery_never_writes_through_manifest_or_temporary_symlinks() {
     use std::os::unix::fs::symlink;
     for temporary in [false, true] {
         with_fixture(|fixture| {
-            let paths = historical_run(&fixture, "interrupted", RunStatus::Queued);
+            let paths = historical_run(fixture, "interrupted", RunStatus::Queued);
             let external = fixture.repo.path().join("outside.json");
             let before = std::fs::read(paths.run_json()).unwrap();
             std::fs::write(&external, &before).unwrap();
@@ -460,7 +462,7 @@ fn seed_old_overlay(fixture: &Fixture) -> Vec<u8> {
 #[test]
 fn acceptance_supersedes_old_overlay_but_allows_later_verification() {
     with_fixture(|fixture| {
-        seed_old_overlay(&fixture);
+        seed_old_overlay(fixture);
         fixture.accept(&["kept"]).unwrap();
         let run = load_run(&fixture.paths()).unwrap();
         let state = er_engine::ai::load_ai_state(&fixture.er_dir, &run.diff_hash, None);
@@ -546,7 +548,7 @@ fn save_refused(error: &anyhow::Error) -> bool {
 #[test]
 fn run_save_failure_restores_superseded_overlay_byte_for_byte() {
     with_fixture(|fixture| {
-        let original = seed_old_overlay(&fixture);
+        let original = seed_old_overlay(fixture);
         let _fail_save = fail_run_save(&fixture.paths());
         assert!(fixture.accept(&["kept"]).is_err());
         assert_eq!(
