@@ -713,10 +713,11 @@ fn tab_keys_load_later_tabs_and_leave_a_failed_one() {
 }
 
 /// The service tests, as text.
-const TEST_SOURCES: [(&str, &str); 12] = [
+const TEST_SOURCES: [(&str, &str); 13] = [
     ("config_hub_tests.rs", include_str!("config_hub_tests.rs")),
     ("filter_tests.rs", include_str!("filter_tests.rs")),
     ("github_tests.rs", include_str!("github_tests.rs")),
+    ("history_tests.rs", include_str!("history_tests.rs")),
     ("loop_tests.rs", include_str!("loop_tests.rs")),
     ("modes_tests.rs", include_str!("modes_tests.rs")),
     ("reviewed_tests.rs", include_str!("reviewed_tests.rs")),
