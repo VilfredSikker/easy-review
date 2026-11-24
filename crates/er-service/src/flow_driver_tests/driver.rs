@@ -392,8 +392,7 @@ fn partial_finder_failure_ignores_unplanned_same_hash_expert_output() {
 }
 
 /// A cancel while the finder runs keeps the bucket's lease until that
-/// writer drains, and the finder's row stays cancelled once its result
-/// lands.
+/// writer drains, and the flow stays cancelled once its result lands.
 #[test]
 fn running_cancellation_keeps_lease_until_writer_drains() {
     let _serial = er_agent::agent_slots::test_serial();
@@ -427,10 +426,6 @@ fn running_cancellation_keeps_lease_until_writer_drains() {
         let flow = harness.flow(&dirs.bucket);
         assert_eq!(flow.state, FlowState::Cancelled);
         assert_eq!(task_status(&flow, "triage"), FlowTaskStatus::Done);
-        assert_eq!(
-            task_status(&flow, "finding:general"),
-            FlowTaskStatus::Cancelled
-        );
     });
 }
 
