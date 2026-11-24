@@ -293,3 +293,88 @@ fn a_triage_run_queues_the_triage_lens() -> anyhow::Result<()> {
     assert!(prepared, "no prepared diff in the bucket");
     Ok(())
 }
+
+/// Professor refuses History, and both lenses refuse a remote tab, each
+/// with the App's message and with no task queued.
+#[test]
+fn the_lenses_refuse_what_the_app_refuses() -> anyhow::Result<()> {
+    with_repo(|dir, repo| {
+        let host = ServiceHost::new(gated_ports(Arc::default()), dir.join("config.toml"));
+        let (_, content) = loaded(&host, repo)?;
+        let mut history = (*content).clone();
+        history.tab.mode = er_engine::tab_identity::DiffMode::History;
+        let mut remote = (*content).clone();
+        remote.context.is_remote = true;
+        let hooks = host.task_hooks();
+        let refusal =
+            |content: &TabContent,
+             plan: fn(&crate::runs::RunTab<'_>) -> Result<(), er_protocol::ErError>| {
+                let run = crate::runs::RunTab {
+                    host: host.tasks(),
+                    hooks: &hooks,
+                    content,
+                };
+                plan(&run).err().map(|error| error.message)
+            };
+        let cases = [
+            (
+                refusal(&history, crate::runs::professor),
+                "Professor not available in this mode",
+            ),
+            (
+                refusal(&remote, crate::runs::professor),
+                "Professor is local-only in v1 — checkout the PR first",
+            ),
+            (
+                refusal(&remote, crate::runs::triage),
+                "Triage is local-only in v1 — checkout the PR first",
+            ),
+        ];
+        for (refused, message) in cases {
+            assert_eq!(refused.as_deref(), Some(message));
+        }
+        assert!(
+            host.tasks().rows().is_empty(),
+            "a refused lens queued a task"
+        );
+        Ok(())
+    })
+}
+
+/// An acceptance sent through `flow` from another project's tab reaches the
+/// actor whose view holds the flow: that actor is held, so no answer comes,
+/// where the tab's own actor would answer at once.
+#[test]
+fn a_flow_acceptance_reaches_the_actor_holding_the_flow() -> anyhow::Result<()> {
+    with_repo(|dir, repo| {
+        let host = ServiceHost::new(gated_ports(Arc::default()), dir.join("config.toml"));
+        let (key, _) = loaded(&host, repo)?;
+        let holder = host.handle_for("/a");
+        drop(holder.send(Command::Hold));
+        let flow = crate::LiveReviewFlow {
+            er_dir: "/flows/a".into(),
+            flow: er_engine::ai::review_flow::ReviewFlow::new("hash"),
+            draining: false,
+            run_targets: Vec::new(),
+            rerun_stages: Vec::new(),
+        };
+        *holder
+            .view
+            .write()
+            .map_err(|_| anyhow::anyhow!("poisoned view"))? = Arc::new(crate::WorkspaceView {
+            review_flows: vec![flow],
+            ..Default::default()
+        });
+        let accept = crate::FlowRequest::Accept {
+            er_dir: "/flows/a".into(),
+            run_id: "run".into(),
+            finding_ids: Vec::new(),
+        };
+        let answer = host.flow(key, accept).recv_timeout(Duration::from_secs(1));
+        assert!(
+            matches!(answer, Err(std::sync::mpsc::RecvTimeoutError::Timeout)),
+            "the tab's own actor answered: {answer:?}"
+        );
+        Ok(())
+    })
+}
