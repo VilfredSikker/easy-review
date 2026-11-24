@@ -6,6 +6,9 @@
 //! with its notice whatever the reload meets. A reload refused because the
 //! tab moved meanwhile starts again from the content that moved it, with the
 //! write's committed view applied, so the tab still shows the write.
+//!
+//! A watched file's snapshot and delete also run off the actor, under
+//! er-git's path checks; git does not track those files, so nothing reloads.
 
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex, RwLock};
@@ -14,7 +17,9 @@ use std::thread;
 use er_engine::tab_identity::DiffMode;
 use er_engine::TabKey;
 
-use crate::actor::{broadcast, publish, refuse_unknown_tab, reload_input, WorkspaceDeps};
+use crate::actor::{
+    broadcast, publish, refuse_unknown_tab, reload_input, spawn_effect, WorkspaceDeps,
+};
 use crate::content::{ContentPatch, LoadedTab, PatchRefused, TabContent};
 use crate::handle::{ActorMsg, ReplySender, WorkspaceError};
 use crate::protocol::{Event, Reply};
@@ -221,4 +226,46 @@ pub(crate) fn run(
             ("Pushed!".to_string(), Some(false))
         }
     })
+}
+
+/// A write to a watched file, which git does not track.
+pub(crate) enum Watched {
+    Snapshot(String),
+    Delete(String),
+}
+
+/// Runs a watched-file write in the tab's repo off the actor. The diff
+/// section does not show watched files, so nothing reloads.
+pub(crate) fn spawn_watched(
+    state: &WorkspaceState,
+    tx: &Sender<ActorMsg>,
+    reply: ReplySender,
+    key: TabKey,
+    write: Watched,
+) {
+    let Some(content) = state.view().tabs.get(&key).cloned() else {
+        return refuse_unknown_tab(reply);
+    };
+    spawn_effect(tx, reply, move || {
+        crate::guard::assert_off_actor();
+        let tab = &content.tab;
+        if tab.identity().is_remote() {
+            return Err(failed("This tab has no working tree to write in"));
+        }
+        let root = &tab.repo_root;
+        let notice = match write {
+            Watched::Snapshot(path) => {
+                let snapshots = format!("{}/snapshots", content.context.er_dir);
+                er_git::save_snapshot(root, &path, &snapshots)
+                    .map_err(|error| failed(format!("Snapshot error: {error}")))?;
+                "Snapshot updated".to_string()
+            }
+            Watched::Delete(path) => {
+                er_git::delete_watched_file(root, &path)
+                    .map_err(|error| failed(format!("Delete failed: {error}")))?;
+                format!("Deleted: {path}")
+            }
+        };
+        Ok(Reply::WorktreeWritten { key, notice })
+    });
 }

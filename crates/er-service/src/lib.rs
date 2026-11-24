@@ -42,9 +42,12 @@ mod pr_posts;
 mod pr_resource;
 mod protocol;
 mod reviewed_resource;
+mod run_worker;
+pub mod runs;
 mod settings;
 mod settings_wire;
 mod sidecar_reload;
+pub mod tab_commands;
 mod tab_pr;
 pub mod tasks;
 #[cfg(any(test, feature = "test-support"))]
@@ -67,7 +70,9 @@ pub use content::{
 };
 pub use diff_resource::{diff_load_error, diff_resource, diff_version, DiffInputs};
 pub use effect::{descriptor_bucket, tab_bucket};
-pub use flow_view::{current_review_diff, review_flow_inputs, review_raw_diff, review_rules};
+pub use flow_view::{
+    current_review_diff, flow_context, review_flow_inputs, review_raw_diff, review_rules,
+};
 pub use flows::read_flow_run;
 pub use freshness::{BaseBehind, Divergence, Freshness, RemoteTips};
 pub use handle::{WorkspaceError, WorkspaceHandle, REPLY_TIMEOUT};
@@ -84,6 +89,7 @@ pub use protocol::{
 pub use reviewed_resource::{
     content_view, painted_view_matches, reviewed_resource, reviewed_version,
 };
+pub use run_worker::{FlowRequest, RunReceiver, RunRequest};
 pub use settings::{spawn_settings, SettingsCommand, SettingsHandle, SettingsReply, SettingsView};
 pub use settings_wire::{risk_resource, settings_command, settings_resource};
 pub use tasks::{Finished, Launch, TaskClock, TaskHooks, TaskHost};
@@ -93,6 +99,8 @@ pub use workspace::{LiveArenaRun, LiveReviewFlow, LoadError, WorkspaceTarget, Wo
 mod flow_tests;
 #[cfg(test)]
 mod job_tests;
+#[cfg(test)]
+mod run_tests;
 #[cfg(test)]
 mod settings_tests;
 #[cfg(test)]

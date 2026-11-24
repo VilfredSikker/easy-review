@@ -27,7 +27,7 @@ const WIDTH: u16 = 120;
 const HEIGHT: u16 = 30;
 
 /// The flag-on modules, as text.
-pub(super) const SOURCES: [(&str, &str); 10] = [
+pub(super) const SOURCES: [(&str, &str); 11] = [
     ("ai_picker.rs", include_str!("ai_picker.rs")),
     ("config_hub.rs", include_str!("config_hub.rs")),
     ("mod.rs", include_str!("mod.rs")),
@@ -37,6 +37,7 @@ pub(super) const SOURCES: [(&str, &str); 10] = [
     ("shell.rs", include_str!("shell.rs")),
     ("startup.rs", include_str!("startup.rs")),
     ("tui_view.rs", include_str!("tui_view.rs")),
+    ("watched.rs", include_str!("watched.rs")),
     ("worktree.rs", include_str!("worktree.rs")),
 ];
 
@@ -44,7 +45,8 @@ pub(super) const SOURCES: [(&str, &str); 10] = [
 /// discovers settings itself, writes the working tree itself, starts a
 /// thread, or waits on an actor: the service owns the domain, and a key never
 /// blocks the loop. The one thread a module may start is the watched-file
-/// reader's, which only reads.
+/// reader's, which only reads: it makes none of the calls a write takes, and
+/// every er-git name it uses is a read.
 #[test]
 fn flag_on_modules_name_no_app_and_never_wait() {
     let banned = [
@@ -71,8 +73,24 @@ fn flag_on_modules_name_no_app_and_never_wait() {
             assert!(!flat.contains(needle), "{name} names {needle}");
         }
         if name == "watched.rs" {
-            for write in ["save_snapshot", "remove_file", "stage_", "commit", "push"] {
+            for write in WATCHED_WRITES {
                 assert!(!flat.contains(write), "{name} names {write}");
+            }
+            let tokens = code_tokens(text);
+            for write in WATCHED_WRITE_NAMES {
+                assert!(!tokens.contains(&write), "{name} names {write}");
+            }
+            for statement in use_statements(text) {
+                assert!(
+                    !statement.iter().any(|token| token == "as"),
+                    "{name} renames an import: {statement:?}"
+                );
+            }
+            for named in er_git_names(&flat) {
+                assert!(
+                    WATCHED_READS.contains(&named),
+                    "{name} names er-git's {named}"
+                );
             }
         } else {
             for spawn in ["thread::spawn", "thread::Builder"] {
@@ -98,6 +116,98 @@ fn flag_on_modules_name_no_app_and_never_wait() {
             });
         assert!(!grouped, "{name} imports the App in a group");
     }
+}
+
+/// The calls the port's writes with common names take, whatever handle or
+/// path comes before them, and the file system, which the reader never
+/// names. Matched as calls, so a name that only contains `push` or `commit`
+/// passes.
+const WATCHED_WRITES: [&str; 12] = [
+    ".commit(",
+    "::commit(",
+    ".push(",
+    "::push(",
+    ".fetch(",
+    "::fetch(",
+    "Git::",
+    "std::fs",
+    "fs::",
+    "OpenOptions",
+    "File::",
+    "remove_dir",
+];
+
+/// The writes with names nothing else uses, matched as whole identifiers in
+/// the code, so no handle, path or import spelling hides them.
+const WATCHED_WRITE_NAMES: [&str; 10] = [
+    "save_snapshot",
+    "delete_watched_file",
+    "diff_watched_file_snapshot",
+    "update_ref",
+    "shallow_clone",
+    "stage_file",
+    "unstage_file",
+    "stage_all",
+    "remove_file",
+    "fs",
+];
+
+/// A source's identifiers, outside `//` comments.
+fn code_tokens(text: &str) -> Vec<&str> {
+    text.lines()
+        .map(|line| line.split("//").next().unwrap_or_default())
+        .flat_map(|line| line.split(|c: char| !c.is_alphanumeric() && c != '_'))
+        .filter(|token| !token.is_empty())
+        .collect()
+}
+
+/// Each `use` statement's identifiers, so an import that renames a write
+/// (`as`) is seen whatever its layout.
+fn use_statements(text: &str) -> Vec<Vec<String>> {
+    let code: Vec<&str> = text
+        .lines()
+        .map(|line| line.split("//").next().unwrap_or_default())
+        .collect();
+    let code = code.join(" ");
+    code.split(';')
+        .filter_map(|piece| {
+            let tokens = code_tokens(piece);
+            let at = tokens.iter().rposition(|token| *token == "use")?;
+            let statement = tokens.get(at + 1..).unwrap_or_default();
+            Some(statement.iter().map(ToString::to_string).collect())
+        })
+        .collect()
+}
+
+/// The er-git names the watched-file reader may use.
+const WATCHED_READS: [&str; 5] = [
+    "Git",
+    "WatchedFile",
+    "discover_watched_files",
+    "read_watched_snapshot_diff",
+    "gitignored_paths",
+];
+
+/// The names a flattened source takes from er-git: each `er_git::` path or
+/// group, and each method called on a `git` handle.
+fn er_git_names<'a>(flat: &'a str) -> Vec<&'a str> {
+    let ident = |rest: &'a str| -> &'a str {
+        rest.split(|c: char| !c.is_alphanumeric() && c != '_')
+            .next()
+            .unwrap_or_default()
+    };
+    let mut names = Vec::new();
+    for rest in flat.split("er_git::").skip(1) {
+        match rest
+            .strip_prefix('{')
+            .and_then(|group| group.split('}').next())
+        {
+            Some(group) => names.extend(group.split(',').map(ident)),
+            None => names.push(ident(rest)),
+        }
+    }
+    names.extend(flat.split("git.").skip(1).map(ident));
+    names
 }
 
 // The lint gate reads this file alone, without the module's `cfg(test)`.
@@ -168,8 +278,9 @@ pub(super) fn shell(args: &Args, config_dir: &Path) -> Shell {
 
 pub(super) fn shell_on(ports: Ports, start: &Start, config_dir: &Path) -> Shell {
     let (tx, events) = mpsc::channel();
+    let git = Arc::clone(&ports.git);
     let host = ServiceHost::new(ports, config_dir.join("config.toml")).with_events(tx);
-    Shell::start(host, events, start).unwrap_or_else(|e| panic!("{e:#}"))
+    Shell::start(host, events, start, git).unwrap_or_else(|e| panic!("{e:#}"))
 }
 
 /// Ticks the loop until `ready` holds.

@@ -58,20 +58,7 @@ pub fn entry(
 /// the tab's content by the App's own rules.
 pub fn context(desktop: &DesktopState, tab: &ArenaTab, scope: Option<&str>) -> FlowContext {
     let config = arena_service::config(desktop);
-    let effort = config
-        .ai_hub
-        .resolve_default_selection(&config.agent)
-        .effort;
-    let view = match scope {
-        Some(scope) => er_service::review_flow_inputs(&desktop.ports, &tab.content, &config, scope)
-            .map_err(|error| error.to_string()),
-        None => Err("this command reviews no view".into()),
-    };
-    FlowContext {
-        config,
-        effort,
-        view,
-    }
+    er_service::flow_context(&desktop.ports, &tab.content, config, scope)
 }
 
 /// The actor that runs the flow on `er_dir`: the started actor whose view

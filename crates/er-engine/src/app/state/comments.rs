@@ -1,12 +1,9 @@
 use super::*;
 
 use crate::agent_log::log_job_progress;
-use crate::agent_prompt::{
-    record_submitted_tab_job, stored_text, AgentPromptRequest, BACKGROUND_PROGRESS_CAPACITY,
-};
+use crate::agent_prompt::{stored_text, AgentPromptRequest, BACKGROUND_PROGRESS_CAPACITY};
 use crate::annotations::ReplyAttribution;
-use er_agent::job::{JobError, JobProgress, JobRun, JobRunner, JobSpec, OutputContract};
-use er_agent::provider::ProviderSpec;
+use er_agent::job::JobProgress;
 // The launch policy's tests stay beside the App path they guard.
 #[cfg(test)]
 use crate::stage_job::{
@@ -2301,13 +2298,8 @@ impl App {
         ) || name.starts_with("expert-")
     }
 
-    /// Spawn a shell command in the background under the given name.
-    /// The command string is run via `sh -c` in the repo root.
-    /// Placeholders {base}, {branch}, {repo}, {output} are substituted.
-    #[expect(
-        clippy::literal_string_with_formatting_args,
-        reason = "{base}/{branch}/{repo}/{output} are template placeholders, not format args"
-    )]
+    /// Spawn a shell command in the background under the given name, through
+    /// `shell_command`, as a host with no App runs one.
     pub fn spawn_command(&mut self, name: &str, shell_cmd: &str) -> Result<()> {
         if self.tab().command_status.get(name) == Some(&CommandStatus::Running) {
             self.notify(&format!("{} already running", name));
@@ -2315,118 +2307,28 @@ impl App {
         }
 
         let tab = self.tab();
-        let repo_root = tab.repo_root.clone();
-        let base = tab.base_branch.clone();
-        let branch = tab.current_branch.clone();
-        let er_dir = tab.er_dir();
-        let output_path = format!("{}/summary.md", er_dir);
+        let started = crate::shell_command::launch_shell_command(
+            crate::shell_command::ShellCommandRequest {
+                name,
+                shell_cmd,
+                repo_root: tab.repo_root.clone(),
+                base_branch: &tab.base_branch,
+                branch: &tab.current_branch,
+                er_dir: tab.er_dir(),
+                config: &self.config,
+                log_tx: tab.log_tx.clone(),
+            },
+        )?;
 
-        // Substitute placeholders — sanitize values for safe shell interpolation
-        let cmd = shell_cmd
-            .replace("{base}", &crate::ai::prompts::sanitize_for_shell(&base))
-            .replace("{branch}", &crate::ai::prompts::sanitize_for_shell(&branch))
-            .replace(
-                "{repo}",
-                &crate::ai::prompts::sanitize_for_shell(&repo_root),
-            )
-            .replace(
-                "{output}",
-                &crate::ai::prompts::sanitize_for_shell(&output_path),
-            );
-
-        super::local_files::ensure_dir(std::path::Path::new(&er_dir))?;
-
-        let name_owned: std::sync::Arc<str> = std::sync::Arc::from(name);
-
-        // Send status log entry before spawning
-        let _ = self.tab().log_tx.send(AgentLogEntry {
-            timestamp: std::time::Instant::now(),
-            command_name: std::sync::Arc::from(name),
-            source: AgentLogSource::Status,
-            text: format!("{} started", name),
-        });
-
-        let log_tx = self.tab().log_tx.clone();
-        let agent_timeout = self.config.ai_hub.effective_agent_timeout();
-        let slot_cap = self.config.ai_hub.effective_max_concurrent_reviews();
-        let ceiling = self.config.ai_hub.effective_max_concurrent_agents();
-        let run = er_agent::agent_run::AgentRunHandle::new();
-        let run_for_tab = std::sync::Arc::clone(&run);
-        let run_name = name.to_string();
-        let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let mut timer = er_agent::agent_timing::AgentRunTimer::start();
-            let result = (|| -> Result<()> {
-                // The shell path stays a job: it launches provider CLIs, so it
-                // keeps its slot and its stop control like any other run.
-                let spec = JobSpec {
-                    kind: er_agent::job::JobKind::Shell(name_owned.to_string()),
-                    provider: ProviderSpec {
-                        program: "sh".to_string(),
-                        args: vec!["-c".to_string(), cmd],
-                        env: Vec::new(),
-                        protocol: crate::agent_runtime::OutputProtocol::Plain,
-                        timeout: agent_timeout,
-                    },
-                    prompt: String::new(),
-                    work_dir: repo_root,
-                    workload: er_agent::agent_slots::Workload::Background,
-                    output: OutputContract::Stdout,
-                };
-                record_submitted_tab_job(&spec.kind);
-
-                // Log lines are drained off the job thread, so a slow UI
-                // cannot hold the runner's pipe readers.
-                let (progress_tx, progress_rx) =
-                    std::sync::mpsc::sync_channel::<JobProgress>(BACKGROUND_PROGRESS_CAPACITY);
-                let log_tx_drain = log_tx.clone();
-                let name_out = name_owned.clone();
-                let name_err = name_owned.clone();
-                let drain = std::thread::spawn(move || {
-                    while let Ok(event) = progress_rx.recv() {
-                        log_job_progress(event, false, &name_out, &name_err, &log_tx_drain);
-                    }
-                });
-
-                let runner = JobRunner::new(slot_cap, ceiling);
-                let outcome = runner.run_controlled(
-                    &spec,
-                    JobRun {
-                        handle: std::sync::Arc::clone(&run),
-                        progress: Some(progress_tx),
-                        timer: Some(&mut timer),
-                    },
-                );
-                let _ = drain.join();
-                let output = match outcome {
-                    Ok(output) => output,
-                    Err(JobError::TimedOut(limit)) => {
-                        return Err(er_agent::agent_run::timed_out(limit));
-                    }
-                    Err(JobError::Cancelled) => {
-                        return Err(er_agent::agent_run::cancelled());
-                    }
-                    Err(JobError::Spawn(error)) => {
-                        return Err(error).with_context(|| format!("Failed to run {}", name_owned));
-                    }
-                };
-
-                if !output.status.success() {
-                    anyhow::bail!("{} failed: {}", name_owned, output.stderr.trim());
-                }
-
-                Ok(())
-            })();
-            let ok = result.is_ok();
-            let _ = tx.send(result);
-            timer.emit("shell_command", &name_owned, ok);
-        });
-
-        self.tab_mut().command_rx.insert(name.to_string(), rx);
+        self.tab_mut()
+            .command_rx
+            .insert(name.to_string(), started.result);
         self.tab_mut()
             .command_status
             .insert(name.to_string(), CommandStatus::Running);
-        self.tab_mut().command_runs.insert(run_name, run_for_tab);
+        self.tab_mut()
+            .command_runs
+            .insert(name.to_string(), started.run);
         self.notify(&format!("{} started...", name));
         Ok(())
     }

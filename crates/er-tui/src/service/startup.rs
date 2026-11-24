@@ -134,6 +134,11 @@ pub enum After {
     Reviewed {
         advance_from: Option<usize>,
     },
+    /// A watched-file write the user asked for: the list is read again.
+    Watched,
+    /// The snapshot a first read found missing: its diff is read again, and
+    /// nothing is announced.
+    SnapshotSaved,
 }
 
 /// A command in flight. The loop drains its receiver each tick.

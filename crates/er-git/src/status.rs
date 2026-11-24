@@ -1218,8 +1218,24 @@ pub fn read_watched_file_content(repo_root: &str, rel_path: &str) -> Result<Opti
         .map_err(|_| anyhow::anyhow!("Watched file is not valid UTF-8: {}", rel_path))
 }
 
-/// Diff a watched file against its snapshot using git diff --no-index
-/// Diff a watched file against its snapshot using git diff --no-index.
+/// Delete a watched file. The path must stay inside the repo once links are
+/// resolved, so a symlinked directory cannot carry the delete outside it.
+pub fn delete_watched_file(repo_root: &str, rel_path: &str) -> Result<()> {
+    let path = join_within(repo_root, rel_path)?;
+    let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
+        anyhow::bail!("Watched file path names no file: {rel_path}");
+    };
+    let root = std::fs::canonicalize(repo_root)?;
+    let parent = std::fs::canonicalize(parent)?;
+    if !parent.starts_with(&root) {
+        anyhow::bail!("Watched file path escapes its root: {rel_path}");
+    }
+    std::fs::remove_file(parent.join(name))?;
+    Ok(())
+}
+
+/// Diff a watched file against its snapshot, saving a snapshot when there
+/// is none yet and answering `None` for it.
 ///
 /// `snapshots_dir` is the absolute path to the snapshots directory (e.g. from
 /// `tab.er_root.snapshots_dir()`).
@@ -1228,12 +1244,23 @@ pub(crate) fn diff_watched_file_snapshot(
     rel_path: &str,
     snapshots_dir: &str,
 ) -> Result<Option<String>, GitError> {
+    let diff = read_watched_snapshot_diff(repo_root, rel_path, snapshots_dir)?;
+    if diff.is_none() {
+        save_snapshot(repo_root, rel_path, snapshots_dir).map_err(|e| invalid(e.to_string()))?;
+    }
+    Ok(diff)
+}
+
+/// Diff a watched file against its snapshot using `git diff --no-index`.
+/// Writes nothing: with no snapshot yet it answers `None`.
+pub fn read_watched_snapshot_diff(
+    repo_root: &str,
+    rel_path: &str,
+    snapshots_dir: &str,
+) -> Result<Option<String>, GitError> {
     let current_path = join_within(repo_root, rel_path).map_err(|e| invalid(e.to_string()))?;
     let snapshot_path = join_within(snapshots_dir, rel_path).map_err(|e| invalid(e.to_string()))?;
-
     if !snapshot_path.exists() {
-        // First time seeing this file — save snapshot, signal "new file"
-        save_snapshot(repo_root, rel_path, snapshots_dir).map_err(|e| invalid(e.to_string()))?;
         return Ok(None);
     }
 
@@ -1569,6 +1596,27 @@ mod tests {
         assert_eq!(byte_prefix("aéé", 2), "a");
         assert_eq!(byte_prefix("aéé", 3), "aé");
         assert_eq!(byte_prefix("aéé", 200), "aéé");
+    }
+
+    /// The read-only diff saves no snapshot, where the port's read saves one.
+    #[test]
+    fn a_snapshot_read_writes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_string_lossy().into_owned();
+        let snapshots = dir.path().join("snapshots");
+        let snapshots = snapshots.to_string_lossy().into_owned();
+        std::fs::write(dir.path().join("a.env"), "A=1\n").unwrap();
+        let read = read_watched_snapshot_diff(&root, "a.env", &snapshots).unwrap();
+        assert_eq!(read, None);
+        assert!(
+            !dir.path().join("snapshots/a.env").exists(),
+            "the read saved"
+        );
+        assert_eq!(
+            diff_watched_file_snapshot(&root, "a.env", &snapshots).unwrap(),
+            None
+        );
+        assert!(dir.path().join("snapshots/a.env").exists());
     }
 
     // ── FileStatus::symbol ──

@@ -17,7 +17,6 @@ pub use crate::state::DesktopState;
 #[cfg(test)]
 use er_engine::card_job::{run_card_ai_subprocess, CardAiInvocation};
 use er_engine::config::InboxConfig;
-use er_engine::tab_identity::DiffMode;
 
 pub(crate) const DEFAULT_ASK_AI_PROMPT: &str =
     "Elaborate on this and answer any question directly.";
@@ -1347,35 +1346,7 @@ pub(crate) fn after_github_write(state: &DesktopState, owner: String, repo: Stri
 
 // ── AI integration ───────────────────────────────────────────────────────────
 
-/// The git scope a review of `scope` reads on a tab showing `mode`.
-pub(crate) fn resolve_review_scope_in(scope: &str, mode: DiffMode) -> Result<String, String> {
-    let resolved = if scope == "current" {
-        match mode {
-            DiffMode::Branch | DiffMode::Unstaged | DiffMode::Staged => mode.git_mode().to_string(),
-            // Guide (tour) reviews the branch diff it was built from.
-            DiffMode::PrDiff | DiffMode::Tour => "branch".to_string(),
-            _ => {
-                return Err(format!(
-                    "AI review not available in {} view — switch to All changes, PR Diff, Unstaged, or Staged",
-                    mode.git_mode()
-                ));
-            }
-        }
-    } else if scope == "pr" {
-        "branch".to_string()
-    } else if matches!(scope, "branch" | "unstaged" | "staged") {
-        if matches!(scope, "unstaged" | "staged") && mode == DiffMode::PrDiff {
-            return Err(
-                "Unstaged/Staged review not available in PR Diff — switch to Unstaged or Staged view"
-                    .to_string(),
-            );
-        }
-        scope.to_string()
-    } else {
-        return Err(format!("Invalid review scope: {scope}"));
-    };
-    Ok(resolved)
-}
+pub(crate) use er_service::runs::resolve_review_scope_in;
 
 // ⌘K / AI Hub: may shell out for the review diff and writes artifacts, then
 // rebuilds a snapshot — must not run on the main thread. Keep admission,
@@ -1642,26 +1613,6 @@ pub(crate) fn spawn_scoped_reviewers(
     }
 
     Ok((started, skipped))
-}
-
-/// The GitHub comments a validation checks: from the loaded sidecar, else
-/// read from `comments_dir`.
-pub(crate) fn github_comment_count(
-    loaded: Option<&er_engine::ai::ErGithubComments>,
-    comments_dir: &str,
-) -> usize {
-    if let Some(gc) = loaded {
-        return er_engine::ai::count_eligible_github_comments(gc);
-    }
-    let store = er_engine::store_registry::store();
-    if let Ok(scope) = er_store::Scope::dir(comments_dir) {
-        if let Ok(er_store::Loaded::Found(stored)) =
-            er_engine::ai::annotation_store::load_github_comments(&store, &scope)
-        {
-            return er_engine::ai::count_eligible_github_comments(&stored.value);
-        }
-    }
-    0
 }
 
 // ── AI provider / model selection ───────────────────────────────────────────
@@ -2940,6 +2891,7 @@ fn chrono_like_timestamp() -> String {
 mod tests {
     use super::*;
     use er_engine::ai::{load_ui_annotations, save_ui_annotations, UiAnnotation};
+    use er_engine::tab_identity::DiffMode;
 
     mod ai_ask_tests;
     mod annotation_write_tests;
