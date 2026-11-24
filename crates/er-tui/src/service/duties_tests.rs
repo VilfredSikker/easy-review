@@ -165,7 +165,9 @@ fn the_resume_hint_matches_the_app() {
         for paths in [paths[..1].to_vec(), paths.clone()] {
             let app = er_engine::app::App::new_with_args(&paths, Ports::cli())
                 .unwrap_or_else(|e| panic!("{e:#}"));
-            let shell = shell(&args(paths.clone()), storage.path());
+            let mut shell = shell(&args(paths.clone()), storage.path());
+            // Loaded, so no actor reads storage after the scope ends.
+            settle(&mut shell, loaded);
             assert_eq!(shell.resume_hint(), crate::resume_hint(&app), "{paths:?}");
         }
     });
