@@ -13,6 +13,7 @@ use super::github_tests::{
 };
 use super::review_hub::ReviewHub;
 use super::shell::Shell;
+use super::startup::After;
 use super::tests::{fixture, key, rows, settle_within, shell_frame, WAIT};
 use super::tui_view::{Ask, Mode, Overlay, TabViewState};
 use crate::ui::highlight::Highlighter;
@@ -316,5 +317,31 @@ fn a_review_draft_survives_the_session() {
         super::session::restore(&mut restored, saved, &content);
         assert!(restored.draft.review);
         assert_eq!(restored.draft.textarea.lines(), ["Later"]);
+    });
+}
+
+/// A submit whose worker died answers as a refusal: the hub stays, says
+/// so, and takes the next submit.
+#[test]
+fn a_lost_submit_answers_as_a_refusal() {
+    let repo = fixture(1);
+    let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+    let github = Arc::new(two());
+    er_engine::storage::with_process_test_storage_root(storage.path(), || {
+        let mut shell = working(&repo, &github, storage.path());
+        open(&mut shell);
+        let (tab, workspace) = (hub(&shell).key, hub(&shell).workspace.clone());
+        shell.lose_write(tab, workspace, After::ReviewSubmit);
+        settle_replies(&mut shell);
+        assert!(
+            notice(&shell).contains("stopped before it answered"),
+            "{}",
+            notice(&shell)
+        );
+        assert!(matches!(shell.view().overlay, Some(Overlay::Review)));
+        to_row(&mut shell, "Submit review");
+        shell.handle_key(key(KeyCode::Enter));
+        settle_replies(&mut shell);
+        assert_eq!(submits(&github).len(), 1, "{:?}", github.calls());
     });
 }
