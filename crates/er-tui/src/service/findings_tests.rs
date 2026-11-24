@@ -124,6 +124,7 @@ pub(super) fn seed_shell(shell: &mut Shell, seed: impl Fn(&str, &str)) {
         std::thread::sleep(Duration::from_millis(10));
     }
     assert!(moved(shell), "the seeded sidecars never reached the shell");
+    super::tests::let_the_reload_notice_go(shell);
 }
 
 /// Seeds both paths with `seed`; the App reads it at once.

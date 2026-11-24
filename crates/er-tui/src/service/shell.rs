@@ -77,14 +77,17 @@ const SESSION_SAVE_DELAY: Duration = Duration::from_secs(2);
 const RELOAD_TRIES: u8 = 3;
 
 /// Opens the arguments' tabs on an in-process service and runs the loop
-/// until the user quits.
-pub fn run(args: &Args) -> anyhow::Result<()> {
+/// until the user quits. `updates` answers a newer release's version once
+/// the update check finds one; the loop never waits for it.
+pub fn run(args: &Args, updates: Receiver<String>) -> anyhow::Result<()> {
     let ports = er_engine::ports::Ports::cli();
     let start = startup::plan(args, &ports)?;
     let (tx, events) = std::sync::mpsc::channel();
     let git = Arc::clone(&ports.git);
     let host = ServiceHost::new(ports, er_engine::config::managed_config_path()).with_events(tx);
     let mut shell = Shell::start(host, events, &start, git)?;
+    shell.listen_for_update(updates);
+    shell.first_launch(er_engine::first_launch::notice());
     let mut highlighter = Highlighter::new();
 
     enable_raw_mode()?;
@@ -94,7 +97,14 @@ pub fn run(args: &Args) -> anyhow::Result<()> {
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;
-    result
+    // As the App's exit: the error, then the line that reopens the tabs.
+    if let Err(err) = result {
+        eprintln!("Error: {err:?}");
+    }
+    if let Some(hint) = shell.resume_hint() {
+        eprintln!("\x1b[2m{hint}\x1b[0m");
+    }
+    Ok(())
 }
 
 struct Landing {
@@ -156,6 +166,8 @@ pub struct Shell {
     /// Each tab's worktrees, from the list its Open hub's last opening asked
     /// for; none until that list lands.
     worktrees: HashMap<TabKey, Vec<er_engine::git::Worktree>>,
+    /// The update check, until it answers.
+    updates: Option<Receiver<String>>,
     /// The clipboard and the editor.
     launch: Box<dyn Launch>,
     /// What a test's copies and editor opens asked for.
@@ -233,6 +245,7 @@ impl Shell {
             branch_prs: HashMap::new(),
             stacks_reading: HashSet::new(),
             worktrees: HashMap::new(),
+            updates: None,
             launch,
             #[cfg(test)]
             recorder,
@@ -261,6 +274,31 @@ impl Shell {
             }
         }
         Ok(shell)
+    }
+
+    /// Takes the update check's answer on a later tick.
+    pub fn listen_for_update(&mut self, updates: Receiver<String>) {
+        self.updates = Some(updates);
+    }
+
+    /// Shows the first-launch notice, for longer, as the App's start does.
+    pub fn first_launch(&mut self, notice: Option<String>) {
+        if let Some(notice) = notice {
+            self.notify(notice);
+            self.dwell = NOTIFICATION_DWELL_LONG;
+        }
+    }
+
+    /// The `er <args>` line that reopens the open tabs, if the App would
+    /// print one.
+    pub fn resume_hint(&self) -> Option<String> {
+        let tabs = self.host.registry().tabs_view();
+        let descriptors: Vec<_> = tabs
+            .tabs
+            .iter()
+            .map(|entry| entry.descriptor.clone())
+            .collect();
+        startup::resume_hint(&descriptors)
     }
 
     fn run_loop<B: Backend<Error: Send + Sync + 'static>>(
@@ -325,6 +363,19 @@ impl Shell {
     #[cfg(test)]
     pub fn in_flight(&self) -> usize {
         self.pending.len()
+    }
+
+    /// The sidecar reloads whose replies have not landed.
+    #[cfg(test)]
+    pub fn reloads_in_flight(&self) -> usize {
+        self.reloads.len()
+    }
+
+    /// Takes the status-line message down, as the App's `clear_notification`.
+    #[cfg(test)]
+    pub fn clear_notification(&mut self) {
+        self.view.notification = None;
+        self.notified_at = None;
     }
 
     #[cfg(test)]
@@ -437,6 +488,11 @@ impl Shell {
         self.sync_probe();
         self.sync_watched(now);
         self.drain_reloads();
+        if let Some(version) = self.updates.as_ref().and_then(|rx| rx.try_recv().ok()) {
+            self.view.available_update = Some(version);
+            self.updates = None;
+            self.redraw = true;
+        }
         let landed = self.settings.drain();
         for message in landed.failures {
             self.failure(Side::Reply, message);
@@ -562,12 +618,20 @@ impl Shell {
         }
     }
 
+    /// A reload that read an outside write on the active tab says so, as the
+    /// App's sidecar poll does.
     fn drain_reloads(&mut self) {
         let mut failures = Vec::new();
+        let mut refreshed = Vec::new();
         self.reloads.retain(|replies| match replies.try_recv() {
             Ok(reply) => {
-                if let Err(error) = reply {
-                    failures.push(error.to_string());
+                match reply {
+                    Ok(Reply::SidecarsReloaded {
+                        key,
+                        reloaded: true,
+                    }) => refreshed.push(key),
+                    Ok(_) => {}
+                    Err(error) => failures.push(error.to_string()),
                 }
                 false
             }
@@ -576,6 +640,13 @@ impl Shell {
         });
         for message in failures {
             self.failure(Side::Reply, message);
+        }
+        if refreshed.is_empty() {
+            return;
+        }
+        let active = self.host.registry().tabs_view().active;
+        if active.is_some_and(|key| refreshed.contains(&key)) {
+            self.notify("✓ AI data refreshed".into());
         }
     }
 

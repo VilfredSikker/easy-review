@@ -39,6 +39,7 @@ pub struct Start {
 /// URL opens a remote PR with `--remote`, or this clone's PR without;
 /// `--pr` makes the first tab that PR. Reads the repo roots, and for `--pr`
 /// the origin's `owner/repo`, which the port parses from the remote URL.
+/// A `--remote` or `--pr` start first checks that `gh` works, as the App's.
 pub fn plan(args: &Args, ports: &er_engine::ports::Ports) -> anyhow::Result<Start> {
     let git = &*ports.git;
     let mut start = Start {
@@ -46,6 +47,7 @@ pub fn plan(args: &Args, ports: &er_engine::ports::Ports) -> anyhow::Result<Star
         ..Start::default()
     };
     if args.remote {
+        ports.github.ensure_installed()?;
         for url in args
             .paths
             .iter()
@@ -80,6 +82,7 @@ pub fn plan(args: &Args, ports: &er_engine::ports::Ports) -> anyhow::Result<Star
         }
     }
     if let (Some(number), Some(first)) = (args.pr, start.tabs.first_mut()) {
+        ports.github.ensure_installed()?;
         let root = first.tab.repo_root.clone();
         // The repo names the PR, so an open of the same PR from the Open hub
         // finds this tab (`same_pr`) instead of listing a second one.
@@ -91,6 +94,31 @@ pub fn plan(args: &Args, ports: &er_engine::ports::Ports) -> anyhow::Result<Star
         start_tab.tab.base_ref.clone_from(&args.target);
     }
     Ok(start)
+}
+
+/// The `er <args>` line that reopens these tabs, as the App prints it on
+/// exit: only with more than one tab or a remote PR tab, and with
+/// `--remote` when every tab is one.
+pub fn resume_hint(tabs: &[TabDescriptor]) -> Option<String> {
+    let remote = |tab: &TabDescriptor| tab.kind == TabKind::RemotePr;
+    if tabs.len() <= 1 && !tabs.iter().any(remote) {
+        return None;
+    }
+    let args: Vec<String> = tabs
+        .iter()
+        .map(|tab| match (&tab.pr_owner, &tab.pr_repo, tab.pr_number) {
+            (Some(owner), Some(repo), Some(number)) if remote(tab) => {
+                format!("https://github.com/{owner}/{repo}/pull/{number}")
+            }
+            _ => tab.repo_root.clone(),
+        })
+        .collect();
+    let prefix = if tabs.iter().all(remote) {
+        "er --remote"
+    } else {
+        "er"
+    };
+    Some(format!("{prefix} {}", args.join(" ")))
 }
 
 fn descriptor(kind: TabKind, repo_root: String) -> TabDescriptor {

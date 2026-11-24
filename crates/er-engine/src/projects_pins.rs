@@ -206,7 +206,6 @@ pub fn load() -> ProjectsFile {
 /// The typed record no longer reads the field, so an old value survives in
 /// `extra`. Only `true` counts: every pre-1.0 record also writes
 /// `auto_triage: false`, and a notice for those users would be noise.
-#[cfg(feature = "ui")]
 pub(crate) fn retired_auto_triage_set() -> bool {
     load().projects.iter().any(|project| {
         project

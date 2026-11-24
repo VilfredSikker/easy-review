@@ -303,8 +303,9 @@ pub(super) fn shell(args: &Args, config_dir: &Path) -> Shell {
 
 /// A GitHub that answers nothing it was not scripted to: the start's PR
 /// probe gets an error, which reads as unknown, and no test reaches `gh`.
+/// It says `gh` is installed, which a `--pr` or `--remote` start checks.
 pub(super) fn fake_github() -> Arc<dyn er_github::GitHub> {
-    Arc::new(er_github::FakeGitHub::default())
+    Arc::new(er_github::FakeGitHub::default().with_ensure_installed(Ok(())))
 }
 
 /// The real git beside [`fake_github`].
@@ -428,6 +429,21 @@ pub(super) fn press_app(app: &mut er_engine::app::App, code: KeyCode) {
     let (tx, _rx) = mpsc::channel();
     let mut cache = crate::screen::ViewCache::default();
     crate::handle_key(app, key(code), &tx, &mut None, &mut cache).unwrap_or_else(|e| panic!("{e}"));
+}
+
+/// A seed written beside the shell reaches it on the reload tick, which says
+/// "✓ AI data refreshed"; the App leg reads its seed in place and says
+/// nothing. Waits for the reload's reply to land, then takes that notice
+/// down, as the App legs clear theirs.
+pub(super) fn let_the_reload_notice_go(shell: &mut Shell) {
+    let deadline = Instant::now() + WAIT;
+    while shell.reloads_in_flight() > 0 && Instant::now() < deadline {
+        shell.tick(Instant::now());
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    if shell.view().notification.as_deref() == Some("✓ AI data refreshed") {
+        shell.clear_notification();
+    }
 }
 
 pub(super) fn loaded(shell: &Shell) -> bool {
@@ -613,6 +629,7 @@ fn a_pr_start_has_the_service_fetch_the_pr_refs() {
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
         let raw = "diff --git a/src/f000.rs b/src/f000.rs\n--- a/src/f000.rs\n+++ b/src/f000.rs\n@@ -1 +1 @@\n-a\n+b\n";
         let github = er_github::FakeGitHub::default()
+            .with_ensure_installed(Ok(()))
             .with_pr_diff(Ok(raw.to_string()))
             .with_pr_base_branch_and_commits(Ok(("main".to_string(), Vec::new())))
             .with_fetch_pr_base_ref(Ok("origin/main".to_string()));
@@ -739,12 +756,13 @@ fn tab_keys_load_later_tabs_and_leave_a_failed_one() {
 }
 
 /// The service tests, as text.
-const TEST_SOURCES: [(&str, &str); 22] = [
+const TEST_SOURCES: [(&str, &str); 23] = [
     ("ai_runs_tests.rs", include_str!("ai_runs_tests.rs")),
     ("clears_tests.rs", include_str!("clears_tests.rs")),
     ("config_hub_tests.rs", include_str!("config_hub_tests.rs")),
     ("context_tests.rs", include_str!("context_tests.rs")),
     ("copy_tests.rs", include_str!("copy_tests.rs")),
+    ("duties_tests.rs", include_str!("duties_tests.rs")),
     ("filter_tests.rs", include_str!("filter_tests.rs")),
     ("findings_tests.rs", include_str!("findings_tests.rs")),
     ("github_tests.rs", include_str!("github_tests.rs")),
