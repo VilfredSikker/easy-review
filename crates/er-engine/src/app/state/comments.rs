@@ -363,60 +363,6 @@ fn status_bar_failure(msg: String) -> String {
     format!("{}…", msg.get(..boundary).unwrap_or_default())
 }
 
-/// The one-time notice that the previous version's data was left behind.
-///
-/// `None` when there is nothing from a previous version. The old settings path
-/// is named only when a `config.toml` is among the entries; the project list is
-/// named when the one-time import ran.
-fn legacy_root_notice(
-    base: &std::path::Path,
-    entries: &[std::path::PathBuf],
-    projects_imported: bool,
-) -> Option<String> {
-    if entries.is_empty() {
-        return None;
-    }
-    let base_text = base.display();
-    let settings = if entries
-        .iter()
-        .any(|entry| entry.file_name().and_then(|name| name.to_str()) == Some("config.toml"))
-    {
-        format!(" (old settings: {base_text}/config.toml)")
-    } else {
-        String::new()
-    };
-    let projects = if projects_imported {
-        " Your project list was imported into this version."
-    } else {
-        ""
-    };
-    Some(format!(
-        "Easy Review 1.0 starts with empty storage. Data from the previous version is untouched in {base_text}{settings}. It is not read any more; delete it when you no longer need it.{projects}"
-    ))
-}
-
-/// The notice that `[commands].summary` is no longer read.
-fn retired_summary_notice(config_path: &std::path::Path) -> Option<String> {
-    if !crate::config::retired_summary_command_set(config_path) {
-        return None;
-    }
-    Some(format!(
-        "The [commands].summary setting is no longer read: Generate summary now runs a built-in job. You can remove it from {}.",
-        config_path.display()
-    ))
-}
-
-/// The notice that the per-project `auto_triage` flag is no longer read.
-fn retired_auto_triage_notice(projects_path: &std::path::Path) -> Option<String> {
-    if !crate::projects_pins::retired_auto_triage_set() {
-        return None;
-    }
-    Some(format!(
-        "The project auto-triage setting is no longer read: triage starts from the sidebar. You can remove it from {}.",
-        projects_path.display()
-    ))
-}
-
 impl App {
     // ── Comment System ──
 
@@ -2155,62 +2101,15 @@ impl App {
     /// The marker lives in the new root, so whichever front end runs first
     /// shows the notice and every later launch stays quiet.
     pub fn announce_legacy_root(&mut self) {
-        // The import is a no-op once the projects record exists; running it
-        // here means the notice can name the import on the launch that made it.
-        crate::projects_pins::import_legacy_projects_once();
-        let base = crate::storage::storage_base();
-        let root = crate::storage::storage_root();
-        self.announce_legacy_root_in(&base, &root);
+        if let Some(message) = crate::first_launch::notice() {
+            self.notify_long(&message);
+        }
     }
 
+    #[cfg(test)]
     fn announce_legacy_root_in(&mut self, base: &std::path::Path, root: &std::path::Path) {
-        // With the override set, base and root are the same directory and
-        // there is no previous version's data.
-        if base == root {
-            return;
-        }
-        let mut messages: Vec<String> = Vec::new();
-
-        if !root.join(super::local_files::LEGACY_ROOT_MARKER).exists() {
-            let entries = crate::storage::legacy_root_entries_in(base, false);
-            let projects_imported = root.join(crate::legacy_projects::IMPORTED_MARKER).exists();
-            if let Some(message) = legacy_root_notice(base, &entries, projects_imported) {
-                // A failed write means the notice shows again next launch.
-                super::local_files::mark_notice_once(root, super::local_files::LEGACY_ROOT_MARKER);
-                messages.push(message);
-            }
-        }
-
-        if !root
-            .join(super::local_files::RETIRED_SUMMARY_MARKER)
-            .exists()
-        {
-            if let Some(message) = retired_summary_notice(&crate::config::managed_config_path()) {
-                super::local_files::mark_notice_once(
-                    root,
-                    super::local_files::RETIRED_SUMMARY_MARKER,
-                );
-                messages.push(message);
-            }
-        }
-
-        if !root
-            .join(super::local_files::RETIRED_AUTO_TRIAGE_MARKER)
-            .exists()
-        {
-            if let Some(path) = crate::projects_pins::projects_artifact_path() {
-                if let Some(message) = retired_auto_triage_notice(&path) {
-                    super::local_files::mark_notice_once(
-                        root,
-                        super::local_files::RETIRED_AUTO_TRIAGE_MARKER,
-                    );
-                    messages.push(message);
-                }
-            }
-        }
-
-        if !messages.is_empty() {
-            self.notify_long(&messages.join(" "));
+        if let Some(message) = crate::first_launch::notice_in(base, root) {
+            self.notify_long(&message);
         }
     }
 
@@ -6299,24 +6198,6 @@ mod github_handle_tests {
 #[cfg(test)]
 mod legacy_root_notice_tests {
     use super::*;
-
-    #[test]
-    fn legacy_root_notice_names_the_base_and_the_old_config() {
-        let base = std::path::PathBuf::from("/data/easy-review");
-        let with_config = [base.join("repos"), base.join("config.toml")];
-        let text = legacy_root_notice(&base, &with_config, false).expect("a notice");
-        assert!(text.contains("/data/easy-review"), "{text}");
-        assert!(text.contains("/data/easy-review/config.toml"), "{text}");
-        assert!(!text.contains("project list"), "{text}");
-
-        let without_config = [base.join("repos")];
-        let text = legacy_root_notice(&base, &without_config, false).expect("a notice");
-        assert!(text.contains("/data/easy-review"), "{text}");
-        assert!(!text.contains("config.toml"), "{text}");
-
-        let text = legacy_root_notice(&base, &without_config, true).expect("a notice");
-        assert!(text.contains("project list was imported"), "{text}");
-    }
 
     #[test]
     fn announce_legacy_root_notifies_once_and_writes_the_marker() {

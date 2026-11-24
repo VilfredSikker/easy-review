@@ -28,6 +28,7 @@ pub mod shell_command;
 pub use review_export as export;
 pub mod file_rows;
 pub mod filter;
+pub mod first_launch;
 pub use er_github::actions as gh_pr_actions;
 mod env_var;
 pub mod gh_stack;

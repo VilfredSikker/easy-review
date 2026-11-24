@@ -46,6 +46,8 @@ mod config_hub_tests;
 #[cfg(test)]
 mod context_tests;
 #[cfg(test)]
+mod duties_tests;
+#[cfg(test)]
 mod filter_tests;
 #[cfg(test)]
 mod findings_tests;

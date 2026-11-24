@@ -297,8 +297,9 @@ pub(super) fn shell(args: &Args, config_dir: &Path) -> Shell {
 
 /// A GitHub that answers nothing it was not scripted to: the start's PR
 /// probe gets an error, which reads as unknown, and no test reaches `gh`.
+/// It says `gh` is installed, which a `--pr` or `--remote` start checks.
 pub(super) fn fake_github() -> Arc<dyn er_github::GitHub> {
-    Arc::new(er_github::FakeGitHub::default())
+    Arc::new(er_github::FakeGitHub::default().with_ensure_installed(Ok(())))
 }
 
 /// The real git beside [`fake_github`].
@@ -607,6 +608,7 @@ fn a_pr_start_has_the_service_fetch_the_pr_refs() {
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
         let raw = "diff --git a/src/f000.rs b/src/f000.rs\n--- a/src/f000.rs\n+++ b/src/f000.rs\n@@ -1 +1 @@\n-a\n+b\n";
         let github = er_github::FakeGitHub::default()
+            .with_ensure_installed(Ok(()))
             .with_pr_diff(Ok(raw.to_string()))
             .with_pr_base_branch_and_commits(Ok(("main".to_string(), Vec::new())))
             .with_fetch_pr_base_ref(Ok("origin/main".to_string()));
@@ -733,10 +735,11 @@ fn tab_keys_load_later_tabs_and_leave_a_failed_one() {
 }
 
 /// The service tests, as text.
-const TEST_SOURCES: [(&str, &str); 19] = [
+const TEST_SOURCES: [(&str, &str); 20] = [
     ("clears_tests.rs", include_str!("clears_tests.rs")),
     ("config_hub_tests.rs", include_str!("config_hub_tests.rs")),
     ("context_tests.rs", include_str!("context_tests.rs")),
+    ("duties_tests.rs", include_str!("duties_tests.rs")),
     ("filter_tests.rs", include_str!("filter_tests.rs")),
     ("findings_tests.rs", include_str!("findings_tests.rs")),
     ("github_tests.rs", include_str!("github_tests.rs")),
