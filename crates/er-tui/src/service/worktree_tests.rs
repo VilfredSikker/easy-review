@@ -49,6 +49,8 @@ fn expire(shell: &mut Shell) {
     shell.tick(Instant::now() + Duration::from_secs(60));
 }
 
+// The lint gate reads this file alone, without the module's `cfg(test)`.
+#[cfg(test)]
 fn porcelain(dir: &Path) -> String {
     let out = Git::new("git")
         .args(["status", "--porcelain"])

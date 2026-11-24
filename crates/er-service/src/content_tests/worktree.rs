@@ -16,6 +16,8 @@ use crate::actor::WorkspaceDeps;
 use crate::protocol::{Command, Reply};
 use crate::{spawn, WorkspaceHandle};
 
+// The lint gate reads this file alone, without the module's `cfg(test)`.
+#[cfg(test)]
 fn run_git(dir: &str, args: &[&str]) -> String {
     let out = Git::new("git")
         .args(args)
