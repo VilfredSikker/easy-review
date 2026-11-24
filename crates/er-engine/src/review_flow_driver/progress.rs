@@ -448,14 +448,23 @@ pub(super) fn set_task_status(
 }
 
 #[cfg(test)]
-#[cfg(feature = "ui")]
 mod tests {
     use super::*;
     use crate::ai::flow_providers::ResolvedReviewModels;
-    use crate::app::App;
     use crate::arena::{ArenaScope, ProgressEvent};
+    use crate::review_flow_driver::ReviewFlowLease;
     use crate::task_target::BackgroundTaskTarget;
     use std::collections::{HashMap, HashSet};
+
+    /// The bucket's lease, as a host takes it before it builds a context.
+    fn lease(bucket: &str) -> (ReviewFlowLease, er_store::LeaseGuard) {
+        let scope = er_store::Scope::dir(bucket).unwrap();
+        let guard = crate::store_registry::store()
+            .lease(&scope, er_store::DEFAULT_LOCK_TIMEOUT, "flow-1")
+            .unwrap();
+        let lease = ReviewFlowLease::new(bucket.to_owned(), 1, guard.holder().clone());
+        (lease, guard)
+    }
 
     #[test]
     fn arbiter_stays_queued_until_the_thinking_event() {
@@ -488,8 +497,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         crate::storage::with_test_storage_root(tmp.path(), || {
             let bucket = tmp.path().to_string_lossy().into_owned();
-            let mut app = App::new_for_test(Vec::new());
-            let lease = app.acquire_review_flow_lease(&bucket).unwrap();
+            let (lease, _guard) = lease(&bucket);
             let mut context = ReviewFlowContext {
                 lease,
                 target: BackgroundTaskTarget {
@@ -509,7 +517,7 @@ mod tests {
                 branch_ref: "main".into(),
                 base_branch: "main".into(),
                 raw_diff: String::new(),
-                config: app.config.clone(),
+                config: ErConfig::default(),
                 model_pools: ResolvedReviewModels {
                     fast: Vec::new(),
                     standard: Vec::new(),
@@ -598,8 +606,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         crate::storage::with_test_storage_root(tmp.path(), || {
             let bucket = tmp.path().to_string_lossy().into_owned();
-            let mut app = App::new_for_test(Vec::new());
-            let lease = app.acquire_review_flow_lease(&bucket).unwrap();
+            let (lease, _guard) = lease(&bucket);
             let context = ReviewFlowContext {
                 lease,
                 target: BackgroundTaskTarget {
@@ -619,7 +626,7 @@ mod tests {
                 branch_ref: "main".into(),
                 base_branch: "main".into(),
                 raw_diff: String::new(),
-                config: app.config.clone(),
+                config: ErConfig::default(),
                 model_pools: ResolvedReviewModels {
                     fast: Vec::new(),
                     standard: Vec::new(),

@@ -86,11 +86,6 @@ impl App {
         self.with_review_flows(|flows, host| flows.advance_review_flows(host));
     }
 
-    #[cfg(test)]
-    pub(crate) fn advance_review_flow(&mut self, key: &str) {
-        self.with_review_flows(|flows, host| flows.advance_review_flow(host, key));
-    }
-
     pub fn review_flow_for(&self, er_dir: &str) -> Option<&ReviewFlow> {
         self.review_flows.review_flow_for(er_dir)
     }
@@ -113,16 +108,6 @@ impl App {
         run_id: &str,
     ) -> Option<&BackgroundTaskTarget> {
         self.review_flows.review_flow_run_target(er_dir, run_id)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn remember_review_flow_run_target(
-        &mut self,
-        target: &BackgroundTaskTarget,
-        run_id: &str,
-    ) {
-        self.review_flows
-            .remember_review_flow_run_target(target, run_id);
     }
 
     /// Professor triage keeps its ordinary Quick review and exposes this

@@ -547,22 +547,35 @@ const fn ago_label(ts: &str) -> String {
     String::new()
 }
 
-#[cfg(all(test, feature = "ui"))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::ai::{
         ErFileReview, ErGithubComments, ErQuestions, ErReview, GithubComment, PrivateAnnotation,
         RiskLevel,
     };
-    use crate::app::TabState;
-    use crate::export::render_markdown;
     use std::collections::HashMap;
 
-    fn tab_with_ai(ai: AiState) -> TabState {
-        let mut tab = TabState::new_for_test(Vec::new());
-        tab.ai = ai;
-        tab.current_branch = "feature".into();
-        tab
+    /// What a tab hands the renderer: its AI state and its view bucket.
+    struct Tab {
+        ai: AiState,
+        er_dir: String,
+    }
+
+    fn tab_with_ai(ai: AiState) -> Tab {
+        Tab {
+            ai,
+            er_dir: "/tmp/test/.er".into(),
+        }
+    }
+
+    fn render_markdown(tab: &Tab, opts: &ExportOpts) -> String {
+        let source = ExportSource {
+            branch: "feature",
+            ai: &tab.ai,
+            er_dir: &tab.er_dir,
+        };
+        render(&source, opts)
     }
 
     fn checklist_item(
@@ -847,8 +860,7 @@ mod tests {
             questions: vec![make_question("q-1", "src/a.ts", 1, "Why?", false)],
         });
         let mut tab = tab_with_ai(ai);
-        tab.repo_root = empty_dir.to_string_lossy().to_string();
-        tab.er_root = crate::ErRoot::managed(format!("{}/.er", tab.repo_root));
+        tab.er_dir = format!("{}/.er", empty_dir.to_string_lossy());
         let out = render_markdown(&tab, &ExportOpts::default());
         assert!(
             !out.contains("## UI annotations"),
@@ -933,8 +945,7 @@ mod tests {
         ];
         save_ui_annotations(&er_dir, &anns).unwrap();
         let mut tab = tab_with_ai(AiState::default());
-        tab.repo_root = pop_dir.to_string_lossy().to_string();
-        tab.er_root = crate::ErRoot::managed(format!("{}/.er", tab.repo_root));
+        tab.er_dir.clone_from(&er_dir);
         let out = render_markdown(&tab, &ExportOpts::default());
         assert!(
             out.contains("## UI annotations"),
