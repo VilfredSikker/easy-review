@@ -13,6 +13,7 @@ mod settings;
 mod shell;
 mod startup;
 mod tui_view;
+mod worktree;
 
 pub use shell::run;
 pub use startup::Args;
@@ -29,3 +30,5 @@ mod loop_tests;
 mod settings_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod worktree_tests;

@@ -353,6 +353,25 @@ fn the_load_banner_follows_the_load_and_a_refused_save() -> anyhow::Result<()> {
     })
 }
 
+/// A save refused because only `agents.toml` broke names that file in the
+/// banner, not `config.toml`.
+#[test]
+fn a_refused_save_names_the_file_that_broke() -> anyhow::Result<()> {
+    in_temp_storage(|dir| {
+        let path = dir.join("config.toml");
+        let handle = actor(dir);
+        patch(&handle, "display.theme", text("first-theme"))?;
+        std::fs::write(er_engine::config::agents_path(&path), "{")?;
+        assert!(patch(&handle, "display.theme", text("broken")).is_err());
+        let banner = handle.view().load_banner.clone().unwrap_or_default();
+        assert_eq!(
+            banner,
+            "agents.toml failed to load; saving is disabled until it is reloaded"
+        );
+        Ok(())
+    })
+}
+
 /// The actor starts with each provider's cached discovered models, as the
 /// App does, and runs no discovery to get them.
 #[test]

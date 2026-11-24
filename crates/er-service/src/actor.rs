@@ -26,6 +26,7 @@ use crate::jobs::JobHost;
 use crate::protocol::{Command, Event, Reply, TabContext};
 use crate::sidecar_reload::SidecarReloads;
 use crate::workspace::{WorkspaceState, WorkspaceView};
+use crate::worktree::Write;
 
 /// The actor's dependencies. This is the seam P45 extends: the actor takes
 /// this value rather than the ports directly, so a new dependency (the shared
@@ -167,6 +168,9 @@ fn run(
                 }
             }
             ActorMsg::FlowTick => flows.request_advance(),
+            ActorMsg::Worktree(step) => {
+                crate::worktree::step(&deps, &mut state, &tx, *step, &subscribers, &view);
+            }
             ActorMsg::FlowsChanged(update) => {
                 apply_flows(&mut state, &jobs, update, &subscribers, &view);
             }
@@ -261,7 +265,7 @@ fn spawn_effect<R: Into<Effected>>(
 }
 
 /// Answers a tab command whose key this actor has not loaded.
-fn refuse_unknown_tab(reply: ReplySender) {
+pub(crate) fn refuse_unknown_tab(reply: ReplySender) {
     let _ = reply.send(Err(WorkspaceError::Failed(
         "no loaded tab has that key".into(),
     )));
@@ -310,7 +314,7 @@ fn spawn_load(
 }
 
 /// The input that reloads loaded content as it is, in `mode`.
-fn reload_input(content: &TabContent, mode: DiffMode) -> LoadInput {
+pub(crate) fn reload_input(content: &TabContent, mode: DiffMode) -> LoadInput {
     let mut tab = content.tab.clone();
     tab.mode = mode;
     LoadInput {
@@ -328,6 +332,7 @@ fn reload_input(content: &TabContent, mode: DiffMode) -> LoadInput {
         tips: content.freshness.value.tips.clone(),
         history: crate::history::HistoryInput::carried(content.history.clone()),
         prev_meta: Some(Arc::clone(&content.diff.meta)),
+        committed_unpushed: content.diff.meta.committed_unpushed,
     }
 }
 
@@ -1113,6 +1118,19 @@ fn handle_command(
                 ))
             });
         }
+        Command::StageFile { key, path } => {
+            crate::worktree::spawn(deps, state, tx, reply, key, Write::Stage(path));
+        }
+        Command::UnstageFile { key, path } => {
+            crate::worktree::spawn(deps, state, tx, reply, key, Write::Unstage(path));
+        }
+        Command::StageAll { key } => {
+            crate::worktree::spawn(deps, state, tx, reply, key, Write::StageAll);
+        }
+        Command::Commit { key, message } => {
+            crate::worktree::spawn(deps, state, tx, reply, key, Write::Commit(message));
+        }
+        Command::Push { key } => crate::worktree::spawn(deps, state, tx, reply, key, Write::Push),
         #[cfg(test)]
         Command::Ping => {
             let _ = reply.send(Ok(Reply::Pong));

@@ -27,7 +27,7 @@ const WIDTH: u16 = 120;
 const HEIGHT: u16 = 30;
 
 /// The flag-on modules, as text.
-const SOURCES: [(&str, &str); 8] = [
+const SOURCES: [(&str, &str); 9] = [
     ("ai_picker.rs", include_str!("ai_picker.rs")),
     ("config_hub.rs", include_str!("config_hub.rs")),
     ("mod.rs", include_str!("mod.rs")),
@@ -36,12 +36,14 @@ const SOURCES: [(&str, &str); 8] = [
     ("shell.rs", include_str!("shell.rs")),
     ("startup.rs", include_str!("startup.rs")),
     ("tui_view.rs", include_str!("tui_view.rs")),
+    ("worktree.rs", include_str!("worktree.rs")),
 ];
 
 /// No flag-on module reaches the App, fetches a PR's refs itself, writes or
-/// discovers settings itself, starts a thread, or waits on an actor: the
-/// service owns the domain, and a key never blocks the loop. The one thread a
-/// module may start is the watched-file reader's, which only reads.
+/// discovers settings itself, writes the working tree itself, starts a
+/// thread, or waits on an actor: the service owns the domain, and a key never
+/// blocks the loop. The one thread a module may start is the watched-file
+/// reader's, which only reads.
 #[test]
 fn flag_on_modules_name_no_app_and_never_wait() {
     let banned = [
@@ -55,6 +57,11 @@ fn flag_on_modules_name_no_app_and_never_wait() {
         "model_discovery::",
         "save_config",
         "apply_config_field",
+        "stage_file",
+        "unstage_file",
+        "stage_all(",
+        "git.commit(",
+        "git.push(",
     ];
     for (name, text) in SOURCES {
         // Joined into one line, so a grouped import or a split call is seen.

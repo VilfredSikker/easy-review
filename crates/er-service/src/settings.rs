@@ -23,10 +23,11 @@ use std::thread;
 use std::time::Duration;
 
 use er_engine::config::{
-    adopt_config_from, apply_config_field, config_hub_view, config_pair_load_failed, hub_edits,
-    normalize_effort, overlay_discovered_models, risk_rules_view, save_config_pair_to, AiSelection,
-    ConfigFieldValue, ConfigHubView, ConfigLoadError, ErConfig, ModelUpsert, ProviderUpsert,
-    ReviewModelGroups, RiskFilesView, RiskRuleTable, RiskRulesView, CONFIG_LOAD_BANNER,
+    adopt_config_from, apply_config_field, config_hub_view, config_pair_load_banner,
+    config_pair_load_failed, hub_edits, normalize_effort, overlay_discovered_models,
+    risk_rules_view, save_config_pair_to, AiSelection, ConfigFieldValue, ConfigHubView,
+    ConfigLoadError, ErConfig, ModelUpsert, ProviderUpsert, ReviewModelGroups, RiskFilesView,
+    RiskRuleTable, RiskRulesView,
 };
 use er_engine::model_discovery::DiscoveredModel;
 use er_engine::uninstall::{UninstallOptions, UninstallPreview, UninstallResult};
@@ -810,8 +811,8 @@ fn apply(
                 state.config = on_disk;
                 state.rebuild_all_risk();
             }
-            if config_pair_load_failed(&state.config_path) {
-                state.load_banner = Some(CONFIG_LOAD_BANNER.to_string());
+            if let Some(banner) = config_pair_load_banner(&state.config_path) {
+                state.load_banner = Some(banner);
             }
             state.last_error = Some(message.clone());
             state.revision += 1;

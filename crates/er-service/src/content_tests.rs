@@ -26,6 +26,7 @@ mod gaps;
 mod hunks;
 mod reviewed;
 mod stamps;
+mod worktree;
 
 const RAW: &str = "\
 diff --git a/src/a.rs b/src/a.rs
@@ -571,6 +572,7 @@ fn loaded_tab(repo: &str) -> Box<LoadedTab> {
                 rules_key: String::new(),
                 risk_artifact: None,
                 commits: Vec::new(),
+                committed_unpushed: false,
             },
             expanded: Default::default(),
         },
