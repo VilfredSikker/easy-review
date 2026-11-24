@@ -33,6 +33,7 @@ use super::layers::{self, Layer};
 use super::modes::{self, BaseStep, Follow};
 use super::open_hub::{OpenHub, OpenStep};
 use super::pr_probe::Probe;
+use super::review_hub::{self, ReviewHub};
 use super::reviewed::ReviewedCache;
 use super::settings::{SettingsBridge, Side, Then};
 use super::startup::{self, After, Args, Pending, Refresh, Start, StartTab};
@@ -332,6 +333,10 @@ impl Shell {
                 // A moved load is resent or its reply says so.
                 Ok(Event::CommandFailed { message }) if er_service::refused_as_moved(&message) => {}
                 Ok(Event::CommandFailed { message }) => self.failure(Side::Event, message),
+                Ok(Event::PendingReviewChanged { context }) => {
+                    self.redraw = true;
+                    self.review_changed(&context);
+                }
                 Ok(_) => self.redraw = true,
                 Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
             }
@@ -468,7 +473,12 @@ impl Shell {
                     if pending.after.follows()
                         || matches!(
                             pending.after,
-                            After::Composed | After::Deleted | After::Posted
+                            After::Composed
+                                | After::Deleted
+                                | After::Posted
+                                | After::ReviewRead
+                                | After::ReviewEdit
+                                | After::ReviewSubmit
                         ) =>
                 {
                     let lost = er_service::WorkspaceError::Failed(
@@ -547,9 +557,11 @@ impl Shell {
                 ) if after == After::Composed => {
                     self.composed(key);
                 }
-                Ok(Reply::AnnotationWritten { .. } | Reply::CommentPosted { .. })
-                    if after == After::Posted =>
-                {
+                Ok(
+                    Reply::AnnotationWritten { .. }
+                    | Reply::CommentPosted { .. }
+                    | Reply::PendingReview { .. },
+                ) if after == After::Posted => {
                     self.posted(key);
                 }
                 Err(error) if after == After::Posted => {
@@ -582,6 +594,28 @@ impl Shell {
                     self.notify("PR approved".into());
                 }
                 Err(error) if after == After::Approved => self.review_failure(error),
+                Ok(Reply::PendingReview { review, .. })
+                    if matches!(after, After::ReviewRead | After::ReviewEdit) =>
+                {
+                    if let Some(hub) = self.view.review.as_mut().filter(|hub| hub.key == key) {
+                        hub.load(review);
+                    }
+                    if after == After::ReviewEdit {
+                        self.notify("Comment removed from your pending review".into());
+                    }
+                }
+                Err(error) if after == After::ReviewRead => {
+                    // A hub whose first read failed has nothing to show.
+                    if self.view.review.as_ref().is_some_and(|hub| !hub.loaded()) {
+                        self.close_review();
+                    }
+                    self.failure(Side::Reply, error.to_string());
+                }
+                Ok(Reply::ReviewSubmitted { .. }) if after == After::ReviewSubmit => {
+                    self.close_review();
+                    self.notify("Review submitted".into());
+                }
+                Err(error) if after == After::ReviewSubmit => self.review_failure(error),
                 Ok(Reply::ThreadChanged { .. }) if after == After::Deleted => {
                     self.notify("Comment deleted".into());
                 }
@@ -687,6 +721,36 @@ impl Shell {
             TuiAction::Overlay(action) if matches!(self.view.overlay, Some(Overlay::GitHub(_))) => {
                 return self.git_hub_key(action, key, workspace, content)
             }
+            TuiAction::Overlay(action) if matches!(self.view.overlay, Some(Overlay::Review)) => {
+                return self.review_key(action);
+            }
+            TuiAction::ReviewSummary(edit) => {
+                let done = self
+                    .view
+                    .review
+                    .as_mut()
+                    .is_some_and(|hub| hub.summary_key(edit));
+                if done {
+                    self.view.input_mode = Mode::Normal;
+                    self.view.overlay = Some(Overlay::Review);
+                }
+                return;
+            }
+            TuiAction::Write(Write::RemoveReviewComment) => {
+                self.view.input_mode = Mode::Normal;
+                self.view.overlay = Some(Overlay::Review);
+                let id = self
+                    .view
+                    .review
+                    .as_mut()
+                    .and_then(|hub| hub.removing.take());
+                if let Some(id) = id {
+                    self.review_write(After::ReviewEdit, |_, content| {
+                        review_hub::remove(content, id)
+                    });
+                }
+                return;
+            }
             TuiAction::Overlay(action)
                 if matches!(self.view.overlay, Some(Overlay::FilterHistory { .. })) =>
             {
@@ -747,6 +811,9 @@ impl Shell {
                 return;
             }
             TuiAction::Confirm(ConfirmKey::Cancel) => {
+                if self.view.input_mode == Mode::Confirm(Ask::RemoveReviewComment) {
+                    self.view.overlay = Some(Overlay::Review);
+                }
                 self.view.input_mode = Mode::Normal;
                 return;
             }
@@ -862,7 +929,8 @@ impl Shell {
                 return;
             }
             A::OpenGitHub => {
-                self.view.overlay = Some(Overlay::GitHub(GitHub::open(content)));
+                let known = self.view.pr_known(key, content);
+                self.view.overlay = Some(Overlay::GitHub(GitHub::open(content, known)));
                 return;
             }
             A::ToggleWatchedFiles => {
@@ -1315,6 +1383,11 @@ impl Shell {
             HubStep::Run(GitPick::ApprovePr) => {
                 self.view.input_mode = Mode::Confirm(Ask::ApprovePr);
             }
+            HubStep::Run(GitPick::Review) => {
+                self.view.review = Some(ReviewHub::open(key, workspace, content));
+                self.view.overlay = Some(Overlay::Review);
+                self.post(key, workspace, review_hub::read(content), After::ReviewRead);
+            }
         }
     }
 
@@ -1589,6 +1662,81 @@ impl Shell {
                     super::session::restore_in_view(state, saved.session, &content);
                 }
             }
+        }
+    }
+
+    /// Runs a key on the review hub. A remove asks first, the summary opens
+    /// its input, and a submit goes once.
+    fn review_key(&mut self, action: OverlayAction) {
+        let Some(hub) = self.view.review.as_mut() else {
+            self.view.overlay = None;
+            return;
+        };
+        match hub.act(action) {
+            review_hub::HubStep::Stay => {}
+            review_hub::HubStep::Close => self.close_review(),
+            review_hub::HubStep::AskRemove => {
+                self.view.overlay = None;
+                self.view.input_mode = Mode::Confirm(Ask::RemoveReviewComment);
+            }
+            review_hub::HubStep::EditSummary => {
+                self.view.overlay = None;
+                self.view.input_mode = Mode::ReviewSummary;
+            }
+            review_hub::HubStep::Submit => {
+                self.review_write(After::ReviewSubmit, |hub, content| hub.submit(content));
+            }
+        }
+    }
+
+    /// Sends a write of the open hub's review on its own tab, unless one is
+    /// in flight there: GitHub holds one draft, so writes go one at a time.
+    fn review_write(
+        &mut self,
+        after: After,
+        command: impl FnOnce(&ReviewHub, &TabContent) -> Command,
+    ) {
+        let Some(hub) = self.view.review.as_ref() else {
+            return;
+        };
+        let (key, workspace) = (hub.key, hub.workspace.clone());
+        if self.writing(key, After::ReviewEdit) || self.writing(key, After::ReviewSubmit) {
+            return;
+        }
+        let Some(content) = self.host.content(&workspace, key) else {
+            return;
+        };
+        let command = command(hub, &content);
+        self.post(key, &workspace, command, after);
+    }
+
+    /// Another write changed the review the open hub shows: it reads again,
+    /// unless a read or a remove of its own is on the way.
+    fn review_changed(&mut self, context: &er_service::TabContext) {
+        let Some(hub) = self.view.review.as_ref().filter(|hub| hub.watches(context)) else {
+            return;
+        };
+        let (key, workspace) = (hub.key, hub.workspace.clone());
+        if self.writing(key, After::ReviewRead) || self.writing(key, After::ReviewEdit) {
+            return;
+        }
+        if let Some(content) = self.host.content(&workspace, key) {
+            self.post(
+                key,
+                &workspace,
+                review_hub::read(&content),
+                After::ReviewRead,
+            );
+        }
+    }
+
+    fn close_review(&mut self) {
+        self.view.review = None;
+        if matches!(self.view.overlay, Some(Overlay::Review)) {
+            self.view.overlay = None;
+        }
+        if self.view.input_mode == Mode::ReviewSummary {
+            self.view.input_mode = Mode::Normal;
         }
     }
 

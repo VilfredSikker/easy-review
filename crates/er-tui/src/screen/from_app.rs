@@ -176,6 +176,7 @@ pub fn from_app<'a>(app: &'a App, cache: &'a mut ViewCache) -> Screen<'a> {
             watched_count: tab.watched_files.len(),
             lazy_mode: tab.lazy_mode,
             comment_type: tab.comment_type,
+            comment_review: false,
             comment_reply_to: tab.comment_reply_to.as_deref(),
             comment_finding_ref: tab.comment_finding_ref.as_deref(),
             comment_file: &tab.comment_file,

@@ -157,6 +157,12 @@ pub enum After {
     Checklist {
         checked: bool,
     },
+    /// A read of the pending review for the review hub.
+    ReviewRead,
+    /// A remove from the pending review; its reply reads the review back.
+    ReviewEdit,
+    /// The review's submit: once it lands, the hub closes.
+    ReviewSubmit,
     /// A mode switch; a refused PR diff says it is unavailable.
     ModeSwitched {
         pr_diff: bool,

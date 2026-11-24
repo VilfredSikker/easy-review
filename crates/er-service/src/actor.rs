@@ -811,6 +811,16 @@ fn handle_command(
                     .map(|(path, patch)| Effected::patched(Reply::ThreadChanged { path }, patch))
             });
         }
+        Command::UpdateGithubComment { context, id, body } => {
+            if !context_matches(state, &context) {
+                return refuse_stale(reply);
+            }
+            let deps = deps.clone();
+            spawn_effect(tx, reply, move || {
+                crate::github_comments::update_github_comment(&deps, &context, &id, &body)
+                    .map(|(path, patch)| Effected::patched(Reply::ThreadChanged { path }, patch))
+            });
+        }
         Command::PromoteToComment { context, id, body } => {
             if !context_matches(state, &context) {
                 return refuse_stale(reply);

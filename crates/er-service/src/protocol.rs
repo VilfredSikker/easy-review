@@ -231,6 +231,13 @@ pub enum Command {
     /// Delete a posted comment and its posted replies on GitHub, then their
     /// local rows. A refused delete keeps every row.
     DeleteGithubComment { context: TabContext, id: String },
+    /// Edit a comment on GitHub, then its local row; a refused edit keeps
+    /// the row. A comment not on GitHub is edited locally.
+    UpdateGithubComment {
+        context: TabContext,
+        id: String,
+        body: String,
+    },
     /// Promote a question or note to a GitHub comment, then remove the source.
     PromoteToComment {
         context: TabContext,

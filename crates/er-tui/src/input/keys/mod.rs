@@ -34,6 +34,7 @@ pub enum TuiAction {
     Commit(Edit),
     RemoteUrl(Edit),
     BaseBranch(Edit),
+    ReviewSummary(Edit),
     Comment(CommentAction),
     /// A y/n prompt's answer other than yes.
     Confirm(ConfirmKey),
@@ -229,6 +230,7 @@ pub enum Write {
     ClearAnswersAndRunQuestions,
     ClearRepliesAndRunNotes,
     ApprovePr,
+    RemoveReviewComment,
 }
 
 /// A key in a one-line text field.
@@ -261,6 +263,9 @@ pub fn key_action(key: KeyEvent, screen: &Screen) -> TuiAction {
         InputMode::Commit => text::edit(key).map_or(TuiAction::Noop, TuiAction::Commit),
         InputMode::RemoteUrl => text::edit(key).map_or(TuiAction::Noop, TuiAction::RemoteUrl),
         InputMode::BaseBranch => text::edit(key).map_or(TuiAction::Noop, TuiAction::BaseBranch),
+        InputMode::ReviewSummary => {
+            text::edit(key).map_or(TuiAction::Noop, TuiAction::ReviewSummary)
+        }
         InputMode::Comment => TuiAction::Comment(text::comment(key)),
         InputMode::Confirm(asked) => confirm::action(key, asked),
     }
@@ -733,6 +738,7 @@ mod tests {
             (InputMode::Commit, "Commit"),
             (InputMode::RemoteUrl, "RemoteUrl"),
             (InputMode::BaseBranch, "BaseBranch"),
+            (InputMode::ReviewSummary, "ReviewSummary"),
         ] {
             screen.chrome.input_mode = mode;
             assert_table(name, &screen, &[&typing(&|edit| format!("{name}({edit})"))]);
@@ -791,6 +797,11 @@ mod tests {
                 Some("KeepAndRunNotes"),
             ),
             (view::ConfirmAction::ApprovePR, "ApprovePr", None),
+            (
+                view::ConfirmAction::RemoveReviewComment,
+                "RemoveReviewComment",
+                None,
+            ),
         ] {
             screen.chrome.input_mode = InputMode::Confirm(asked);
             let mut table = format!("*y => Write({write})\n*n *Esc => Confirm(Cancel)\n");
