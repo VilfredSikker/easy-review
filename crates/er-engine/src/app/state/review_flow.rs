@@ -115,16 +115,6 @@ impl App {
         self.review_flows.review_flow_run_target(er_dir, run_id)
     }
 
-    #[cfg(test)]
-    pub(crate) fn remember_review_flow_run_target(
-        &mut self,
-        target: &BackgroundTaskTarget,
-        run_id: &str,
-    ) {
-        self.review_flows
-            .remember_review_flow_run_target(target, run_id);
-    }
-
     /// Professor triage keeps its ordinary Quick review and exposes this
     /// follow-up suggestion to a later snapshot/UI layer.
     pub fn review_flow_professor_follow_up_suggested(&self, er_dir: &str) -> bool {

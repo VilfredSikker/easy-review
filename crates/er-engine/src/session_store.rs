@@ -284,30 +284,9 @@ mod tests {
         .unwrap();
         assert!(load_session(&store, &scope).is_none());
     }
-}
-
-#[cfg(all(test, feature = "ui"))]
-#[expect(
-    clippy::unwrap_used,
-    reason = "this test module needs the ui feature, which clippy's test exemption does not recognise"
-)]
-mod ui_tests {
-    use super::*;
-    use crate::app::TabState;
-    use crate::paths::ErRoot;
-    use tempfile::TempDir;
-
-    fn store_and_scope(tmp: &TempDir) -> (ArtifactStore, Scope) {
-        (
-            ArtifactStore::new(tmp.path()),
-            Scope::dir(tmp.path()).unwrap(),
-        )
-    }
-
-    fn captured_session() -> SessionState {
-        let mut tab = TabState::new_for_test(vec![]);
-        tab.branch_diff_hash = "hash".to_string();
-        tab.capture_session()
+    /// Every other field has a serde default.
+    fn a_session(fields: serde_json::Value) -> SessionState {
+        serde_json::from_value(fields).unwrap()
     }
 
     #[test]
@@ -319,7 +298,12 @@ mod ui_tests {
         let newer = r#"{"kind":"session","version":99,"payload":{"diff_hash":"hash"}}"#;
         std::fs::write(&path, newer).unwrap();
 
-        let error = save_session(&store, &scope, &captured_session()).unwrap_err();
+        let error = save_session(
+            &store,
+            &scope,
+            &a_session(serde_json::json!({"diff_hash": "hash"})),
+        )
+        .unwrap_err();
         assert!(matches!(error, StoreError::NewerVersion { found: 99, .. }));
         assert!(load_session(&store, &scope).is_none());
         assert_eq!(std::fs::read_to_string(path).unwrap(), newer);
@@ -330,28 +314,27 @@ mod ui_tests {
         let tmp = TempDir::new().unwrap();
         let (store, scope) = store_and_scope(&tmp);
         let guard = store.lock_scope(&scope, DEFAULT_LOCK_TIMEOUT).unwrap();
-        let error = save_session(&store, &scope, &captured_session()).unwrap_err();
+        let error = save_session(
+            &store,
+            &scope,
+            &a_session(serde_json::json!({"diff_hash": "hash"})),
+        )
+        .unwrap_err();
         assert!(matches!(error, StoreError::AlreadyLocked { .. }));
         drop(guard);
     }
 
+    /// Restoring only onto the same diff is the TUI's check
+    /// (`er-tui` `service/loop_tests.rs`); the store keeps the hash it was given.
     #[test]
-    fn session_round_trips_and_restore_rejects_a_changed_diff() {
+    fn a_session_round_trips_through_the_store() {
         let tmp = TempDir::new().unwrap();
-        crate::storage::with_test_storage_root(tmp.path(), || {
-            let mut tab = TabState::new_for_test(vec![]);
-            tab.er_root = ErRoot::managed(tmp.path().to_string_lossy());
-            tab.branch_diff_hash = "hash-a".to_string();
-            tab.selected_file = 3;
-            tab.save_session();
+        let (store, scope) = store_and_scope(&tmp);
+        let session = a_session(serde_json::json!({"diff_hash": "hash-a", "selected_file": 3}));
+        save_session(&store, &scope, &session).unwrap();
 
-            let (store, scope) = store_and_scope(&tmp);
-            let session = load_session(&store, &scope).expect("the saved session");
-            assert_eq!(session.diff_hash, "hash-a");
-            assert_eq!(session.selected_file, 3);
-
-            tab.branch_diff_hash = "hash-b".to_string();
-            assert!(!tab.restore_session());
-        });
+        let loaded = load_session(&store, &scope).expect("the saved session");
+        assert_eq!(loaded.diff_hash, "hash-a");
+        assert_eq!(loaded.selected_file, 3);
     }
 }
