@@ -107,19 +107,34 @@ pub(crate) fn toggle_checklist_item(ctx: &TabContext, item_id: &str) -> Result<(
     }
 }
 
-/// Deletes the triage, or every review artifact, once no review flow holds
-/// the bucket.
+/// Deletes the triage, or every review artifact, while it holds the bucket's
+/// admission: refused while a review flow holds it, and no flow takes it
+/// until the delete is done.
 pub(crate) fn delete_review_artifact(
     ctx: &TabContext,
     artifact: ReviewArtifact,
 ) -> Result<(), WorkspaceError> {
-    er_engine::arena::check_bucket_admission(&ctx.er_dir)
-        .map_err(|error| WorkspaceError::Failed(format!("{error:#}")))?;
+    let _admitted = admitted(ctx)?;
     let deleted = match artifact {
         ReviewArtifact::Triage => ai::review_cleanup::cleanup_triage(&ctx.er_dir),
         ReviewArtifact::Review => ai::review_cleanup::cleanup_review_artifacts(&ctx.er_dir),
     };
     deleted.map_err(|error| failed("Failed to delete the review", error))
+}
+
+/// Runs one of the draft clears on the view bucket, holding its admission as
+/// the review delete does.
+pub(crate) fn clear_drafts(
+    ctx: &TabContext,
+    clear: fn(&str) -> Result<(), er_store::StoreError>,
+) -> Result<(), WorkspaceError> {
+    let _admitted = admitted(ctx)?;
+    clear(&ctx.er_dir).map_err(|error| failed("Failed to clear", error))
+}
+
+fn admitted(ctx: &TabContext) -> Result<er_store::LeaseGuard, WorkspaceError> {
+    er_engine::arena::hold_bucket_admission(&ctx.er_dir)
+        .map_err(|error| WorkspaceError::Failed(format!("{error:#}")))
 }
 
 pub(crate) fn delete_diagram(ctx: &TabContext, id: &str) -> Result<(), WorkspaceError> {

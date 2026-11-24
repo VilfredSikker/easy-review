@@ -739,6 +739,30 @@ fn handle_command(
                 crate::finding_writes::delete_diagram(context, &id)
             });
         }
+        Command::ClearQuestionsAndNotes { context } => {
+            spawn_ai_write(deps, state, tx, reply, context, |context| {
+                crate::finding_writes::clear_drafts(
+                    context,
+                    er_engine::ai::annotation_cleanup::cleanup_questions_and_notes,
+                )
+            });
+        }
+        Command::ClearQuestionAnswers { context } => {
+            spawn_ai_write(deps, state, tx, reply, context, |context| {
+                crate::finding_writes::clear_drafts(
+                    context,
+                    er_engine::ai::annotation_cleanup::cleanup_question_answers,
+                )
+            });
+        }
+        Command::ClearNoteReplies { context } => {
+            spawn_ai_write(deps, state, tx, reply, context, |context| {
+                crate::finding_writes::clear_drafts(
+                    context,
+                    er_engine::ai::annotation_cleanup::cleanup_note_replies,
+                )
+            });
+        }
         Command::StartJob {
             job,
             submission,

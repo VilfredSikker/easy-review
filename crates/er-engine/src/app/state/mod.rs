@@ -8257,72 +8257,20 @@ impl App {
 // `crate::app::chrono_now` / `super::chrono_now` paths keep working.
 pub use crate::sync::chrono_now;
 
-/// Delete personal questions sidecar files. Errors are ignored (files may not exist).
-///
-/// Remove the private local-draft sidecars: questions and notes. Both are
-/// user-authored, never-pushed drafts, so the `z` cleanup clears them together.
+/// The App's `z`, which reports nothing: the cleared message shows whatever
+/// the store answered. P77 deletes these wrappers with the App.
 pub fn cleanup_questions_and_notes(er_dir: &str) {
-    let store = crate::store_registry::store();
-    if let Ok(scope) = er_store::Scope::dir(er_dir) {
-        let _ = crate::ai::annotation_store::delete::<crate::ai::ErQuestions>(&store, &scope);
-        let _ = crate::ai::annotation_store::delete::<crate::ai::ErNotes>(&store, &scope);
-    }
-    // The `.prev.json` backups stay plain files.
-    let base = std::path::Path::new(er_dir);
-    let _ = std::fs::remove_file(base.join("questions.prev.json"));
-    let _ = std::fs::remove_file(base.join("notes.prev.json"));
+    let _ = crate::ai::annotation_cleanup::cleanup_questions_and_notes(er_dir);
 }
 
-/// Strip Claude-authored replies from a local draft thread list and un-resolve parents.
-fn cleanup_claude_replies(items: &mut Vec<crate::ai::PrivateAnnotation>) {
-    let reply_ids: std::collections::HashSet<String> = items
-        .iter()
-        .filter(|q| q.author == "Claude")
-        .map(|q| q.id.clone())
-        .collect();
-    let parent_ids: std::collections::HashSet<String> = items
-        .iter()
-        .filter(|q| q.author == "Claude")
-        .filter_map(|q| q.in_reply_to.clone())
-        .collect();
-
-    items.retain(|q| !reply_ids.contains(&q.id));
-
-    for q in items.iter_mut() {
-        if parent_ids.contains(&q.id) {
-            q.resolved = false;
-        }
-    }
-}
-
-/// Remove AI-generated replies from the notes file, keeping human notes intact.
-/// Unmarks resolved status on notes whose replies are removed.
+/// The App's replies clear before a notes run; errors are dropped as before.
 pub fn cleanup_note_replies(er_dir: &str) {
-    let store = crate::store_registry::store();
-    let Ok(scope) = er_store::Scope::dir(er_dir) else {
-        return;
-    };
-    let _ = crate::ai::annotation_store::update_notes(&store, &scope, |current| {
-        let mut ns =
-            current.ok_or_else(|| anyhow::anyhow!("the notes file is missing or unreadable"))?;
-        cleanup_claude_replies(&mut ns.notes);
-        Ok::<_, anyhow::Error>(ns)
-    });
+    let _ = crate::ai::annotation_cleanup::cleanup_note_replies(er_dir);
 }
 
-/// Remove AI-generated answers from the questions file, keeping human questions intact.
-/// Unmarks resolved status on questions whose answers are removed.
+/// The App's answers clear before a questions run; errors are dropped as before.
 pub fn cleanup_question_answers(er_dir: &str) {
-    let store = crate::store_registry::store();
-    let Ok(scope) = er_store::Scope::dir(er_dir) else {
-        return;
-    };
-    let _ = crate::ai::annotation_store::update_questions(&store, &scope, |current| {
-        let mut qs = current
-            .ok_or_else(|| anyhow::anyhow!("the questions file is missing or unreadable"))?;
-        cleanup_claude_replies(&mut qs.questions);
-        Ok::<_, anyhow::Error>(qs)
-    });
+    let _ = crate::ai::annotation_cleanup::cleanup_question_answers(er_dir);
 }
 
 pub use crate::ai::review_cleanup::{cleanup_review_artifacts, cleanup_reviews, cleanup_triage};

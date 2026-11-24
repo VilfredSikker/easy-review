@@ -1,3 +1,4 @@
+pub mod annotation_cleanup;
 pub mod annotation_store;
 pub mod change_facts;
 pub mod checklist_store;

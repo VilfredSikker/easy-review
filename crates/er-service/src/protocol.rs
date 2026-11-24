@@ -169,6 +169,16 @@ pub enum Command {
     /// Delete one diagram from the bucket.
     DeleteDiagram { context: TabContext, id: String },
 
+    // ── Draft clears (P72.3) ──
+    // Each holds the bucket's admission while it deletes, so it is refused
+    // while a review flow holds the bucket, and a busy bucket refuses it.
+    /// Delete the questions and notes, with their backups.
+    ClearQuestionsAndNotes { context: TabContext },
+    /// Remove Claude's answers from the questions and reopen what they answered.
+    ClearQuestionAnswers { context: TabContext },
+    /// Remove Claude's replies from the notes and reopen what they answered.
+    ClearNoteReplies { context: TabContext },
+
     // ── Ask-AI answers ──
     /// Write an ask's answer into the thread it asked about. `context` is
     /// the one the ask captured when it started on tab `key`, and the write

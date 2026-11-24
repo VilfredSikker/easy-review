@@ -17,12 +17,15 @@ use std::time::Duration;
 /// Reject ordinary actions only while a workflow owns this exact bucket. The
 /// probe does not wait: a held lease answers at once.
 pub fn check_bucket_admission(er_dir: &str) -> Result<()> {
+    hold_bucket_admission(er_dir).map(drop)
+}
+
+/// [`check_bucket_admission`] that keeps the lease, so no workflow can take
+/// the bucket until the guard drops. A clear holds it while it deletes.
+pub fn hold_bucket_admission(er_dir: &str) -> Result<er_store::LeaseGuard> {
     let scope = er_store::Scope::dir(er_dir)?;
     match crate::store_registry::store().lease(&scope, Duration::ZERO, "admission") {
-        Ok(guard) => {
-            drop(guard);
-            Ok(())
-        }
+        Ok(guard) => Ok(guard),
         Err(StoreError::LeaseHeld { .. } | StoreError::AlreadyLocked { .. }) => {
             bail!("A review flow is already using this review bucket")
         }
