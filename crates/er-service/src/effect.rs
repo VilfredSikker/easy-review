@@ -395,6 +395,7 @@ pub(crate) fn load_tab(
             .remote_repo
             .as_deref()
             .is_some_and(|slug| slug.split('/').count() == 2);
+    // Any other view clears it, so a mode switch does too.
     let committed_unpushed =
         input.committed_unpushed && tab.mode == DiffMode::Staged && shows_last_commit(git, &tab);
     let fetch = |scope: &str| {

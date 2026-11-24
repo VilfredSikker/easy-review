@@ -354,7 +354,6 @@ fn mode_input(content: &TabContent, mode: DiffMode, pr_number: Option<u64>) -> L
     }
     input.auto_unmark = false;
     input.recheck_branch = false;
-    input.committed_unpushed = false;
     // The first entry into a local PR's diff fetches its refs.
     input.fetch_pr_refs = mode == DiffMode::PrDiff
         && content.tab.mode != DiffMode::PrDiff
