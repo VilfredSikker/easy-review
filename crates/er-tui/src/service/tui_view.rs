@@ -23,6 +23,7 @@ use tui_textarea::TextArea;
 
 use super::ai_picker::Picker;
 use super::config_hub::ConfigHub;
+use super::history::HistoryPos;
 use super::modes::Follow;
 use super::open_hub::OpenHub;
 use super::review_hub::ReviewHub;
@@ -289,6 +290,7 @@ pub struct TabViewState {
     pub refresh_follow: Option<Follow>,
     pub restore: Option<Restore>,
     pub base_sent: Option<String>,
+    pub history: HistoryPos,
 }
 
 impl Default for TabViewState {
@@ -328,6 +330,7 @@ impl Default for TabViewState {
             refresh_follow: None,
             restore: None,
             base_sent: None,
+            history: HistoryPos::default(),
         }
     }
 }
@@ -763,8 +766,8 @@ pub fn screen<'a>(view: &'a TuiView, state: &'a TabViewState, frame: Frame<'a>) 
             current_branch: &tab.current_branch,
             base_branch: &tab.base_branch,
             pr_number: tab.pr_number,
-            merge_active: false,
-            unresolved_count: 0,
+            merge_active: content.diff.meta.merge_active,
+            unresolved_count: content.diff.meta.unresolved,
             committed_unpushed: content.diff.meta.committed_unpushed,
             sort_by_mtime: state.sort_by_mtime,
             modes: modes(content, frame.config),
@@ -832,6 +835,7 @@ pub fn screen<'a>(view: &'a TuiView, state: &'a TabViewState, frame: Frame<'a>) 
             ai: &content.ai.state,
             reviewed_count: frame.reviewed_count,
             filtered_reviewed_count: state.filtered_reviewed_count(content),
+            history: super::history::view(&state.history, content, &state.search_query),
         }),
     }
 }
@@ -862,7 +866,8 @@ pub fn tab_name(content: &TabContent) -> String {
         )
 }
 
-/// The App's mode list, so number keys match; Conflicts waits for P71.2.
+/// The App's mode list, so number keys match; Conflicts shows while a
+/// merge is in progress.
 fn modes(content: &TabContent, config: &ErConfig) -> Vec<DiffMode> {
     let tab = &content.tab;
     if tab.identity().is_remote() || (tab.pr_number.is_some() && tab.checkout_root.is_none()) {
@@ -888,6 +893,9 @@ fn modes(content: &TabContent, config: &ErConfig) -> Vec<DiffMode> {
     }
     if features.view_tour && content.ai.state.has_tour() {
         modes.push(DiffMode::Tour);
+    }
+    if features.view_conflicts && !read_only && content.diff.meta.merge_active {
+        modes.push(DiffMode::Conflicts);
     }
     if features.view_hidden && !read_only && !config.watched.paths.is_empty() {
         modes.push(DiffMode::Hidden);

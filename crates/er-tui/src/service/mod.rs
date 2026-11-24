@@ -10,6 +10,7 @@ mod ai_picker;
 mod config_hub;
 mod filter;
 mod github;
+mod history;
 mod layers;
 mod modes;
 mod open_hub;
@@ -39,6 +40,8 @@ mod config_hub_tests;
 mod filter_tests;
 #[cfg(test)]
 mod github_tests;
+#[cfg(test)]
+mod history_tests;
 #[cfg(test)]
 mod loop_tests;
 #[cfg(test)]

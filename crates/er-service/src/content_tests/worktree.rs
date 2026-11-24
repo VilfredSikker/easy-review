@@ -107,6 +107,7 @@ fn a_commit_runs_off_the_actor_thread() -> anyhow::Result<()> {
     with_root(|repo| {
         let fake = Arc::new(
             er_git::FakeGit::default()
+                .with_is_merge_in_progress(false)
                 .with_current_branch(Ok("feature".to_string()))
                 .with_diff_shortstat((0, 0, 0))
                 .with_diff_raw(Ok(RAW.to_string()))
@@ -336,7 +337,7 @@ fn a_write_survives_a_reload_that_lands_meanwhile() -> anyhow::Result<()> {
 /// the write is refused before any port write.
 #[test]
 fn a_tab_with_no_working_tree_refuses_every_write() -> anyhow::Result<()> {
-    let fake = Arc::new(er_git::FakeGit::default());
+    let fake = Arc::new(er_git::FakeGit::default().with_is_merge_in_progress(false));
     let git: Arc<dyn er_git::Git> = Arc::clone(&fake) as Arc<dyn er_git::Git>;
     let deps = WorkspaceDeps::new(Ports {
         git,

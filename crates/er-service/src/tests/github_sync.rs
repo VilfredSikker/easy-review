@@ -56,7 +56,7 @@ pub(super) fn acme_7() -> PrRef {
 }
 
 pub(super) fn actor(github: &Arc<FakeGitHub>) -> WorkspaceHandle {
-    let git: Arc<dyn er_git::Git> = Arc::new(FakeGit::default());
+    let git: Arc<dyn er_git::Git> = Arc::new(FakeGit::default().with_is_merge_in_progress(false));
     let github: Arc<dyn er_github::GitHub> = github.clone();
     spawn(WorkspaceDeps::new(Ports { git, github }))
 }
@@ -287,6 +287,7 @@ fn a_sync_patches_the_ai_section_of_the_tab_on_its_bucket() -> anyhow::Result<()
     er_engine::storage::with_process_test_storage_root(storage, || -> anyhow::Result<()> {
         let git: Arc<dyn er_git::Git> = Arc::new(
             FakeGit::default()
+                .with_is_merge_in_progress(false)
                 .with_current_branch(Ok("feature".to_string()))
                 .with_diff_shortstat((0, 0, 0))
                 .with_diff_raw(Ok(RAW.to_string())),

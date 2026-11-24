@@ -164,6 +164,11 @@ pub enum After {
     },
     Refreshed(Refresh),
     BaseChanged,
+    /// A History commit `k` or `j` picked: once it lands, the next queued
+    /// press goes out.
+    CommitSelected,
+    /// History's next page: once it lands, the waiting `k` moves into it.
+    MoreHistory,
 }
 
 impl After {
