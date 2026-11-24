@@ -1934,181 +1934,52 @@ impl App {
     }
 
     pub fn yank_hunk(&mut self) -> Result<()> {
-        let si = self.tab().selected_file;
-        let hi = self.tab().current_hunk;
-
-        if si >= self.tab().files.len() {
-            self.notify("No file selected");
-            return Ok(());
-        }
-        if hi >= self.tab().files[si].hunks.len() {
-            self.notify("No hunk selected");
-            return Ok(());
-        }
-
-        let text = self.tab().files[si].hunks[hi].to_text();
-        Self::copy_to_clipboard(&text)?;
-        self.notify("Hunk copied to clipboard");
-        Ok(())
+        let tab = self.tab();
+        let built = crate::copy_text::hunk(tab.files.get(tab.selected_file), tab.current_hunk);
+        self.copy_built(built)
     }
 
     /// Copy all hunks for the selected file in unified diff format
     pub fn copy_full_file(&mut self) -> Result<()> {
-        let tab = self.tab();
-        if let Some(file) = tab.selected_diff_file() {
-            let mut text = format!("--- a/{}\n+++ b/{}\n", file.path, file.path);
-            for hunk in &file.hunks {
-                text.push_str(&hunk.to_text());
-                text.push('\n');
-            }
-            let count = file.hunks.len();
-            Self::copy_to_clipboard(&text)?;
-            self.notify(&format!("Copied full file diff ({} hunks)", count));
-        } else {
-            self.notify("No file selected");
-        }
-        Ok(())
+        let built = crate::copy_text::full_file(self.tab().selected_diff_file());
+        self.copy_built(built)
     }
 
     /// Copy the selected file's path to clipboard
     pub fn copy_file_path(&mut self) -> Result<()> {
-        let tab = self.tab();
-        if let Some(file) = tab.selected_diff_file() {
-            let path = file.path.clone();
-            Self::copy_to_clipboard(&path)?;
-            self.notify(&format!("Copied: {}", path));
-        } else {
-            self.notify("No file selected");
-        }
-        Ok(())
+        let built = crate::copy_text::path(self.tab().selected_diff_file());
+        self.copy_built(built)
     }
 
     /// Copy the current line's content to clipboard (requires line-level navigation)
     pub fn copy_line(&mut self) -> Result<()> {
         let tab = self.tab();
-        if let Some(file) = tab.selected_diff_file() {
-            if let Some(line_idx) = tab.current_line {
-                if let Some(hunk) = file.hunks.get(tab.current_hunk) {
-                    if let Some(line) = hunk.lines.get(line_idx) {
-                        let content = line.content.clone();
-                        Self::copy_to_clipboard(&content)?;
-                        self.notify("Line copied to clipboard");
-                        return Ok(());
-                    }
-                }
-            }
-            self.notify("No line selected — use arrow keys to enter line navigation");
-        } else {
-            self.notify("No file selected");
-        }
-        Ok(())
+        let built = crate::copy_text::line(tab.selected_diff_file(), &tab.copy_cursor());
+        self.copy_built(built)
     }
 
-    /// Copy rich context to clipboard for pasting into an agent terminal.
-    ///
-    /// What gets copied depends on navigation state:
-    /// - Selection active (shift+arrow): selected lines only
-    /// - Line-level nav (arrow keys): current line only
-    /// - Hunk-level nav (n/N keys): full hunk
+    /// Copy rich context to clipboard for pasting into an agent terminal:
+    /// the shift-arrow selection, else the current line, else the hunk.
     pub fn copy_context(&mut self) -> Result<()> {
         let tab = self.tab();
-        let file = match tab.selected_diff_file() {
-            Some(f) => f,
-            None => {
-                self.notify("No file selected");
-                return Ok(());
+        let built = crate::copy_text::context(
+            tab.selected_diff_file(),
+            &tab.copy_cursor(),
+            (&tab.current_branch, &tab.base_branch),
+            &tab.ai,
+            &tab.layers,
+        );
+        self.copy_built(built)
+    }
+
+    fn copy_built(&mut self, built: crate::copy_text::Built) -> Result<()> {
+        match built {
+            Ok(copied) => {
+                Self::copy_to_clipboard(&copied.text)?;
+                self.notify(&copied.notice);
             }
-        };
-        let hunk = match file.hunks.get(tab.current_hunk) {
-            Some(h) => h,
-            None => {
-                self.notify("No hunk selected");
-                return Ok(());
-            }
-        };
-
-        let mut text = String::new();
-
-        // Header
-        text.push_str(&format!("File: {}\n", file.path));
-        text.push_str(&format!(
-            "Branch: {} (vs {})\n",
-            tab.current_branch, tab.base_branch
-        ));
-
-        // Determine what to copy based on navigation state
-        let (lines_to_copy, line_label) = if let Some(range) = tab.selected_range() {
-            // Shift+arrow selection: copy selected lines
-            let selected: Vec<_> = hunk
-                .lines
-                .iter()
-                .enumerate()
-                .filter(|(i, _)| range.contains(i))
-                .map(|(_, l)| l)
-                .collect();
-            let start = selected.first().and_then(|l| l.new_num).unwrap_or(0);
-            let end = selected.last().and_then(|l| l.new_num).unwrap_or(0);
-            let label = if start == end {
-                format!("Line {}", start)
-            } else {
-                format!("Lines {}-{}", start, end)
-            };
-            (selected, label)
-        } else if let Some(line_idx) = tab.current_line {
-            // Line-level navigation: copy current line only
-            if let Some(line) = hunk.lines.get(line_idx) {
-                let ln = line.new_num.unwrap_or(0);
-                (vec![line], format!("Line {}", ln))
-            } else {
-                let all: Vec<_> = hunk.lines.iter().collect();
-                (all, format!("Hunk #{}", tab.current_hunk + 1))
-            }
-        } else {
-            // Hunk-level navigation: copy full hunk
-            let all: Vec<_> = hunk.lines.iter().collect();
-            (all, format!("Hunk #{}", tab.current_hunk + 1))
-        };
-
-        text.push_str(&format!("{}:\n\n", line_label));
-
-        // Hunk header
-        text.push_str(&format!(" {}\n", hunk.header));
-
-        // Diff lines
-        for line in &lines_to_copy {
-            let prefix = match line.line_type {
-                crate::git::LineType::Add => "+",
-                crate::git::LineType::Delete => "-",
-                crate::git::LineType::Context => " ",
-                crate::git::LineType::Fold(_) => continue,
-            };
-            text.push_str(&format!("{}{}\n", prefix, line.content));
+            Err(notice) => self.notify(&notice),
         }
-
-        // AI finding if present
-        let findings =
-            tab.ai
-                .findings_for_hunk(&file.path, tab.current_hunk, file.hunks.len(), &tab.layers);
-        if let Some(finding) = findings.first() {
-            text.push_str(&format!(
-                "\nFinding: [{:?}] {}\n",
-                finding.severity, finding.title
-            ));
-            if !finding.suggestion.is_empty() {
-                text.push_str(&format!("Suggestion: {}\n", finding.suggestion));
-            }
-        }
-
-        let line_count = lines_to_copy.len();
-        let scope = if tab.selected_range().is_some() {
-            "selection"
-        } else if tab.current_line.is_some() {
-            "line"
-        } else {
-            "hunk"
-        };
-        Self::copy_to_clipboard(&text)?;
-        self.notify(&format!("Copied {} ({} lines)", scope, line_count));
         Ok(())
     }
 

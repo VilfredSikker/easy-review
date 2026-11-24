@@ -32,9 +32,12 @@ use super::ai_runs::{self, Next, Rerun};
 use super::clears::{self, Clear};
 use super::config_hub::{self, ConfigHub, Step};
 use super::context;
+use super::copy::{self, CopyHub, CopyStep};
+use super::export::{self, ExportStep};
 use super::filter::{self, Done};
 use super::findings::{self, Summary};
 use super::github;
+use super::handoff::{self, Launch};
 use super::history;
 use super::layers::{self, Layer};
 use super::modes::{self, BaseStep, Follow};
@@ -149,6 +152,11 @@ pub struct Shell {
     branch_prs: HashMap<TabKey, (u64, String)>,
     /// The tabs with a stack lookup on the way.
     stacks_reading: HashSet<TabKey>,
+    /// The clipboard and the editor.
+    launch: Box<dyn Launch>,
+    /// What a test's copies and editor opens asked for.
+    #[cfg(test)]
+    pub recorder: handoff::Recorder,
     /// The runs the host is planning.
     runs: Vec<RunReceiver>,
     /// The bucket each tab that ran something showed, so a closed tab's log
@@ -190,6 +198,12 @@ impl Shell {
                 Probe::spawn(github, key, first.tab.repo_root.clone())
             });
         let starts = keys.into_iter().zip(start.tabs.iter().cloned()).collect();
+        #[cfg(test)]
+        let recorder = handoff::Recorder::default();
+        #[cfg(test)]
+        let launch: Box<dyn Launch> = Box::new(recorder.clone());
+        #[cfg(not(test))]
+        let launch = handoff::launcher();
         let mut shell = Self {
             host,
             events,
@@ -214,6 +228,9 @@ impl Shell {
             probed: None,
             branch_prs: HashMap::new(),
             stacks_reading: HashSet::new(),
+            launch,
+            #[cfg(test)]
+            recorder,
             runs: Vec::new(),
             run_buckets: HashMap::new(),
             should_quit: false,
@@ -858,8 +875,16 @@ impl Shell {
         };
         self.unsaved.insert(tab);
         self.save_due = Some(Instant::now() + SESSION_SAVE_DELAY);
-        if let Some(action) = self.with_screen(tab, &content, |screen| key_action(key, screen)) {
-            self.execute(action, tab, &workspace, &content);
+        let Some(action) = self.with_screen(tab, &content, |screen| key_action(key, screen)) else {
+            return;
+        };
+        let before = self.view.tab(tab).map(|state| state.selected_file);
+        self.execute(action, tab, &workspace, &content);
+        // The App clears the selection on every move to another file.
+        if let Some(state) = self.view.tab_mut_if_open(tab) {
+            if Some(state.selected_file) != before {
+                state.selection_anchor = None;
+            }
         }
     }
 
@@ -954,6 +979,14 @@ impl Shell {
             }
             TuiAction::Overlay(action) if matches!(self.view.overlay, Some(Overlay::Open(_))) => {
                 return self.open_hub_key(action, key, workspace, content)
+            }
+            TuiAction::Overlay(action)
+                if matches!(
+                    self.view.overlay,
+                    Some(Overlay::Copy(_) | Overlay::ExportPicker { .. })
+                ) =>
+            {
+                return self.copy_overlay_key(action, key, content)
             }
             TuiAction::Overlay(action) => return self.overlay_key(action, key, content),
             TuiAction::BaseBranch(edit) => return self.base_key(edit, key, workspace, content),
@@ -1112,6 +1145,18 @@ impl Shell {
                 state.move_line(file, action == A::NextLine);
                 None
             }
+            A::ExtendSelectionDown | A::ExtendSelectionUp => {
+                state.extend_selection(file, action == A::ExtendSelectionDown);
+                None
+            }
+            A::OpenCopyHub => {
+                self.view.overlay = Some(Overlay::Copy(CopyHub::open(state, content)));
+                return;
+            }
+            A::OpenExportPicker => {
+                self.view.overlay = Some(export::open());
+                return;
+            }
             A::ScrollDown(rows) if state.panel_focus && state.panel.is_some() => {
                 state.panel_scroll = state.panel_scroll.saturating_add(rows).min(4096);
                 None
@@ -1249,10 +1294,16 @@ impl Shell {
                 let focus = findings::start_reply(state, content);
                 return self.focus(focus);
             }
-            A::Reply | A::Edit | A::AskDeleteComment => {
+            A::Edit => match threads::start_edit(state, content) {
+                threads::Focus::Editor => {
+                    let (file, hunk) = (state.shown_file(content), state.current_hunk);
+                    return self.edit_file(content, file, hunk);
+                }
+                focus => return self.focus(focus),
+            },
+            A::Reply | A::AskDeleteComment => {
                 let focus = match action {
                     A::Reply => threads::start_reply(state, content),
-                    A::Edit => threads::start_edit(state, content),
                     _ => threads::ask_delete(state, content),
                 };
                 return self.focus(focus);
@@ -1444,12 +1495,11 @@ impl Shell {
     /// Runs what a thread key on the focused comment asks.
     fn focus(&mut self, focus: threads::Focus) {
         match focus {
-            threads::Focus::Nothing => {}
+            threads::Focus::Nothing | threads::Focus::Editor => {}
             threads::Focus::Opened => self.view.input_mode = Mode::Comment,
             threads::Focus::AskDelete => {
                 self.view.input_mode = Mode::Confirm(Ask::DeleteComment);
             }
-            threads::Focus::Unported => self.unported(),
             threads::Focus::Refused(message) => self.notify(message.into()),
         }
     }
@@ -2245,6 +2295,10 @@ impl Shell {
             let message = layers::hub_row(state, row);
             return self.notify(message);
         }
+        if let Step::Copy(pick) = step {
+            self.view.overlay = None;
+            return self.copy(pick, key, content);
+        }
         if let Step::Clear(clear) = step {
             self.view.overlay = None;
             if let Some(ask) = clears::ask(clear, content, false) {
@@ -2266,7 +2320,9 @@ impl Shell {
         let settings = self.host.settings();
         let (close, send) = match step {
             Step::Stay => (false, None),
-            Step::Close | Step::Layer(_) | Step::Clear(_) | Step::Run(_) => (true, None),
+            Step::Close | Step::Layer(_) | Step::Clear(_) | Step::Copy(_) | Step::Run(_) => {
+                (true, None)
+            }
             Step::Send(command) => (false, Some((command, Then::Nothing))),
             Step::Leave(command) => (true, Some((command, Then::Nothing))),
             Step::Pick(command) => (true, Some((command, Then::AnnouncePick))),
@@ -2288,6 +2344,80 @@ impl Shell {
         }
         if let Some((command, then)) = send {
             self.settings.send(&settings, command, then);
+        }
+    }
+
+    /// Runs a key on the Copy hub or the export picker.
+    fn copy_overlay_key(&mut self, action: OverlayAction, key: TabKey, content: &TabContent) {
+        match self.view.overlay.as_mut() {
+            Some(Overlay::Copy(hub)) => match hub.act(action) {
+                CopyStep::Stay => {}
+                CopyStep::Close => self.view.overlay = None,
+                CopyStep::Notify(message) => {
+                    self.view.overlay = None;
+                    self.notify(message);
+                }
+                CopyStep::Copy(pick) => {
+                    self.view.overlay = None;
+                    self.copy(pick, key, content);
+                }
+            },
+            Some(overlay) => match export::act(overlay, action, content) {
+                ExportStep::Stay => {}
+                ExportStep::Close => self.view.overlay = None,
+                ExportStep::Reopen(message) => {
+                    self.view.overlay = Some(export::open());
+                    self.notify(message.into());
+                }
+                ExportStep::Copy(copied) => {
+                    self.view.overlay = None;
+                    self.clipboard(Ok(copied));
+                }
+            },
+            None => {}
+        }
+    }
+
+    /// Copies from `key`'s tab as it stands at the press.
+    fn copy(&mut self, pick: copy::Pick, key: TabKey, content: &TabContent) {
+        let state = self.view.tab_mut(key, content);
+        let built = copy::build(pick, state, content);
+        self.clipboard(built);
+    }
+
+    /// Hands the text to the clipboard on the loop, as the App does; a
+    /// failure says so and the loop goes on.
+    fn clipboard(&mut self, built: er_engine::copy_text::Built) {
+        let message = match built {
+            Ok(copied) => match self.launch.clipboard(&copied.text) {
+                Ok(()) => copied.notice,
+                Err(error) => format!("{error:#}"),
+            },
+            Err(notice) => notice,
+        };
+        self.notify(message);
+    }
+
+    /// `e` with no comment of yours focused: the selected file opens in the
+    /// editor at the current hunk's first new line, as the App's does.
+    fn edit_file(
+        &mut self,
+        content: &TabContent,
+        file: Option<&er_engine::git::DiffFile>,
+        hunk: usize,
+    ) {
+        if content.tab.identity().is_remote() {
+            return self.notify("Editor not available in remote mode".into());
+        }
+        let Some(file) = file else { return };
+        if tui_view::is_stub(file) {
+            return self.notify("File is still loading".into());
+        }
+        let line = file.hunks.get(hunk).map_or(1, |hunk| hunk.new_start);
+        let root = &content.tab.repo_root;
+        let path = std::path::Path::new(root).join(&file.path);
+        if let Err(error) = self.launch.editor(root, &path, line) {
+            self.notify(format!("{error:#}"));
         }
     }
 
