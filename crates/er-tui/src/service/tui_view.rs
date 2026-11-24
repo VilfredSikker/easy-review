@@ -244,8 +244,11 @@ pub struct TabViewState {
     pub commit_input: String,
     pub watched: TabWatched,
     context_overrides: HashMap<String, usize>,
-    /// Where the selection stood when a mode switch or refresh went out.
+    /// Where the selection stood when a mode switch or base change went out.
     pub follow: Option<Follow>,
+    /// Where it stood when a refresh went out; a refresh keeps its own, so
+    /// one that lands or is refused leaves a switch's alone.
+    pub refresh_follow: Option<Follow>,
     /// A session saved in another view, waiting for its switch.
     pub restore: Option<Restore>,
     /// The base the input sent, for the reply's notice.
@@ -286,6 +289,7 @@ impl Default for TabViewState {
             watched: TabWatched::default(),
             context_overrides: HashMap::new(),
             follow: None,
+            refresh_follow: None,
             restore: None,
             base_sent: None,
         }

@@ -1,8 +1,10 @@
 //! The flag-on file watcher. One `FileWatcher` follows the active tab's
 //! checkout, else its repo root, and a change refreshes that tab through the
-//! service once the changes stop for the App's 200 ms. The watcher's threads
-//! are er-engine's; this module starts none.
+//! service once the changes stop for the App's 200 ms. One refresh per tab
+//! is out at a time; changes that arrive meanwhile send one more once it
+//! lands. The watcher's threads are er-engine's; this module starts none.
 
+use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
 
@@ -20,12 +22,17 @@ pub struct Watch {
     /// On at the start, as the App's; `w` turns it off and on.
     pub on: bool,
     watching: Option<(String, FileWatcher)>,
-    /// The tab a refresh goes to.
+    /// The active tab, which a change counted now belongs to.
     key: Option<TabKey>,
     tx: Sender<WatchEvent>,
     rx: Receiver<WatchEvent>,
-    /// The changed files counted since the last refresh, and when it is due.
-    due: Option<(Instant, usize)>,
+    /// Per tab, the changed files counted since its last refresh went out,
+    /// and when the next one is due.
+    due: HashMap<TabKey, (Instant, usize)>,
+    /// The tabs with a watcher refresh out.
+    out: HashSet<TabKey>,
+    /// The tabs the watcher has followed.
+    seen: HashSet<TabKey>,
 }
 
 impl Default for Watch {
@@ -37,7 +44,9 @@ impl Default for Watch {
             key: None,
             tx,
             rx,
-            due: None,
+            due: HashMap::new(),
+            out: HashSet::new(),
+            seen: HashSet::new(),
         }
     }
 }
@@ -59,15 +68,26 @@ impl Watch {
     }
 
     /// Watches the active tab's root, opening a watcher when the root moved.
-    /// A watcher that cannot open turns watching off without a word, as the
-    /// App's start does.
-    pub fn follow(&mut self, active: Option<(TabKey, &TabContent)>) {
+    /// A tab followed before, shown again while watching is on, is refreshed
+    /// once, for the changes made while another tab was watched. A watcher
+    /// that cannot open turns watching off without a word, as the App's start
+    /// does.
+    pub fn follow(&mut self, active: Option<(TabKey, &TabContent)>, now: Instant) {
         let root = active.and_then(|(key, content)| Some((key, root_of(content)?)));
-        let Some((key, root)) = root.filter(|_| self.on) else {
+        let Some((key, root)) = root else {
             self.watching = None;
             return;
         };
-        self.key = Some(key);
+        if self.key != Some(key) {
+            if !self.seen.insert(key) && self.on {
+                self.due.entry(key).or_insert((now, 0));
+            }
+            self.key = Some(key);
+        }
+        if !self.on {
+            self.watching = None;
+            return;
+        }
         if self.watching.as_ref().is_some_and(|(at, _)| at == root) {
             return;
         }
@@ -105,19 +125,31 @@ impl Watch {
         }
     }
 
-    /// Counts the changes that arrived, and answers the tab to refresh and
-    /// how many files changed once they have stopped for the debounce.
-    pub fn drain(&mut self, now: Instant) -> Option<(TabKey, usize)> {
+    /// Counts the changes that arrived for the tab watched when they came.
+    pub fn count(&mut self, now: Instant) {
         while let Ok(WatchEvent::FilesChanged(paths)) = self.rx.try_recv() {
-            let files = self.due.map_or(0, |(_, files)| files) + paths.len();
-            self.due = Some((now + DEBOUNCE, files));
+            let Some(key) = self.key else { continue };
+            let files = self.due.get(&key).map_or(0, |(_, files)| *files) + paths.len();
+            self.due.insert(key, (now + DEBOUNCE, files));
         }
-        let (at, files) = self.due?;
-        if now < at {
-            return None;
-        }
-        self.due = None;
-        Some((self.key?, files))
+    }
+
+    /// A tab whose changes have stopped for the debounce and that has no
+    /// refresh out, with how many files changed. The refresh counts as out
+    /// until `landed`.
+    pub fn ready(&mut self, now: Instant) -> Option<(TabKey, usize)> {
+        let (&key, &(_, files)) = self
+            .due
+            .iter()
+            .find(|(key, (at, _))| *at <= now && !self.out.contains(key))?;
+        self.due.remove(&key);
+        self.out.insert(key);
+        Some((key, files))
+    }
+
+    /// `key`'s watcher refresh answered, landed or refused.
+    pub fn landed(&mut self, key: TabKey) {
+        self.out.remove(&key);
     }
 
     /// The watched root, for a test.

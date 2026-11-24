@@ -186,6 +186,9 @@ pub struct Pending {
     pub workspace: String,
     pub replies: ReplyReceiver,
     pub after: After,
+    /// A reload to send again when the tab moved while it ran, and how many
+    /// times it was sent again.
+    pub retry: Option<(Command, u8)>,
 }
 
 /// Lists every tab in the registry, makes the first one active, and loads
@@ -231,5 +234,6 @@ pub fn load(host: &ServiceHost, key: TabKey, start_tab: &StartTab) -> Pending {
         workspace,
         replies,
         after,
+        retry: None,
     }
 }

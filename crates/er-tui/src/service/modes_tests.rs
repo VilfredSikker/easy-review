@@ -295,3 +295,193 @@ fn the_file_order_comes_from_the_service() {
         assert_eq!(calls, name == "tui_view.rs", "{name} and listed_files");
     }
 }
+
+/// Commits a change to `file` and tells the watcher about it.
+fn change(shell: &mut Shell, root: &std::path::Path, file: &str) {
+    write(root, file, "let watched = 1;\n");
+    git(root, &["commit", "-qam", "watched"]);
+    let path = format!("{}/{file}", path_of_dir(root));
+    let sender = shell.watch_mut().sender();
+    sender
+        .send(WatchEvent::FilesChanged(vec![path]))
+        .unwrap_or_else(|e| panic!("{e}"));
+}
+
+fn path_of_dir(root: &std::path::Path) -> String {
+    let canonical = std::fs::canonicalize(root).unwrap_or_else(|e| panic!("{e}"));
+    canonical.to_string_lossy().into_owned()
+}
+
+fn shows(content: &er_service::TabContent, file: &str) -> bool {
+    let diff = content.diff.files.iter().find(|f| f.path == file);
+    diff.is_some_and(|f| format!("{:?}", f.hunks).contains("watched"))
+}
+
+const MOVED: &str = "the tab changed while it loaded";
+
+/// One watcher refresh per tab is out at a time; a change that arrives while
+/// it is out sends exactly one more once it lands, and neither shows the
+/// tab-moved refusal.
+#[test]
+fn one_watcher_refresh_is_out_per_tab() {
+    let repo = fixture(2);
+    let storage = storage();
+    er_engine::storage::with_process_test_storage_root(storage.path(), || {
+        let mut shell = start(vec![path_of(&repo)], None, storage.path());
+        let content = content(&shell);
+        let key = shell.host().registry().tabs_view().active;
+        let key = key.unwrap_or_else(|| panic!("no tab"));
+        // The watch alone, on its own clock.
+        let mut watch = super::watcher::Watch::default();
+        watch.on = false;
+        let t0 = Instant::now();
+        watch.follow(Some((key, &content)), t0);
+        let sender = watch.sender();
+        let event = || WatchEvent::FilesChanged(vec!["a".into()]);
+        sender.send(event()).unwrap_or_else(|e| panic!("{e}"));
+        watch.count(t0);
+        let later = |secs| t0 + Duration::from_secs(secs);
+        assert_eq!(watch.ready(later(1)), Some((key, 1)));
+        sender.send(event()).unwrap_or_else(|e| panic!("{e}"));
+        watch.count(later(1));
+        assert_eq!(watch.ready(later(2)), None, "a second refresh went out");
+        watch.landed(key);
+        assert_eq!(watch.ready(later(2)), Some((key, 1)));
+        assert_eq!(watch.ready(later(3)), None);
+
+        // The shell, with two changes in a row.
+        let start = Instant::now();
+        change(&mut shell, repo.path(), "src/f000.rs");
+        shell.tick(start);
+        shell.tick(start + Duration::from_secs(1));
+        change(&mut shell, repo.path(), "src/f001.rs");
+        shell.tick(start + Duration::from_secs(2));
+        shell.tick(start + Duration::from_secs(3));
+        assert!(shell.in_flight() <= 1, "two watcher refreshes are out");
+        let both = |shell: &Shell| {
+            let content = super::modes_tests::content(shell);
+            idle(shell) && shows(&content, "src/f000.rs") && shows(&content, "src/f001.rs")
+        };
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while !both(&shell) && Instant::now() < deadline {
+            shell.tick(Instant::now() + Duration::from_secs(3));
+            let notice = shell.view().notification.clone().unwrap_or_default();
+            assert!(!notice.contains(MOVED), "{notice}");
+        }
+        assert!(both(&shell), "the second change was not refreshed");
+    });
+}
+
+/// A reload refused because another landed first is sent again without a
+/// word: two `R`s in a row both say "Refreshed".
+#[test]
+fn a_reload_refused_as_moved_is_sent_again() {
+    let repo = fixture(2);
+    let storage = storage();
+    er_engine::storage::with_process_test_storage_root(storage.path(), || {
+        let mut shell = start(vec![path_of(&repo)], None, storage.path());
+        for _ in 0..3 {
+            shell.handle_key(key(KeyCode::Char('R')));
+            shell.handle_key(key(KeyCode::Char('R')));
+            let deadline = Instant::now() + Duration::from_secs(20);
+            while !idle(&shell) && Instant::now() < deadline {
+                shell.tick(Instant::now());
+                let notice = shell.view().notification.clone().unwrap_or_default();
+                assert!(!notice.contains(MOVED), "{notice}");
+            }
+            assert_eq!(shell.view().notification.as_deref(), Some("Refreshed"));
+        }
+    });
+}
+
+/// A change counted on one tab refreshes that tab after a switch; a change
+/// on the tab shown next refreshes it; and a tab watched before is
+/// refreshed once when it is shown again, for changes made meanwhile.
+#[test]
+fn changes_refresh_the_tab_they_were_counted_on() {
+    let (first, second) = (fixture(2), fixture(2));
+    let storage = storage();
+    er_engine::storage::with_process_test_storage_root(storage.path(), || {
+        let paths = vec![path_of(&first), path_of(&second)];
+        let mut shell = start(paths, None, storage.path());
+        shell.tick(Instant::now());
+        let tabs = shell.host().registry().tabs_view();
+        let tab = |at: usize| {
+            let entry = &tabs.tabs[at];
+            (entry.key, entry.descriptor.workspace_key())
+        };
+        let ((one, one_ws), (two, two_ws)) = (tab(0), tab(1));
+        let of = |shell: &Shell, key, workspace: &str| {
+            let content = shell.host().content(workspace, key);
+            content.unwrap_or_else(|| panic!("tab not loaded"))
+        };
+        change(&mut shell, first.path(), "src/f000.rs");
+        shell.tick(Instant::now());
+        shell.handle_key(key(KeyCode::Char(']')));
+        settle(&mut shell, |shell| {
+            idle(shell) && shows(&of(shell, one, &one_ws), "src/f000.rs")
+        });
+        settle(&mut shell, |shell| {
+            shell.host().content(&two_ws, two).is_some()
+        });
+        shell.tick(Instant::now());
+        change(&mut shell, second.path(), "src/f000.rs");
+        let refreshed = settle_within(&mut shell, Duration::from_secs(20), |shell| {
+            idle(shell) && shows(&of(shell, two, &two_ws), "src/f000.rs")
+        });
+        assert!(refreshed, "the shown tab's change was not refreshed");
+        // A change on the first tab while the second is watched.
+        write(first.path(), "src/f001.rs", "let watched = 1;\n");
+        git(first.path(), &["commit", "-qam", "unwatched"]);
+        shell.watch_mut().on = true;
+        shell.handle_key(key(KeyCode::Char('[')));
+        let caught = settle_within(&mut shell, Duration::from_secs(20), |shell| {
+            idle(shell) && shows(&of(shell, one, &one_ws), "src/f001.rs")
+        });
+        shell.watch_mut().on = false;
+        assert!(caught, "the tab shown again was not refreshed");
+    });
+}
+
+/// A refused refresh leaves a switch's follow and a waiting session alone,
+/// and a session whose switch is refused still restores its filter and its
+/// toggles in the view the tab shows.
+#[test]
+fn a_refused_restore_switch_keeps_the_filter_and_toggles() {
+    let repo = fixture(3);
+    let storage = storage();
+    er_engine::storage::with_process_test_storage_root(storage.path(), || {
+        let mut shell = start(vec![path_of(&repo)], None, storage.path());
+        let content = content(&shell);
+        let entry = shell.host().registry().tabs_view().active_entry().cloned();
+        let entry = entry.unwrap_or_else(|| panic!("no tab"));
+        let state = shell.view_mut().tab_mut(entry.key, &content);
+        let mut session = super::session::capture(&content, state);
+        session.filter_expr = "f001".into();
+        session.show_unreviewed_only = true;
+        state.restore = Some(super::session::Restore {
+            mode: DiffMode::Staged,
+            session,
+            sent: true,
+        });
+        state.follow = Some(super::modes::Follow::of(state, &content));
+        let workspace = entry.descriptor.workspace_key();
+        // A refused refresh leaves the switch's follow and the session alone.
+        let refresh = super::startup::After::Refreshed(super::startup::Refresh::Key);
+        shell.lose_write(entry.key, workspace.clone(), refresh);
+        shell.tick(Instant::now());
+        let view = shell.view().tab(entry.key);
+        let waiting = view.is_some_and(|state| state.follow.is_some() && state.restore.is_some());
+        assert!(waiting, "a refused refresh let go of the switch's follow");
+        let after = super::startup::After::ModeSwitched { pr_diff: false };
+        shell.lose_write(entry.key, workspace, after);
+        shell.tick(Instant::now());
+        let state = shell
+            .view()
+            .tab(entry.key)
+            .unwrap_or_else(|| panic!("no view"));
+        assert!(state.restore.is_none());
+        assert_eq!(state.filter_expr, "f001");
+        assert!(state.show_unreviewed_only);
+    });
+}

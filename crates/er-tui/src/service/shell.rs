@@ -52,6 +52,9 @@ const NOTIFICATION_DWELL_LONG: Duration = Duration::from_secs(5);
 const RELOAD_INTERVAL: Duration = Duration::from_secs(1);
 /// How long after the last key a tab's session is saved.
 const SESSION_SAVE_DELAY: Duration = Duration::from_secs(2);
+/// How many times a reload refused because its tab moved is sent again, as
+/// the service's worktree writes resend theirs.
+const RELOAD_TRIES: u8 = 3;
 
 /// Opens the arguments' tabs on an in-process service and runs the loop
 /// until the user quits.
@@ -72,6 +75,25 @@ pub fn run(args: &Args) -> anyhow::Result<()> {
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;
     result
+}
+
+/// A reply's command as it was sent, for the drain.
+struct Landing {
+    key: TabKey,
+    workspace: String,
+    after: After,
+    retry: Option<(Command, u8)>,
+}
+
+impl Landing {
+    fn of(pending: &Pending) -> Self {
+        Self {
+            key: pending.key,
+            workspace: pending.workspace.clone(),
+            after: pending.after,
+            retry: pending.retry.clone(),
+        }
+    }
 }
 
 /// The loop's state: the host, the view state, and the commands in flight.
@@ -232,6 +254,7 @@ impl Shell {
             workspace,
             replies,
             after,
+            retry: None,
         });
     }
 
@@ -279,6 +302,9 @@ impl Shell {
     pub fn tick(&mut self, now: Instant) {
         loop {
             match self.events.try_recv() {
+                // A load refused because its tab moved is sent again, or
+                // its reply says so; its event says nothing.
+                Ok(Event::CommandFailed { message }) if er_service::refused_as_moved(&message) => {}
                 Ok(Event::CommandFailed { message }) => self.failure(Side::Event, message),
                 Ok(_) => self.redraw = true,
                 Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
@@ -406,29 +432,32 @@ impl Shell {
         self.pending
             .retain(|pending| match pending.replies.try_recv() {
                 Ok(reply) => {
-                    landed.push((pending.key, pending.workspace.clone(), pending.after, reply));
+                    landed.push((Landing::of(pending), reply));
                     false
                 }
                 Err(TryRecvError::Empty) => true,
-                // A thread write whose worker died answers as a refusal, so
-                // its composer takes edits again and a delete says so.
+                // A write or reload whose worker died answers as a refusal,
+                // so its composer takes edits again, a delete says so, and a
+                // reload lets go of what waited on it.
                 Err(TryRecvError::Disconnected)
-                    if matches!(pending.after, After::Composed | After::Deleted) =>
+                    if pending.after.follows()
+                        || matches!(pending.after, After::Composed | After::Deleted) =>
                 {
                     let lost = er_service::WorkspaceError::Failed(
                         "The write stopped before it answered".into(),
                     );
-                    landed.push((
-                        pending.key,
-                        pending.workspace.clone(),
-                        pending.after,
-                        Err(lost),
-                    ));
+                    landed.push((Landing::of(pending), Err(lost)));
                     false
                 }
                 Err(TryRecvError::Disconnected) => false,
             });
-        for (key, workspace, after, reply) in landed {
+        for (landing, reply) in landed {
+            let Landing {
+                key,
+                workspace,
+                after,
+                retry,
+            } = landing;
             self.redraw = true;
             match reply {
                 Ok(Reply::ContentLoaded { .. }) if after == After::FetchPrRefs => {
@@ -445,25 +474,28 @@ impl Shell {
                         workspace,
                         replies,
                         after: After::Nothing,
+                        retry: None,
                     });
                 }
                 Ok(Reply::ContentLoaded {
                     reviewed_cleared, ..
                 }) if after.follows() => self.reloaded(key, &workspace, after, reviewed_cleared),
-                Err(error) if after.follows() && self.host.content(&workspace, key).is_some() => {
-                    if let Some(state) = self.view.tab_mut_if_open(key) {
-                        state.follow = None;
-                        state.base_sent = None;
+                Err(error) if after.follows() => match retry {
+                    Some((command, tries))
+                        if tries < RELOAD_TRIES
+                            && er_service::refused_as_moved(&error.to_string()) =>
+                    {
+                        let replies = self.host.post(&workspace, command.clone());
+                        self.pending.push(Pending {
+                            key,
+                            workspace,
+                            replies,
+                            after,
+                            retry: Some((command, tries + 1)),
+                        });
                     }
-                    let message = match after {
-                        After::ModeSwitched { pr_diff: true } => {
-                            format!("PR diff unavailable: {error}")
-                        }
-                        After::BaseChanged => format!("Could not change base: {error}"),
-                        _ => error.to_string(),
-                    };
-                    self.notify(message);
-                }
+                    _ => self.reload_refused(key, after, &error),
+                },
                 Ok(Reply::ReviewedChanged { .. }) => {
                     if let After::Reviewed {
                         advance_from: Some(position),
@@ -887,12 +919,14 @@ impl Shell {
 
     /// Sends a command for `key`'s tab; its reply lands on a later tick.
     fn post(&mut self, key: TabKey, workspace: &str, command: Command, after: After) {
+        let retry = after.follows().then(|| (command.clone(), 0));
         let replies = self.host.post(workspace, command);
         self.pending.push(Pending {
             key,
             workspace: workspace.to_string(),
             replies,
             after,
+            retry,
         });
     }
 
@@ -1043,7 +1077,7 @@ impl Shell {
     /// the selection stays on its file.
     fn refresh(&mut self, key: TabKey, workspace: &str, content: &TabContent, why: Refresh) {
         let state = self.view.tab_mut(key, content);
-        state.follow = Some(Follow::of(state, content));
+        state.refresh_follow = Some(Follow::of(state, content));
         let command = Command::RefreshDiff {
             key,
             force: false,
@@ -1055,20 +1089,35 @@ impl Shell {
     /// A mode switch, refresh or base change landed: the selection follows
     /// the App's rule for it, and the status line says what it did.
     fn reloaded(&mut self, key: TabKey, workspace: &str, after: After, cleared: usize) {
+        if matches!(after, After::Refreshed(Refresh::Watched { .. })) {
+            self.watch.landed(key);
+        }
         let Some(content) = self.host.content(workspace, key) else {
             return;
         };
         let shown = self.watched_shown(key, &content);
         let state = self.view.tab_mut(key, &content);
         let selected = match after {
-            After::ModeSwitched { .. } => modes::switched(state, &content, shown),
-            _ => modes::refreshed(state, &content),
+            After::ModeSwitched { .. } => state
+                .follow
+                .take()
+                .and_then(|follow| modes::switched(state, follow, &content, shown)),
+            After::Refreshed(_) => state
+                .refresh_follow
+                .take()
+                .and_then(|follow| modes::refreshed(state, follow, &content)),
+            _ => state
+                .follow
+                .take()
+                .and_then(|follow| modes::refreshed(state, follow, &content)),
         };
         let sent = state.base_sent.take();
         match after {
             After::Refreshed(Refresh::Key) => self.notify("Refreshed".into()),
             After::Refreshed(Refresh::Watched { files }) => {
-                self.notify(modes::watch_notice(cleared, files));
+                if let Some(notice) = modes::watch_notice(cleared, files) {
+                    self.notify(notice);
+                }
             }
             After::BaseChanged => {
                 let base_ref = content.tab.base_branch.clone();
@@ -1087,6 +1136,38 @@ impl Shell {
         if let Some(index) = selected {
             self.parse_if_stub(key, workspace, &content, index);
         }
+    }
+
+    /// A mode switch, refresh or base change was refused: what waited on it
+    /// lets go, and the status line says why. A session that waited on a
+    /// refused switch restores its filter and toggles in the view shown.
+    fn reload_refused(&mut self, key: TabKey, after: After, error: &er_service::WorkspaceError) {
+        if matches!(after, After::Refreshed(Refresh::Watched { .. })) {
+            self.watch.landed(key);
+        }
+        let workspace = self.workspace_of(key);
+        let content = workspace.and_then(|workspace| self.host.content(&workspace, key));
+        if let (Some(state), Some(content)) = (self.view.tab_mut_if_open(key), content) {
+            match after {
+                After::Refreshed(_) => state.refresh_follow = None,
+                After::ModeSwitched { .. } => {
+                    state.follow = None;
+                    if let Some(saved) = state.restore.take_if(|saved| saved.sent) {
+                        super::session::restore_in_view(state, saved.session, &content);
+                    }
+                }
+                _ => {
+                    state.follow = None;
+                    state.base_sent = None;
+                }
+            }
+        }
+        let message = match after {
+            After::ModeSwitched { pr_diff: true } => format!("PR diff unavailable: {error}"),
+            After::BaseChanged => format!("Could not change base: {error}"),
+            _ => error.to_string(),
+        };
+        self.notify(message);
     }
 
     /// One key in the base input; Enter sends the base change.
@@ -1137,15 +1218,21 @@ impl Shell {
         let shown = active
             .as_ref()
             .and_then(|(key, _, content)| Some((*key, &**content.as_ref()?)));
-        self.watch.follow(shown);
-        let Some((key, files)) = self.watch.drain(now) else {
+        // Changes already queued belong to the tab watched when they came.
+        self.watch.count(now);
+        self.watch.follow(shown, now);
+        let Some((key, files)) = self.watch.ready(now) else {
             return;
         };
-        let Some(workspace) = self.workspace_of(key) else {
-            return;
-        };
-        if let Some(content) = self.host.content(&workspace, key) {
-            self.refresh(key, &workspace, &content, Refresh::Watched { files });
+        let workspace = self.workspace_of(key);
+        let content = workspace
+            .as_ref()
+            .and_then(|workspace| self.host.content(workspace, key));
+        match (workspace, content) {
+            (Some(workspace), Some(content)) => {
+                self.refresh(key, &workspace, &content, Refresh::Watched { files });
+            }
+            _ => self.watch.landed(key),
         }
     }
 
@@ -1169,7 +1256,11 @@ impl Shell {
                 let after = After::ModeSwitched { pr_diff: false };
                 self.post(key, &workspace, command, after);
             }
-            _ => state.restore = None,
+            _ => {
+                if let Some(saved) = state.restore.take() {
+                    super::session::restore_in_view(state, saved.session, &content);
+                }
+            }
         }
     }
 
@@ -1341,6 +1432,7 @@ impl Shell {
             workspace: workspace.to_string(),
             replies,
             after: After::Nothing,
+            retry: None,
         });
     }
 

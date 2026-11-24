@@ -65,8 +65,8 @@ pub use app_registry::{
 };
 pub use ask_context::{ask_raw_diff, ask_scope};
 pub use content::{
-    AiSection, DiffMeta, DiffSection, FreshnessSection, HistorySection, PrSection, ReviewedSection,
-    ScopeStats, SidecarStamp, StackRead, TabContent,
+    refused_as_moved, AiSection, DiffMeta, DiffSection, FreshnessSection, HistorySection,
+    PrSection, ReviewedSection, ScopeStats, SidecarStamp, StackRead, TabContent,
 };
 pub use diff_resource::{
     diff_load_error, diff_resource, diff_version, file_rule_tables, listed_files, DiffInputs,

@@ -131,6 +131,12 @@ pub fn restore_in_mode(state: &mut TabViewState, session: SessionState, content:
     restore_filter(state, session, content);
 }
 
+/// The filter and the toggles of a session whose view could not be shown,
+/// in the view the tab shows.
+pub fn restore_in_view(state: &mut TabViewState, session: SessionState, content: &TabContent) {
+    restore_filter(state, session, content);
+}
+
 /// In the App's order: a saved filter, which replaces `--filter` and snaps,
 /// then the history, which replaces `--filter`'s. The unreviewed-only
 /// toggle comes back last, with no snap of its own.

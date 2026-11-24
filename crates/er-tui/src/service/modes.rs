@@ -65,8 +65,12 @@ fn hunks(content: &TabContent, index: usize) -> usize {
 /// new view lists it, with its hunk and line while it still has that hunk,
 /// else the first file; then the snap, then the scroll to the hunk, as the
 /// App's `set_mode`. Answers the file it selected.
-pub fn switched(state: &mut TabViewState, content: &TabContent, shown: bool) -> Option<usize> {
-    let follow = state.follow.take()?;
+pub fn switched(
+    state: &mut TabViewState,
+    follow: Follow,
+    content: &TabContent,
+    shown: bool,
+) -> Option<usize> {
     state.current_hunk = 0;
     state.current_line = None;
     state.watched.selected = None;
@@ -94,8 +98,7 @@ pub fn switched(state: &mut TabViewState, content: &TabContent, shown: bool) -> 
 /// A refresh landed: the file selected before it stays selected, at its hunk,
 /// line and scroll; a file the diff dropped leaves the selection in range,
 /// as the App's refresh.
-pub fn refreshed(state: &mut TabViewState, content: &TabContent) -> Option<usize> {
-    let follow = state.follow.take()?;
+pub fn refreshed(state: &mut TabViewState, follow: Follow, content: &TabContent) -> Option<usize> {
     let files = &content.diff.files;
     let had_file = follow.path.is_some();
     let at = follow
@@ -160,15 +163,16 @@ pub fn base_key(text: &mut String, edit: Edit) -> BaseStep {
 }
 
 /// The App's two refresh notices: the marks a change cleared, else the
-/// files that changed.
-pub fn watch_notice(cleared: usize, files: usize) -> String {
+/// files that changed. A refresh on re-arming counts no files, and says
+/// nothing unless it cleared a mark.
+pub fn watch_notice(cleared: usize, files: usize) -> Option<String> {
     let plural = |n: usize| if n == 1 { "" } else { "s" };
     if cleared > 0 {
-        format!(
+        Some(format!(
             "{cleared} reviewed file{} auto-unmarked (diff changed)",
             plural(cleared)
-        )
+        ))
     } else {
-        format!("{files} file{} changed", plural(files))
+        (files > 0).then(|| format!("{files} file{} changed", plural(files)))
     }
 }
