@@ -160,10 +160,10 @@ pub enum After {
     Refreshed(Refresh),
     /// A base change, which the registry keeps.
     BaseChanged,
-    /// A History commit `k` or `j` picked: once it lands, the next press
-    /// moves on from the commit shown.
+    /// A History commit `k` or `j` picked: once it lands, the next queued
+    /// press goes out.
     CommitSelected,
-    /// History's next page: once it lands, `k` moves on into it.
+    /// History's next page: once it lands, the waiting `k` moves into it.
     MoreHistory,
 }
 

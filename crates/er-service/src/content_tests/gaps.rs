@@ -53,6 +53,7 @@ fn a_load_takes_the_preview_stamps_its_keys_read() -> anyhow::Result<()> {
         let blob = "b".repeat(40);
         let git = Arc::new(
             FakeGit::default()
+                .with_is_merge_in_progress(false)
                 .with_current_branch(Ok("feature".to_string()))
                 .with_diff_shortstat((0, 0, 0))
                 .with_diff_raw(Ok(RENAMED.to_string()))
@@ -257,6 +258,7 @@ diff --git a/a.rs b/a.rs
 fn views_git() -> Arc<FakeGit> {
     Arc::new(
         FakeGit::default()
+            .with_is_merge_in_progress(false)
             .with_current_branch(Ok("feature".to_string()))
             .with_diff_shortstat((0, 0, 0))
             .with_diff_raw(Ok(RAW.to_string()))
@@ -315,6 +317,32 @@ fn each_view_with_its_own_diff_loads_on_a_load_tab() -> anyhow::Result<()> {
             assert_eq!(resource.selected_commit_sha, selected, "{mode:?}");
             assert_eq!(resource.commits.len(), 2);
         }
+        Ok(())
+    })
+}
+
+/// `LoadMoreHistory` lists the next page after the commits History holds,
+/// and the page moves the tab's generation, so a load started before it is
+/// refused instead of writing back the shorter list.
+#[test]
+fn history_lists_its_next_page_and_moves_the_generation() -> anyhow::Result<()> {
+    with_root(|repo| {
+        let git = views_git();
+        let handle = actor_over(Arc::clone(&git));
+        let key = TabKey::next();
+        load(&handle, key, repo)?;
+        send(&handle, set_mode(key, DiffMode::History))?;
+        let before = content_of(&handle.view(), key)?;
+        let added = send(&handle, Command::LoadMoreHistory { key })?;
+        assert_eq!(added, Reply::HistoryExtended { key, added: 2 });
+        let after = content_of(&handle.view(), key)?;
+        let held = after.history.as_ref().map(|h| h.commits.len());
+        assert_eq!(held, Some(4), "the page was not appended");
+        assert!(git.calls().iter().any(|call| call.contains("skip=2")));
+        assert!(
+            after.generation() > before.generation(),
+            "the page left the generation"
+        );
         Ok(())
     })
 }
@@ -440,6 +468,7 @@ fn an_expanded_file_stays_expanded_across_a_refresh() -> anyhow::Result<()> {
             .unwrap_or_default();
         let git = Arc::new(
             FakeGit::default()
+                .with_is_merge_in_progress(false)
                 .with_current_branch(Ok("feature".to_string()))
                 .with_diff_shortstat((0, 0, 0))
                 .with_diff_raw(Ok(WITH_LOCK.to_string()))

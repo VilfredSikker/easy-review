@@ -480,18 +480,8 @@ impl Shell {
             } = landing;
             self.redraw = true;
             match reply {
-                _ if after == After::CommitSelected => {
-                    if let Some(state) = self.view.tab_mut_if_open(key) {
-                        state.history.sent = None;
-                    }
-                    if let Err(error) = reply {
-                        self.failure(Side::Reply, error.to_string());
-                    }
-                }
-                Ok(Reply::HistoryExtended { added, .. }) if added > 0 => {
-                    if let Some(content) = self.host.content(&workspace, key) {
-                        self.history_key(HistoryAction::NextCommit, key, &workspace, &content);
-                    }
+                _ if matches!(after, After::CommitSelected | After::MoreHistory) => {
+                    self.history_landed(key, &workspace, after, reply);
                 }
                 Ok(Reply::ContentLoaded { .. }) if after == After::FetchPrRefs => {
                     let replies = self.host.post(
@@ -1250,6 +1240,21 @@ impl Shell {
 
     /// A refresh with auto-unmark; the selection stays on its file.
     fn refresh(&mut self, key: TabKey, workspace: &str, content: &TabContent, why: Refresh) {
+        // The App's refresh leaves History alone: its notice, and no reload.
+        if content.tab.mode == DiffMode::History {
+            let notice = match why {
+                Refresh::Key => Some("Refreshed".to_string()),
+                Refresh::Watched { files } => {
+                    self.watch.landed(key);
+                    modes::watch_notice(0, files)
+                }
+                Refresh::Sort => None,
+            };
+            if let Some(notice) = notice {
+                self.notify(notice);
+            }
+            return;
+        }
         let state = self.view.tab_mut(key, content);
         state.refresh_follow = Some(Follow::of(state, content));
         let command = Command::RefreshDiff {
@@ -1324,7 +1329,12 @@ impl Shell {
         content: &TabContent,
     ) {
         let state = self.view.tab_mut(key, content);
-        let Some(command) = history::key(&mut state.history, key, content, action) else {
+        let command = history::key(&mut state.history, key, content, action);
+        self.send_history(key, workspace, command);
+    }
+
+    fn send_history(&mut self, key: TabKey, workspace: &str, command: Option<Command>) {
+        let Some(command) = command else {
             return;
         };
         let after = match command {
@@ -1332,6 +1342,40 @@ impl Shell {
             _ => After::CommitSelected,
         };
         self.post(key, workspace, command, after);
+    }
+
+    /// A commit load or page landed: a commit shown takes its press off the
+    /// queue, a tab moved meanwhile sends it again, any other refusal drops
+    /// the rest, and the next press goes out.
+    fn history_landed(
+        &mut self,
+        key: TabKey,
+        workspace: &str,
+        after: After,
+        reply: Result<Reply, er_service::WorkspaceError>,
+    ) {
+        let content = self.host.content(workspace, key);
+        let (Some(content), Some(state)) = (content, self.view.tab_mut_if_open(key)) else {
+            return;
+        };
+        let pos = &mut state.history;
+        pos.in_flight = false;
+        let refused = match reply {
+            Ok(_) if after == After::CommitSelected => {
+                pos.queued.pop_front();
+                None
+            }
+            Err(error) if !er_service::refused_as_moved(&error.to_string()) => {
+                pos.queued.clear();
+                Some(error.to_string())
+            }
+            _ => None,
+        };
+        let command = history::pump(pos, key, &content);
+        if let Some(message) = refused {
+            self.failure(Side::Reply, message);
+        }
+        self.send_history(key, workspace, command);
     }
 
     /// A reload was refused: its own waits let go, and a restore keeps its filter.

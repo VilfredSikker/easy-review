@@ -9,6 +9,7 @@ use er_engine::git::{self, CommitInfo};
 use er_engine::history::{self, HistorySource};
 use er_engine::tab_identity::{DiffMode, ResolvedTab};
 
+use crate::actor::WorkspaceDeps;
 use crate::content::HistorySection;
 
 /// Whether `mode` shows a diff the tab's scope does not fetch.
@@ -126,6 +127,7 @@ fn section(
         .prev
         .as_deref()
         .filter(|prev| prev.return_mode == input.return_mode);
+    let revision = kept.map_or(0, |prev| prev.revision);
     let (commits, all_loaded, selected) = match kept {
         Some(prev) => (prev.commits.clone(), prev.all_loaded, prev.selected.clone()),
         None => {
@@ -144,13 +146,14 @@ fn section(
         all_loaded,
         selected: picked.or(selected),
         return_mode: input.return_mode,
+        revision,
     }
 }
 
 /// History's next page after the commits `held` lists, by the App's rule: a
 /// PR branch view lists its PR's commits whole, so it adds none.
 pub(crate) fn more(
-    git: &dyn git::Git,
+    deps: &WorkspaceDeps,
     tab: &ResolvedTab,
     held: &HistorySection,
 ) -> Vec<CommitInfo> {
@@ -158,7 +161,7 @@ pub(crate) fn more(
         return Vec::new();
     }
     let source = source(tab, held.return_mode);
-    history::more_commits(git, &source, held.commits.len())
+    history::more_commits(&*deps.ports().git, &source, held.commits.len())
 }
 
 /// The commit scroller's rows for `tab`, read in every view.

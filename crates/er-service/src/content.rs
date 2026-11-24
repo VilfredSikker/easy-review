@@ -70,6 +70,7 @@ impl TabContent {
             .max(self.reviewed.revision)
             .max(self.ai.written)
             .max(self.mode_revision)
+            .max(self.history.as_ref().map_or(0, |history| history.revision))
     }
 
     /// The inputs this content's preview keys read. Only History names its
@@ -336,6 +337,9 @@ pub struct HistorySection {
     pub selected: Option<String>,
     /// The view History was entered from, which leaving it returns to.
     pub return_mode: DiffMode,
+    /// The revision of the page that last extended the list, so a load
+    /// started before it is refused instead of dropping the page.
+    pub revision: u64,
 }
 
 /// Files, added and deleted lines in the working tree and in the index.
@@ -803,6 +807,7 @@ pub(crate) fn apply(
                         all_loaded,
                         selected: held.selected.clone(),
                         return_mode: held.return_mode,
+                        revision,
                     }));
                 }
                 *content = Arc::new(next);

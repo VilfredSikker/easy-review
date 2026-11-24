@@ -1,9 +1,11 @@
 //! History on the flag path (P71.2). The commits and the selected commit's
 //! files come from the service's History section and diff; `k` and `j` send
-//! `SelectCommit`, and `k` past the last commit sends `LoadMoreHistory`. The
+//! `SelectCommit`, and `k` past the last commit sends `LoadMoreHistory`, one
+//! at a time per tab, the presses waiting their turn in order. The
 //! position in the commit's files is the TUI's own, kept apart from the diff
 //! view's, as the App keeps `HistoryState`.
 
+use std::collections::VecDeque;
 use std::sync::Arc;
 
 use er_engine::git::DiffFile;
@@ -26,9 +28,11 @@ pub struct HistoryPos {
     pub current_line: Option<usize>,
     pub diff_scroll: u16,
     pub h_scroll: u16,
-    /// The commit `k` or `j` asked for, until its load lands, so a second
-    /// press moves on from it.
-    pub sent: Option<String>,
+    /// The `k` (true) and `j` presses not yet shown, oldest first; the front
+    /// one leaves when its commit lands.
+    pub queued: VecDeque<bool>,
+    /// Whether a commit load or a page is in flight.
+    pub in_flight: bool,
     /// Where the diff view stood when History was entered, which leaving
     /// History returns to.
     pub left: Option<Follow>,
@@ -45,9 +49,6 @@ impl HistoryPos {
             return;
         }
         let shown = (history.selected.clone(), history.return_mode);
-        if self.sent == shown.0 {
-            self.sent = None;
-        }
         if self.shown.as_ref() != Some(&shown) {
             self.shown = Some(shown);
             self.top(0);
@@ -75,27 +76,8 @@ pub fn key(
     let files = &content.diff.files;
     match action {
         H::NextCommit | H::PrevCommit => {
-            let history = content.history.as_deref()?;
-            let at = pos.sent.as_deref().or(history.selected.as_deref());
-            let index = at
-                .and_then(|sha| history.commits.iter().position(|c| c.hash == sha))
-                .unwrap_or(0);
-            let to = if action == H::NextCommit {
-                Some(index + 1).filter(|to| *to < history.commits.len())
-            } else {
-                index.checked_sub(1)
-            };
-            match to.and_then(|to| history.commits.get(to)) {
-                Some(commit) => {
-                    pos.sent = Some(commit.hash.clone());
-                    let sha = commit.hash.clone();
-                    return Some(Command::SelectCommit { key, sha });
-                }
-                None if action == H::NextCommit && !history.all_loaded => {
-                    return Some(Command::LoadMoreHistory { key });
-                }
-                None => {}
-            }
+            pos.queued.push_back(action == H::NextCommit);
+            return pump(pos, key, content);
         }
         H::NextFile if pos.selected_file + 1 < files.len() => to_file(pos, files, 1),
         H::PrevFile if pos.selected_file > 0 => to_file(pos, files, -1),
@@ -107,6 +89,41 @@ pub fn key(
         H::ScrollDown(rows) => pos.diff_scroll = pos.diff_scroll.saturating_add(rows),
         H::ScrollUp(rows) => pos.diff_scroll = pos.diff_scroll.saturating_sub(rows),
         H::NextFile | H::PrevFile => {}
+    }
+    None
+}
+
+/// The next press's command once nothing is in flight: the commit after or
+/// before the one shown, else History's next page for a `k` past the last
+/// commit. A press with nowhere to go is dropped, as on the App, and
+/// leaving History drops them all.
+pub fn pump(pos: &mut HistoryPos, key: TabKey, content: &TabContent) -> Option<Command> {
+    if content.tab.mode != DiffMode::History {
+        pos.queued.clear();
+    }
+    let history = content.history.as_deref()?;
+    while let Some(&forward) = pos.queued.front().filter(|_| !pos.in_flight) {
+        let selected = history.selected.as_deref();
+        let commits = &history.commits;
+        let index = commits
+            .iter()
+            .position(|c| Some(c.hash.as_str()) == selected);
+        let index = index.unwrap_or(0);
+        let to = if forward {
+            index.checked_add(1)
+        } else {
+            index.checked_sub(1)
+        };
+        if let Some(commit) = to.and_then(|to| commits.get(to)) {
+            pos.in_flight = true;
+            let sha = commit.hash.clone();
+            return Some(Command::SelectCommit { key, sha });
+        }
+        if forward && !history.all_loaded {
+            pos.in_flight = true;
+            return Some(Command::LoadMoreHistory { key });
+        }
+        pos.queued.pop_front();
     }
     None
 }

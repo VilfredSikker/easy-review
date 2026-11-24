@@ -38,6 +38,17 @@ fn idle(shell: &Shell) -> bool {
     shell.in_flight() == 0
 }
 
+/// Presses `k` twice on both paths, the flag path's second press before its
+/// first lands, and compares the frames once its replies have landed.
+fn two_k(app: &mut App, shell: &mut Shell, hl: &mut Highlighter, step: &str) {
+    for _ in 0..2 {
+        press_app(app, KeyCode::Char('k'));
+        shell.handle_key(key(KeyCode::Char('k')));
+    }
+    settle(shell, idle);
+    assert_parity(app, &shell_frame(shell, hl), hl, step);
+}
+
 /// Presses `code` on both paths and compares the frames once the flag
 /// path's replies have landed.
 fn step(app: &mut App, shell: &mut Shell, hl: &mut Highlighter, code: KeyCode) {
@@ -134,8 +145,9 @@ fn history_draws_like_the_app() {
     });
 }
 
-/// `k` on the first page's last commit, the 50th of 56, lists the next page
-/// and selects its first commit, as the App's does.
+/// Two quick `k`s move two commits, and two on the first page's last
+/// commit, the 50th of 56, list the next page and move into it, as the
+/// App's do.
 #[test]
 fn history_lists_its_next_page_like_the_app() {
     let (app_repo, flag_repo) = twins(|| {
@@ -154,6 +166,7 @@ fn history_lists_its_next_page_like_the_app() {
         let mut shell = start(&path_of(&flag_repo), storage.path());
         let mut hl = Highlighter::new();
         step(&mut app, &mut shell, &mut hl, KeyCode::Char('4'));
+        two_k(&mut app, &mut shell, &mut hl, "k k");
         // Both go to the 50th commit, the first page's last.
         if let Some(history) = app.tab_mut().history.as_mut() {
             history.selected_commit = 49;
@@ -171,9 +184,16 @@ fn history_lists_its_next_page_like_the_app() {
             .host()
             .post(&entry.descriptor.workspace_key(), command);
         assert!(replies.recv_timeout(WAIT).is_ok_and(|reply| reply.is_ok()));
-        step(&mut app, &mut shell, &mut hl, KeyCode::Char('k'));
-        let listed = content(&shell).history.as_ref().map(|h| h.commits.len());
+        two_k(&mut app, &mut shell, &mut hl, "k k at the page's edge");
+        let held = content(&shell).history.clone();
+        let listed = held.as_ref().map(|h| h.commits.len());
         assert_eq!(listed, Some(56), "the fixture's 56 commits");
+        let selected = held.and_then(|h| h.selected.clone());
+        let fifty_second = content(&shell)
+            .history
+            .as_ref()
+            .map(|h| h.commits[51].hash.clone());
+        assert_eq!(selected, fifty_second);
     });
 }
 
@@ -191,6 +211,66 @@ fn conflicts_show_while_a_merge_runs_like_the_app() {
         for code in ['j', '5', 'j', '1'] {
             step(&mut app, &mut shell, &mut hl, KeyCode::Char(code));
         }
+    });
+}
+
+/// `R` and the watcher leave History as the App's refresh does: no reload,
+/// and the App's notices.
+#[test]
+fn a_refresh_leaves_history_alone() {
+    let repo = two_commits();
+    let path = path_of(&repo);
+    let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+    er_engine::storage::with_process_test_storage_root(storage.path(), || {
+        let mut shell = start(&path, storage.path());
+        shell.handle_key(key(KeyCode::Char('4')));
+        settle(&mut shell, |shell| {
+            idle(shell) && content(shell).tab.mode == DiffMode::History
+        });
+        let before = content(&shell).diff.revision;
+        shell.handle_key(key(KeyCode::Char('R')));
+        settle(&mut shell, idle);
+        assert_eq!(shell.view().notification.as_deref(), Some("Refreshed"));
+        shell.watch_mut().on = true;
+        shell.tick(Instant::now());
+        shell.watch_mut().on = false;
+        shell.tick(Instant::now());
+        let changed = vec![format!("{path}/src/f000.rs")];
+        let sender = shell.watch_mut().sender();
+        sender
+            .send(er_engine::watch::WatchEvent::FilesChanged(changed))
+            .unwrap_or_else(|e| panic!("{e}"));
+        let noticed = settle_within(&mut shell, WAIT, |shell| {
+            idle(shell) && shell.view().notification.as_deref() == Some("1 file changed")
+        });
+        assert!(noticed, "the watcher said nothing");
+        assert_eq!(content(&shell).diff.revision, before, "History reloaded");
+    });
+}
+
+/// In Conflicts, staging a resolved file lists it as resolved after the
+/// reload, and the unresolved count drops, as on the App.
+#[test]
+fn a_staged_resolution_drops_the_unresolved_count_like_the_app() {
+    let (app_repo, flag_repo) = twins(merging);
+    let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+    er_engine::storage::with_process_test_storage_root(storage.path(), || {
+        let mut app = app_on(&path_of(&app_repo));
+        let mut shell = start(&path_of(&flag_repo), storage.path());
+        let mut hl = Highlighter::new();
+        step(&mut app, &mut shell, &mut hl, KeyCode::Char('5'));
+        assert_eq!(content(&shell).diff.meta.unresolved, 1);
+        for repo in [&app_repo, &flag_repo] {
+            let file = repo.path().join("src/f000.rs");
+            std::fs::write(file, "let resolved = 1;\n").unwrap_or_else(|e| panic!("{e}"));
+        }
+        step(&mut app, &mut shell, &mut hl, KeyCode::Char('s'));
+        let content = content(&shell);
+        assert_eq!(content.tab.mode, DiffMode::Conflicts);
+        assert_eq!(
+            content.diff.meta.unresolved, 0,
+            "the conflict is still listed"
+        );
     });
 }
 

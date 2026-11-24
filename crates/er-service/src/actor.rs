@@ -1057,7 +1057,7 @@ fn handle_command(
             };
             let deps = deps.clone();
             spawn_effect(tx, reply, move || {
-                let more = crate::history::more(&*deps.ports().git, &content.tab, &held);
+                let more = crate::history::more(&deps, &content.tab, &held);
                 let added = more.len();
                 let since = held.commits.len();
                 Ok(Effected::patched(
