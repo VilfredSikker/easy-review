@@ -155,9 +155,10 @@ pub struct Shell {
     dwell: Duration,
     /// The shown message is a refusal or an error, which an ordinary notice
     /// does not replace until it has been drawn for its dwell. An ordinary
-    /// notice told meanwhile waits in `deferred`.
+    /// notice told meanwhile waits in `deferred`, with whether it takes the
+    /// long dwell once shown.
     holding: Option<Hold>,
-    deferred: Option<String>,
+    deferred: Option<(String, bool)>,
     /// The sidecar reloads in flight, whose failures pair with their events.
     reloads: Vec<ReplyReceiver>,
     reloaded_at: Option<Instant>,
@@ -304,8 +305,7 @@ impl Shell {
         if let Some(error) = shell.host.settings().view().load_error.clone() {
             let revision = shell.host.settings().view().revision;
             if shell.settings.admit_once(revision, &error) {
-                shell.notify(error);
-                shell.dwell = NOTIFICATION_DWELL_LONG;
+                shell.tell(error, true);
             }
         }
         Ok(shell)
@@ -319,8 +319,7 @@ impl Shell {
     /// Shows the first-launch notice, for longer, as the App's start does.
     pub fn first_launch(&mut self, notice: Option<String>) {
         if let Some(notice) = notice {
-            self.notify(notice);
-            self.dwell = NOTIFICATION_DWELL_LONG;
+            self.tell(notice, true);
         }
     }
 
@@ -444,13 +443,33 @@ impl Shell {
     }
 
     fn notify(&mut self, message: String) {
+        self.tell(message, false);
+    }
+
+    /// Shows an ordinary notice, for the long dwell when `long`. Behind a
+    /// held refusal it waits and keeps its own dwell, so the refusal's is
+    /// not lengthened.
+    fn tell(&mut self, message: String, long: bool) {
         #[cfg(test)]
         self.told.push(message.clone());
         if self.holding.is_some() {
-            self.deferred = Some(message);
+            self.deferred = Some((message, long));
             return;
         }
         self.show(message);
+        if long {
+            self.dwell = NOTIFICATION_DWELL_LONG;
+        }
+    }
+
+    /// Shows the notice that waited behind a refusal.
+    fn show_deferred(&mut self) {
+        if let Some((message, long)) = self.deferred.take() {
+            self.show(message);
+            if long {
+                self.dwell = NOTIFICATION_DWELL_LONG;
+            }
+        }
     }
 
     /// Shows a refusal or an error, held until it has been drawn for its
@@ -545,11 +564,11 @@ impl Shell {
                     // A task's failure is told as "<task> failed (<tab>): …".
                     if message.contains(" failed (") {
                         self.refuse(message);
+                        if long {
+                            self.dwell = NOTIFICATION_DWELL_LONG;
+                        }
                     } else {
-                        self.notify(message);
-                    }
-                    if long {
-                        self.dwell = NOTIFICATION_DWELL_LONG;
+                        self.tell(message, long);
                     }
                 }
                 Ok(Event::TabsChanged { .. }) => {
@@ -606,8 +625,7 @@ impl Shell {
         // A reload that still fails says why for longer, as the App's does.
         if let Some(error) = still_failed {
             self.settings.admit_message(&error);
-            self.notify(error);
-            self.dwell = NOTIFICATION_DWELL_LONG;
+            self.tell(error, true);
         }
         if self
             .reloaded_at
@@ -637,9 +655,7 @@ impl Shell {
             self.view.notification = None;
             self.redraw = true;
             self.holding = None;
-            if let Some(message) = self.deferred.take() {
-                self.show(message);
-            }
+            self.show_deferred();
         }
     }
 
@@ -1146,9 +1162,7 @@ impl Shell {
         self.redraw = true;
         // A held refusal gives way to its waiting notice; the key's own replaces both.
         self.holding = None;
-        if let Some(message) = self.deferred.take() {
-            self.show(message);
-        }
+        self.show_deferred();
         let Some((tab, workspace, Some(content))) = self.active() else {
             match key.code {
                 KeyCode::Char('q') if key.modifiers.contains(KeyModifiers::CONTROL) => {
