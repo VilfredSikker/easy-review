@@ -1,13 +1,8 @@
 //! er-tui builds on the service alone: no feature brings the App path back,
-//! and no er-engine line turns on the `ui` half, which holds the App.
+//! and every er-engine dependency turns default features off and names no
+//! `ui` feature, in the inline form or the `[dependencies.er-engine]` table.
 
-/// Each line that names er-engine, dev-dependency included.
-fn engine_lines(manifest: &str) -> Vec<&str> {
-    manifest
-        .lines()
-        .filter(|line| line.trim_start().starts_with("er-engine"))
-        .collect()
-}
+use toml::Value;
 
 #[test]
 fn the_manifest_names_no_v1_service_feature() {
@@ -19,12 +14,33 @@ fn the_manifest_names_no_v1_service_feature() {
 }
 
 #[test]
-fn every_engine_line_leaves_the_ui_half_off() {
-    let manifest = include_str!("../Cargo.toml");
-    let lines = engine_lines(manifest);
-    assert_eq!(lines.len(), 2, "{lines:?}");
-    for line in lines {
-        assert!(line.contains("default-features = false"), "{line}");
-        assert!(!line.contains("\"ui\""), "{line}");
+fn every_engine_dependency_leaves_default_features_off() -> anyhow::Result<()> {
+    let manifest: Value = toml::from_str(include_str!("../Cargo.toml"))?;
+    let kinds = ["dependencies", "dev-dependencies", "build-dependencies"];
+    let mut roots = vec![&manifest];
+    if let Some(targets) = manifest.get("target").and_then(Value::as_table) {
+        roots.extend(targets.values());
     }
+    let engines: Vec<&Value> = roots
+        .into_iter()
+        .flat_map(|root| {
+            kinds
+                .iter()
+                .filter_map(|kind| root.get(*kind)?.get("er-engine"))
+        })
+        .collect();
+    assert_eq!(engines.len(), 2, "{engines:?}");
+    for engine in engines {
+        let off = engine.get("default-features").and_then(Value::as_bool);
+        assert_eq!(off, Some(false), "{engine}");
+        let features = engine.get("features").and_then(Value::as_array);
+        let features = features.map(Vec::as_slice).unwrap_or_default();
+        assert!(
+            !features
+                .iter()
+                .any(|feature| feature.as_str() == Some("ui")),
+            "{engine}"
+        );
+    }
+    Ok(())
 }

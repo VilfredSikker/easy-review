@@ -1533,6 +1533,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "toml 1.2.1+spec-1.1.0",
  "tui-textarea-2",
  "ureq",
 ]

@@ -12,7 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 er-agent = { path = "../er-agent" }
-# No `ui`: the TUI reads the service, and the App stays out of its graph.
+# Default features off, so the TUI names the engine features it uses.
 er-engine = { path = "../er-engine", default-features = false, features = ["watch", "highlight"] }
 er-git = { path = "../er-git" }
 er-service = { path = "../er-service" }
@@ -46,6 +46,8 @@ er-engine = { path = "../er-engine", default-features = false, features = ["watc
 er-github = { path = "../er-github" }
 # The gated fake agent and the planning worker, for the flag-on run tests.
 er-service = { path = "../er-service", features = ["test-support"] }
+# The manifest test reads every form of a dependency table.
+toml.workspace = true
 
 [lints]
 workspace = true
