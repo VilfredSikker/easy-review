@@ -3,8 +3,6 @@
 #![deny(clippy::print_stdout)]
 
 pub mod ai;
-#[cfg(feature = "ui")]
-pub mod app;
 pub mod arena;
 pub mod card_ai_context;
 pub mod card_job;
@@ -25,12 +23,10 @@ pub mod diff_fetch;
 pub mod diff_load;
 pub mod dir_browse;
 pub mod env_path;
-pub mod shell_command;
-#[cfg(feature = "ui")]
-pub use review_export as export;
 pub mod file_rows;
 pub mod filter;
 pub mod first_launch;
+pub mod shell_command;
 pub use er_github::actions as gh_pr_actions;
 mod env_var;
 pub mod gh_stack;

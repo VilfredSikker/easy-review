@@ -82,7 +82,7 @@ pub(crate) fn bucket_scope(dir: &str) -> Result<Scope, WorkspaceError> {
 ///
 /// The engine helper covers branch-view and remote tabs only. A plain repo tab,
 /// the one `er` opens by default, has neither and takes the same `diff_raw`
-/// fallthrough as `TabState::fetch_tab_raw_diff`.
+/// fallthrough the App's `TabState::fetch_tab_raw_diff` took.
 pub(crate) fn fetch_raw(deps: &WorkspaceDeps, ctx: &TabContext) -> Result<String, WorkspaceError> {
     fetch_raw_with(deps.ports(), ctx)
 }

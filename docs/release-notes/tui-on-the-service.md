@@ -151,7 +151,7 @@
 ## For contributors
 
 - The `v1-service` feature, `just test-v1` and the "Test (v1-service)" CI job
-  are gone. er-tui builds with er-engine's `ui` half off.
+  are gone. er-engine has no `ui` feature and no App.
 - `cargo check -p er-tui --all-targets` joins the own-graph check
   (`just check-desktop`, the "Desktop (own graph)" CI job).
 - The parity tests check the committed goldens under

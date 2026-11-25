@@ -60,12 +60,6 @@ pub fn agents_load_failed(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-/// Whether the managed `agents.toml` has a recorded failed load.
-#[cfg(feature = "ui")]
-pub(crate) fn managed_agents_load_failed() -> bool {
-    agents_load_failed(&agents_path(&super::managed_config_path()))
-}
-
 fn parse_agents_from_path(path: &Path) -> Result<AgentsConfig, ConfigReadError> {
     let content = std::fs::read_to_string(path).map_err(ConfigReadError::Read)?;
     toml::from_str(&content).map_err(ConfigReadError::Parse)

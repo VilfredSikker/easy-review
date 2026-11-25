@@ -10,8 +10,7 @@ description = "UI-agnostic engine for easy-review (git diffs, watching, AI sidec
 # A headless consumer builds with:
 #   default-features = false, features = ["highlight"]
 # (`er-api`, named in older notes, is a deferred extraction — not a crate.)
-default = ["ui", "watch", "highlight"]
-ui = ["dep:tui-textarea-2"]
+default = ["watch", "highlight"]
 watch = ["dep:notify", "dep:notify-debouncer-mini"]
 highlight = ["dep:syntect", "dep:two-face"]
 # Lets a dependent's tests scope the storage root to one thread instead of
@@ -40,7 +39,6 @@ tempfile = "3"
 png = "0.18"
 notify = { workspace = true, optional = true }
 notify-debouncer-mini = { workspace = true, optional = true }
-tui-textarea-2 = { version = "0.13", default-features = false, features = ["crossterm"], optional = true }
 syntect = { version = "5", optional = true }
 two-face = { version = "0.5.1", optional = true }
 

@@ -6,7 +6,7 @@ what an agent produced; it does not spawn one. Spawning lives in `er-agent`;
 pass, and the prompt text is compiled into `ai/prompts.rs` — nothing reads a
 prompt or skill file at runtime. `docs/adr/0023-self-contained-agent-prompts.md`.
 
-Sidecars live in the tab's per-view bucket (`TabState::er_dir()`): the branch
+Sidecars live in the tab's per-view bucket (its `er_dir`): the branch
 bucket or `prs/pr-<N>/`. `docs/adr/0004-per-view-artifact-scoping.md`.
 
 ## Who writes which file
@@ -35,7 +35,7 @@ them. `docs/adr/0059-validation-and-scoped-overlays.md`.
 
 **`checklist.json` is split by field.** Its *items* are AI-owned like the rest;
 its `checked` flags are the reviewer's own progress, written by the toggle in
-either front end (`App::toggle_checklist_item_at`, through `checklist_store`).
+either front end (`checklist_store::toggle_checked`).
 Nothing else in the file is theirs to write, and the agent that generates it
 never sets `checked`.
 

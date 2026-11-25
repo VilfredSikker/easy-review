@@ -96,9 +96,9 @@ docs and release chores do land on `main`.
   net. A stale view means a writer that did not stamp a version, or a relay
   that did not hand it on. Fix that before touching a timer (ADR 0072).
 - **The TUI reads the service in-process, and a key never waits on an
-  actor.** The service writes; `crates/er-tui/tests/writes.rs` fails on one
-  via the git or GitHub ports, er-github, er-store or `std::fs`; P77.2 widens
-  it to er-engine's writers (ADR 0073).
+  actor.** No TUI module writes a sidecar, the working tree or GitHub itself:
+  each write is a command the service runs, and `crates/er-tui/tests/writes.rs`
+  fails on one that is not (ADR 0073).
 - **One `er` instance per worktree.** Multi-worktree tabs work through the
   worktree picker.
 - **`main` and `release/v*` can differ** — check the branch you are actually on.

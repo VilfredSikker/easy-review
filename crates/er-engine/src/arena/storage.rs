@@ -175,40 +175,6 @@ pub fn list_run_ids(er_dir: &Path) -> Result<Vec<String>> {
     Ok(ids)
 }
 
-/// Latest mtime under `.er/arena/` for poll fallback.
-pub fn latest_arena_mtime(er_dir: &Path) -> Option<std::time::SystemTime> {
-    let arena_root = er_dir.join("arena");
-    if !arena_root.is_dir() {
-        return None;
-    }
-    let mut latest: Option<std::time::SystemTime> = None;
-    let stack = vec![arena_root];
-    walk_mtime(stack, &mut latest);
-    latest
-}
-
-fn walk_mtime(mut dirs: Vec<PathBuf>, latest: &mut Option<std::time::SystemTime>) {
-    while let Some(dir) = dirs.pop() {
-        let Ok(entries) = fs::read_dir(&dir) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                dirs.push(path);
-            } else if let Ok(meta) = entry.metadata() {
-                if let Ok(mtime) = meta.modified() {
-                    *latest = Some(match latest {
-                        Some(prev) if mtime > *prev => mtime,
-                        Some(prev) => *prev,
-                        None => mtime,
-                    });
-                }
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

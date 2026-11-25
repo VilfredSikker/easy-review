@@ -265,16 +265,17 @@ build-engine-headless:
     cargo build -p er-engine --no-default-features
     cargo build -p er-engine --no-default-features --features highlight
 
-# Build the service the way CI does: its own graph, no Tauri system deps, so an
-# engine reference to a `ui`-gated module fails here and nowhere else.
+# Build the service the way CI does: its own graph, no Tauri system deps, so a
+# service reference to a `watch`- or `highlight`-gated engine module, which a
+# workspace build turns on for another crate, fails here and nowhere else.
 [group('ci')]
 build-service-headless:
     cargo check -p er-service --all-targets
 
 # Check the desktop and the TUI each in its own graph, tests included.
-# Resolver 2 unifies er-engine's features in a workspace build, where
-# er-engine's own tests turn `ui` on, so only these checks fail when either
-# front end names the App (ADR 0072).
+# Resolver 2 unifies er-engine's features in a workspace build, so only these
+# checks fail when either front end relies on an engine feature (`watch`,
+# `highlight`) that only another crate turns on.
 [group('ci')]
 check-desktop:
     cargo check -p er-desktop --all-targets

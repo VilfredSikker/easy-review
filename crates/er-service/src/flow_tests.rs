@@ -47,15 +47,18 @@ fn ports() -> Ports {
 }
 
 /// Two fake providers. Triage picks Deep; every arena call waits for `gate`,
-/// so a test can look at a run while its reviewers are mid-round.
+/// so a test can look at a run while its reviewers are mid-round. The wait
+/// ends when the gate's directory goes or after 30 s, so a failed test leaves
+/// no provider behind.
 fn deep_config(bucket: &str, gate: &Path) -> ErConfig {
     let script = format!(
         "case \"$1\" in\n\
          *triage.json*) {preamble}; printf '{{\"version\":1,\"diff_hash\":\"%s\",\"verdict\":{{\"primary\":\"arena\",\"experts\":[\"security\"]}}}}' \"$h\" > \"$out/triage.json\" ;;\n\
-         *) while [ ! -f '{gate}' ]; do sleep 0.05; done; printf '{{\"findings\":[],\"ballots\":[],\"verdicts\":[]}}' ;;\n\
+         *) i=0; while [ -d '{dir}' ] && [ ! -f '{gate}' ] && [ \"$i\" -lt 600 ]; do sleep 0.05; i=$((i+1)); done; printf '{{\"findings\":[],\"ballots\":[],\"verdicts\":[]}}' ;;\n\
          esac",
         preamble = er_engine::test_support::STAGING_PREAMBLE,
         gate = gate.display(),
+        dir = gate.parent().unwrap_or(gate).display(),
     );
     let provider = AiProviderConfig {
         command: "/bin/sh".into(),

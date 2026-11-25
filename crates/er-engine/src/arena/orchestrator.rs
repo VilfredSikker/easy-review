@@ -359,7 +359,7 @@ pub fn estimate_latency_sec(
     sec.max(5)
 }
 
-/// Cost/latency preview from an already-resolved raw diff (see [`TabState::raw_diff_for_arena`]).
+/// Cost/latency preview from an already-resolved raw diff.
 pub fn build_arena_diff_preview(
     config: &ErConfig,
     raw_diff: &str,

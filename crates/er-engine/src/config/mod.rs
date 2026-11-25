@@ -14,8 +14,6 @@ mod settings_coverage;
 
 use anyhow::Result;
 
-#[cfg(feature = "ui")]
-pub(crate) use agents::managed_agents_load_failed;
 pub use agents::{agents_path, load_agents_from, save_agents_to, AgentsConfig};
 pub use desktop_settings::{
     apply_config_field, validate_config_text_field, ConfigFieldValue, ConfigHubFieldDto,
@@ -1760,14 +1758,6 @@ fn config_load_failed(path: &std::path::Path) -> bool {
         .lock()
         .map(|failed| failed.contains(path))
         .unwrap_or(false)
-}
-
-/// Whether the managed config has a recorded failed load. The config hub reads
-/// this after a refused save, so the persistent banner also appears when the
-/// file went bad after startup.
-#[cfg(feature = "ui")]
-pub(crate) fn managed_config_load_failed() -> bool {
-    config_load_failed(&managed_config_path())
 }
 
 /// Whether `config_path`, or the `agents.toml` beside it, has a recorded

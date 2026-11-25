@@ -374,7 +374,7 @@ impl Finding {
     /// `diff_file` is `None` when the file itself has left the diff, which is
     /// the comment path's `Missing → Lost` case: an anchored finding there is
     /// stale. A caller that merely hasn't parsed the file yet must not pass
-    /// `None` — see `TabState::refresh_finding_staleness`.
+    /// `None` — see er-engine's `tab_refresh::refresh_finding_staleness`.
     ///
     /// File- and hunk-level findings carry no `line_content` and stay fresh:
     /// `AiState::stale_files` already covers the file as a whole.

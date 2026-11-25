@@ -393,10 +393,9 @@ fn no_resource_module_names_the_app() {
     assert!(scanned >= 2, "scanned {scanned} modules");
 }
 
-/// The asks, runs and task host outside `resources/` name nothing under the
-/// engine's `ui`-gated `app` either, so er-desktop can build on er-engine
-/// without `ui`. They reach the launcher and log types through the
-/// always-compiled half.
+/// The asks, runs and task host outside `resources/` name nothing of the
+/// App either, which er-engine no longer has. They reach the launcher and log
+/// types through the engine's modules.
 #[test]
 fn no_flag_on_host_module_names_the_engine_app() {
     let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");

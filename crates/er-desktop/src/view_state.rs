@@ -278,13 +278,17 @@ mod tests {
                 );
             }
         }
-        // D20 keeps the TUI layout group in the engine until phase 5b.
-        let state = std::fs::read_to_string(engine.join("app/state/mod.rs")).expect("mod.rs");
-        for kept in ["file_tree_width", "panel_width"] {
-            assert!(
-                has_ident(production(&state), kept),
-                "`{kept}` stays on the engine state"
-            );
+        // D20's TUI layout group left the engine with the App; it is in
+        // er-tui's `TuiView` now.
+        for path in &files {
+            let src = std::fs::read_to_string(path).expect("read engine source");
+            for gone in ["file_tree_width", "panel_width"] {
+                assert!(
+                    !has_ident(production(&src), gone),
+                    "{} still names the TUI layout field `{gone}`",
+                    path.display()
+                );
+            }
         }
     }
 

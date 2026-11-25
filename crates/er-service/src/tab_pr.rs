@@ -47,7 +47,7 @@ pub(crate) fn viewed_branch(tab: &ResolvedTab) -> String {
         .unwrap_or_else(|| tab.current_branch.clone())
 }
 
-/// Where `tab`'s stack is read from, as `TabState::stack_source` finds it:
+/// Where `tab`'s stack is read from, as the App's `TabState::stack_source` found it:
 /// `gh stack view` in the checkout that holds the viewed branch, else the
 /// PR chain of a PR's head; none when the tab has neither.
 pub(crate) fn stack_source(

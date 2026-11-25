@@ -24,8 +24,8 @@ the sections that moved.
   reviewed marks, the AI state and the PR. Each section stamps the revision that last
   replaced it. A section is replaced, never changed in place, so equal
   revisions mean equal content.
-- A load runs as an effect, by the same engine steps a `TabState` refresh
-  runs, and the actor applies it. The actor never makes a key: the caller
+- A load runs as an effect, by the engine's load steps, and the actor
+  applies it. The actor never makes a key: the caller
   gives one, so the keys can come from the tab list today and from the
   front end's own tabs later.
 - A write effect hands the sidecar or the reviewed map it saved back to the
@@ -47,5 +47,5 @@ the sections that moved.
 - Sidecars written outside the Workspace, by `er-mcp` or an agent, reach the
   content when a front end asks for a sidecar reload. The reload reads only
   when the sidecars' stamps moved, and publishes nothing otherwise.
-- The service's load and `TabState`'s refresh are two sequences over one set
-  of engine steps. A parity test over the four diff modes keeps them in step.
+- The App's `TabState` refresh ran the same engine steps as the service's
+  load. It left with the App (P77), so the load is now their one sequence.

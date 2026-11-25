@@ -11,8 +11,7 @@ name = "er-desktop"
 path = "src/main.rs"
 
 [dependencies]
-# No `ui`: the desktop names nothing of the App (ADR 0072). `watch` is the
-# file watcher.
+# `watch` is the file watcher; the desktop needs no syntax highlighting.
 er-engine = { path = "../er-engine", default-features = false, features = ["watch"] }
 er-store = { path = "../er-store" }
 er-service = { path = "../er-service" }

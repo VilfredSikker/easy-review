@@ -48,11 +48,11 @@ actor and one app registry, each started on first use.
 
 ## Consequences
 
-- er-tui builds with er-engine's `ui` half off, so the App is outside its
-  graph. Its manifest test holds the dependency lines to that, and the
-  own-graph check (`cargo check -p er-tui --all-targets`) fails if a module
-  names the App, since a workspace build turns `ui` on through er-engine's own
-  tests.
+- er-engine has had no App and no `ui` feature since P77; er-engine's
+  manifest test keeps the feature from coming back. er-tui's manifest test
+  holds its er-engine lines to `default-features = false`, and the own-graph
+  check (`cargo check -p er-tui --all-targets`) fails if a module relies on
+  an engine feature that only another crate turns on.
 - A source scan walks `crates/er-tui/src` and keeps every module from naming
   the App, from calling `send_and_wait` or `recv_timeout`, from writing or
   discovering settings itself, and from starting a thread. Three threads are
@@ -62,10 +62,14 @@ actor and one app registry, each started on first use.
   background update check `main.rs` starts from `update.rs`, whose result the
   loop reads without waiting. A test holds a load on a gated git port and
   bounds each key's frame.
-- A write guard (`crates/er-tui/tests/writes.rs`) fails on a write via the git
-  or GitHub ports, er-github, er-store or `std::fs`; P77.2 widens it to
-  er-engine's writers. It exempts `service/session.rs`'s save and
-  `update.rs`'s archive. The same walk fails on any path that says an area is
+- A write guard (`crates/er-tui/tests/writes.rs`) fails on a module that
+  calls a write it names: the git and GitHub ports, er-github, er-store,
+  er-engine's writers and `std::fs`. It exempts `service/session.rs`'s save,
+  `update.rs`'s archive and binary, `service/shell.rs`'s first-launch notice
+  (a one-time import of legacy projects) and `main.rs`'s `er uninstall`,
+  which runs with no service. A git push whose result a match arm or a
+  closure returns is out of its reach, since it reads the same as a list's
+  push. The same walk fails on any path that says an area is
   not on this build, so no key, hub row or panel falls back to one.
 - The TUI and the desktop each run a settings actor over one `config.toml`,
   as the two processes did before; ADR 0005's rule against a reload that

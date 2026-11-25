@@ -50,7 +50,9 @@ own `recv_timeout`. An unbounded `recv()` would hold a worker for as long as the
 actor lives and turn a dead actor into a frozen command.
 
 **The crate graph stays headless.** `er-service` depends on `er-engine` with
-`default-features = false` and has no front end in its graph. Both front ends
+`default-features = false` and has no front end in its graph. Since the App
+left (P77), er-engine has no front-end half, so that drops only `watch` and
+`highlight`. Both front ends
 run on it.
 An open goes through `er_send` like every other command: its `Ack` names the
 resources it moved, and the page refetches `tabs` and the new tab's content

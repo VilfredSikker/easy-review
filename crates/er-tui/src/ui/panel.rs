@@ -114,8 +114,6 @@ fn render_panel(f: &mut Frame, area: Rect, screen: &Screen, content: PanelConten
         PanelContent::PrOverview => render_pr_overview(&mut lines, area, screen),
         PanelContent::AiSummary => render_ai_summary(&mut lines, area, screen, ai),
         PanelContent::AgentLog => render_agent_log(&mut lines, area, screen),
-        // Symbol references were struck from the TUI, so nothing opens it.
-        PanelContent::SymbolRefs => {}
     }
 
     let border_style = if tab.panel_focus {

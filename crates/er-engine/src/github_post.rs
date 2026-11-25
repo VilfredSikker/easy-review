@@ -6,8 +6,8 @@
 //! pending attempt is remembered and the PR's comments are listed before the
 //! retry posts.
 //!
-//! This module has no `App` dependency: the state layer in
-//! `app::state::github_post` owns the pending records and drives the phases.
+//! This module holds no tab state: its caller (er-service's
+//! `github_comments.rs`) keeps the pending record and drives the phases.
 
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};

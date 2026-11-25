@@ -33,9 +33,8 @@ impl BranchScopeFetchInputs {
     }
 }
 
-/// Fetch the branch-scope raw diff — the same computation
-/// `TabState::fetch_tab_raw_diff("branch")` performs, as a free function so a
-/// caller can run it without holding the App lock.
+/// Fetch the branch-scope raw diff, as a free function a caller can run off
+/// the thread that owns the tab.
 ///
 /// Handles both local PR tabs (working-tree diff when checked out, `gh pr diff`
 /// / `git diff base...ref` otherwise) and remote PR tabs (`gh pr diff --repo`).

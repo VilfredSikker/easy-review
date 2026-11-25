@@ -1,6 +1,6 @@
 # Single-owner view state lives in its front end
 
-_Supersedes ADR 0006 for view state that only one front end reads._
+_Supersedes ADR 0006._
 
 ## Context
 
@@ -15,16 +15,17 @@ View state with one front-end owner lives in that front end. The desktop's
 per-tab review browser (URL, layout, split ratio, annotate mode, tooltips) and
 its panel visibility left `TabState` and `App` for
 `crates/er-desktop/src/view_state.rs`. desktop-ui's store accessors, command
-names and snapshot payload did not change. ADR 0006 still holds for state both
-front ends read, and D20 keeps the TUI layout widths, selection, cursor and
-scroll in the engine until phase 5b.
+names and snapshot payload did not change. D20 kept the TUI layout widths,
+selection, cursor and scroll in the engine until phase 5b; they now live in
+er-tui's `TuiView` (ADR 0073), and the engine keeps only the `navigation`
+functions. The App left in P77, so the engine has no front-end state model:
+state both front ends read is the service's published sections (ADR 0071).
 
-**Browser state is keyed on a tab key.** `TabState` carries a `TabKey`, a
+**Browser state is keyed on a tab key.** Each tab carries a `TabKey`, a
 process-local number given when the tab is built and never saved. The app
 registry issues the key, so the registry, the loaded content and the view
 state name a tab by one key. The type
-lives in the engine half that always compiles, so the desktop and the service
-name the same key.
+lives in the engine, so the desktop and the service name the same key.
 
 **`tabs.json` is unchanged.** Save copies each tab's URL and layout from the view
 state into its descriptor; restore copies them onto the rebuilt tab's new key.
@@ -51,7 +52,7 @@ Split ratio, annotate mode, tooltips and panels stay in memory, as before.
   `select_file`, `next_file`, `prev_file`, `next_hunk`, `prev_hunk` and
   `jump_to_unreviewed` run as functions over `diff(tab)` and `reviewed(tab)`
   (`desktop-ui/src/lib/navigation.ts`), so a key press makes no IPC call. This
-  moves the desktop's copy ahead of D20's phase 5b, because the App leaves
+  moved the desktop's copy ahead of D20's phase 5b, because the App left
   er-desktop in phase 5. The engine's `navigation` functions stay for the TUI,
   and one fixture (`crates/er-engine/tests/fixtures/navigation_cases.json`)
   holds both to the same answers, so the two cannot drift.

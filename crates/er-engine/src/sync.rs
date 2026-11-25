@@ -1,9 +1,5 @@
-//! Pure sync core — GitHub comment merge/anchoring without any
-//! `App`/`TabState` dependency.
+//! Pure sync core — GitHub comment merge/anchoring with no tab state.
 //!
-//! The TUI and desktop call these through thin `App` wrappers in
-//! `app/state/github_sync.rs` (three-phase pattern: snapshot under the App
-//! lock → fetch/process here without the lock → apply under the lock).
 //! A headless consumer calls these directly with its own session state. The
 //! workspace actor uses the two halves on their own: [`fetch_comment_sync`]
 //! reads GitHub on an effect thread and writes nothing, and
@@ -11,7 +7,7 @@
 //! stays the one writer.
 //!
 //! This module is always compiled — it must not depend on any feature-gated
-//! module (`app`, `arena`, `watch`, `highlight`).
+//! module (`watch`, `highlight`).
 
 use anyhow::Result;
 

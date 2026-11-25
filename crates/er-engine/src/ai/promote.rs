@@ -25,9 +25,9 @@ use crate::ai::Finding;
 /// };
 /// ```
 ///
-/// ```compile_fail
+/// ```compile_fail,E0277
 /// use er_engine::ai::PrivateAnnotation;
-/// use er_engine::app::NewGitHubComment;
+/// use er_engine::github_post_session::NewGitHubComment;
 /// let question: PrivateAnnotation = todo!();
 /// let _: NewGitHubComment = question.into();
 /// ```
@@ -39,11 +39,20 @@ use crate::ai::Finding;
 /// let _ = NewLineComment::from(&question);
 /// ```
 ///
-/// ```compile_fail
+/// ```compile_fail,E0277
 /// use er_engine::ai::PrivateAnnotation;
-/// use er_engine::app::NewGitHubComment;
+/// use er_engine::github_post_session::NewGitHubComment;
 /// let question: PrivateAnnotation = todo!();
 /// let _ = NewGitHubComment::from(&question);
+/// ```
+///
+/// The two blocks above import their types with these lines, which compile,
+/// so a moved type fails here and those blocks still fail on the `From` rule:
+///
+/// ```
+/// use er_engine::ai::PrivateAnnotation;
+/// use er_engine::github_post_session::NewGitHubComment;
+/// fn _types(_: PrivateAnnotation, _: NewGitHubComment) {}
 /// ```
 ///
 /// ```compile_fail

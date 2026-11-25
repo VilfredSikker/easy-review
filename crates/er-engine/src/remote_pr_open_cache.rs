@@ -11,7 +11,7 @@
 //! - the sidebar hover prefetch (`prefetch_remote_pr_open`) warms entries
 //!   before the click, and
 //! - a cache hit opens the PR with zero `gh` calls (the tab is built via
-//!   `TabState::new_remote_with_data`, no network).
+//!   the cached inputs, no network).
 //!
 //! Transient by design: re-fetched on every app start (remote opens are
 //! infrequent and freshness matters more than persistence here).
