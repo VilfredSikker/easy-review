@@ -8,7 +8,7 @@ use er_engine::ports::Ports;
 
 use super::shell::Shell;
 use super::tests::{
-    assert_parity, fixture, key, loaded, path_of, press_app, settle, shell, shell_frame, WAIT,
+    assert_parity, fixture, git, key, loaded, path_of, press_app, settle, shell, shell_frame, WAIT,
 };
 use super::threads_tests::{active_key, args, both_on, state, step};
 use crate::ui::highlight::Highlighter;
@@ -165,6 +165,15 @@ fn the_width_keys_hold_the_apps_limits() {
 #[test]
 fn the_split_diff_focus_and_scroll_follow_the_app() {
     let (app_repo, flag_repo) = (fixture(1), fixture(1));
+    // Three lines added at the top, so the old and new numbers differ on
+    // the context lines below them.
+    for repo in [&app_repo, &flag_repo] {
+        let file = repo.path().join("src/f000.rs");
+        let body = std::fs::read_to_string(&file).unwrap_or_else(|e| panic!("{e}"));
+        std::fs::write(&file, format!("let a = 1;\nlet b = 2;\nlet c = 3;\n{body}"))
+            .unwrap_or_else(|e| panic!("{e}"));
+        git(repo.path(), &["commit", "-q", "-am", "top"]);
+    }
     let storage = storage();
     let config = storage.path().join("config.toml");
     std::fs::write(&config, "[display]\nsplit_diff = true\n").unwrap_or_else(|e| panic!("{e}"));
@@ -178,6 +187,8 @@ fn the_split_diff_focus_and_scroll_follow_the_app() {
             KeyCode::Char('l'),
             KeyCode::Char('l'),
             KeyCode::Char('h'),
+            KeyCode::Down,
+            KeyCode::Down,
             KeyCode::Down,
             KeyCode::Down,
             KeyCode::Home,
@@ -200,6 +211,50 @@ fn the_split_diff_focus_and_scroll_follow_the_app() {
             (tab.comment_line_num, tab.comment_side.as_deref())
         );
         assert_eq!(draft.side.as_deref(), Some("LEFT"));
+        // The cursor is on a context line whose old number is three less
+        // than its new one; the old side takes the old number.
+        let line = app
+            .tab()
+            .current_line
+            .and_then(|at| app.tab().files[0].hunks[0].lines.get(at))
+            .unwrap_or_else(|| panic!("no cursor line"));
+        assert_eq!(line.new_num, line.old_num.map(|old| old + 3), "{line:?}");
+        assert_eq!(draft.line, line.old_num);
+    });
+}
+
+/// Up and Shift+Up move the cursor and the selection's end up, as the
+/// App's, after Down and Shift+Down move them down.
+#[test]
+fn up_and_shift_up_move_like_the_app() {
+    let (app_repo, flag_repo) = (fixture(1), fixture(1));
+    let storage = storage();
+    er_engine::storage::with_process_test_storage_root(storage.path(), || {
+        let (mut app, mut shell) = both_on(&app_repo, &flag_repo, storage.path());
+        let mut hl = Highlighter::new();
+        let none = KeyModifiers::NONE;
+        let shift = KeyModifiers::SHIFT;
+        let events = [
+            with(KeyCode::Down, none),
+            with(KeyCode::Down, none),
+            with(KeyCode::Down, none),
+            with(KeyCode::Down, none),
+            with(KeyCode::Up, none),
+            with(KeyCode::Down, shift),
+            with(KeyCode::Down, shift),
+            with(KeyCode::Up, shift),
+        ];
+        let key = active_key(&shell);
+        for event in events {
+            step(&mut app, &mut shell, &mut hl, event);
+            let view = state(&shell, key);
+            let anchor = view.selection_anchor.as_ref().map(|(_, at)| *at);
+            assert_eq!(
+                (view.current_line, anchor),
+                (app.tab().current_line, app.tab().selection_anchor),
+                "{event:?}"
+            );
+        }
     });
 }
 
