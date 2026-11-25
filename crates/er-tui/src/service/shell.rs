@@ -978,11 +978,13 @@ impl Shell {
                 }
                 Err(error) if matches!(after, After::Rerun(_)) => {
                     if let After::Rerun(rerun) = after {
+                        self.settings.claim_reply(&error.to_string());
                         self.notify(rerun.refused(&error.to_string()));
                     }
                 }
                 Err(error) if matches!(after, After::Cleared(_)) => {
                     if let After::Cleared(clear) = after {
+                        self.settings.claim_reply(&error.to_string());
                         self.notify(clears::refused(clear, &error.to_string()));
                     }
                 }

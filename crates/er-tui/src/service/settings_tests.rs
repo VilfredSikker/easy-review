@@ -294,3 +294,25 @@ fn the_saved_selection_follows_the_view() {
         assert_parity(&app, &shell_frame(&mut shell, &mut hl), &mut hl, "pick");
     });
 }
+
+/// A refusal the loop words its own way claims its raw event twin, in
+/// either order, so the raw text never lands over the worded notice on a
+/// later tick: the cause of the clears test's second refusal text.
+#[test]
+fn a_worded_reply_claims_its_raw_event() {
+    use super::settings::{SettingsBridge, Side};
+    let raw = "Failed to delete the review: …/branch is locked by pid 1 (write)";
+    let mut reply_first = SettingsBridge::default();
+    reply_first.claim_reply(raw);
+    assert!(
+        !reply_first.admit_failure(Side::Event, raw),
+        "the raw event showed"
+    );
+    let mut event_first = SettingsBridge::default();
+    assert!(event_first.admit_failure(Side::Event, raw));
+    event_first.claim_reply(raw);
+    assert!(
+        event_first.admit_failure(Side::Event, raw),
+        "a later failure with the same text is new and shows"
+    );
+}
