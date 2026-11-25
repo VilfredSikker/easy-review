@@ -33,7 +33,6 @@ docs/DEVELOPMENT.md
 docs/quality-checks.md
 crates/er-engine/src/CLAUDE.md
 crates/er-engine/src/ai/CLAUDE.md
-crates/er-engine/src/app/CLAUDE.md
 crates/er-engine/src/git/CLAUDE.md
 crates/er-git/CLAUDE.md
 crates/er-github/CLAUDE.md
@@ -41,7 +40,6 @@ crates/er-store/CLAUDE.md
 crates/er-engine/src/watch/CLAUDE.md
 crates/er-tui/src/ui/CLAUDE.md
 crates/er-desktop/agent.md
-crates/er-engine/src/app/state/agent.md
 desktop-ui/agent.md
 desktop-ui/src/lib/stores/agent.md
 desktop-ui/src/lib/components/agent.md

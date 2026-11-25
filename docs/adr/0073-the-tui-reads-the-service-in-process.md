@@ -48,11 +48,11 @@ actor and one app registry, each started on first use.
 
 ## Consequences
 
-- er-tui builds with er-engine's `ui` half off, so the App is outside its
-  graph. Its manifest test holds the dependency lines to that, and the
-  own-graph check (`cargo check -p er-tui --all-targets`) fails if a module
-  names the App, since a workspace build turns `ui` on through er-engine's own
-  tests.
+- er-engine has had no App and no `ui` feature since P77; er-engine's
+  manifest test keeps the feature from coming back. er-tui's manifest test
+  holds its er-engine lines to `default-features = false`, and the own-graph
+  check (`cargo check -p er-tui --all-targets`) fails if a module relies on
+  an engine feature that only another crate turns on.
 - A source scan walks `crates/er-tui/src` and keeps every module from naming
   the App, from calling `send_and_wait` or `recv_timeout`, from writing or
   discovering settings itself, and from starting a thread. Three threads are

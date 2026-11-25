@@ -190,8 +190,9 @@ jobs:
       - run: cargo check -p er-service --all-targets
 
   # er-desktop and er-tui each in its own graph, tests included. A workspace
-  # build unifies er-engine's features, and er-engine's own tests turn `ui`
-  # on, so only this job fails when either front end names the App (ADR 0072).
+  # build unifies er-engine's features, so only this job fails when either
+  # front end relies on an engine feature (`watch`, `highlight`) that only
+  # another crate turns on.
   check-desktop:
     name: Desktop (own graph)
     needs: changes

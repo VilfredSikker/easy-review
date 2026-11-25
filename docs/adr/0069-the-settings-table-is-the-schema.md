@@ -38,7 +38,7 @@ settings actor, held at a fixed key in the desktop's `ServiceState` and never
 chosen from the active tab. Workspace actors own per-repo state only. P45's
 `AppRegistry` follows the same rule for tabs and caches. Per-repo actors each
 holding a config copy would race their saves to one file, and a desktop command
-that picks the actor from the active tab has to read the tab under the App
+that picks the actor from the active tab had to read the tab under the App
 lock, which is the wait the service exists to remove.
 
 **Settings follow ADR 0067's read path.** The settings actor publishes a
@@ -50,8 +50,7 @@ a save the file refuses undoes the edit, and any write staged after it, in the
 actor's config.
 
 **`apply_config_field` stays the one writer of a config field**, in the
-engine's non-`ui` config, so the flag-off desktop and the settings actor share
-it.
+engine's config module, and the settings actor calls it.
 
 ## Consequences
 
@@ -62,11 +61,9 @@ Settings reads never wait on the actor.
 **Costs.** Labels and descriptions are still written by hand, and the TUI's
 table is not covered by the fixture. A client that wants a machine-readable
 schema for validation would need a derive added beside the table; the wire
-rows would not change. On the flag path, side effects the flag-off App runs
-after a config write (refreshing watched files, resyncing the AI selection)
-wait for the service to own that state. The palette's `set_ai_model`,
-`set_ai_selection` and `set_ai_effort` save through the actor too; the App only
-takes the saved selection as its session selection, because the palette still
-reads it there. A write is published before its save lands, so a reader can
+rows would not change. Side effects the App ran after a config write
+(refreshing watched files, resyncing the AI selection) left with it. The
+palette's `set_ai_model`, `set_ai_selection` and `set_ai_effort` save through
+the actor too. A write is published before its save lands, so a reader can
 see an edit the file then refuses; the actor rolls it back when the refusal
 arrives, and the view matches the disk again.
