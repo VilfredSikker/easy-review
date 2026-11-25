@@ -9,7 +9,7 @@
 
 | Session | Bundle | Working on | Lanes |
 | --- | --- | --- | --- |
-| Coordinator | subagents | Phase 5b done 2026-11-25: P63–P77 merged, issues #647–#661 closed; the exit list is in BUILD_LOG.md. Phase 6 (consolidate, #400): ADDENDUM-08 is in review with the owner; #762, #764 and #765 build alongside | – |
+| Coordinator | subagents | Phase 5b done 2026-11-25: P63–P77 merged, issues #647–#661 closed; the exit list is in BUILD_LOG.md. Phase 6 (consolidate, #400): ADDENDUM-08 approved, then revised (no new features, desktop page audit); the revision is in review; #762, #764 and #765 build alongside | – |
 | D1–D5, T1, T2 | – | stopped 2026-11-14; the coordinator runs the rest of phase 4 through workflow runs | – |
 
 **Phases 0–2 are complete, and the phase-3 gate passed on 2026-11-10.** [ADDENDUM-04](./ADDENDUM-04-phase-3.md) is the phase-3 plan, and its issues are #471–#489. **Phase 3 is complete, and the phase-4 gate passed on 2026-11-14.** [ADDENDUM-05](./ADDENDUM-05-phase-4.md) is the phase-4 plan, re-checked at `afd78bced`; its issues are #526–#538. **Phase 4 is complete (2026-11-17):** P38 through P47.2 are merged and #526–#538 are closed. P47.2 was re-sequenced into stacked layers (2a, 2b, a slim 2c); its decisions, the exit checklist and the list of what stays on the App with the flag on are on #538. The phase-5 gate questions (D9 codegen, sidebar resources) are answered. **The phase-5 gate passed on 2026-11-18:** the owner approved the plan, [ADDENDUM-06](./ADDENDUM-06-phase-5.md) (merged as #601), and its issues are #602–#622.
@@ -130,8 +130,6 @@ The `Model` column sets how deep the coordinator's review goes, not who implemen
 | P79.3 | The inbox sweep, the triage and the project commands | S/DS/D | opus | ⬜ | | ADDENDUM-08; not opened |
 | P80.1 | The MCP use cases in er-service, one writer | S/E/M | opus | ⬜ | | ADDENDUM-08; not opened |
 | P80.2 | er-mcp depends on er-service | M/C | sonnet | ⬜ | | ADDENDUM-08; not opened |
-| P81.1 | Headless `er review`: the run and the JSON report | S/T/P | opus | ⬜ | | ADDENDUM-08; not opened |
-| P81.2 | `--post`, one pending review | S/T | opus | ⬜ | | ADDENDUM-08; not opened |
 | P82 | One `now_epoch_ms` | C/E/S/D/M | sonnet | ⬜ | | ADDENDUM-08; not opened |
 | P83.1 | The er-service front-end surface, and the TUI on it | S/T/C | opus | ⬜ | | ADDENDUM-08; not opened |
 | P83.2 | The desktop on it | S/D/C | sonnet | ⬜ | | ADDENDUM-08; not opened |
@@ -139,6 +137,13 @@ The `Model` column sets how deep the coordinator's review goes, not who implemen
 | P84 | One service host | S/D | opus | ⬜ | | ADDENDUM-08; not opened |
 | P85 | ADRs, docs, npm and the close-out | Docs/M | sonnet | ⬜ | | ADDENDUM-08; not opened |
 | P86 | The `*Snapshot` renames | U/D/P/S | sonnet | ⬜ | | ADDENDUM-08; not opened |
+| P87 | The PR card's branch actions through the service | S/D | opus | ⬜ | | ADDENDUM-08; not opened |
+| P88 | The card asks on the task host | S/D | opus | ⬜ | | ADDENDUM-08; not opened |
+| P89 | The desktop-only runs planned in er-service | S/D | opus | ⬜ | | ADDENDUM-08; not opened |
+| P90 | Browser annotations through the workspace actor | S/D | opus | ⬜ | | ADDENDUM-08; not opened |
+| P91 | One `pr_status` version per PR | S/D | sonnet | ⬜ | | ADDENDUM-08; not opened |
+| P92 | Split `route_helpers.rs` and `page_view.rs` by caller | D | sonnet | ⬜ | | ADDENDUM-08; not opened |
+| P93 | App-era leftovers | D/S/E/T/U | sonnet | ⬜ | | ADDENDUM-08; not opened |
 
 ## Designs
 
@@ -167,11 +172,11 @@ The `Model` column sets how deep the coordinator's review goes, not who implemen
 
 ## Waiting on the owner
 
-**Decisions.** D1–D10 are settled in [ADDENDUM-01](./ADDENDUM-01-decisions.md) and D11–D18 in [ADDENDUM-02](./ADDENDUM-02-issue-decisions.md). Routine merges and design approvals are delegated to the coordinator (BUILD_LOG, 2026-11-06). One is open: ADDENDUM-08's question on a lost submit response (below).
+**Decisions.** D1–D10 are settled in [ADDENDUM-01](./ADDENDUM-01-decisions.md) and D11–D18 in [ADDENDUM-02](./ADDENDUM-02-issue-decisions.md). Routine merges and design approvals are delegated to the coordinator (BUILD_LOG, 2026-11-06). One is open: ADDENDUM-08's question on desktop-ui's other `*Snapshot` interfaces (below).
 
 **Actions.**
 
-- Approve ADDENDUM-08, the phase-6 plan, and answer its open question (a lost submit response under `--post`).
+- Approve the revised ADDENDUM-08 (no new features; the desktop page audit) and answer its open question (desktop-ui's other `*Snapshot` interfaces).
 - ER-45: go/no-go on the item that would run on the release branch, in `stage_job.rs`.
 - ER-120: the click-to-paint readings accepted at P55.2b ([#609](https://github.com/VilfredSikker/easy-review/issues/609)).
 - The main checkout's target dir.
