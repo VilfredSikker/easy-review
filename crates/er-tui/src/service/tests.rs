@@ -56,7 +56,10 @@ pub(super) fn sources() -> Vec<(String, String)> {
                 None => format!("../{relative}"),
             };
             let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{e}"));
-            (name, text[..test_module(&text)].to_string())
+            (
+                name,
+                text.get(..test_module(&text)).unwrap_or(&text).to_string(),
+            )
         })
         .collect()
 }
@@ -73,7 +76,8 @@ fn test_module(text: &str) -> usize {
     text.match_indices("#[cfg(test)]")
         .map(|(at, _)| at)
         .find(|&at| {
-            let item = text[at..].lines().nth(1).unwrap_or("").trim();
+            let rest = text.get(at..).unwrap_or_default();
+            let item = rest.lines().nth(1).unwrap_or_default().trim();
             item.starts_with("mod ") && item.ends_with('{')
         })
         .unwrap_or(text.len())

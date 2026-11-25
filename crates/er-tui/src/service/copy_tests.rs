@@ -498,7 +498,8 @@ fn a_refresh_that_moves_the_file_keeps_its_selection() {
             step(&mut shell, &mut hl, event);
         }
         // A file that sorts first moves src/f001.rs from index 1 to 2.
-        for repo in [&flag_repo] {
+        {
+            let repo = &flag_repo;
             std::fs::write(repo.path().join("src/a.rs"), "fn a() {}\n")
                 .unwrap_or_else(|e| panic!("{e}"));
             git(repo.path(), &["add", "."]);
@@ -602,7 +603,8 @@ fn a_refresh_that_removes_the_anchored_file_starts_a_new_selection() {
             step(&mut shell, &mut hl, event);
         }
         // src/f001.rs back to main's text: it leaves the diff.
-        for repo in [&flag_repo] {
+        {
+            let repo = &flag_repo;
             git(
                 repo.path(),
                 &["checkout", "-q", "main", "--", "src/f001.rs"],

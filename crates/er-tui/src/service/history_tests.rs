@@ -126,7 +126,8 @@ fn history_draws_like_the_app() {
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
         // Unstaged lists `f002` alone, which Branch lists third.
-        for repo in [&flag_repo] {
+        {
+            let repo = &flag_repo;
             let file = repo.path().join("src/f002.rs");
             std::fs::write(file, "let unstaged = 1;\n").unwrap_or_else(|e| panic!("{e}"));
         }
@@ -377,7 +378,8 @@ fn a_staged_resolution_drops_the_unresolved_count_like_the_app() {
         let mut hl = Highlighter::new();
         step(&mut shell, &mut hl, KeyCode::Char('5'));
         assert_eq!(content(&shell).diff.meta.unresolved, 1);
-        for repo in [&flag_repo] {
+        {
+            let repo = &flag_repo;
             let file = repo.path().join("src/f000.rs");
             std::fs::write(file, "let resolved = 1;\n").unwrap_or_else(|e| panic!("{e}"));
         }

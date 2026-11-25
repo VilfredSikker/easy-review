@@ -289,26 +289,21 @@ fn browse_step(shell: &mut Shell, hl: &mut Highlighter, code: KeyCode) {
     shell.tick(Instant::now() + Duration::from_secs(60));
     shell.handle_key(key(code));
     settle_replies(shell);
-    let own = rooted_paths(shell, None);
+    let own = rooted_path(shell, None);
     let frame = super::tests::shell_frame(shell, hl);
     super::parity::assert_frame(&format!("{code:?}"), &frame);
-    rooted_paths(shell, Some(own));
+    rooted_path(shell, own);
 }
 
-/// Writes the browsed directory under `/tmp`, and answers the path it
-/// replaced; given that, puts it back.
-fn rooted_paths(shell: &mut Shell, restore: Option<Option<String>>) -> Option<String> {
-    let flag_path = match shell.view_mut().overlay.as_mut() {
-        Some(Overlay::Directory(browser)) => Some(&mut browser.current_path),
-        _ => None,
+/// Writes the browsed directory under `/tmp`, or back to `own`, and answers
+/// the path it replaced.
+fn rooted_path(shell: &mut Shell, own: Option<String>) -> Option<String> {
+    let Some(Overlay::Directory(browser)) = shell.view_mut().overlay.as_mut() else {
+        return None;
     };
-    let swap = |path: Option<&mut String>, to: Option<String>| {
-        path.map(|path| {
-            let to = to.unwrap_or_else(|| super::parity::tmp_rooted(path));
-            std::mem::replace(path, to)
-        })
-    };
-    swap(flag_path, restore.flatten())
+    let path = &mut browser.current_path;
+    let to = own.unwrap_or_else(|| super::parity::tmp_rooted(path));
+    Some(std::mem::replace(path, to))
 }
 
 /// "Open PR in browser" names the tab's PR and repo; `b` on a stack row

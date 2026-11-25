@@ -127,6 +127,13 @@ impl Landing {
     }
 }
 
+/// A held refusal: not yet drawn, or first drawn at.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Hold {
+    Unseen,
+    DrawnAt(Instant),
+}
+
 /// The loop's state: the host, the view state, and the commands in flight.
 pub struct Shell {
     host: ServiceHost,
@@ -147,10 +154,9 @@ pub struct Shell {
     notified_at: Option<Instant>,
     dwell: Duration,
     /// The shown message is a refusal or an error, which an ordinary notice
-    /// does not replace until it has been drawn for its dwell; it was first
-    /// drawn at the second field. An ordinary notice told meanwhile waits in
-    /// `deferred`.
-    holding: Option<Option<Instant>>,
+    /// does not replace until it has been drawn for its dwell. An ordinary
+    /// notice told meanwhile waits in `deferred`.
+    holding: Option<Hold>,
     deferred: Option<String>,
     /// The sidecar reloads in flight, whose failures pair with their events.
     reloads: Vec<ReplyReceiver>,
@@ -454,7 +460,7 @@ impl Shell {
         #[cfg(test)]
         self.told.push(message.clone());
         self.show(message);
-        self.holding = Some(None);
+        self.holding = Some(Hold::Unseen);
     }
 
     fn show(&mut self, message: String) {
@@ -585,7 +591,8 @@ impl Shell {
         let loaded = self.parse_selected_stub();
         self.send_restore();
         let held = match self.holding {
-            Some(drawn) => drawn.is_none_or(|at| now.duration_since(at) < self.dwell),
+            Some(Hold::Unseen) => true,
+            Some(Hold::DrawnAt(at)) => now.duration_since(at) < self.dwell,
             None => false,
         };
         if !loaded && self.notified_at.is_some() {
@@ -2995,8 +3002,8 @@ impl Shell {
     /// start's notice and the status line, each once.
     pub fn draw(&mut self, f: &mut ratatui::Frame, highlighter: &mut Highlighter) {
         self.terminal_width = f.area().width;
-        if let Some(drawn @ None) = self.holding.as_mut() {
-            *drawn = Some(Instant::now());
+        if self.holding == Some(Hold::Unseen) {
+            self.holding = Some(Hold::DrawnAt(Instant::now()));
         }
         let Some((key, _, content)) = self.active() else {
             return f.render_widget(Paragraph::new("No tab is open"), f.area());

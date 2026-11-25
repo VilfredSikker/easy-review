@@ -156,7 +156,8 @@ fn the_split_diff_focus_and_scroll_follow_the_app() {
     let flag_repo = fixture(1);
     // Three lines added at the top, so the old and new numbers differ on
     // the context lines below them.
-    for repo in [&flag_repo] {
+    {
+        let repo = &flag_repo;
         let file = repo.path().join("src/f000.rs");
         let body = std::fs::read_to_string(&file).unwrap_or_else(|e| panic!("{e}"));
         std::fs::write(&file, format!("let a = 1;\nlet b = 2;\nlet c = 3;\n{body}"))
@@ -434,7 +435,8 @@ fn to_git_row(shell: &mut Shell, hl: &mut Highlighter, label: &str) {
 fn the_git_hub_working_tree_rows_act_like_the_app() {
     let _golden = super::parity::guard();
     let flag_repo = fixture(2);
-    for repo in [&flag_repo] {
+    {
+        let repo = &flag_repo;
         for file in ["src/f000.rs", "src/f001.rs"] {
             std::fs::write(repo.path().join(file), "let unstaged = 1;\n")
                 .unwrap_or_else(|e| panic!("{e}"));
