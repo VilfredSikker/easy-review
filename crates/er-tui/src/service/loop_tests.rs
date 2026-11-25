@@ -418,3 +418,34 @@ fn no_key_waits_while_an_effect_is_held() {
         );
     });
 }
+
+/// A refusal holds the status line until it has been drawn for its dwell:
+/// an ordinary notice told in the meantime waits, then shows.
+#[test]
+fn a_refusal_holds_until_it_has_been_drawn() {
+    let repo = fixture(1);
+    let storage = storage();
+    er_engine::storage::with_process_test_storage_root(storage.path(), || {
+        let mut shell = shell(&args(vec![path_of(&repo)]), storage.path());
+        settle(&mut shell, loaded);
+        shell.land_failed_reply("summary failed (feature): no agent".into());
+        // Another task's ordinary notice, landing in the same tick.
+        (shell.host().task_hooks().notify)("tour completed (feature)".into(), false);
+        shell.tick(Instant::now() + Duration::from_secs(60));
+        let shown = |shell: &Shell| shell.view().notification.clone().unwrap_or_default();
+        assert!(
+            shown(&shell).starts_with("summary failed"),
+            "{}",
+            shown(&shell)
+        );
+        shell_frame(&mut shell, &mut Highlighter::new());
+        shell.tick(Instant::now() + Duration::from_secs(1));
+        assert!(
+            shown(&shell).starts_with("summary failed"),
+            "{}",
+            shown(&shell)
+        );
+        shell.tick(Instant::now() + Duration::from_secs(60));
+        assert_eq!(shown(&shell), "tour completed (feature)");
+    });
+}

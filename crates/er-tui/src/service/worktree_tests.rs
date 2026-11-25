@@ -47,6 +47,8 @@ fn notice(shell: &Shell) -> String {
 
 /// Lets the last step's message expire.
 fn expire(shell: &mut Shell) {
+    // Drawn first, as the loop draws each frame: a refusal holds until then.
+    shell_frame(shell, &mut Highlighter::new());
     shell.tick(Instant::now() + Duration::from_secs(60));
 }
 

@@ -114,8 +114,10 @@ fn a_refused_save_shows_once_and_raises_the_banner() {
         assert_eq!(shell.settings().times_shown(&message), 1, "{message}");
         assert_eq!(shell.view().notification.as_deref(), Some(message.as_str()));
 
-        shell.tick(Instant::now() + Duration::from_secs(60));
+        // Drawn first, as the loop draws each frame: a refusal holds until then.
         let mut hl = Highlighter::new();
+        shell_frame(&mut shell, &mut hl);
+        shell.tick(Instant::now() + Duration::from_secs(60));
         let frame = rows(&shell_frame(&mut shell, &mut hl)).join("\n");
         assert!(frame.contains(CONFIG_LOAD_BANNER), "{frame}");
     });
