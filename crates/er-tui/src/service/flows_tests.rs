@@ -328,7 +328,13 @@ fn an_interrupted_flow_shows_and_reruns_like_the_app() {
             panic!("the progress is not open");
         };
         assert_eq!(progress.er_dir, bucket);
-        let own = std::mem::replace(&mut progress.er_dir, app.tab().er_dir());
+        let shown = super::parity::tmp_rooted(&app.tab().er_dir());
+        let own = std::mem::replace(&mut progress.er_dir, shown.clone());
+        if let Some(er_engine::app::OverlayData::ReviewFlowProgress { er_dir, .. }) =
+            app.overlay.as_mut()
+        {
+            *er_dir = shown;
+        }
         assert_parity(&app, &shell_frame(&mut shell, &mut hl), &mut hl, "progress");
         if let Some(Overlay::FlowProgress(progress)) = shell.view_mut().overlay.as_mut() {
             progress.er_dir = own;
@@ -423,4 +429,118 @@ fn dropped_review(dir: &str, hash: &str) {
         serde_json::json!({"version": 1, "diff_hash": hash,
             "verdicts": [verdict("f1", 4, "kept"), verdict("f2", 5, "dropped")]}),
     );
+}
+
+fn results_of(findings: &[(&str, bool)]) -> super::flows::Results {
+    use er_engine::review_flow_driver::{ReviewFlowResultFinding, ReviewFlowResults};
+    let finding = |(id, selectable): &(&str, bool)| ReviewFlowResultFinding {
+        id: (*id).into(),
+        file: "src/f000.rs".into(),
+        line: Some(1),
+        title: (*id).into(),
+        body: String::new(),
+        confidence: 0.5,
+        raised_by: vec!["general".into()],
+        verdict: er_engine::arena::Verdict::Kept,
+        accepted: !selectable,
+        selectable: *selectable,
+    };
+    super::flows::Results::new(ReviewFlowResults {
+        er_dir: "/captured/bucket".into(),
+        run_id: "run-7".into(),
+        diff_hash: "hash".into(),
+        findings: findings.iter().map(finding).collect(),
+    })
+}
+
+/// The progress overlay's keys only move and scroll; none sends a request:
+/// the flag path's twin of the App's
+/// `review_progress_dispatch_is_read_only_and_scrolls`.
+#[test]
+fn the_progress_keys_only_move_and_scroll() {
+    use super::flows::{progress_key, Progress, Then};
+    use crate::input::keys::OverlayAction as O;
+    let mut flow = er_engine::ai::review_flow::ReviewFlow::new("hash");
+    for id in ["a", "b"] {
+        flow.tasks
+            .push(er_engine::ai::review_flow::FlowTaskProgress {
+                id: id.into(),
+                stage: er_engine::ai::review_flow::FlowTaskStage::Finding,
+                lens: None,
+                label: id.into(),
+                purpose: String::new(),
+                provider_id: String::new(),
+                provider_label: String::new(),
+                model_id: String::new(),
+                model_label: String::new(),
+                status: er_engine::ai::review_flow::FlowTaskStatus::Running,
+                error: None,
+                background_task_id: None,
+                round: None,
+                total_rounds: None,
+            });
+    }
+    let mut progress = Progress::new("/captured/bucket".into(), flow);
+    for action in [
+        O::ScrollDetail(3),
+        O::ToggleFlowFinding,
+        O::AcceptFlowFindings,
+    ] {
+        assert!(matches!(progress_key(&mut progress, action), Then::Stay));
+    }
+    assert_eq!(progress.detail_scroll, 3);
+    assert!(matches!(progress_key(&mut progress, O::Next), Then::Stay));
+    assert_eq!((progress.selected, progress.detail_scroll), (1, 0));
+}
+
+/// Space toggles only a row the run left selectable, as the App's toggle
+/// does: the flag path's twin of
+/// `review_flow_result_selection_toggles_only_eligible_rows`.
+#[test]
+fn only_a_selectable_result_row_toggles() {
+    use super::flows::{results_key, Then};
+    use crate::input::keys::OverlayAction as O;
+    let mut results = results_of(&[("dropped", false), ("kept", true)]);
+    assert!(matches!(
+        results_key(&mut results, O::ToggleFlowFinding),
+        Then::Notify("This finding cannot be accepted")
+    ));
+    assert!(results.selected_ids.is_empty());
+    results.selected = 1;
+    results_key(&mut results, O::ToggleFlowFinding);
+    assert!(results.selected_ids.contains("kept"));
+    results_key(&mut results, O::ToggleFlowFinding);
+    assert!(results.selected_ids.is_empty());
+}
+
+/// Accept sends the run's own bucket and run, with the picked ids in a
+/// stable order, and nothing when none is picked: the flag path's twin of
+/// `accept_action_uses_captured_bucket_and_stable_finding_ids`.
+#[test]
+fn accept_sends_the_captured_bucket_and_sorted_ids() {
+    use super::flows::{results_key, Then};
+    use crate::input::keys::OverlayAction as O;
+    let mut results = results_of(&[("b", true), ("a", true)]);
+    assert!(matches!(
+        results_key(&mut results, O::AcceptFlowFindings),
+        Then::Notify(_)
+    ));
+    results.selected_ids = ["b".to_string(), "a".to_string()].into();
+    let Then::Send {
+        request:
+            er_service::FlowRequest::Accept {
+                er_dir,
+                run_id,
+                finding_ids,
+            },
+        ..
+    } = results_key(&mut results, O::AcceptFlowFindings)
+    else {
+        panic!("accept sent nothing");
+    };
+    assert_eq!(
+        (er_dir.as_str(), run_id.as_str()),
+        ("/captured/bucket", "run-7")
+    );
+    assert_eq!(finding_ids, ["a", "b"]);
 }

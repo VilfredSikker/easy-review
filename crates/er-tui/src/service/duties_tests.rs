@@ -173,7 +173,12 @@ fn the_resume_hint_matches_the_app() {
             settle(&mut shell, loaded);
             assert_eq!(shell.resume_hint(), crate::resume_hint(&app), "{paths:?}");
             let step = format!("{} paths", paths.len());
-            assert_json(&step, &shell.resume_hint(), &crate::resume_hint(&app));
+            let rooted = |hint: Option<String>| hint.map(|hint| super::parity::tmp_rooted(&hint));
+            assert_json(
+                &step,
+                &rooted(shell.resume_hint()),
+                &rooted(crate::resume_hint(&app)),
+            );
         }
     });
     let pr = |number| PrRef {

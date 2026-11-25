@@ -260,6 +260,24 @@ pub(super) fn mask(row: &str) -> String {
     out
 }
 
+/// `text` with this machine's temp root written as `/tmp`, so a path under
+/// it reads as it does on Linux, where the goldens are recorded. It runs
+/// before a frame is drawn: a longer root moves borders and truncation,
+/// which no mask after drawing can undo.
+pub(super) fn tmp_rooted(text: &str) -> String {
+    let dir = std::env::temp_dir();
+    let mut roots: Vec<String> = [Some(dir.clone()), std::fs::canonicalize(&dir).ok()]
+        .into_iter()
+        .flatten()
+        .map(|root| root.to_string_lossy().trim_end_matches('/').to_string())
+        .filter(|root| !root.is_empty() && root != "/tmp")
+        .collect();
+    roots.sort_by_key(|root| std::cmp::Reverse(root.len()));
+    roots.iter().fold(text.to_string(), |out, root| {
+        out.replace(&format!("{root}/"), "/tmp/")
+    })
+}
+
 /// `golden.rs`'s text and style digest for `frame`, ages collapsed and
 /// the rest masked. A frame with neither keeps `golden.rs`'s digest.
 pub(super) fn stable_text(frame: &Buffer) -> String {
@@ -707,6 +725,10 @@ fn every_golden_directory_is_a_frozen_module() {
     let dirs = std::fs::read_dir(&root).unwrap_or_else(|e| panic!("{e}"));
     for dir in dirs {
         let dir = dir.unwrap_or_else(|e| panic!("{e}")).path();
+        // Finder drops `.DS_Store` files beside the goldens.
+        if !dir.is_dir() {
+            continue;
+        }
         let module = dir
             .file_name()
             .map(|name| name.to_string_lossy().into_owned());
@@ -728,6 +750,9 @@ fn every_golden_directory_is_a_frozen_module() {
         let files = std::fs::read_dir(&dir).unwrap_or_else(|e| panic!("{e}"));
         for file in files {
             let path = file.unwrap_or_else(|e| panic!("{e}")).path();
+            if path.extension().and_then(|ext| ext.to_str()) != Some("txt") {
+                continue;
+            }
             let test = path
                 .file_stem()
                 .map(|stem| stem.to_string_lossy().into_owned());
@@ -737,8 +762,8 @@ fn every_golden_directory_is_a_frozen_module() {
                 "goldens/parity/{module}/{test}.txt is for a test FROZEN does not list"
             );
             assert!(
-                source.contains(&format!("fn {test}()")),
-                "goldens/parity/{module}/{test}.txt names no test in {module}.rs"
+                source.contains(&format!("#[test]\nfn {test}() {{")),
+                "goldens/parity/{module}/{test}.txt names no #[test] fn in {module}.rs"
             );
         }
     }

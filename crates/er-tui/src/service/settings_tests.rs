@@ -217,6 +217,16 @@ fn a_failed_load_draws_the_apps_notice_and_banner() {
         settle(&mut shell, loaded);
         let shown_at = Instant::now();
         let mut hl = Highlighter::new();
+        // The notice names the config file under the temp root.
+        if let Some(notice) = app.notification.as_mut() {
+            notice.message = super::parity::tmp_rooted(&notice.message);
+        }
+        let shown = shell
+            .view()
+            .notification
+            .as_deref()
+            .map(super::parity::tmp_rooted);
+        shell.view_mut().notification = shown;
         assert_parity(&app, &shell_frame(&mut shell, &mut hl), &mut hl, "notice");
         // The App's long notice stays up 5 s; a short one would be gone.
         shell.tick(shown_at + Duration::from_millis(4000));
@@ -283,4 +293,26 @@ fn the_saved_selection_follows_the_view() {
         });
         assert_parity(&app, &shell_frame(&mut shell, &mut hl), &mut hl, "pick");
     });
+}
+
+/// A refusal the loop words its own way claims its raw event twin, in
+/// either order, so the raw text never lands over the worded notice on a
+/// later tick: the cause of the clears test's second refusal text.
+#[test]
+fn a_worded_reply_claims_its_raw_event() {
+    use super::settings::{SettingsBridge, Side};
+    let raw = "Failed to delete the review: …/branch is locked by pid 1 (write)";
+    let mut reply_first = SettingsBridge::default();
+    reply_first.claim_reply(raw);
+    assert!(
+        !reply_first.admit_failure(Side::Event, raw),
+        "the raw event showed"
+    );
+    let mut event_first = SettingsBridge::default();
+    assert!(event_first.admit_failure(Side::Event, raw));
+    event_first.claim_reply(raw);
+    assert!(
+        event_first.admit_failure(Side::Event, raw),
+        "a later failure with the same text is new and shows"
+    );
 }

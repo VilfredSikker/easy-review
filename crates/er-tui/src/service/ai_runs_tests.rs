@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use crossterm::event::KeyCode;
 use er_engine::ai::PanelContent;
+use er_engine::config::ErConfig;
 use er_service::test_support::{open_gate, Agent};
 
 use super::ai_runs::Rerun;
@@ -540,6 +541,187 @@ fn validate_questions_and_notes_run_their_kinds() {
             .filter(|n| n.in_reply_to.is_some())
             .collect();
         assert!(replies.is_empty(), "Claude's reply stayed: {replies:?}");
+        release(&mut shell, &agent);
+    });
+}
+
+/// One project at `root` whose review ignores `globs`.
+fn ignore_in(root: &str, globs: &[&str]) {
+    er_engine::projects_pins::update(|file| {
+        file.projects.push(er_engine::projects_pins::ProjectRecord {
+            id: "local".into(),
+            name: "repo".into(),
+            root_path: root.into(),
+            review_ignore_globs: globs.iter().map(|glob| (*glob).to_string()).collect(),
+            ..Default::default()
+        });
+        Ok(true)
+    })
+    .unwrap_or_else(|e| panic!("{e}"));
+}
+
+const IGNORE_DIFF: &str = "diff --git a/keep.rs b/keep.rs\n--- a/keep.rs\n+++ b/keep.rs\n@@ -0,0 +1 @@\n+keep\n\ndiff --git a/ignored.rs b/ignored.rs\n--- a/ignored.rs\n+++ b/ignored.rs\n@@ -0,0 +1 @@\n+ignore\n";
+
+/// A run's diff leaves out the files the project's review-ignore globs
+/// name before it is prepared and hashed, and is left byte for byte when
+/// the project names none: the flag path's twin of the App's
+/// `review_ignore_preparation_filters_before_hashing` and
+/// `review_ignore_empty_globs_preserve_raw_bytes…`.
+#[test]
+fn review_ignore_globs_filter_the_diff_before_it_is_hashed() {
+    let repo = fixture(1);
+    let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+    er_engine::storage::with_process_test_storage_root(storage.path(), || {
+        let mut shell = shell(&args(vec![path_of(&repo)]), storage.path());
+        settle(&mut shell, loaded);
+        let content = shell
+            .active_content()
+            .unwrap_or_else(|| panic!("no content"));
+        let kept = er_service::runs::filtered(IGNORE_DIFF.into(), &content);
+        assert_eq!(kept, IGNORE_DIFF, "no globs changed the bytes");
+
+        ignore_in(&content.tab.repo_root, &["ignored.rs"]);
+        let raw = er_service::runs::filtered(IGNORE_DIFF.into(), &content);
+        assert!(
+            raw.contains("keep.rs") && !raw.contains("ignored.rs"),
+            "{raw}"
+        );
+        let bucket = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let er_dir = bucket.path().to_string_lossy().into_owned();
+        let config = ErConfig::default();
+        let hash = er_service::runs::review_inputs(
+            &super::tests::test_ports(),
+            &content,
+            &config,
+            &er_dir,
+            &raw,
+        )
+        .unwrap_or_else(|e| panic!("{e:?}"));
+        let prepared = std::fs::read_to_string(Path::new(&er_dir).join("diff-tmp"))
+            .unwrap_or_else(|e| panic!("{e}"));
+        assert!(prepared.contains("keep.rs") && !prepared.contains("ignored.rs"));
+        assert_eq!(
+            er_engine::ai::prepared_diff::diff_tmp_hash(&er_dir).as_deref(),
+            Some(hash.as_str())
+        );
+    });
+}
+
+/// With every file ignored a review is refused before anything is
+/// prepared or started: the flag path's twin of the App's
+/// `review_ignore_all_files_returns_before_preparation_or_spawn`.
+#[test]
+fn a_review_with_every_file_ignored_starts_nothing() {
+    let repo = fixture(1);
+    let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+    er_engine::storage::with_process_test_storage_root(storage.path(), || {
+        let agent = agent_with(storage.path(), "true", "");
+        let mut shell = shell_on(&[&repo], &agent);
+        let root = shell
+            .active_content()
+            .map(|content| content.tab.repo_root.clone())
+            .unwrap_or_else(|| panic!("no content"));
+        ignore_in(&root, &["*.rs"]);
+        let dir = er_dir(&shell);
+        choose(&mut shell, 'a', "Review work");
+        settle_within(&mut shell, Duration::from_millis(500), |_| false);
+        let told = notice(&shell);
+        assert!(told.contains("Nothing to review"), "{told}");
+        assert!(
+            !Path::new(&dir).join("diff-tmp").exists(),
+            "a diff was prepared"
+        );
+        assert_eq!(kinds(&shell), Vec::<String>::new(), "a task started");
+        release(&mut shell, &agent);
+    });
+}
+
+/// A review run is the tab's own bucket's, and its prompt points the agent
+/// at the prepared diff, never at `gh pr diff`; and validate prepares the
+/// diff artifacts on a tab with a review and no GitHub comment. The flag
+/// path's twin of the App's `local_ai_prompt_builders_target_tab_er_dir`,
+/// `remote_review_uses_prepared_diff_not_gh_pr_diff` and
+/// `validate_action_ensures_artifacts_for_review_only_tabs`.
+#[test]
+fn a_run_prepares_its_bucket_and_points_the_agent_there() {
+    let repo = fixture(1);
+    let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+    er_engine::storage::with_process_test_storage_root(storage.path(), || {
+        let told = storage.path().join("prompt");
+        let body = format!(r#"printf '%s' "$1" > "{}""#, told.display());
+        let agent = agent_with(storage.path(), &body, "");
+        let mut shell = shell_on(&[&repo], &agent);
+        let dir = er_dir(&shell);
+        choose(&mut shell, 'a', "Review work");
+        let written = settle_within(&mut shell, Duration::from_secs(20), |_| told.exists());
+        assert!(written, "no agent ran: {}", notice(&shell));
+        let prompt = std::fs::read_to_string(&told).unwrap_or_else(|e| panic!("{e}"));
+        // The agent writes to a staging dir that the store commits into the
+        // bucket; the run is the tab's bucket's, whose log holds its output.
+        assert!(prompt.contains("prepared diff"), "{prompt}");
+        let logged = settle_within(&mut shell, Duration::from_secs(5), |shell| {
+            log_of(shell, &dir).contains("line-a")
+        });
+        assert!(logged, "the run is not the tab's bucket's");
+        assert!(!prompt.contains("gh pr diff"), "{prompt}");
+        release(&mut shell, &agent);
+
+        for file in [".diff-tmp.sha256", "diff-annotated"] {
+            let _ = std::fs::remove_file(Path::new(&dir).join(file));
+        }
+        seed_review(&mut shell, &dir);
+        choose(&mut shell, 'a', "Validate review");
+        let validating = |shell: &Shell| kinds(shell).iter().any(|kind| kind == "validate");
+        settle(&mut shell, validating);
+        for file in [".diff-tmp.sha256", "diff-annotated"] {
+            assert!(
+                Path::new(&dir).join(file).exists(),
+                "validate prepared no {file}"
+            );
+        }
+        release(&mut shell, &agent);
+    });
+}
+
+/// A review run's agent writes into its job's staging dir, and the store
+/// commits the checked set into the tab's bucket and drops the staging:
+/// the flag path's twin of the App's
+/// `the_review_tab_job_stages_and_commits_its_sidecars`.
+#[test]
+fn a_review_run_commits_its_staged_sidecars_into_the_bucket() {
+    let repo = fixture(1);
+    let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+    er_engine::storage::with_process_test_storage_root(storage.path(), || {
+        let record = storage.path().join("staging-path.txt");
+        let body = format!(
+            r#"printf '%s' "$ER_JOB_STAGING" > "{}"; {}; {}"#,
+            record.display(),
+            er_engine::test_support::STAGING_PREAMBLE,
+            er_engine::test_support::WRITE_REVIEW_SIDECARS
+        );
+        let agent = agent_with(storage.path(), &body, "");
+        let mut shell = shell_on(&[&repo], &agent);
+        let dir = er_dir(&shell);
+        choose(&mut shell, 'a', "Review work");
+        open_gate(&agent.first);
+        let review = Path::new(&dir).join("review.json");
+        let committed = settle_within(&mut shell, Duration::from_secs(20), |_| review.exists());
+        assert!(committed, "no review landed: {}", notice(&shell));
+        let stored: er_engine::ai::ErReview =
+            serde_json::from_str(&std::fs::read_to_string(&review).unwrap_or_default())
+                .unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(stored.version, 1);
+        assert!(Path::new(&dir).join("order.json").is_file());
+        let staging = std::fs::read_to_string(&record).unwrap_or_else(|e| panic!("{e}"));
+        let root = er_engine::storage::storage_root();
+        assert!(
+            staging.starts_with(&format!("{}/staging/", root.display())),
+            "{staging}"
+        );
+        let gone = settle_within(&mut shell, Duration::from_secs(5), |_| {
+            !Path::new(&staging).exists()
+        });
+        assert!(gone, "the finished run left its staging behind: {staging}");
         release(&mut shell, &agent);
     });
 }

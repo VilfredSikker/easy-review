@@ -340,22 +340,15 @@ mod tests {
     /// The service path draws the reviewed count it was given.
     #[test]
     fn sections_draw_their_reviewed_count() {
-        let app = crate::golden::base_app();
-        let files: Vec<_> = app
-            .tab()
-            .files
-            .iter()
-            .cloned()
-            .map(std::sync::Arc::new)
-            .collect();
-        let mut cache = ViewCache::default();
-        let mut screen = from_app(&app, &mut cache);
+        let scene = crate::service::golden_tests::section_scene();
+        let files = scene.content.diff.files.clone();
+        let mut screen = crate::service::golden_tests::screen_of(&scene);
         let reviewed = std::collections::HashMap::new();
         screen.data = TabData::Sections(SectionData {
             files: &files,
             reviewed: &reviewed,
             pr: None,
-            ai: &app.tab().ai,
+            ai: &scene.content.ai.state,
             reviewed_count: (1, 2),
             filtered_reviewed_count: None,
             history: None,
@@ -380,24 +373,17 @@ mod tests {
     /// given.
     #[test]
     fn sections_draw_the_ai_summary_panel() {
-        let mut app = crate::golden::base_app();
-        app.tab_mut().ai.summary = Some("Reads the audience early.".into());
-        app.tab_mut().panel = Some(PanelContent::AiSummary);
-        let files: Vec<_> = app
-            .tab()
-            .files
-            .iter()
-            .cloned()
-            .map(std::sync::Arc::new)
-            .collect();
+        let mut scene = crate::service::golden_tests::section_scene();
+        scene.ai(|ai| ai.summary = Some("Reads the audience early.".into()));
+        scene.state.panel = Some(PanelContent::AiSummary);
+        let files = scene.content.diff.files.clone();
         let reviewed = std::collections::HashMap::new();
-        let mut cache = ViewCache::default();
-        let mut screen = from_app(&app, &mut cache);
+        let mut screen = crate::service::golden_tests::screen_of(&scene);
         screen.data = TabData::Sections(SectionData {
             files: &files,
             reviewed: &reviewed,
             pr: None,
-            ai: &app.tab().ai,
+            ai: &scene.content.ai.state,
             reviewed_count: (0, 0),
             filtered_reviewed_count: None,
             history: None,

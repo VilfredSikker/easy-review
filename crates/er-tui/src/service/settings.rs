@@ -131,6 +131,16 @@ impl SettingsBridge {
         }
     }
 
+    /// Takes a reply the loop words its own way, such as a refused clear: its
+    /// event, raw, does not show, whichever of the two lands first, so it
+    /// cannot replace the worded notice on a later tick.
+    pub fn claim_reply(&mut self, message: &str) {
+        if self.take_twin(Side::Reply, message).is_none() {
+            self.unpaired
+                .push((Side::Reply, message.to_string(), Instant::now(), false));
+        }
+    }
+
     /// Removes the unpaired failure from the other side with this text, and
     /// answers whether `side`'s report of it is to show.
     fn take_twin(&mut self, side: Side, message: &str) -> Option<bool> {

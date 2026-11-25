@@ -1212,6 +1212,7 @@ mod tests {
 
     /// The counts render last on the branch row, so a narrow terminal cuts
     /// them before the merge warning.
+    #[cfg(feature = "v1-service")]
     #[test]
     fn top_bar_puts_line_counts_after_the_merge_warning() {
         use er_engine::git::{DiffFile, FileStatus};
@@ -1225,19 +1226,17 @@ mod tests {
             raw_hunk_count: 0,
             similarity: None,
         };
-        let mut app = er_engine::app::App::new_for_test(vec![
-            file("src/lib.rs", 10),
-            file("src/lib.test.ts", 30),
-        ]);
-        app.tab_mut().mode = DiffMode::Conflicts;
-        app.tab_mut().merge_active = true;
+        let mut scene = crate::service::golden_tests::section_scene();
+        scene.files(vec![file("src/lib.rs", 10), file("src/lib.test.ts", 30)]);
+        scene.content.tab.mode = DiffMode::Conflicts;
+        scene.merge(true, 0);
 
         let backend = ratatui::backend::TestBackend::new(200, 2);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         terminal
             .draw(|f| {
-                let mut cache = crate::screen::ViewCache::default();
-                render_top_bar(f, f.area(), &crate::screen::from_app(&app, &mut cache));
+                let screen = crate::service::golden_tests::screen_of(&scene);
+                render_top_bar(f, f.area(), &screen);
             })
             .unwrap();
         let buffer = terminal.backend().buffer();

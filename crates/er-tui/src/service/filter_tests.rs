@@ -186,6 +186,9 @@ fn a_start_filter_yields_to_a_saved_one_like_the_app() {
             let mut shell = start(&flag_path, storage.path(), Some("f001"));
             let mut hl = Highlighter::new();
             assert_parity(&app, &shell_frame(&mut shell, &mut hl), &mut hl, "start");
+            // The flag path's twin of the App's restore check above.
+            let restored = if saved { "f002" } else { "f001" };
+            assert_eq!(state(&shell).filter_expr, restored);
             assert_eq!(state(&shell).filter_expr, app.tab().filter_expr);
             assert_eq!(state(&shell).filter_history, app.tab().filter_history);
             assert_json("expr", &state(&shell).filter_expr, &app.tab().filter_expr);

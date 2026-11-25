@@ -271,6 +271,12 @@ pub fn key_action(key: KeyEvent, screen: &Screen) -> TuiAction {
     }
 }
 
+// The key tables are checked on the flag path's screen, so without the
+// feature only the guard and no-write tests run, and the tables sit unused.
+#[cfg_attr(
+    not(feature = "v1-service"),
+    expect(dead_code, unused_imports, reason = "the table tests need v1-service")
+)]
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -518,11 +524,11 @@ mod tests {
         *k *Up => Overlay(Prev)
         *Esc *q => Overlay(Close)";
 
+    #[cfg(feature = "v1-service")]
     #[test]
     fn the_key_table_pins_every_key_in_normal_mode() {
-        let app = crate::golden::base_app();
-        let mut cache = crate::screen::ViewCache::default();
-        let mut screen = crate::screen::from_app(&app, &mut cache);
+        let scene = crate::service::golden_tests::section_scene();
+        let mut screen = crate::service::golden_tests::screen_of(&scene);
         screen.tab.mode = DiffMode::Branch;
         screen.tab.modes = vec![DiffMode::Branch, DiffMode::Unstaged, DiffMode::Staged];
         screen.chrome.split_diff = false;
@@ -546,11 +552,11 @@ mod tests {
     }
 
     /// The guards that send one key to another action.
+    #[cfg(feature = "v1-service")]
     #[test]
     fn guards_pick_the_action_from_the_screen() {
-        let app = crate::golden::base_app();
-        let mut cache = crate::screen::ViewCache::default();
-        let mut screen = crate::screen::from_app(&app, &mut cache);
+        let scene = crate::service::golden_tests::section_scene();
+        let mut screen = crate::service::golden_tests::screen_of(&scene);
         let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
         let action = |screen: &Screen, code| key_action(key(code), screen);
         let check = |screen: &Screen, code, want: NormalAction| {
@@ -599,31 +605,31 @@ mod tests {
         check(&screen, KeyCode::Enter, A::JumpToFocusedFinding);
 
         // A file with findings: j and k step through them.
-        let mut reviewed = crate::golden::base_app();
-        let tab = reviewed.tab_mut();
-        let path = tab.files[tab.selected_file].path.clone();
-        tab.ai.review = Some(
-            serde_json::from_value(serde_json::json!({
-                "version": 1, "diff_hash": "hash",
-                "files": {path: {"risk": "high", "summary": "s", "findings": [
-                    {"id": "f1", "severity": "high", "title": "t", "hunk_index": 0}
-                ]}}
-            }))
-            .unwrap(),
-        );
-        let mut cache = crate::screen::ViewCache::default();
-        let mut screen = crate::screen::from_app(&reviewed, &mut cache);
+        let mut reviewed = crate::service::golden_tests::section_scene();
+        let path = reviewed.content.diff.files[0].path.clone();
+        reviewed.ai(|ai| {
+            ai.review = Some(
+                serde_json::from_value(serde_json::json!({
+                    "version": 1, "diff_hash": "hash",
+                    "files": {path: {"risk": "high", "summary": "s", "findings": [
+                        {"id": "f1", "severity": "high", "title": "t", "hunk_index": 0}
+                    ]}}
+                }))
+                .unwrap(),
+            );
+        });
+        let mut screen = crate::service::golden_tests::screen_of(&reviewed);
         screen.tab.panel_focus = true;
         screen.tab.panel = Some(er_engine::ai::PanelContent::FileDetail);
         check(&screen, KeyCode::Char('j'), A::NavigatePanelFinding(true));
         check(&screen, KeyCode::Up, A::NavigatePanelFinding(false));
     }
 
+    #[cfg(feature = "v1-service")]
     #[test]
     fn the_key_table_pins_every_key_in_each_overlay() {
-        let app = crate::golden::base_app();
-        let mut cache = crate::screen::ViewCache::default();
-        let mut screen = crate::screen::from_app(&app, &mut cache);
+        let scene = crate::service::golden_tests::section_scene();
+        let mut screen = crate::service::golden_tests::screen_of(&scene);
         let flow = er_engine::ai::review_flow::ReviewFlow::new("hash");
         let results = er_engine::review_flow_driver::ReviewFlowResults {
             er_dir: String::new(),
@@ -727,11 +733,11 @@ mod tests {
         assert_table("hub", &screen, &[LIST, rows]);
     }
 
+    #[cfg(feature = "v1-service")]
     #[test]
     fn the_key_table_pins_every_key_in_the_text_inputs_and_the_prompt() {
-        let app = crate::golden::base_app();
-        let mut cache = crate::screen::ViewCache::default();
-        let mut screen = crate::screen::from_app(&app, &mut cache);
+        let scene = crate::service::golden_tests::section_scene();
+        let mut screen = crate::service::golden_tests::screen_of(&scene);
         for (mode, name) in [
             (InputMode::Search, "Search"),
             (InputMode::Filter, "Filter"),

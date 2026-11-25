@@ -3325,18 +3325,15 @@ mod github_comment_fold_tests {
             raw_hunk_count: 1,
             similarity: None,
         };
-        let mut app = er_engine::app::App::new_for_test(vec![file]);
-        app.tab_mut().ai.github_comments = Some(ErGithubComments {
+        let mut ai = er_engine::ai::AiState::default();
+        ai.github_comments = Some(ErGithubComments {
             version: 1,
             diff_hash: "h".to_string(),
             github: None,
             comments: vec![gh_comment_on_banner()],
         });
 
-        let tab = app.tab();
-        let path = tab.files[0].path.clone();
-        let hunk = tab.files[0].hunks[0].clone();
-        let found = comments_for_hunk_resolved(&tab.ai, &path, 0, &hunk);
+        let found = comments_for_hunk_resolved(&ai, &file.path, 0, &file.hunks[0]);
         assert_eq!(
             found.len(),
             1,

@@ -208,6 +208,11 @@ fn hub_keys_match_the_apps() {
             app_file.contains("snapshot"),
             "the cycle did not save: {app_file}"
         );
+        let flag_file = &files(config_dir.path())[0];
+        assert!(
+            flag_file.contains("snapshot"),
+            "the flag path's cycle did not save: {flag_file}"
+        );
         let mut hl = Highlighter::new();
         assert_parity(&app, &shell_frame(&mut shell, &mut hl), &mut hl, "hub");
     });
@@ -264,6 +269,11 @@ fn a_cycled_provider_saves_and_labels_like_the_app() {
         assert!(
             app.config.ai_hub.default_effort.is_some(),
             "no effort was pinned"
+        );
+        assert!(
+            read(&agents).contains("default_effort = "),
+            "the flag path pinned no effort: {}",
+            read(&agents)
         );
     });
 }
@@ -471,5 +481,156 @@ fn the_effort_list_goes_back_to_the_models() {
         }
         shell.handle_key(key(KeyCode::Esc));
         assert_eq!(picker_kind(&shell), None);
+    });
+}
+
+/// A setting's inline edit inserts, deletes and moves over a multibyte
+/// char whole: the flag path's twin of the App's
+/// `char_boundaries_step_over_multibyte_chars`.
+#[test]
+fn a_setting_edit_steps_over_multibyte_chars() {
+    use crate::input::keys::{Edit, OverlayAction};
+    let repo = fixture(1);
+    let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+    let path = path_of(&repo);
+    er_engine::storage::with_process_test_storage_root(storage.path(), || {
+        let args = Args {
+            paths: vec![path],
+            ..Args::default()
+        };
+        let mut shell = super::tests::shell(&args, storage.path());
+        settle(&mut shell, loaded);
+        let view = shell.host().settings().view();
+        let mut hub = super::config_hub::ConfigHub::open(&view);
+        hub.selected = hub
+            .items
+            .iter()
+            .position(|item| matches!(item, er_engine::config::ConfigItem::StringEdit { .. }))
+            .unwrap_or_else(|| panic!("no text setting"));
+        let mut act = |action| super::config_hub::act(&mut hub, action, &view);
+        act(OverlayAction::ActivateSetting);
+        for _ in 0..64 {
+            act(OverlayAction::EditSetting(Edit::Backspace));
+        }
+        for c in ['a', 'é', '日', 'b'] {
+            act(OverlayAction::EditSetting(Edit::Insert(c)));
+        }
+        for edit in [Edit::Left, Edit::Left, Edit::Backspace, Edit::Right] {
+            act(OverlayAction::EditSetting(edit));
+        }
+        act(OverlayAction::EditSetting(Edit::Insert('ü')));
+        let buffer = hub.editing.as_ref().map(|edit| edit.buffer.clone());
+        assert_eq!(buffer.as_deref(), Some("a日üb"));
+    });
+}
+
+/// The flag path's twin of the App's effort-picker tests
+/// (`selecting_effort_capable_model_opens_effort_picker_without_activating`,
+/// `selecting_effort_activates_the_model`,
+/// `selecting_model_without_effort_activates_immediately`,
+/// `selecting_single_effort_model_provider_opens_effort_picker`): a model
+/// with effort levels opens its efforts and saves nothing yet, an effort
+/// saves the model with it, a model without efforts saves at once, and a
+/// provider with one such model goes straight to its efforts.
+#[test]
+fn a_model_pick_saves_once_its_effort_is_known() {
+    use super::ai_picker::{act, open_ai_hub, HubFacts, Picker};
+    use super::config_hub::Step;
+    use crate::input::keys::OverlayAction as O;
+    use er_engine::config::{AiModelConfig, AiProviderConfig};
+    let repo = fixture(1);
+    let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+    let path = path_of(&repo);
+    er_engine::storage::with_process_test_storage_root(storage.path(), || {
+        let args = Args {
+            paths: vec![path],
+            ..Args::default()
+        };
+        let mut shell = super::tests::shell(&args, storage.path());
+        settle(&mut shell, loaded);
+        let content = shell
+            .active_content()
+            .unwrap_or_else(|| panic!("no content"));
+        let model = |id: &str, efforts: &[&str]| AiModelConfig {
+            id: id.into(),
+            label: Some(id.into()),
+            effort_levels: efforts.iter().map(|e| (*e).to_string()).collect(),
+            ..AiModelConfig::default()
+        };
+        let mut config = (*shell.host().settings().view().config).clone();
+        config.ai_hub.providers.insert(
+            "codex".into(),
+            AiProviderConfig {
+                label: Some("Codex".into()),
+                models: vec![model("luna", &["low", "high"]), model("plain", &[])],
+                ..AiProviderConfig::default()
+            },
+        );
+        config.ai_hub.providers.insert(
+            "solo".into(),
+            AiProviderConfig {
+                label: Some("Solo".into()),
+                models: vec![model("one", &["max"])],
+                ..AiProviderConfig::default()
+            },
+        );
+        let mut view = (*shell.host().settings().view()).clone();
+        view.config = std::sync::Arc::new(config);
+        let picker_of = |step: Step| match step {
+            Step::Open(overlay, _) => match *overlay {
+                Overlay::Picker(picker) => picker,
+                _ => panic!("no picker opened"),
+            },
+            _ => panic!("no picker opened"),
+        };
+        let run = |picker: &mut Picker, label: &str| {
+            for _ in 0..40 {
+                if picker.rows[picker.selected]
+                    .label
+                    .to_lowercase()
+                    .contains(label)
+                {
+                    break;
+                }
+                act(picker, O::Next, &view, "");
+            }
+            let row = &picker.rows[picker.selected].label;
+            assert!(row.to_lowercase().contains(label), "no {label}");
+            act(picker, O::SelectRow, &view, "")
+        };
+        let facts = HubFacts::of(
+            &content.ai.state,
+            true,
+            super::flows::FlowFacts::of(&content, None),
+        );
+        let providers = |picker_label: &str| {
+            let mut hub = picker_of(open_ai_hub(&view, "", facts.clone()));
+            let mut list = picker_of(run(&mut hub, "change agent/model"));
+            run(&mut list, picker_label)
+        };
+        let saved = |step: Step| match step {
+            Step::Pick(SettingsCommand::SetDefaultAiSelection {
+                provider_id,
+                model_id,
+                effort,
+            }) => (provider_id, model_id, effort),
+            _ => panic!("nothing was saved"),
+        };
+
+        let mut models = picker_of(providers("codex"));
+        let mut efforts = picker_of(run(&mut models, "luna"));
+        assert_eq!(efforts.kind(), crate::screen::view::HubKind::AiEffort);
+        let effort = saved(run(&mut efforts, "high"));
+        assert_eq!(
+            effort,
+            ("codex".into(), Some("luna".into()), Some("high".into()))
+        );
+
+        let mut models = picker_of(providers("codex"));
+        let plain = saved(run(&mut models, "plain"));
+        assert_eq!(plain, ("codex".into(), Some("plain".into()), None));
+
+        let solo = picker_of(providers("solo"));
+        assert_eq!(solo.kind(), crate::screen::view::HubKind::AiEffort);
     });
 }

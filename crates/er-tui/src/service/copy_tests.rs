@@ -619,8 +619,22 @@ fn a_jump_away_and_back_leaves_no_selection() {
             1,
             "the jumps did not reach src/f001.rs"
         );
+        let selected = |shell: &Shell| {
+            let key = super::threads_tests::active_key(shell);
+            super::threads_tests::state(shell, key).selected_file
+        };
+        assert_eq!(
+            selected(&shell),
+            1,
+            "the flag path's jumps did not reach src/f001.rs"
+        );
         step(&mut app, &mut shell, &mut hl, ctrl('j'));
         assert_eq!(app.tab().selected_file, 0, "the jump did not come back");
+        assert_eq!(
+            selected(&shell),
+            0,
+            "the flag path's jump did not come back"
+        );
         let want = app_copy(&app, 4);
         let notice_of = want.clone().map(|c| c.notice);
         assert_eq!(notice_of, Ok("Copied line (1 lines)".to_string()));

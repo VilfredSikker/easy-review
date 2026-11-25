@@ -1610,7 +1610,7 @@ mod tests {
     #[test]
     fn the_drawn_finding_rows_are_the_step_list() {
         use ratatui::{backend::TestBackend, Terminal};
-        let mut app = crate::golden::base_app();
+        let mut scene = crate::service::golden_tests::section_scene();
         let row = |id: &str, lens: &str, title: &str, line: usize, confidence: &str| {
             let raised_by = if lens == "security" || title == "Shared claim" {
                 vec!["general", "security"]
@@ -1633,23 +1633,23 @@ mod tests {
             row("done-row", "general", "Closed claim", 4, "confirmed"),
             row("dropped-row", "security", "Dropped claim", 5, "dropped"),
         ];
-        let tab = app.tab_mut();
-        tab.ai.review = Some(
+        let mut ai = scene.content.ai.state.clone();
+        ai.review = Some(
             serde_json::from_value(serde_json::json!({
                 "version": 1, "diff_hash": "hash",
                 "files": {"src/auth.rs": {"risk": "high", "findings": findings}}
             }))
             .unwrap(),
         );
-        tab.ai.arbiter_graded_keys = HashSet::from([er_engine::ai::identity::finding_key(
+        ai.arbiter_graded_keys = HashSet::from([er_engine::ai::identity::finding_key(
             "src/auth.rs",
             Some(2),
             "Shared claim",
         )]);
-        tab.layers.min_trust = Confidence::Tentative;
-        tab.panel = Some(PanelContent::FileDetail);
-        let mut cache = crate::screen::ViewCache::default();
-        let screen = crate::screen::from_app(&app, &mut cache);
+        scene.ai(|state| *state = ai);
+        scene.state.layers.min_trust = Confidence::Tentative;
+        scene.state.panel = Some(PanelContent::FileDetail);
+        let screen = crate::service::golden_tests::screen_of(&scene);
         let mut terminal = Terminal::new(TestBackend::new(80, 40)).unwrap();
         terminal.draw(|f| render(f, f.area(), &screen)).unwrap();
         let titles = [
@@ -1667,8 +1667,8 @@ mod tests {
             .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
             .filter_map(|row| titles.into_iter().find(|title| row.contains(title)))
             .collect();
-        let tab = app.tab();
-        let steps: Vec<&str> = drawn_file_findings(&tab.ai, &tab.layers, "src/auth.rs")
+        let ai = &scene.content.ai.state;
+        let steps: Vec<&str> = drawn_file_findings(ai, &scene.state.layers, "src/auth.rs")
             .iter()
             .map(|finding| finding.title.as_str())
             .collect();

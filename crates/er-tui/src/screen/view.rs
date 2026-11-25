@@ -62,7 +62,7 @@ pub enum InputMode<'a> {
     /// The pending review's summary; only the flag path's review hub asks
     /// for it.
     #[cfg_attr(
-        all(not(feature = "v1-service"), not(test)),
+        not(feature = "v1-service"),
         expect(dead_code, reason = "only the flag path's review hub opens it")
     )]
     ReviewSummary,
@@ -88,7 +88,7 @@ pub enum ConfirmAction<'a> {
     ApprovePR,
     /// A comment of the pending review; only the flag path asks.
     #[cfg_attr(
-        all(not(feature = "v1-service"), not(test)),
+        not(feature = "v1-service"),
         expect(dead_code, reason = "only the flag path's review hub asks it")
     )]
     RemoveReviewComment,
