@@ -1,0 +1,299 @@
+@@@ 01 frame start
+| feature · feature (vs main)  +2 -2
+|  1  BRANCH   2  UNSTAGED   3  STAGED   4  HISTORY                                   Claude / Sonnet 5.5   0/1 reviewed
+| FILES (1)                     │  ~ src/f000.rs  +2 -2                                                      Hunk 1/2
+| ~ src/f000.rs          +2 -2  │
+|                               │ ▶ @@ -1,14 +1,14 @@
+|                               │   1    1 │ let line_0 = 0;
+|                               │   2    2 │ let line_1 = 1;
+|                               │   3    3 │ let line_2 = 2;
+|                               │   4      │-let line_3 = 3;
+|                               │        4 │+let changed_3 = 3; // edited
+|                               │   5    5 │ let line_4 = 4;
+|                               │   6    6 │ let line_5 = 5;
+|                               │   7    7 │ let line_6 = 6;
+|                               │   8    8 │ let line_7 = 7;
+|                               │   9    9 │ let line_8 = 8;
+|                               │  10   10 │ let line_9 = 9;
+|                               │  11   11 │ let line_10 = 10;
+|                               │  12   12 │ let line_11 = 11;
+|                               │  13   13 │ let line_12 = 12;
+|                               │  14   14 │ let line_13 = 13;
+|                               │  ··· 6 lines hidden (+/- to expand) ···
+|                               │   @@ -21,20 +21,20 @@ let line_19 = 19;
+|                               │  21   21 │ let line_20 = 20;
+|                               │  22   22 │ let line_21 = 21;
+|                               │  23   23 │ let line_22 = 22;
+|                               │  24   24 │ let line_23 = 23;
+|                               │  25   25 │ let line_24 = 24;
+|                               │  26   26 │ let line_25 = 25;
+|                               │  27   27 │ let line_26 = 26;
+| j/k nav n/N hunks +/- context ␣ review / search g git a ai o open v verify ? help ^q quit
+|styles a2c14185335478ca
+@@@ 02 frame cycle < 01
+01|  1  BRANCH   2  UNSTAGED   3  STAGED   4  HISTORY                                   Codex / GPT-6 Astra   0/1 reviewed
+04|                         ┌ Config — General ──────────────────────────────────────────────────┐
+05|                         │ Commands                                                           │
+06|                         │  Test: e.g. cargo test                                             │
+07|                         │  Lint: e.g. cargo clippy                                           │
+08|                         │  Typecheck: e.g. tsc --noEmit                                      │
+09|                         │  Security: e.g. cargo audit                                        │
+10|                         │  [ ] Push summary to PR body                                       │
+11|                         │ Agent                                                              │
+12|                         │  Command: claude                                                   │
+13|                         │  Args: --print --output-format stream-json -p {prompt}             │
+14|                         │ AI Hub                                                             │
+15|                         │▸ Provider: codex  ◀▶  Global AI Hub provider                       │
+16|                         │  Model: gpt-6-astra  ◀▶                                            │
+17|                         │  Effort / reasoning: Auto  ◀▶                                      │
+18|                         │  [x] Model discovery                                               │
+19|                         │ Watched Paths                                                      │
+20|                         │  Diff mode:   ◀▶                                                   │
+21|                         │  + Add pattern...                                                  │
+22|                         │                                                                    │
+23|                         │ j/k nav  Enter edit  1/2 tab  d delete  Esc close (auto-saves)     │
+24|                         └────────────────────────────────────────────────────────────────────┘
+30|styles c9b6900c3bfbbe33
+@@@ 03 json model
+|[
+|  "[agent]",
+|  "command = \"claude\"",
+|  "args = [",
+|  "    \"--print\",",
+|  "    \"--output-format\",",
+|  "    \"stream-json\",",
+|  "    \"-p\",",
+|  "    \"{prompt}\",",
+|  "]",
+|  "model = \"\"",
+|  "",
+|  "[ai_hub]",
+|  "flow_providers = []",
+|  "default_provider = \"codex\"",
+|  "default_model = \"gpt-6-sol\"",
+|  "removed_catalog_providers = []",
+|  "max_concurrent_reviews = 0",
+|  "agent_timeout_secs = 0",
+|  "max_concurrent_arena_reviews = 0",
+|  "max_concurrent_agents = 0",
+|  "",
+|  "[[ai_hub.review_models.fast]]",
+|  "provider_id = \"claude\"",
+|  "model_id = \"haiku-5.5\"",
+|  "",
+|  "[[ai_hub.review_models.fast]]",
+|  "provider_id = \"codex\"",
+|  "model_id = \"gpt-6-luna\"",
+|  "",
+|  "[[ai_hub.review_models.standard]]",
+|  "provider_id = \"claude\"",
+|  "model_id = \"sonnet-5.5\"",
+|  "",
+|  "[[ai_hub.review_models.standard]]",
+|  "provider_id = \"codex\"",
+|  "model_id = \"gpt-6-sol\"",
+|  "",
+|  "[[ai_hub.review_models.advanced]]",
+|  "provider_id = \"claude\"",
+|  "model_id = \"opus-5.5\"",
+|  "",
+|  "[[ai_hub.review_models.advanced]]",
+|  "provider_id = \"codex\"",
+|  "model_id = \"gpt-6-astra\"",
+|  "",
+|  "[ai_hub.providers.claude]",
+|  "label = \"Claude\"",
+|  "command = \"claude\"",
+|  "args = [",
+|  "    \"--print\",",
+|  "    \"-p\",",
+|  "    \"{prompt}\",",
+|  "]",
+|  "family = \"claude\"",
+|  "models_command = []",
+|  "models = []",
+|  "removed_catalog_models = []",
+|  "",
+|  "[ai_hub.providers.codex]",
+|  "label = \"Codex\"",
+|  "command = \"codex\"",
+|  "args = [",
+|  "    \"exec\",",
+|  "    \"--ignore-user-config\",",
+|  "    \"--skip-git-repo-check\",",
+|  "    \"--sandbox\",",
+|  "    \"workspace-write\",",
+|  "    \"{prompt}\",",
+|  "]",
+|  "family = \"codex\"",
+|  "models_command = [",
+|  "    \"codex\",",
+|  "    \"debug\",",
+|  "    \"models\",",
+|  "]",
+|  "models = []",
+|  "removed_catalog_models = []",
+|  "",
+|  "[ai_hub.providers.cursor]",
+|  "label = \"Cursor\"",
+|  "command = \"agent\"",
+|  "args = [",
+|  "    \"--print\",",
+|  "    \"--trust\",",
+|  "    \"--force\",",
+|  "    \"--output-format\",",
+|  "    \"stream-json\",",
+|  "    \"-p\",",
+|  "    \"{prompt}\",",
+|  "]",
+|  "family = \"cursor\"",
+|  "models_command = [",
+|  "    \"agent\",",
+|  "    \"--list-models\",",
+|  "]",
+|  "models = []",
+|  "removed_catalog_models = []",
+|  "",
+|  "[ai_hub.providers.opencode]",
+|  "label = \"OpenCode\"",
+|  "command = \"opencode\"",
+|  "args = [",
+|  "    \"run\",",
+|  "    \"--auto\",",
+|  "    \"{prompt}\",",
+|  "]",
+|  "family = \"opencode\"",
+|  "models_command = [",
+|  "    \"opencode\",",
+|  "    \"models\",",
+|  "]",
+|  "models = []",
+|  "removed_catalog_models = []"
+|]
+@@@ 04 frame model < 02
+01|  1  BRANCH   2  UNSTAGED   3  STAGED   4  HISTORY                                     Codex / GPT-6 Sol   0/1 reviewed
+15|                         │  Provider: codex  ◀▶                                               │
+16|                         │▸ Model: gpt-6-sol  ◀▶  Model for the selected provider             │
+30|styles bedced764e97986f
+@@@ 05 json effort
+|[
+|  "[agent]",
+|  "command = \"claude\"",
+|  "args = [",
+|  "    \"--print\",",
+|  "    \"--output-format\",",
+|  "    \"stream-json\",",
+|  "    \"-p\",",
+|  "    \"{prompt}\",",
+|  "]",
+|  "model = \"\"",
+|  "",
+|  "[ai_hub]",
+|  "flow_providers = []",
+|  "default_provider = \"codex\"",
+|  "default_model = \"gpt-6-sol\"",
+|  "default_effort = \"low\"",
+|  "removed_catalog_providers = []",
+|  "max_concurrent_reviews = 0",
+|  "agent_timeout_secs = 0",
+|  "max_concurrent_arena_reviews = 0",
+|  "max_concurrent_agents = 0",
+|  "",
+|  "[[ai_hub.review_models.fast]]",
+|  "provider_id = \"claude\"",
+|  "model_id = \"haiku-5.5\"",
+|  "",
+|  "[[ai_hub.review_models.fast]]",
+|  "provider_id = \"codex\"",
+|  "model_id = \"gpt-6-luna\"",
+|  "",
+|  "[[ai_hub.review_models.standard]]",
+|  "provider_id = \"claude\"",
+|  "model_id = \"sonnet-5.5\"",
+|  "",
+|  "[[ai_hub.review_models.standard]]",
+|  "provider_id = \"codex\"",
+|  "model_id = \"gpt-6-sol\"",
+|  "",
+|  "[[ai_hub.review_models.advanced]]",
+|  "provider_id = \"claude\"",
+|  "model_id = \"opus-5.5\"",
+|  "",
+|  "[[ai_hub.review_models.advanced]]",
+|  "provider_id = \"codex\"",
+|  "model_id = \"gpt-6-astra\"",
+|  "",
+|  "[ai_hub.providers.claude]",
+|  "label = \"Claude\"",
+|  "command = \"claude\"",
+|  "args = [",
+|  "    \"--print\",",
+|  "    \"-p\",",
+|  "    \"{prompt}\",",
+|  "]",
+|  "family = \"claude\"",
+|  "models_command = []",
+|  "models = []",
+|  "removed_catalog_models = []",
+|  "",
+|  "[ai_hub.providers.codex]",
+|  "label = \"Codex\"",
+|  "command = \"codex\"",
+|  "args = [",
+|  "    \"exec\",",
+|  "    \"--ignore-user-config\",",
+|  "    \"--skip-git-repo-check\",",
+|  "    \"--sandbox\",",
+|  "    \"workspace-write\",",
+|  "    \"{prompt}\",",
+|  "]",
+|  "family = \"codex\"",
+|  "models_command = [",
+|  "    \"codex\",",
+|  "    \"debug\",",
+|  "    \"models\",",
+|  "]",
+|  "models = []",
+|  "removed_catalog_models = []",
+|  "",
+|  "[ai_hub.providers.cursor]",
+|  "label = \"Cursor\"",
+|  "command = \"agent\"",
+|  "args = [",
+|  "    \"--print\",",
+|  "    \"--trust\",",
+|  "    \"--force\",",
+|  "    \"--output-format\",",
+|  "    \"stream-json\",",
+|  "    \"-p\",",
+|  "    \"{prompt}\",",
+|  "]",
+|  "family = \"cursor\"",
+|  "models_command = [",
+|  "    \"agent\",",
+|  "    \"--list-models\",",
+|  "]",
+|  "models = []",
+|  "removed_catalog_models = []",
+|  "",
+|  "[ai_hub.providers.opencode]",
+|  "label = \"OpenCode\"",
+|  "command = \"opencode\"",
+|  "args = [",
+|  "    \"run\",",
+|  "    \"--auto\",",
+|  "    \"{prompt}\",",
+|  "]",
+|  "family = \"opencode\"",
+|  "models_command = [",
+|  "    \"opencode\",",
+|  "    \"models\",",
+|  "]",
+|  "models = []",
+|  "removed_catalog_models = []"
+|]
+@@@ 06 frame effort < 04
+01|  1  BRANCH   2  UNSTAGED   3  STAGED   4  HISTORY                               Codex / GPT-6 Sol · low   0/1 reviewed
+16|                         │  Model: gpt-6-sol  ◀▶                                              │
+17|                         │▸ Effort / reasoning: low  ◀▶  Auto uses the provider default       │
+30|styles 2bb3c09d11639f15
