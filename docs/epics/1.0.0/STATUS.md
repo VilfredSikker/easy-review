@@ -1,7 +1,7 @@
 # Epic 1.0.0 status
 
-> Release branch `release/v1.0.0`; every PR below targets it. Plan: [PLAN.md](./PLAN.md). Design: [the proposal](../../plans/plan-clean-slate-architecture.md). Decisions: [ADDENDUM-01](./ADDENDUM-01-decisions.md), [ADDENDUM-02](./ADDENDUM-02-issue-decisions.md), [ADDENDUM-03](./ADDENDUM-03-issues-are-the-spec.md), [ADDENDUM-04](./ADDENDUM-04-phase-3.md), [ADDENDUM-05](./ADDENDUM-05-phase-4.md), [ADDENDUM-06](./ADDENDUM-06-phase-5.md), [ADDENDUM-07](./ADDENDUM-07-phase-5b.md). Pick-up notes: [BUILD_LOG.md](./BUILD_LOG.md).
-> Updated by the coordinator only, after every merge, verdict or hand-off. GitHub ([#371](https://github.com/VilfredSikker/easy-review/issues/371), the [v1.0.0 milestone](https://github.com/VilfredSikker/easy-review/milestone/1)) wins if the two disagree. Last update: 2026-11-25 (phase 5b done).
+> Release branch `release/v1.0.0`; every PR below targets it. Plan: [PLAN.md](./PLAN.md). Design: [the proposal](../../plans/plan-clean-slate-architecture.md). Decisions: [ADDENDUM-01](./ADDENDUM-01-decisions.md), [ADDENDUM-02](./ADDENDUM-02-issue-decisions.md), [ADDENDUM-03](./ADDENDUM-03-issues-are-the-spec.md), [ADDENDUM-04](./ADDENDUM-04-phase-3.md), [ADDENDUM-05](./ADDENDUM-05-phase-4.md), [ADDENDUM-06](./ADDENDUM-06-phase-5.md), [ADDENDUM-07](./ADDENDUM-07-phase-5b.md), [ADDENDUM-08](./ADDENDUM-08-phase-6.md). Pick-up notes: [BUILD_LOG.md](./BUILD_LOG.md).
+> Updated by the coordinator only, after every merge, verdict or hand-off. GitHub ([#371](https://github.com/VilfredSikker/easy-review/issues/371), the [v1.0.0 milestone](https://github.com/VilfredSikker/easy-review/milestone/1)) wins if the two disagree. Last update: 2026-11-25 (phase 6 addendum in review).
 
 **Legend:** ⬜ planned · 🟡 in progress · 🔵 in review · 🔧 fixing review findings · ✅ merged · ⛔ blocked on a design
 
@@ -9,7 +9,7 @@
 
 | Session | Bundle | Working on | Lanes |
 | --- | --- | --- | --- |
-| Coordinator | subagents | Phase 5b done 2026-11-25: P63–P77 merged, issues #647–#661 closed; the exit list is in BUILD_LOG.md. Phase 6 (consolidate, #400) is next and not planned | – |
+| Coordinator | subagents | Phase 5b done 2026-11-25: P63–P77 merged, issues #647–#661 closed; the exit list is in BUILD_LOG.md. Phase 6 (consolidate, #400): ADDENDUM-08 approved, then revised (no new features, desktop page audit) and approved again; #762, #764 and #765 build alongside | – |
 | D1–D5, T1, T2 | – | stopped 2026-11-14; the coordinator runs the rest of phase 4 through workflow runs | – |
 
 **Phases 0–2 are complete, and the phase-3 gate passed on 2026-11-10.** [ADDENDUM-04](./ADDENDUM-04-phase-3.md) is the phase-3 plan, and its issues are #471–#489. **Phase 3 is complete, and the phase-4 gate passed on 2026-11-14.** [ADDENDUM-05](./ADDENDUM-05-phase-4.md) is the phase-4 plan, re-checked at `afd78bced`; its issues are #526–#538. **Phase 4 is complete (2026-11-17):** P38 through P47.2 are merged and #526–#538 are closed. P47.2 was re-sequenced into stacked layers (2a, 2b, a slim 2c); its decisions, the exit checklist and the list of what stays on the App with the flag on are on #538. The phase-5 gate questions (D9 codegen, sidebar resources) are answered. **The phase-5 gate passed on 2026-11-18:** the owner approved the plan, [ADDENDUM-06](./ADDENDUM-06-phase-5.md) (merged as #601), and its issues are #602–#622.
@@ -124,6 +124,29 @@ The `Model` column sets how deep the coordinator's review goes, not who implemen
 | P75 | [#659](https://github.com/VilfredSikker/easy-review/issues/659) Export, copy and open actions | T | opus | ✅ | [#743](https://github.com/VilfredSikker/easy-review/pull/743), [#746](https://github.com/VilfredSikker/easy-review/pull/746), [#747](https://github.com/VilfredSikker/easy-review/pull/747), [#744](https://github.com/VilfredSikker/easy-review/pull/744) | merged; P75.4 took the startup and loop duties |
 | P76 | [#660](https://github.com/VilfredSikker/easy-review/issues/660) Switch the TUI and delete its old path and the flag | T/C | opus | ✅ | [#748](https://github.com/VilfredSikker/easy-review/pull/748), [#749](https://github.com/VilfredSikker/easy-review/pull/749), [#750](https://github.com/VilfredSikker/easy-review/pull/750), [#751](https://github.com/VilfredSikker/easy-review/pull/751), [#752](https://github.com/VilfredSikker/easy-review/pull/752), [#753](https://github.com/VilfredSikker/easy-review/pull/753), [#754](https://github.com/VilfredSikker/easy-review/pull/754), [#755](https://github.com/VilfredSikker/easy-review/pull/755), [#756](https://github.com/VilfredSikker/easy-review/pull/756), [#757](https://github.com/VilfredSikker/easy-review/pull/757), [#758](https://github.com/VilfredSikker/easy-review/pull/758), [#759](https://github.com/VilfredSikker/easy-review/pull/759) | merged; P76.1 froze parity to delta goldens, P76.2 (#759) runs the TUI on the service alone; watched-test flake #762 |
 | P77 | [#661](https://github.com/VilfredSikker/easy-review/issues/661) Delete the App and the `ui` feature | S/C | opus | ✅ | [#727](https://github.com/VilfredSikker/easy-review/pull/727), [#728](https://github.com/VilfredSikker/easy-review/pull/728), [#763](https://github.com/VilfredSikker/easy-review/pull/763) | merged; P77.1 moved the engine tests off the App, P77.2 (#763) deleted `app/` and the `ui` feature |
+| P78 | Freeze the MCP contract | M | opus | ⬜ | | ADDENDUM-08; not opened |
+| P79.1 | Move the records and the owner | S/DS/D | opus | ⬜ | | ADDENDUM-08; not opened |
+| P79.2 | The sidebar refreshers | S/DS/D | opus | ⬜ | | ADDENDUM-08; not opened |
+| P79.3 | The inbox sweep, the triage and the project commands | S/DS/D | opus | ⬜ | | ADDENDUM-08; not opened |
+| P80.1 | The MCP use cases in er-service, one writer | S/E/M | opus | ⬜ | | ADDENDUM-08; not opened |
+| P80.2 | er-mcp depends on er-service | M/C | sonnet | ⬜ | | ADDENDUM-08; not opened |
+| P82 | One `now_epoch_ms` | C/E/S/D/M | sonnet | ⬜ | | ADDENDUM-08; not opened |
+| P83.1 | The er-service front-end surface, and the TUI on it | S/T/C | opus | ⬜ | | ADDENDUM-08; not opened |
+| P83.2 | The desktop on it | S/D/C | sonnet | ⬜ | | ADDENDUM-08; not opened |
+| P83.3 | The `er::front_end_deps` rule | C | sonnet | ⬜ | | ADDENDUM-08; not opened |
+| P84 | One service host | S/D | opus | ⬜ | | ADDENDUM-08; not opened |
+| P85 | ADRs, docs, npm and the close-out | Docs/M | sonnet | ⬜ | | ADDENDUM-08; not opened |
+| P86 | The `*Snapshot` renames | U/D/P/S | sonnet | ⬜ | | ADDENDUM-08; not opened |
+| P86b | desktop-ui's diff view `*Snapshot` types | U | sonnet | ⬜ | | ADDENDUM-08; not opened |
+| P86c | desktop-ui's annotation and AI panel `*Snapshot` types | U | sonnet | ⬜ | | ADDENDUM-08; not opened |
+| P86d | desktop-ui's jobs, sidebar, PR, settings and chrome `*Snapshot` types | U | sonnet | ⬜ | | ADDENDUM-08; not opened |
+| P87 | The PR card's branch actions through the service | S/D | opus | ⬜ | | ADDENDUM-08; not opened |
+| P88 | The card asks in er-service | S/D | opus | ⬜ | | ADDENDUM-08; not opened |
+| P89 | The desktop-only runs planned in er-service | S/D | opus | ⬜ | | ADDENDUM-08; not opened |
+| P90 | Browser annotations through the workspace actor | S/D | opus | ⬜ | | ADDENDUM-08; not opened |
+| P91 | One `pr_status` version per PR | S/D | sonnet | ⬜ | | ADDENDUM-08; not opened |
+| P92 | Split `route_helpers.rs` and `page_view.rs` by caller | D | sonnet | ⬜ | | ADDENDUM-08; not opened |
+| P93 | App-era leftovers | D/S/E/T/U/P | sonnet | ⬜ | | ADDENDUM-08; not opened |
 
 ## Designs
 
@@ -148,7 +171,7 @@ The `Model` column sets how deep the coordinator's review goes, not who implemen
 | Phase 4: core and service | [#397](https://github.com/VilfredSikker/easy-review/issues/397) | ✅ passed 2026-11-14; [ADDENDUM-05](./ADDENDUM-05-phase-4.md), issues #526–#538 |
 | Phase 5: desktop protocol | [#398](https://github.com/VilfredSikker/easy-review/issues/398) | ✅ done 2026-11-23 (ADDENDUM-06, #602–#622) |
 | Phase 5b: TUI | [#399](https://github.com/VilfredSikker/easy-review/issues/399) | ✅ done 2026-11-25 (ADDENDUM-07, #647–#661); the TUI runs on the service alone and the engine has one half |
-| Phase 6: consolidate | [#400](https://github.com/VilfredSikker/easy-review/issues/400) | ⬜ |
+| Phase 6: consolidate | [#400](https://github.com/VilfredSikker/easy-review/issues/400) | 🟡 approved 2026-11-25, revised plan approved; issues not opened yet ([ADDENDUM-08](./ADDENDUM-08-phase-6.md)) |
 
 ## Waiting on the owner
 
