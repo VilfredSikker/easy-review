@@ -411,7 +411,13 @@ fn the_git_hub_working_tree_rows_act_like_the_app() {
         let (mut app, mut shell) = both_on(&app_repo, &flag_repo, storage.path());
         let mut hl = Highlighter::new();
         press(&mut app, &mut shell, &mut hl, KeyCode::Char('2'));
-        for label in ["Stage current file", "Refresh diff", "Stage all files"] {
+        let labels = [
+            "Push to remote",
+            "Stage current file",
+            "Refresh diff",
+            "Stage all files",
+        ];
+        for label in labels {
             to_git_row(&mut app, &mut shell, &mut hl, label);
             press(&mut app, &mut shell, &mut hl, KeyCode::Enter);
         }
