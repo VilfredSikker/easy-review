@@ -395,3 +395,59 @@ fn tab_cancel_back_and_close_keys_match_the_apps() {
         assert_parity(&app, &shell_frame(&mut shell, &mut hl), &mut hl, "closed");
     });
 }
+
+/// The open picker's kind.
+fn picker_kind(shell: &Shell) -> Option<crate::screen::view::HubKind> {
+    match shell.view().overlay.as_ref() {
+        Some(Overlay::Picker(picker)) => Some(picker.kind()),
+        _ => None,
+    }
+}
+
+/// Backspace and Esc on the effort list go back to the model list, as the
+/// App's `pop_ai_effort_picker`; Esc on the model list closes it.
+#[test]
+fn the_effort_list_goes_back_to_the_models() {
+    use crate::screen::view::HubKind;
+    let repo = fixture(1);
+    let (storage, config_dir) = (temp(), temp());
+    let path = path_of(&repo);
+    er_engine::storage::with_process_test_storage_root(storage.path(), || {
+        let mut shell = start(&path, config_dir.path());
+        patch(
+            &mut shell,
+            "features.model_discovery",
+            ConfigFieldValue::Bool(false),
+        );
+        let view = shell.host().settings().view();
+        let (provider_id, model) = view
+            .config
+            .ai_hub
+            .providers
+            .iter()
+            .filter(|(_, provider)| provider.models.len() > 1)
+            .find_map(|(id, provider)| {
+                let model = provider
+                    .models
+                    .iter()
+                    .find(|m| !m.effort_levels.is_empty())?;
+                Some((id.clone(), model.display_name()))
+            })
+            .unwrap_or_else(|| panic!("no provider lists a model with efforts"));
+        open_provider(&mut shell, &provider_id);
+        shell.handle_key(key(KeyCode::Enter));
+        assert_eq!(picker_kind(&shell), Some(HubKind::AiModel));
+        for _ in 0..8 {
+            shell.handle_key(key(KeyCode::Char('k')));
+        }
+        select(&mut shell, &model);
+        for back in [KeyCode::Backspace, KeyCode::Esc] {
+            shell.handle_key(key(KeyCode::Enter));
+            assert_eq!(picker_kind(&shell), Some(HubKind::AiEffort));
+            shell.handle_key(key(back));
+            assert_eq!(picker_kind(&shell), Some(HubKind::AiModel), "{back:?}");
+        }
+        shell.handle_key(key(KeyCode::Esc));
+        assert_eq!(picker_kind(&shell), None);
+    });
+}
