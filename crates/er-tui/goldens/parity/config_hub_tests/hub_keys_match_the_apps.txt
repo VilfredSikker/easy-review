@@ -1,0 +1,37 @@
+@@@ 01 json files
+|[
+|  "[commands]\ntest = \"make\"\n\n[display]\nauto_context_threshold = 0\nline_numbers = true\nsplit_diff = false\ntab_width = 4\ntheme = \"graphite\"\nwrap_lines = false\n\n[features]\narena = true\nmodel_discovery = true\nview_branch = true\nview_conflicts = true\nview_hidden = true\nview_history = true\nview_staged = true\nview_tour = true\nview_unstaged = true\n\n[file_kinds]\n\n[hints]\ncomments = true\nnavigation = true\nstaging = true\nverbose = false\n\n[inbox.notify]\nai_review_done = true\nai_review_failed = true\nai_triage_done = true\nai_triage_failed = true\nci_failed = true\ngithub_refresh_failed = true\nmention = true\npr_closed = true\npr_comment = true\npr_comment_reply = true\npr_merged = true\npr_review_approved = true\npr_review_changes_requested = true\npr_review_received = true\nreview_requested = true\n\n[inbox.show]\nai_review_done = true\nai_review_failed = true\nai_triage_done = true\nai_triage_failed = true\nci_failed = true\ngithub_refresh_failed = true\nmention = true\npr_closed = true\npr_comment = true\npr_comment_reply = true\npr_merged = true\npr_review_approved = true\npr_review_changes_requested = true\npr_review_received = true\nreview_requested = true\n\n[packages]\n\n[risk]\n\n[summary]\npush_to_pr = true\n\n[watched]\ndiff_mode = \"snapshot\"\npaths = []\n",
+|  "[agent]\ncommand = \"claude\"\nargs = [\n    \"--print\",\n    \"--output-format\",\n    \"stream-json\",\n    \"-p\",\n    \"{prompt}\",\n]\nmodel = \"\"\n\n[ai_hub]\nflow_providers = []\ndefault_provider = \"claude\"\ndefault_model = \"sonnet-5.5\"\nremoved_catalog_providers = []\nmax_concurrent_reviews = 0\nagent_timeout_secs = 0\nmax_concurrent_arena_reviews = 0\nmax_concurrent_agents = 0\n\n[[ai_hub.review_models.fast]]\nprovider_id = \"claude\"\nmodel_id = \"haiku-5.5\"\n\n[[ai_hub.review_models.fast]]\nprovider_id = \"codex\"\nmodel_id = \"gpt-6-luna\"\n\n[[ai_hub.review_models.standard]]\nprovider_id = \"claude\"\nmodel_id = \"sonnet-5.5\"\n\n[[ai_hub.review_models.standard]]\nprovider_id = \"codex\"\nmodel_id = \"gpt-6-sol\"\n\n[[ai_hub.review_models.advanced]]\nprovider_id = \"claude\"\nmodel_id = \"opus-5.5\"\n\n[[ai_hub.review_models.advanced]]\nprovider_id = \"codex\"\nmodel_id = \"gpt-6-astra\"\n\n[ai_hub.providers.claude]\nlabel = \"Claude\"\ncommand = \"claude\"\nargs = [\n    \"--print\",\n    \"-p\",\n    \"{prompt}\",\n]\nfamily = \"claude\"\nmodels_command = []\nmodels = []\nremoved_catalog_models = []\n\n[ai_hub.providers.codex]\nlabel = \"Codex\"\ncommand = \"codex\"\nargs = [\n    \"exec\",\n    \"--ignore-user-config\",\n    \"--skip-git-repo-check\",\n    \"--sandbox\",\n    \"workspace-write\",\n    \"{prompt}\",\n]\nfamily = \"codex\"\nmodels_command = [\n    \"codex\",\n    \"debug\",\n    \"models\",\n]\nmodels = []\nremoved_catalog_models = []\n\n[ai_hub.providers.cursor]\nlabel = \"Cursor\"\ncommand = \"agent\"\nargs = [\n    \"--print\",\n    \"--trust\",\n    \"--force\",\n    \"--output-format\",\n    \"stream-json\",\n    \"-p\",\n    \"{prompt}\",\n]\nfamily = \"cursor\"\nmodels_command = [\n    \"agent\",\n    \"--list-models\",\n]\nmodels = []\nremoved_catalog_models = []\n\n[ai_hub.providers.opencode]\nlabel = \"OpenCode\"\ncommand = \"opencode\"\nargs = [\n    \"run\",\n    \"--auto\",\n    \"{prompt}\",\n]\nfamily = \"opencode\"\nmodels_command = [\n    \"opencode\",\n    \"models\",\n]\nmodels = []\nremoved_catalog_models = []\n"
+|]
+@@@ 02 frame hub
+| feature · feature (vs main)  +2 -2
+|  1  BRANCH   2  UNSTAGED   3  STAGED   4  HISTORY                                   Claude / Sonnet 5.5   0/1 reviewed
+| FILES (1)                     │  ~ src/f000.rs  +2 -2                                                      Hunk 1/2
+| ~ src/f000.rs          +2 -2  │
+|                         ┌ Config — General ──────────────────────────────────────────────────┐
+|                         │ Commands                                                           │
+|                         │  Test: make                                                        │
+|                         │  Lint: e.g. cargo clippy                                           │
+|                         │  Typecheck: e.g. tsc --noEmit                                      │
+|                         │  Security: e.g. cargo audit                                        │
+|                         │  [x] Push summary to PR body                                       │
+|                         │ Agent                                                              │
+|                         │  Command: claude                                                   │
+|                         │  Args: --print --output-format stream-json -p {prompt}             │
+|                         │ AI Hub                                                             │
+|                         │  Provider: claude  ◀▶                                              │
+|                         │  Model: sonnet-5.5  ◀▶                                             │
+|                         │  Effort / reasoning: Auto  ◀▶                                      │
+|                         │  [x] Model discovery                                               │
+|                         │ Watched Paths                                                      │
+|                         │  Diff mode: snapshot  ◀▶                                           │
+|                         │▸ + Add pattern...                                                  │
+|                         │                                                                    │
+|                         │ j/k nav  Enter edit  1/2 tab  d delete  Esc close (auto-saves)     │
+|                         └────────────────────────────────────────────────────────────────────┘
+|                               │  24   24 │ let line_23 = 23;
+|                               │  25   25 │ let line_24 = 24;
+|                               │  26   26 │ let line_25 = 25;
+|                               │  27   27 │ let line_26 = 26;
+| j/k nav n/N hunks +/- context ␣ review / search g git a ai o open v verify ? help ^q quit
+|styles d8a246f5a6a9f0a7

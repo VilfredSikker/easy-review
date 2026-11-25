@@ -15,6 +15,7 @@ use er_engine::TabKey;
 use er_github::{BranchPrProbe, CreatedComment, FakeGitHub, GhError, PrLookup, PrOverviewData};
 use er_service::{EARLIER_VERSION_POSTED, OWN_PR_APPROVAL_REFUSED};
 
+use super::parity::assert_json;
 use super::shell::Shell;
 use super::startup::Args;
 use super::tests::{
@@ -463,6 +464,11 @@ fn a_github_line_comment_posts_like_the_app() {
         let content = shell.active_content().unwrap_or_else(|| panic!("gone"));
         let flag_rows = rows(&content.context.comments_dir);
         assert_eq!(flag_rows, rows(&app.tab().github_comments_dir()));
+        assert_json(
+            "sidecar",
+            &flag_rows,
+            &rows(&app.tab().github_comments_dir()),
+        );
         assert_eq!(flag_rows[0]["side"], "LEFT", "{flag_rows}");
         assert_eq!(calls(&flag_github, "post_line_comment").len(), 1);
     });

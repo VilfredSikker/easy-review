@@ -9,6 +9,7 @@ use crossterm::event::KeyCode;
 use er_engine::config::{ConfigFieldValue, ErConfig};
 use er_service::SettingsCommand;
 
+use super::parity::assert_json;
 use super::shell::Shell;
 use super::startup::Args;
 use super::tests::{
@@ -193,6 +194,7 @@ fn hub_keys_match_the_apps() {
             files(storage.path()) == files(config_dir.path())
         });
         assert_eq!(files(config_dir.path()), files(storage.path()));
+        assert_json("files", &files(config_dir.path()), &files(storage.path()));
         let app_file = &files(storage.path())[0];
         assert!(
             app_file.contains("snapshot"),
@@ -243,6 +245,7 @@ fn a_cycled_provider_saves_and_labels_like_the_app() {
             }
             settle_quietly(&mut shell, || read(&agents) == read(&app_agents));
             assert_eq!(read(&agents), read(&app_agents), "{step}");
+            assert_json(step, &read(&agents), &read(&app_agents));
             assert_parity(&app, &shell_frame(&mut shell, &mut hl), &mut hl, step);
         }
         assert!(
@@ -388,6 +391,7 @@ fn tab_cancel_back_and_close_keys_match_the_apps() {
             shell.handle_key(key(code));
             settle_quietly(&mut shell, || read(&agents) == read(&app_agents));
             assert_eq!(read(&agents), read(&app_agents), "Left");
+            assert_json("Left", &read(&agents), &read(&app_agents));
         }
         press_app(&mut app, KeyCode::Char('s'));
         shell.handle_key(key(KeyCode::Char('s')));

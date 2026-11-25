@@ -1,0 +1,65 @@
+@@@ 01 frame KeyEvent { code: Char('c'), modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) }
+| feature · feature (vs main)  +2 -2
+|  1  BRANCH   2  UNSTAGED   3  STAGED   4  HISTORY                                   Claude / Sonnet 5.5   0/1 reviewed
+| ● No pull request for this branch: comments post to GitHub when created. Start a question or a note to keep it private.
+| ~ src/f000.rs          +2 -2  │
+|                               │ ▶ @@ -1,14 +1,14 @@
+|                               │   1    1 │ let line_0 = 0;
+|                               │   2    2 │ let line_1 = 1;
+|                               │   3    3 │ let line_2 = 2;
+|                               │   4      │-let line_3 = 3;
+|                               │        4 │+let changed_3 = 3; // edited
+|                               │   5    5 │ let line_4 = 4;
+|                               │   6    6 │ let line_5 = 5;
+|                               │   7    7 │ let line_6 = 6;
+|                               │   8    8 │ let line_7 = 7;
+|                               │   9    9 │ let line_8 = 8;
+|                               │  10   10 │ let line_9 = 9;
+|                               │  11   11 │ let line_10 = 10;
+|                               │  12   12 │ let line_11 = 11;
+|                               │  13   13 │ let line_12 = 12;
+|                               │  14   14 │ let line_13 = 13;
+|                               │  ··· 6 lines hidden (+/- to expand) ···
+|                               │   @@ -21,20 +21,20 @@ let line_19 = 19;
+|                               │  21   21 │ let line_20 = 20;
+|                               │  22   22 │ let line_21 = 21;
+|                               │  23   23 │ let line_22 = 22;
+|                               │  24   24 │ let line_23 = 23;
+|                               │  25   25 │ let line_24 = 24;
+|                               │  26   26 │ let line_25 = 25;
+|                               │  27   27 │ let line_26 = 26;
+| j/k nav n/N hunks +/- context ␣ review / search g git a ai o open v verify ? help ^q quit
+|styles 89b302de62a79381
+@@@ 02 frame KeyEvent { code: Char('g'), modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 01
+02| FILES (1)                     │  ~ src/f000.rs  +2 -2                                                      Hunk 1/2
+10|                               │┌ GIT (Enter=select, Esc=close) ──────────────────────┐
+11|                               ││▶ Push to remote  Push current branch to origin      │
+12|                               ││  Stage current file  [s]  Stage or unstage the selec│
+13|                               ││  Stage all files  Stage all changed files           │
+14|                               ││  Refresh diff  [R]  Re-run git diff and reload      │
+15|                               ││  Pull GitHub comments  Sync review comments from Git│
+16|                               ││  Comment on PR  Post a general comment on the PR (no│
+17|                               ││  Approve PR  No PR detected                         │
+18|                               │└─────────────────────────────────────────────────────┘
+30|styles 62c958bb643438ca
+@@@ 03 frame KeyEvent { code: Down, modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 02
+11|                               ││  Push to remote  Push current branch to origin      │
+12|                               ││▶ Stage current file  [s]  Stage or unstage the selec│
+30|styles 6f010420120603c8
+@@@ 04 frame KeyEvent { code: Down, modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 02
+11|                               ││  Push to remote  Push current branch to origin      │
+13|                               ││▶ Stage all files  Stage all changed files           │
+30|styles cf09f14b54106b8c
+@@@ 05 frame KeyEvent { code: Down, modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 02
+11|                               ││  Push to remote  Push current branch to origin      │
+14|                               ││▶ Refresh diff  [R]  Re-run git diff and reload      │
+30|styles 30003afa37ad05ca
+@@@ 06 frame KeyEvent { code: Down, modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 02
+11|                               ││  Push to remote  Push current branch to origin      │
+15|                               ││▶ Pull GitHub comments  Sync review comments from Git│
+30|styles ccb03b4d1c39ef14
+@@@ 07 frame KeyEvent { code: Down, modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 02
+11|                               ││  Push to remote  Push current branch to origin      │
+16|                               ││▶ Comment on PR  Post a general comment on the PR (no│
+30|styles ead9bdc8842b8b04
+@@@ 08 frame KeyEvent { code: Enter, modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 01

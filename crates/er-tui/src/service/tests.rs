@@ -420,7 +420,7 @@ pub(super) fn assert_parity(
             );
         }
     }
-    super::parity::dump(step, app);
+    super::parity::assert_frame(step, flag_on, app);
 }
 
 /// The App path, on the same repo, with the automatic context pick off, as
