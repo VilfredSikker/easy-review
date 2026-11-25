@@ -41,7 +41,7 @@ pub struct WorkspaceDeps {
     app_registry: Option<Arc<crate::app_registry::AppRegistry>>,
     /// The app's task host. A review flow reads it to see the host tasks
     /// that write into its bucket (#764).
-    tasks: crate::tasks::TaskHost,
+    tasks: Option<crate::tasks::TaskHost>,
 }
 
 impl WorkspaceDeps {
@@ -53,7 +53,7 @@ impl WorkspaceDeps {
                 er_engine::github_post_session::PostSession::default(),
             )),
             app_registry: None,
-            tasks: crate::tasks::TaskHost::default(),
+            tasks: None,
         }
     }
 
@@ -61,12 +61,13 @@ impl WorkspaceDeps {
     /// flows see the host's tasks.
     #[must_use]
     pub fn with_tasks(mut self, tasks: crate::tasks::TaskHost) -> Self {
-        self.tasks = tasks;
+        self.tasks = Some(tasks);
         self
     }
 
-    pub(crate) fn tasks(&self) -> &crate::tasks::TaskHost {
-        &self.tasks
+    /// The task host these deps share, when one was given.
+    pub fn tasks(&self) -> Option<&crate::tasks::TaskHost> {
+        self.tasks.as_ref()
     }
 
     /// Shares the service's one app registry with the actors built from this.

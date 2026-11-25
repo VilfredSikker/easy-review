@@ -282,6 +282,38 @@ fn the_task_events_reach_the_sender() -> anyhow::Result<()> {
     })
 }
 
+/// A task host the deps carry is the service host's own: its tasks are
+/// listed, and its row changes reach the host's events.
+#[test]
+fn a_service_host_keeps_the_task_host_its_deps_carry() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    er_engine::storage::with_process_test_storage_root(dir.path().join("storage"), || {
+        let given = TaskHost::default();
+        let deps = crate::WorkspaceDeps::new(Ports::for_test()).with_tasks(given.clone());
+        let (tx, events) = std::sync::mpsc::channel();
+        let host = ServiceHost::with_deps(deps, dir.path().join("config.toml")).with_events(tx);
+        let bucket = dir.path().join("bucket");
+
+        let id = printed(&given, &bucket.to_string_lossy(), 1)?;
+
+        assert!(
+            host.tasks().rows().iter().any(|row| row.id == id),
+            "the service host replaced the task host its deps carried"
+        );
+        let deadline = Instant::now() + WAIT;
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if matches!(
+                events.recv_timeout(left)?,
+                crate::Event::TasksChanged { .. }
+            ) {
+                break;
+            }
+        }
+        Ok(())
+    })
+}
+
 /// A committed importance run has the host's settings view read the repo's
 /// rules again, as the desktop's does, so a TUI importance run moves
 /// `risk(key)` too. The table is committed by hand: a run that commits one

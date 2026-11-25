@@ -59,7 +59,7 @@ pub struct TaskClock {
     watchers: Arc<Mutex<Vec<Watcher>>>,
 }
 
-type Watcher = Box<dyn Fn() -> bool + Send + Sync>;
+type Watcher = Box<dyn Fn(u64) -> bool + Send + Sync>;
 
 impl TaskClock {
     pub fn revision(&self) -> u64 {
@@ -71,7 +71,7 @@ impl TaskClock {
         if let Some(wake) = &self.wake {
             wake(revision);
         }
-        lock(&self.watchers).retain(|watch| watch());
+        lock(&self.watchers).retain(|watch| watch(revision));
     }
 }
 
@@ -149,10 +149,11 @@ impl TaskHost {
         self.tasks.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Calls `watch` on every row change until it answers `false`. Every
+    /// Calls `watch` with the new revision on every row change until it
+    /// answers `false`. Every
     /// caller bumps the clock after it lets the tasks go, so a watcher never
     /// runs under the tasks lock.
-    pub fn watch(&self, watch: impl Fn() -> bool + Send + Sync + 'static) {
+    pub fn watch(&self, watch: impl Fn(u64) -> bool + Send + Sync + 'static) {
         lock(&self.clock.watchers).push(Box::new(watch));
     }
 
@@ -381,11 +382,37 @@ pub fn hold_agent(
     name: &str,
     launch: impl FnOnce(Sender<AgentLogEntry>) -> anyhow::Result<AgentPromptRun>,
 ) -> Result<String, String> {
+    hold(host, hooks, target, name, true, launch)
+}
+
+/// [`hold_agent`] past the bucket's admission, so a test can put a host
+/// task in a bucket a flow already holds.
+#[cfg(test)]
+pub(crate) fn hold_agent_unadmitted(
+    host: &TaskHost,
+    hooks: &TaskHooks,
+    target: BackgroundTaskTarget,
+    name: &str,
+    launch: impl FnOnce(Sender<AgentLogEntry>) -> anyhow::Result<AgentPromptRun>,
+) -> Result<String, String> {
+    hold(host, hooks, target, name, false, launch)
+}
+
+fn hold(
+    host: &TaskHost,
+    hooks: &TaskHooks,
+    target: BackgroundTaskTarget,
+    name: &str,
+    admitted: bool,
+    launch: impl FnOnce(Sender<AgentLogEntry>) -> anyhow::Result<AgentPromptRun>,
+) -> Result<String, String> {
     // One lock over the busy check, the launch and the push, so two sends at
     // once start one agent. The launch only spawns: the runner waits for its
     // slot on its own thread.
     let mut tasks = host.lock();
-    admit(name, &target.er_dir)?;
+    if admitted {
+        admit(name, &target.er_dir)?;
+    }
     let busy = tasks.iter().any(|task| {
         task.row.kind == name && task.target.er_dir == target.er_dir && task.run.is_some()
     });

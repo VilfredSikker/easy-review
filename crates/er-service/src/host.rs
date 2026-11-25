@@ -61,14 +61,17 @@ impl ServiceHost {
 
     /// The same, over deps the caller built, such as a test's job sink. A
     /// registry the deps already carry is replaced by the host's own, which
-    /// never persists.
+    /// never persists. A task host the deps carry is kept, and its row
+    /// changes reach this host's events too.
     pub fn with_deps(deps: WorkspaceDeps, settings_path: PathBuf) -> Self {
         let registry = Arc::new(AppRegistry::in_memory(deps.ports().clone()));
         let task_events: Arc<Mutex<Option<Sender<Event>>>> = Arc::default();
-        let tasks = {
-            let events = Arc::clone(&task_events);
-            TaskHost::new(move |revision| send(&events, Event::TasksChanged { revision }))
-        };
+        let tasks = deps.tasks().cloned().unwrap_or_default();
+        let events = Arc::clone(&task_events);
+        tasks.watch(move |revision| {
+            send(&events, Event::TasksChanged { revision });
+            true
+        });
         Self {
             deps: deps
                 .with_app_registry(Arc::clone(&registry))

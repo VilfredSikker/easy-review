@@ -112,7 +112,9 @@
 - While a review flow holds a bucket, Summary, Questions, Notes and the named
   `[commands]` are refused with "A review flow is already using this review
   bucket", as review runs already were. Tours still run beside a flow. The
-  desktop refuses the same runs, and Send to agent on a note too.
+  desktop refuses the same runs, and Send to agent on a note too. While a
+  clear runs on the bucket, they are refused with "A clear is already using
+  this review bucket".
 - A review flow does not start while a run or tab command is queued or
   running in its bucket, and keeps the bucket until those finish.
 

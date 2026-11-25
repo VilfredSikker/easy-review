@@ -89,13 +89,13 @@ impl FlowRunner {
             tasks: HashMap::new(),
             finished: Arc::new(Mutex::new(HashMap::new())),
             panel_runs_seen: HashSet::new(),
-            task_host: deps.tasks().clone(),
+            task_host: deps.tasks().cloned().unwrap_or_default(),
         };
         // A flow whose release a host task held back advances when that
         // task moves; the watcher goes when the actor does.
         let wake = tx.clone();
-        deps.tasks()
-            .watch(move || wake.send(ActorMsg::TasksChanged).is_ok());
+        host.task_host
+            .watch(move |_| wake.send(ActorMsg::TasksChanged).is_ok());
         Self {
             shared: Arc::new(Mutex::new(Flows {
                 flows: ReviewFlows::default(),
