@@ -64,6 +64,7 @@ pub(super) fn step(app: &mut App, shell: &mut Shell, hl: &mut Highlighter, code:
 /// after `G` the section is read again, and the panel and the notice match.
 #[test]
 fn the_pr_panel_reads_the_pr_section_and_a_pull_refreshes_it() {
+    let _golden = super::parity::guard();
     let (app_repo, flag_repo) = (fixture(1), fixture(1));
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     let probe = BranchPrProbe::Present {
@@ -148,6 +149,14 @@ fn assert_stack_parity(app: &App, shell: &mut Shell, hl: &mut Highlighter, step:
     let shown = flag_rows.join("\n");
     let start = at(&flag_rows, "── Stack ──", 0).unwrap_or_else(|| panic!("{step}: {shown}"));
     let end = at(&flag_rows, "Refresh stack", start).unwrap_or_else(|| panic!("{step}: {shown}"));
+    // The section alone, cut out of each frame, is what the golden holds.
+    let section = |buffer: &Buffer| {
+        let rows = u16::try_from(end + 1 - start).unwrap_or_else(|e| panic!("{e}"));
+        let mut cut = Buffer::empty(ratatui::layout::Rect::new(0, 0, 120, rows));
+        cut.content = buffer.content[start * 120..(end + 1) * 120].to_vec();
+        cut
+    };
+    super::parity::assert_frame(step, &section(&flag), &section(&app_frame));
     for row in start..=end {
         assert_eq!(app_rows[row], flag_rows[row], "{step}: row {row}\n{shown}");
         for col in 0..120 {
@@ -174,6 +183,7 @@ pub(super) fn select_row(app: Option<&mut App>, shell: &mut Shell, label: &str) 
 /// and the rows follow the section once its revision moves.
 #[test]
 fn the_stack_rows_follow_the_pr_section() {
+    let _golden = super::parity::guard();
     let (app_repo, flag_repo) = (fixture(1), fixture(1));
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     let github = Arc::new(FakeGitHub::default().with_stack_view_json(Ok(stack_json(false))));

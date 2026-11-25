@@ -1,0 +1,98 @@
+@@@ 01 frame no flow
+| feature · feature (vs main)  +2 -2
+|  1  BRANCH   2  UNSTAGED   3  STAGED   4  HISTORY                                           Gated / one   0/1 reviewed
+| FILES (1)                     │  ~ src/f000.rs  +2 -2                                                      Hunk 1/2
+| ~ src/f000.rs          +2 -2  │┌ AI (Enter=select, Esc=close) ───────────────────────┐
+|                               ││▶ Review  Start review flow on the active branch diff│
+|                               ││  Triage branch  Fast scan — first impression and rev│
+|                               ││── Advanced ──                                       │
+|                               ││  Review work  Full review: risk, order, checklist, s│
+|                               ││  Generate summary  Generate summary via Gated / one │
+|                               ││  Generate guided tour  AI-guided walkthrough: pillar│
+|                               ││  Specialized review  Focused expert lens — security,│
+|                               ││  Professor  Learn the implementation — teaching insi│
+|                               ││  Validate review  Run review or add GitHub comments │
+|                               ││  Answer questions  No unresolved questions          │
+|                               ││  Address notes  No unresolved notes                 │
+|                               ││  Change agent/model  Current: Gated / one           │
+|                               ││  Copy context to clipboard  Copy diff context for ag│
+|                               ││  Toggle AI findings  [A]  Show/hide inline AI findin│
+|                               ││  Toggle comments  Show/hide GitHub comment layer    │
+|                               ││  Toggle questions  Show/hide question layer         │
+|                               ││  Hide resolved  [X]  Toggle hiding resolved comments│
+|                               ││  Confidence gate  [T]  Cycle which grades show: all,│
+|                               ││  Show arbiter's drops  List the findings the arbiter│
+|                               ││  Propose risk rules  Agent reads the repo and writes│
+|                               ││  Cleanup questions & notes  [z]  no questions or not│
+|                               ││  Cleanup reviews  [Z]  no review data to clean up   │
+|                               │└─────────────────────────────────────────────────────┘
+|                               │  26   26 │ let line_25 = 25;
+|                               │  27   27 │ let line_26 = 26;
+| j/k nav n/N hunks +/- context ␣ review / search g git a ai o open v verify ? help ^q quit
+|styles e9083f1809121754
+@@@ 02 frame triage running < 01
+02| FILES (1)                     │┌ AI (Enter=select, Esc=close) ───────────────────────┐                     Hunk 1/2
+03| ~ src/f000.rs          +2 -2  ││▶ Review  Triage is running · open task progress     │
+04|                               ││  Cancel review  Stop the running review             │
+30|styles adad3e67ebe35e4a
+@@@ 03 frame awaiting Deep < 02
+03| ~ src/f000.rs          +2 -2  ││▶ Review  Estimated $1.14 · about 1 min · Enter confi│
+04|                               ││  Cancel Deep review  Decline the pending Deep review│
+05|                               ││  Review task progress  Inspect the captured plan, mo│
+06|                               ││  Triage branch  Fast scan — first impression and rev│
+07|                               ││── Advanced ──                                       │
+08|                               ││  Review work  Full review: risk, order, checklist, s│
+09|                               ││  Generate summary  Generate summary via Gated / one │
+10|                               ││  Generate guided tour  AI-guided walkthrough: pillar│
+11|                               ││  Specialized review  Focused expert lens — security,│
+12|                               ││  Professor  Learn the implementation — teaching insi│
+13|                               ││  Validate review  Run review or add GitHub comments │
+14|                               ││  Answer questions  No unresolved questions          │
+15|                               ││  Address notes  No unresolved notes                 │
+16|                               ││  Change agent/model  Current: Gated / one           │
+17|                               ││  Copy context to clipboard  Copy diff context for ag│
+18|                               ││  Toggle AI findings  [A]  Show/hide inline AI findin│
+19|                               ││  Toggle comments  Show/hide GitHub comment layer    │
+20|                               ││  Toggle questions  Show/hide question layer         │
+21|                               ││  Hide resolved  [X]  Toggle hiding resolved comments│
+22|                               ││  Confidence gate  [T]  Cycle which grades show: all,│
+23|                               ││  Show arbiter's drops  List the findings the arbiter│
+24|                               ││  Propose risk rules  Agent reads the repo and writes│
+25|                               ││  Cleanup questions & notes  [z]  no questions or not│
+26|                               ││  Cleanup reviews  [Z]  no review data to clean up   │
+27|                               │└─────────────────────────────────────────────────────┘
+30|styles b7a0e30b75633a6b
+@@@ 04 frame done with findings < 02
+03| ~ src/f000.rs          +2 -2  ││▶ Review  2 findings waiting to accept · open results│
+04|                               ││  Review task progress  Inspect the captured plan, mo│
+30|styles 1ac1d804cb2f3b5f
+@@@ 05 frame results < 01
+01|  1  BRANC┌ REVIEW RESULTS · ##################### · 1 of 2 · Space select · a accept · PgUp/PgDn detail · Es┐ reviewed
+02| FILES (1)│┌Findings 1–2────────────────────────────────────────────────────────────────────────────────────┐│nk 1/2
+03| ~ src/f00││[ ] src/f000.rs:4 · First flow finding                                                          ││
+04|          ││[ ] src/f000.rs:31 · Second flow finding                                                        ││
+05|          ││                                                                                                ││
+06|          ││                                                                                                ││
+07|          ││                                                                                                ││
+08|          ││                                                                                                ││
+09|          ││                                                                                                ││
+10|          │└────────────────────────────────────────────────────────────────────────────────────────────────┘│
+11|          │┌Selected finding────────────────────────────────────────────────────────────────────────────────┐│
+12|          ││src/f000.rs:4                                                                                   ││
+13|          ││First flow finding                                                                              ││
+14|          ││Kept · 90% confidence · raised by general, security                                             ││
+15|          ││[ ]                                                                                             ││
+16|          ││                                                                                                ││
+17|          ││Line four changed.                                                                              ││
+18|          ││                                                                                                ││
+19|          ││                                                                                                ││
+20|          ││                                                                                                ││
+21|          ││                                                                                                ││
+22|          ││                                                                                                ││
+23|          ││                                                                                                ││
+24|          ││                                                                                                ││
+25|          ││                                                                                                ││
+26|          ││                                                                                                ││
+27|          │└────────────────────────────────────────────────────────────────────────────────────────────────┘│
+28|          └──────────────────────────────────────────────────────────────────────────────────────────────────┘
+30|styles 4d854c30d7b67e9e

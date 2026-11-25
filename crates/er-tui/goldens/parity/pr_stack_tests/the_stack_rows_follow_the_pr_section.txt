@@ -1,0 +1,15 @@
+@@@ 01 frame two layers
+|                               ││── Stack ──                                          │
+|                               ││  feature-2  [#8]  open                              │
+|                               ││  feature  [#7]  open                                │
+|                               ││  main  trunk                                        │
+|                               ││  Refresh stack  Look up the stack again             │
+|styles 7af2f4e2b4beed97
+@@@ 02 frame three layers
+|                               ││── Stack ──                                          │
+|                               ││  feature-3  [#9]  open                              │
+|                               ││  feature-2  [#8]  open                              │
+|                               ││  feature  [#7]  open                                │
+|                               ││  main  trunk                                        │
+|                               ││  Refresh stack  Look up the stack again             │
+|styles a992208d5276d6e3
