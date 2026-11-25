@@ -1,0 +1,41 @@
+@@@ 01 frame j
+| feature · feature (vs main)  +6 -6
+|  1  BRANCH   2  UNSTAGED   3  STAGED   4  HISTORY                                   Claude / Sonnet 5.5   0/3 reviewed
+| FILES (3)                     │ src/f002.rs [full context]                                                 Hunk 1/1
+| ~ src/f000.rs          +2 -2  │  ~ src/f002.rs  +2 -2
+| ~ src/f001.rs          +2 -2  │
+| ~ src/f002.rs          +2 -2  │ ▶ @@ -1,40 +1,40 @@
+|                               │   1    1 │ let line_0 = 0;
+|                               │   2    2 │ let line_1 = 1;
+|                               │   3    3 │ let line_2 = 2;
+|                               │   4      │-let line_3 = 3;
+|                               │        4 │+let changed_3 = 3; // edited
+|                               │   5    5 │ let line_4 = 4;
+|                               │   6    6 │ let line_5 = 5;
+|                               │   7    7 │ let line_6 = 6;
+|                               │   8    8 │ let line_7 = 7;
+|                               │   9    9 │ let line_8 = 8;
+|                               │  10   10 │ let line_9 = 9;
+|                               │  11   11 │ let line_10 = 10;
+|                               │  12   12 │ let line_11 = 11;
+|                               │  13   13 │ let line_12 = 12;
+|                               │  14   14 │ let line_13 = 13;
+|                               │ ··· 6 lines ···
+|                               │  21   21 │ let line_20 = 20;
+|                               │  22   22 │ let line_21 = 21;
+|                               │  23   23 │ let line_22 = 22;
+|                               │  24   24 │ let line_23 = 23;
+|                               │  25   25 │ let line_24 = 24;
+|                               │  26   26 │ let line_25 = 25;
+|                               │  27   27 │ let line_26 = 26;
+| j/k nav n/N hunks +/- context ␣ review / search g git a ai o open v verify ? help ^q quit
+|styles 9c401bfd30e2b4f6
+@@@ 02 frame j < 01
+02| FILES (3)                     │ src/f001.rs [full context]                                                 Hunk 1/1
+03| ~ src/f000.rs          +2 -2  │  ~ src/f001.rs  +2 -2
+30|styles d01a63eca70bca1a
+@@@ 03 frame k < 01
+@@@ 04 frame minus < 01
+02| FILES (3)                     │ src/f002.rs [context: 80]                                                  Hunk 1/1
+30|styles 9a02a5132f86a355
+@@@ 05 frame j < 02

@@ -1,0 +1,64 @@
+@@@ 01 frame conflicts
+| feature · feature [merge in progress]  +4 -0
+|  1  BRANCH   2  UNSTAGED   3  STAGED   4  HISTORY   5  CONFLICTS    Claude / Sonnet 5.5    1 unresolved   0/1 reviewed
+| FILES (1)                     │  ! src/f000.rs  +4 -0                                                      Hunk 1/2
+| ✗ src/f000.rs          +4 -0  │
+|                               │ ▶ @@ -1,10 +1,11 @@
+|                               │        1 │+<<<<<<< HEAD
+|                               │   1    2 │ let line_0 = 0;
+|                               │   2    3 │ let line_1 = 1;
+|                               │   3    4 │ let line_2 = 2;
+|                               │   4    5 │ let changed_3 = 3; // edited
+|                               │   5    6 │ let line_4 = 4;
+|                               │   6    7 │ let line_5 = 5;
+|                               │   7    8 │ let line_6 = 6;
+|                               │   8    9 │ let line_7 = 7;
+|                               │   9   10 │ let line_8 = 8;
+|                               │  10   11 │ let line_9 = 9;
+|                               │  ··· 20 lines hidden (+/- to expand) ···
+|                               │   @@ -31,10 +32,13 @@ let line_29 = 29;
+|                               │  31   32 │ let changed_30 = 30; // edited
+|                               │  32   33 │ let line_31 = 31;
+|                               │  33   34 │ let line_32 = 32;
+|                               │  34   35 │ let line_33 = 33;
+|                               │  35   36 │ let line_34 = 34;
+|                               │  36   37 │ let line_35 = 35;
+|                               │  37   38 │ let line_36 = 36;
+|                               │  38   39 │ let line_37 = 37;
+|                               │  39   40 │ let line_38 = 38;
+|                               │  40   41 │ let line_39 = 39;
+|                               │       42 │+=======
+| j/k nav n/N hunks +/- context ␣ review / search g git a ai o open v verify ? help ^q quit
+|styles 670d6e29b4829aa2
+@@@ 02 frame history
+| feature · feature (vs main) · 3b3fb05 · <age>  +2 -40
+|  1  BRANCH   2  UNSTAGED   3  STAGED   4  HISTORY                                   Claude / Sonnet 5.5   0/2 reviewed
+| COMMITS (2)                   │ 3b3fb05 · later                                                            File 1/2
+| ● later                       │ ▶ ~ src/f001.rs  +1 -40
+|   t                           │
+|────────────────────────────── │ ▶ @@ -1,40 +1,1 @@
+| ○ change                      │   1      │-let line_0 = 0;
+|   t                           │   2      │-let line_1 = 1;
+|────────────────────────────── │   3      │-let line_2 = 2;
+|                               │   4      │-let changed_3 = 3; // edited
+|                               │   5      │-let line_4 = 4;
+|                               │   6      │-let line_5 = 5;
+|                               │   7      │-let line_6 = 6;
+|                               │   8      │-let line_7 = 7;
+|                               │   9      │-let line_8 = 8;
+|                               │  10      │-let line_9 = 9;
+|                               │  11      │-let line_10 = 10;
+|                               │  12      │-let line_11 = 11;
+|                               │  13      │-let line_12 = 12;
+|                               │  14      │-let line_13 = 13;
+|                               │  15      │-let line_14 = 14;
+|                               │  16      │-let line_15 = 15;
+|                               │  17      │-let line_16 = 16;
+|                               │  18      │-let line_17 = 17;
+|                               │  19      │-let line_18 = 18;
+|                               │  20      │-let line_19 = 19;
+|                               │  21      │-let line_20 = 20;
+|                               │  22      │-let line_21 = 21;
+|                               │  23      │-let line_22 = 22;
+| j/k commits n/N files ↑↓ lines / search g git a ai ? help ^q quit  f001.rs
+|styles dd47b9b692b5b5b6

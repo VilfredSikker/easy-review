@@ -1,0 +1,32 @@
+@@@ 01 frame restored
+| feature · feature  +2 -80
+|  1  BRANCH   2  UNSTAGED   3  STAGED   4  HISTORY                                   Claude / Sonnet 5.5   0/2 reviewed
+| FILES (2)                     │  ~ src/f002.rs  +1 -40                                                     Hunk 1/1
+| ~ src/f001.rs         +1 -40  │
+| ~ src/f002.rs         +1 -40  │ ▶ @@ -1,40 +1,1 @@
+|                               │   1      │-let line_0 = 0;
+|                               │   2      │-let line_1 = 1;
+|                               │   3      │-let line_2 = 2;
+|                               │   4      │-let changed_3 = 3; // edited
+|                               │   5      │-let line_4 = 4;
+|                               │   6      │-let line_5 = 5;
+|                               │   7      │-let line_6 = 6;
+|                               │   8      │-let line_7 = 7;
+|                               │   9      │-let line_8 = 8;
+|                               │  10      │-let line_9 = 9;
+|                               │  11      │-let line_10 = 10;
+|                               │  12      │-let line_11 = 11;
+|                               │  13      │-let line_12 = 12;
+|                               │  14      │-let line_13 = 13;
+|                               │  15      │-let line_14 = 14;
+|                               │  16      │-let line_15 = 15;
+|                               │  17      │-let line_16 = 16;
+|                               │  18      │-let line_17 = 17;
+|                               │  19      │-let line_18 = 18;
+|                               │  20      │-let line_19 = 19;
+|                               │  21      │-let line_20 = 20;
+|                               │  22      │-let line_21 = 21;
+|                               │  23      │-let line_22 = 22;
+|                               │  24      │-let line_23 = 23;
+| j/k nav n/N hunks +/- context ␣ review / search s stage c commit g git a ai o open v verify ? help ^q quit
+|styles c7424a0614475926

@@ -139,6 +139,7 @@ fn merging() -> tempfile::TempDir {
 /// for another view selects the file History was entered on, by path.
 #[test]
 fn history_draws_like_the_app() {
+    let _golden = super::parity::guard();
     let (app_repo, flag_repo) = twins(two_commits);
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
@@ -168,6 +169,7 @@ fn history_draws_like_the_app() {
 /// History's previous-file and scroll keys draw as the App's.
 #[test]
 fn history_scroll_keys_draw_like_the_app() {
+    let _golden = super::parity::guard();
     let (app_repo, flag_repo) = twins(two_commits);
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
@@ -198,6 +200,7 @@ fn history_scroll_keys_draw_like_the_app() {
 /// App's do.
 #[test]
 fn history_lists_its_next_page_like_the_app() {
+    let _golden = super::parity::guard();
     let (app_repo, flag_repo) = twins(|| {
         let repo = fixture(1);
         dated(repo.path());
@@ -340,6 +343,7 @@ fn queued_commit_moves_go_nowhere_outside_history() {
 /// changeset with the unresolved count, as the App's.
 #[test]
 fn conflicts_show_while_a_merge_runs_like_the_app() {
+    let _golden = super::parity::guard();
     let (app_repo, flag_repo) = twins(merging);
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
@@ -391,6 +395,7 @@ fn a_refresh_leaves_history_alone() {
 /// reload, and the unresolved count drops, as on the App.
 #[test]
 fn a_staged_resolution_drops_the_unresolved_count_like_the_app() {
+    let _golden = super::parity::guard();
     let (app_repo, flag_repo) = twins(merging);
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
@@ -417,6 +422,7 @@ fn a_staged_resolution_drops_the_unresolved_count_like_the_app() {
 /// the first, as the App's switch does.
 #[test]
 fn hidden_shows_the_watched_files_like_the_app() {
+    let _golden = super::parity::guard();
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     let config = "[watched]\npaths = [\"*.env\"]\n";
     std::fs::write(storage.path().join("config.toml"), config).unwrap_or_else(|e| panic!("{e}"));
@@ -452,6 +458,7 @@ fn hidden_shows_the_watched_files_like_the_app() {
 /// in History comes back in History, as the App's restore does.
 #[test]
 fn sessions_saved_in_history_or_conflicts_restore_there() {
+    let _golden = super::parity::guard();
     for (mode, saved, make) in [
         (
             DiffMode::Conflicts,

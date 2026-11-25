@@ -1,0 +1,32 @@
+@@@ 01 frame base
+| feature · feature (vs other)
+|  1  BRANCH   2  UNSTAGED   3  STAGED   4  HISTORY                                               Claude / Sonnet 5.5
+| FILES (0)                     │                                                                  ● Base set to other
+|                               │
+|                               │  No files changed
+|                               │
+|                               │  Switch modes with [1] [2] [3]
+|                               │
+|                               │
+|                               │
+|                               │
+|                               │
+|                               │
+|                               │
+|                               │
+|                               │
+|                               │
+|                               │
+|                               │
+|                               │
+|                               │
+|                               │
+|                               │
+|                               │
+|                               │
+|                               │
+|                               │
+|                               │
+|                               │
+| j/k nav n/N hunks +/- context ␣ review / search g git a ai o open v verify ? help ^q quit
+|styles 507fceb63e472282

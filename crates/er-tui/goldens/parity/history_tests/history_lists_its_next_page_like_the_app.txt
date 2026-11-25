@@ -1,0 +1,52 @@
+@@@ 01 frame 4
+| feature · feature (vs main) · 85949f8 · <age>
+|  1  BRANCH   2  UNSTAGED   3  STAGED   4  HISTORY                                               Claude / Sonnet 5.5
+| COMMITS (50)                  │
+| ● c54                         │
+|   t                           │  Empty commit: 85949f8
+|────────────────────────────── │
+| ○ c53                         │  Switch modes with [1] [2] [3]
+|   t                           │
+|────────────────────────────── │
+| ○ c52                         │
+|   t                           │
+|────────────────────────────── │
+| ○ c51                         │
+|   t                           │
+|────────────────────────────── │
+| ○ c50                         │
+|   t                           │
+|────────────────────────────── │
+| ○ c49                         │
+|   t                           │
+|────────────────────────────── │
+| ○ c48                         │
+|   t                           │
+|────────────────────────────── │
+| ○ c47                         │
+|   t                           │
+|────────────────────────────── │
+| ○ c46                         │
+|   t                           │
+| j/k commits n/N files ↑↓ lines / search g git a ai ? help ^q quit
+|styles 835fc11092ebc8c4
+@@@ 02 frame k k < 01
+00| feature · feature (vs main) · d03d3aa · <age>
+03| ○ c54                         │
+04|   t                           │  Empty commit: d03d3aa
+09| ● c52                         │
+30|styles 1f7d2dc116fe1044
+@@@ 03 frame k k at the page's edge < 01
+00| feature · feature (vs main) · e81a96f · <age>
+02| COMMITS (56)                  │
+03| ○ c10                         │
+04|   t                           │  Empty commit: e81a96f
+06| ○ c9                          │  Switch modes with [1] [2] [3]
+09| ○ c8                          │
+12| ○ c7                          │
+15| ○ c6                          │
+18| ○ c5                          │
+21| ○ c4                          │
+24| ● c3                          │
+27| ○ c2                          │
+30|styles 2ed0e9936b143bb3

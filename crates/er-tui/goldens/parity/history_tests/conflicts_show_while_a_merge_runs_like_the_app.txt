@@ -1,0 +1,94 @@
+@@@ 01 frame merging
+| feature · feature (vs main)  +4 -4
+|  1  BRANCH   2  UNSTAGED   3  STAGED   4  HISTORY   5  CONFLICTS                    Claude / Sonnet 5.5   0/2 reviewed
+| FILES (2)                     │  ~ src/f000.rs  +2 -2                                                      Hunk 1/2
+| ~ src/f000.rs          +2 -2  │
+| ~ src/f001.rs          +2 -2  │ ▶ @@ -1,14 +1,14 @@
+|                               │   1    1 │ let line_0 = 0;
+|                               │   2    2 │ let line_1 = 1;
+|                               │   3    3 │ let line_2 = 2;
+|                               │   4      │-let line_3 = 3;
+|                               │        4 │+let changed_3 = 3; // edited
+|                               │   5    5 │ let line_4 = 4;
+|                               │   6    6 │ let line_5 = 5;
+|                               │   7    7 │ let line_6 = 6;
+|                               │   8    8 │ let line_7 = 7;
+|                               │   9    9 │ let line_8 = 8;
+|                               │  10   10 │ let line_9 = 9;
+|                               │  11   11 │ let line_10 = 10;
+|                               │  12   12 │ let line_11 = 11;
+|                               │  13   13 │ let line_12 = 12;
+|                               │  14   14 │ let line_13 = 13;
+|                               │  ··· 6 lines hidden (+/- to expand) ···
+|                               │   @@ -21,20 +21,20 @@ let line_19 = 19;
+|                               │  21   21 │ let line_20 = 20;
+|                               │  22   22 │ let line_21 = 21;
+|                               │  23   23 │ let line_22 = 22;
+|                               │  24   24 │ let line_23 = 23;
+|                               │  25   25 │ let line_24 = 24;
+|                               │  26   26 │ let line_25 = 25;
+|                               │  27   27 │ let line_26 = 26;
+| j/k nav n/N hunks +/- context ␣ review / search g git a ai o open v verify ? help ^q quit
+|styles 0030dfed1b7b1037
+@@@ 02 frame j < 01
+02| FILES (2)                     │ src/f001.rs                                                                Hunk 1/2
+03| ~ src/f000.rs          +2 -2  │  ~ src/f001.rs  +2 -2
+04| ~ src/f001.rs          +2 -2  │
+05|                               │ ▶ @@ -1,14 +1,14 @@
+06|                               │   1    1 │ let line_0 = 0;
+07|                               │   2    2 │ let line_1 = 1;
+08|                               │   3    3 │ let line_2 = 2;
+09|                               │   4      │-let line_3 = 3;
+10|                               │        4 │+let changed_3 = 3; // edited
+11|                               │   5    5 │ let line_4 = 4;
+12|                               │   6    6 │ let line_5 = 5;
+13|                               │   7    7 │ let line_6 = 6;
+14|                               │   8    8 │ let line_7 = 7;
+15|                               │   9    9 │ let line_8 = 8;
+16|                               │  10   10 │ let line_9 = 9;
+17|                               │  11   11 │ let line_10 = 10;
+18|                               │  12   12 │ let line_11 = 11;
+19|                               │  13   13 │ let line_12 = 12;
+20|                               │  14   14 │ let line_13 = 13;
+21|                               │  ··· 6 lines hidden (+/- to expand) ···
+22|                               │   @@ -21,20 +21,20 @@ let line_19 = 19;
+23|                               │  21   21 │ let line_20 = 20;
+24|                               │  22   22 │ let line_21 = 21;
+25|                               │  23   23 │ let line_22 = 22;
+26|                               │  24   24 │ let line_23 = 23;
+27|                               │  25   25 │ let line_24 = 24;
+28|                               │  26   26 │ let line_25 = 25;
+30|styles fe80335b1db759ab
+@@@ 03 frame 5 < 01
+00| feature · feature [merge in progress]  +4 -0
+01|  1  BRANCH   2  UNSTAGED   3  STAGED   4  HISTORY   5  CONFLICTS    Claude / Sonnet 5.5    1 unresolved   0/1 reviewed
+02| FILES (1)                     │ src/f000.rs                                                                Hunk 1/2
+03| ✗ src/f000.rs          +4 -0  │  ! src/f000.rs  +4 -0
+04|                               │
+05|                               │ ▶ @@ -1,10 +1,11 @@
+06|                               │        1 │+<<<<<<< HEAD
+07|                               │   1    2 │ let line_0 = 0;
+08|                               │   2    3 │ let line_1 = 1;
+09|                               │   3    4 │ let line_2 = 2;
+10|                               │   4    5 │ let changed_3 = 3; // edited
+11|                               │   5    6 │ let line_4 = 4;
+12|                               │   6    7 │ let line_5 = 5;
+13|                               │   7    8 │ let line_6 = 6;
+14|                               │   8    9 │ let line_7 = 7;
+15|                               │   9   10 │ let line_8 = 8;
+16|                               │  10   11 │ let line_9 = 9;
+17|                               │  ··· 20 lines hidden (+/- to expand) ···
+18|                               │   @@ -31,10 +32,13 @@ let line_29 = 29;
+19|                               │  31   32 │ let changed_30 = 30; // edited
+20|                               │  32   33 │ let line_31 = 31;
+21|                               │  33   34 │ let line_32 = 32;
+22|                               │  34   35 │ let line_33 = 33;
+23|                               │  35   36 │ let line_34 = 34;
+24|                               │  36   37 │ let line_35 = 35;
+25|                               │  37   38 │ let line_36 = 36;
+26|                               │  38   39 │ let line_37 = 37;
+27|                               │  39   40 │ let line_38 = 38;
+28|                               │  40   41 │ let line_39 = 39;
+30|styles 502945c33fc537c7
+@@@ 04 frame j < 03
+@@@ 05 frame 1 < 01
