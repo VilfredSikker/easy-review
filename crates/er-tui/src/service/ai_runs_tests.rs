@@ -635,3 +635,50 @@ fn a_review_with_every_file_ignored_starts_nothing() {
         release(&mut shell, &agent);
     });
 }
+
+/// A review run is the tab's own bucket's, and its prompt points the agent
+/// at the prepared diff, never at `gh pr diff`; and validate prepares the
+/// diff artifacts on a tab with a review and no GitHub comment. The flag
+/// path's twin of the App's `local_ai_prompt_builders_target_tab_er_dir`,
+/// `remote_review_uses_prepared_diff_not_gh_pr_diff` and
+/// `validate_action_ensures_artifacts_for_review_only_tabs`.
+#[test]
+fn a_run_prepares_its_bucket_and_points_the_agent_there() {
+    let repo = fixture(1);
+    let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+    er_engine::storage::with_process_test_storage_root(storage.path(), || {
+        let told = storage.path().join("prompt");
+        let body = format!(r#"printf '%s' "$1" > "{}""#, told.display());
+        let agent = agent_with(storage.path(), &body, "");
+        let mut shell = shell_on(&[&repo], &agent);
+        let dir = er_dir(&shell);
+        choose(&mut shell, 'a', "Review work");
+        let written = settle_within(&mut shell, Duration::from_secs(20), |_| told.exists());
+        assert!(written, "no agent ran: {}", notice(&shell));
+        let prompt = std::fs::read_to_string(&told).unwrap_or_else(|e| panic!("{e}"));
+        // The agent writes to a staging dir that the store commits into the
+        // bucket; the run is the tab's bucket's, whose log holds its output.
+        assert!(prompt.contains("prepared diff"), "{prompt}");
+        let logged = settle_within(&mut shell, Duration::from_secs(5), |shell| {
+            log_of(shell, &dir).contains("line-a")
+        });
+        assert!(logged, "the run is not the tab's bucket's");
+        assert!(!prompt.contains("gh pr diff"), "{prompt}");
+        release(&mut shell, &agent);
+
+        for file in [".diff-tmp.sha256", "diff-annotated"] {
+            let _ = std::fs::remove_file(Path::new(&dir).join(file));
+        }
+        seed_review(&mut shell, &dir);
+        choose(&mut shell, 'a', "Validate review");
+        let validating = |shell: &Shell| kinds(shell).iter().any(|kind| kind == "validate");
+        settle(&mut shell, validating);
+        for file in [".diff-tmp.sha256", "diff-annotated"] {
+            assert!(
+                Path::new(&dir).join(file).exists(),
+                "validate prepared no {file}"
+            );
+        }
+        release(&mut shell, &agent);
+    });
+}
