@@ -233,7 +233,7 @@ pub(super) fn stable_text(frame: &Buffer) -> String {
 
 /// The test modules whose checks are frozen. Each later P76.1 PR adds its
 /// areas; the others still only compare the two legs live.
-const FROZEN: [&str; 22] = [
+const FROZEN: [&str; 21] = [
     "copy_tests",
     "open_tests",
     "duties_tests",
@@ -250,7 +250,6 @@ const FROZEN: [&str; 22] = [
     "filter_tests",
     "reviewed_tests",
     "settings_tests",
-    "config_hub_tests",
     "github_tests",
     "threads_tests",
     "thread_writes_tests",
@@ -286,6 +285,11 @@ pub(super) struct Guard(());
 /// Starts a frozen test's checks; a frozen check without one fails.
 #[must_use = "the guard checks the golden when it drops"]
 pub(super) fn guard() -> Guard {
+    let (module, name) = test_name();
+    assert!(
+        FROZEN.contains(&module.as_str()),
+        "{module}::{name} holds a guard, but {module} is not in FROZEN"
+    );
     GUARDED.with(|guarded| guarded.set(true));
     Guard(())
 }
@@ -364,8 +368,16 @@ fn check(order: usize, kind: &str, step: &str, app: &str, flag_on: &str) {
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ");
+    assert!(
+        !step.contains(" < "),
+        "{module}::{name}: step `{step}` holds ` < `, which a golden reads as a base"
+    );
     let head = format!("{order:02} {kind} {step}");
     let update = std::env::var_os("ER_UPDATE_GOLDENS").is_some();
+    assert!(
+        !(update && std::env::var_os("CI").is_some()),
+        "ER_UPDATE_GOLDENS is refused under CI: record goldens locally"
+    );
     GOLDEN.with(|cell| {
         let mut cell = cell.borrow_mut();
         let golden = cell.get_or_insert_with(|| Golden::open(&module, &name));
@@ -410,10 +422,11 @@ impl Golden {
             .join(module)
             .join(format!("{name}.txt"));
         let text = std::fs::read_to_string(&path).unwrap_or_default();
+        let held = decode(&path.display().to_string(), &text);
         Self {
             path,
             module: module.to_string(),
-            held: decode(&text),
+            held,
             recorded: Vec::new(),
         }
     }
@@ -439,8 +452,7 @@ fn encode(entries: &[Entry]) -> String {
     for (at, entry) in entries.iter().enumerate() {
         let changed = |base: &Entry| -> Option<Vec<usize>> {
             let same_shape = base.lines.len() == entry.lines.len()
-                && base.head.split(' ').nth(1) == Some("frame")
-                && entry.head.split(' ').nth(1) == Some("frame");
+                && base.head.split(' ').nth(1) == entry.head.split(' ').nth(1);
             same_shape.then(|| {
                 (0..entry.lines.len())
                     .filter(|&line| base.lines[line] != entry.lines[line])
@@ -470,18 +482,30 @@ fn encode(entries: &[Entry]) -> String {
     out
 }
 
-fn decode(text: &str) -> Vec<Entry> {
+/// Reads a golden back. A base that is not an earlier check, or a row past
+/// its base's length, fails with the file and line, so a hand edit that
+/// breaks the format cannot read as some other frame.
+fn decode(path: &str, text: &str) -> Vec<Entry> {
     let mut entries: Vec<Entry> = Vec::new();
-    for line in text.lines() {
+    for (at, line) in text.lines().enumerate() {
+        let at = at + 1;
         if let Some(head) = line.strip_prefix("@@@ ") {
-            let (head, base) = match head.rsplit_once(" < ") {
-                Some((head, base)) => (head, base.parse::<usize>().ok()),
-                None => (head, None),
+            let (head, lines) = match head.rsplit_once(" < ") {
+                Some((head, base)) => {
+                    let earlier = base
+                        .parse::<usize>()
+                        .ok()
+                        .filter(|base| (1..=entries.len()).contains(base));
+                    let Some(base) = earlier else {
+                        panic!(
+                            "{path}:{at}: base `< {base}` is not an earlier check (1 to {})",
+                            entries.len()
+                        );
+                    };
+                    (head, entries[base - 1].lines.clone())
+                }
+                None => (head, Vec::new()),
             };
-            let lines = base
-                .and_then(|base| entries.get(base - 1))
-                .map(|base| base.lines.clone())
-                .unwrap_or_default();
             entries.push(Entry {
                 head: head.to_string(),
                 lines,
@@ -489,12 +513,18 @@ fn decode(text: &str) -> Vec<Entry> {
             continue;
         }
         let Some(entry) = entries.last_mut() else {
-            continue;
+            panic!("{path}:{at}: a line before the first `@@@` check");
         };
-        let (index, rest) = line.split_once('|').unwrap_or(("", line));
-        match index.parse::<usize>() {
-            Ok(index) if index < entry.lines.len() => entry.lines[index] = rest.to_string(),
-            _ => entry.lines.push(rest.to_string()),
+        match line.split_once('|') {
+            Some(("", rest)) => entry.lines.push(rest.to_string()),
+            Some((index, rest)) => match index.parse::<usize>() {
+                Ok(index) if index < entry.lines.len() => entry.lines[index] = rest.to_string(),
+                _ => panic!(
+                    "{path}:{at}: row `{index}` is past its base's {} rows",
+                    entry.lines.len()
+                ),
+            },
+            None => panic!("{path}:{at}: a line with no `|`"),
         }
     }
     entries
@@ -621,6 +651,42 @@ fn key_name(key: &str) -> String {
         .map_or_else(|| key.to_string(), |(_, name)| (*name).to_string())
 }
 
+/// Every module with goldens is frozen, so a golden cannot sit unchecked.
+#[test]
+fn every_golden_directory_is_a_frozen_module() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("goldens/parity");
+    let dirs = std::fs::read_dir(&root).unwrap_or_else(|e| panic!("{e}"));
+    for dir in dirs {
+        let name = dir.unwrap_or_else(|e| panic!("{e}")).file_name();
+        let name = name.to_string_lossy();
+        assert!(
+            FROZEN.contains(&name.as_ref()),
+            "goldens/parity/{name} is not in FROZEN"
+        );
+    }
+}
+
+/// A base that is not an earlier check, or a row past the base, names
+/// itself and its line.
+#[test]
+fn a_broken_reference_names_the_file_and_line() {
+    let frame = "@@@ 01 frame a\n|x\n|y\n";
+    for (bad, said) in [
+        ("@@@ 02 frame b < 0x\n00|z\n", "f:4: base `< 0x`"),
+        ("@@@ 02 frame b < 00\n00|z\n", "f:4: base `< 00`"),
+        ("@@@ 02 frame b < 02\n00|z\n", "f:4: base `< 02`"),
+        ("@@@ 02 frame b < 01\n02|z\n", "f:5: row `02`"),
+    ] {
+        let text = format!("{frame}{bad}");
+        let panic = std::panic::catch_unwind(|| decode("f", &text));
+        let message = panic
+            .err()
+            .and_then(|e| e.downcast_ref::<String>().cloned())
+            .unwrap_or_default();
+        assert!(message.starts_with(said), "{bad}: {message}");
+    }
+}
+
 #[test]
 fn a_delta_golden_decodes_to_the_frames_it_encodes() {
     let entry = |head: &str, lines: &[&str]| Entry {
@@ -636,7 +702,7 @@ fn a_delta_golden_decodes_to_the_frames_it_encodes() {
     ];
     let text = encode(&entries);
     assert!(text.contains("@@@ 04 frame Esc < 01\n"), "{text}");
-    let decoded = decode(&text);
+    let decoded = decode("unit", &text);
     assert_eq!(decoded.len(), entries.len());
     for (decoded, entry) in decoded.iter().zip(&entries) {
         assert_eq!(decoded.head, entry.head);
