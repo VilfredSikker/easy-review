@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 
 use crossterm::event::KeyCode;
 
+use super::parity::assert_json;
 use super::shell::Shell;
 use super::startup::Args;
 use super::tests::{
@@ -153,6 +154,7 @@ fn the_builder_runs_once_per_reviewed_version() {
 /// same frames, the reviewed count included.
 #[test]
 fn marks_and_the_jump_match_the_app() {
+    let _golden = super::parity::guard();
     let (app_repo, flag_repo) = (fixture(3), fixture(3));
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
@@ -172,12 +174,14 @@ fn marks_and_the_jump_match_the_app() {
             step(&mut app, &mut shell, &mut hl, code);
         }
         assert_eq!(marks_in(&er_dir(&shell)), app.tab().reviewed);
+        assert_json("marks", &marks_in(&er_dir(&shell)), &app.tab().reviewed);
     });
 }
 
 /// A mark under unreviewed-only moves the selection where the App's does.
 #[test]
 fn a_mark_under_unreviewed_only_advances_like_the_app() {
+    let _golden = super::parity::guard();
     let (app_repo, flag_repo) = (fixture(3), fixture(3));
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
@@ -202,6 +206,7 @@ fn with_lock() -> tempfile::TempDir {
 /// Enter on a compacted file expands it through the service.
 #[test]
 fn enter_expands_a_compacted_file_like_the_app() {
+    let _golden = super::parity::guard();
     let (app_repo, flag_repo) = (with_lock(), with_lock());
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     er_engine::storage::with_process_test_storage_root(storage.path(), || {

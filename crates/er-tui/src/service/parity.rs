@@ -233,8 +233,10 @@ pub(super) fn stable_text(frame: &Buffer) -> String {
 
 /// The test modules whose checks are frozen. Each later P76.1 PR adds its
 /// areas; the others still only compare the two legs live.
-const FROZEN: [&str; 7] = [
+const FROZEN: [&str; 9] = [
     "tests",
+    "filter_tests",
+    "reviewed_tests",
     "settings_tests",
     "github_tests",
     "threads_tests",
@@ -313,7 +315,10 @@ pub(super) fn assert_frame(step: &str, flag_on: &Buffer, app: &Buffer) {
 /// check. The caller passes them as its live comparison takes them.
 pub(super) fn assert_json<T: serde::Serialize>(step: &str, flag_on: &T, app: &T) {
     let json = |value: &T| {
-        let text = serde_json::to_string_pretty(value).unwrap_or_else(|e| panic!("{e}"));
+        // Through a `Value`, whose maps sort their keys, so a `HashMap`
+        // reads the same on every run.
+        let value = serde_json::to_value(value).unwrap_or_else(|e| panic!("{e}"));
+        let text = serde_json::to_string_pretty(&value).unwrap_or_else(|e| panic!("{e}"));
         text.lines()
             .map(|line| mask(line) + "\n")
             .collect::<String>()
