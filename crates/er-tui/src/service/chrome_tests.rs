@@ -368,3 +368,56 @@ fn every_ai_hub_row_runs_or_toggles() {
         assert_eq!(picker.inert_rows(), Vec::<&str>::new());
     });
 }
+
+/// Opens the Git hub and moves to the row whose label holds `label`, with
+/// each move's frame compared.
+fn to_git_row(
+    app: &mut er_engine::app::App,
+    shell: &mut Shell,
+    hl: &mut Highlighter,
+    label: &str,
+) {
+    // The App has no review row; it goes before any frame is compared.
+    blind(app, shell, KeyCode::Char('g'));
+    super::tests::without_review_row(shell);
+    for _ in 0..16 {
+        let on = match shell.view().overlay.as_ref() {
+            Some(super::tui_view::Overlay::GitHub(hub)) => hub
+                .rows
+                .get(hub.selected)
+                .is_some_and(|row| row.label.contains(label)),
+            _ => panic!("no Git hub"),
+        };
+        if on {
+            return;
+        }
+        press(app, shell, hl, KeyCode::Char('j'));
+    }
+    panic!("no row {label}");
+}
+
+/// The Git hub's stage, stage-all, refresh and push rows act as the App's.
+#[test]
+fn the_git_hub_working_tree_rows_act_like_the_app() {
+    let (app_repo, flag_repo) = (fixture(2), fixture(2));
+    for repo in [&app_repo, &flag_repo] {
+        for file in ["src/f000.rs", "src/f001.rs"] {
+            std::fs::write(repo.path().join(file), "let unstaged = 1;\n")
+                .unwrap_or_else(|e| panic!("{e}"));
+        }
+    }
+    let storage = storage();
+    er_engine::storage::with_process_test_storage_root(storage.path(), || {
+        let (mut app, mut shell) = both_on(&app_repo, &flag_repo, storage.path());
+        let mut hl = Highlighter::new();
+        press(&mut app, &mut shell, &mut hl, KeyCode::Char('2'));
+        for label in ["Stage current file", "Refresh diff", "Stage all files"] {
+            to_git_row(&mut app, &mut shell, &mut hl, label);
+            press(&mut app, &mut shell, &mut hl, KeyCode::Enter);
+        }
+        press(&mut app, &mut shell, &mut hl, KeyCode::Char('3'));
+        to_git_row(&mut app, &mut shell, &mut hl, "Push to remote");
+        press(&mut app, &mut shell, &mut hl, KeyCode::Enter);
+        press(&mut app, &mut shell, &mut hl, KeyCode::Esc);
+    });
+}
