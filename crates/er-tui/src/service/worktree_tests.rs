@@ -138,6 +138,7 @@ fn a_refused_push_shows_the_ports_message() {
 /// the frame match the App's.
 #[test]
 fn a_stage_writes_and_draws_like_the_app() {
+    let _golden = super::parity::guard();
     let repo = edited_fixture();
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     let path = path_of(&repo);
@@ -168,6 +169,7 @@ fn a_stage_writes_and_draws_like_the_app() {
 /// App draws them.
 #[test]
 fn a_commit_draws_like_the_app() {
+    let _golden = super::parity::guard();
     let repo = edited_fixture();
     git(repo.path(), &["add", "src/f000.rs"]);
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
@@ -210,6 +212,7 @@ fn a_commit_draws_like_the_app() {
 /// The Git hub lists the App's rows, with push off outside Staged.
 #[test]
 fn the_git_hub_draws_like_the_app() {
+    let _golden = super::parity::guard();
     let repo = fixture(1);
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     let path = path_of(&repo);

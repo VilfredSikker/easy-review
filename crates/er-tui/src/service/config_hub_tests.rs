@@ -149,6 +149,7 @@ fn a_hub_edit_goes_through_the_settings_actor() {
 /// hub draws the same.
 #[test]
 fn hub_keys_match_the_apps() {
+    let _golden = super::parity::guard();
     let repo = fixture(1);
     let (storage, config_dir) = (temp(), temp());
     let path = path_of(&repo);
@@ -209,6 +210,7 @@ fn hub_keys_match_the_apps() {
 /// row's label and the hub follow the settings view as the App's do.
 #[test]
 fn a_cycled_provider_saves_and_labels_like_the_app() {
+    let _golden = super::parity::guard();
     let repo = fixture(1);
     let (storage, config_dir) = (temp(), temp());
     let path = path_of(&repo);
@@ -347,6 +349,7 @@ fn a_model_refresh_shows_in_the_open_picker() {
 /// keys leave.
 #[test]
 fn tab_cancel_back_and_close_keys_match_the_apps() {
+    let _golden = super::parity::guard();
     let repo = fixture(1);
     let (storage, config_dir) = (temp(), temp());
     let path = path_of(&repo);

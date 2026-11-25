@@ -462,6 +462,7 @@ pub(super) fn loaded(shell: &Shell) -> bool {
 /// file, hunk, line and scroll moves land where the App's do.
 #[test]
 fn flag_on_frames_match_the_app_frames() {
+    let _golden = super::parity::guard();
     let repo = fixture(3);
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     let path = path_of(&repo);
@@ -515,6 +516,7 @@ fn flag_on_frames_match_the_app_frames() {
 /// as the App, which parses it in place, draws them.
 #[test]
 fn a_selected_stub_parses_and_draws_like_the_app() {
+    let _golden = super::parity::guard();
     let repo = fixture(520);
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     let path = path_of(&repo);

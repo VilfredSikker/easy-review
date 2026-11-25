@@ -322,6 +322,7 @@ fn app_on(path: &str, github: &Arc<FakeGitHub>) -> er_engine::app::App {
 /// the App's message and draw as the App's held state draws.
 #[test]
 fn a_tab_known_to_have_no_pr_refuses_the_github_composer() {
+    let _golden = super::parity::guard();
     let (app_repo, flag_repo) = (fixture(1), fixture(1));
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     let github =
@@ -442,6 +443,7 @@ fn comment_on_pr_posts_pr_wide_once() {
 /// does, and the frames match.
 #[test]
 fn a_github_line_comment_posts_like_the_app() {
+    let _golden = super::parity::guard();
     let (app_repo, flag_repo) = (fixture(1), fixture(1));
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     let script = || Arc::new(on_pr_7().with_post_line_comment(Ok(created(901))));

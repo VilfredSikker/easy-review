@@ -159,6 +159,40 @@ struct Entry {
 
 thread_local! {
     static GOLDEN: RefCell<Option<Golden>> = const { RefCell::new(None) };
+    static GUARDED: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Held for the whole of a frozen test. When it drops it fails the test if
+/// the golden holds a check the test never reached, so a test whose last
+/// steps stop running cannot pass on the checks before them.
+pub(super) struct Guard(());
+
+/// Starts a frozen test's checks; a frozen check without one fails.
+#[must_use = "the guard checks the golden when it drops"]
+pub(super) fn guard() -> Guard {
+    GUARDED.with(|guarded| guarded.set(true));
+    Guard(())
+}
+
+impl Drop for Guard {
+    fn drop(&mut self) {
+        GUARDED.with(|guarded| guarded.set(false));
+        if std::thread::panicking() || std::env::var_os("ER_UPDATE_GOLDENS").is_some() {
+            return;
+        }
+        let (module, name) = test_name();
+        let ran = ORDER.with(Cell::get);
+        let golden = GOLDEN
+            .with(|cell| cell.borrow_mut().take())
+            .unwrap_or_else(|| Golden::open(&module, &name));
+        assert!(
+            golden.held.len() <= ran,
+            "{}: the golden holds {} checks, and the test ran {ran}; the next is {}",
+            golden.path.display(),
+            golden.held.len(),
+            golden.held[ran].head
+        );
+    }
 }
 
 /// `golden.rs`'s text for `frame`, masked.
@@ -211,6 +245,10 @@ fn check(order: usize, kind: &str, step: &str, app: &str, flag_on: &str) {
     if !FROZEN.contains(&module.as_str()) {
         return;
     }
+    assert!(
+        GUARDED.with(Cell::get),
+        "{module}::{name} is frozen: hold `parity::guard()` for the whole test"
+    );
     let step: String = step.split_whitespace().collect::<Vec<_>>().join(" ");
     let head = format!("{order:02} {kind} {step}");
     let update = std::env::var_os("ER_UPDATE_GOLDENS").is_some();
