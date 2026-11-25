@@ -9,8 +9,8 @@ use super::styles;
 use crate::screen::view::{DirEntry, HubItem, HubKind, OverlayData};
 use er_engine::git::Worktree;
 
-/// Render the active overlay on top of the main UI
-/// Note: ConfigHub overlay is rendered separately in ui/mod.rs since it needs App access.
+/// Render the active overlay on top of the main UI. The Config hub is drawn
+/// in `ui/mod.rs`.
 pub fn render_overlay(f: &mut Frame, area: Rect, overlay: &OverlayData) {
     match overlay {
         OverlayData::WorktreePicker {

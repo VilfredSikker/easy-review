@@ -4,9 +4,6 @@
 //! the whole process (ADR 0069). The desktop resolves app-scoped records — the
 //! project list — to a repo root and a remote before sending, so the service
 //! never reads the store: those records stay on the caller's side for now.
-//!
-//! Only compiled with `v1-service`. The default build keeps the existing
-//! command path untouched.
 
 use std::collections::HashMap;
 use std::path::PathBuf;

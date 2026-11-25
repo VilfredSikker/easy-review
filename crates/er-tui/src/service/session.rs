@@ -2,8 +2,8 @@
 //! saved beside the diff it was taken on, and restored only on that diff.
 //!
 //! The file is the TUI's own: the service never reads it (ADR 0068).
-//! It lives in the tab's bucket, where the App path keeps it, so either build
-//! picks up where the other left off.
+//! It lives in the tab's bucket, where the old TUI kept it, so a session from
+//! before 1.0 restores.
 
 use er_engine::ai::CommentType;
 use er_engine::session_store::{self, SessionState};

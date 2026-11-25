@@ -101,21 +101,6 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: ./scripts/protocol-check.sh
 
-  # The flag-on path: er-tui, the one package that declares the flag, tested
-  # with the feature on.
-  test-v1:
-    name: Test (v1-service)
-    needs: changes
-    if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.ui == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: ./.github/actions/tauri-linux-deps
-        timeout-minutes: 5
-      - uses: dtolnay/rust-toolchain@1.98.0
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo test -p er-tui --features v1-service
-
   desktop-ui-lint:
     name: Desktop UI lint
     needs: changes
@@ -204,9 +189,9 @@ jobs:
       - run: cargo build -p er-engine --no-default-features --features highlight
       - run: cargo check -p er-service --all-targets
 
-  # er-desktop in its own graph, tests included. A workspace build unifies
-  # er-engine's features with er-tui's, which turns `ui` on, so only this job
-  # fails when the desktop names the App (ADR 0072).
+  # er-desktop and er-tui each in its own graph, tests included. A workspace
+  # build unifies er-engine's features, and er-engine's own tests turn `ui`
+  # on, so only this job fails when either front end names the App (ADR 0072).
   check-desktop:
     name: Desktop (own graph)
     needs: changes
@@ -219,6 +204,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.98.0
       - uses: Swatinem/rust-cache@v2
       - run: cargo check -p er-desktop --all-targets
+      - run: cargo check -p er-tui --all-targets
 
   # The docs' citations and the ADR supersession marks. A code rename breaks a
   # citation as surely as a doc edit does, so this runs on every PR.

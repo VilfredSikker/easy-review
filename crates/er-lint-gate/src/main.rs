@@ -432,24 +432,7 @@ fn run(flags: &Flags) -> anyhow::Result<bool> {
             "--message-format=json",
         ],
     )?;
-    // The feature pass compiles er-tui, the one package that declares the
-    // flag, with it on, so feature-only code is linted too. It repeats shared diagnostics; both
-    // streams go through one parse, which keeps one count per site for the
-    // budget, `--accept-warnings`, `--prune` and the stale check.
-    let (feature_stream, feature_success) = clippy_json(
-        &cargo,
-        &root,
-        &[
-            "clippy",
-            "-p",
-            "er-tui",
-            "--all-targets",
-            "--features",
-            "er-tui/v1-service",
-            "--message-format=json",
-        ],
-    )?;
-    let mut diags = diagnostics::parse(&format!("{default_stream}\n{feature_stream}"));
+    let mut diags = diagnostics::parse(&default_stream);
     diags.extend(cohesion);
     diags.extend(spawn);
     diags.extend(spawn_gh);
@@ -460,7 +443,7 @@ fn run(flags: &Flags) -> anyhow::Result<bool> {
     diags.extend(registry_rule);
     diags.extend(core_io_rule);
     diags.extend(agent);
-    let clippy_ok = default_success && feature_success;
+    let clippy_ok = default_success;
     let e = evaluate(diags, &config.budgeted, &budget, clippy_ok);
 
     let mut problems = Vec::new();

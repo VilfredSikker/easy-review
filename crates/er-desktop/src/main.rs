@@ -949,7 +949,7 @@ fn main() {
     //                          tip. ANY failure (error/non-zero/empty) no-ops.
     //   Phase 3 (brief lock) — cache the oid; bump the revision ONLY when it
     //                          actually changed, so we don't churn polls.
-    // With `v1-service` the probe posts to the tab's actor (`spawn_base_probe`).
+    // The probe posts to the tab's actor (`spawn_base_probe`).
     spawn_base_probe(
         Arc::clone(&service),
         Arc::clone(&ports.git),
