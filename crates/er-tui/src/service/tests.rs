@@ -401,6 +401,7 @@ pub(super) fn assert_parity(
     step: &str,
 ) {
     let app = &app_frame(app, hl);
+    super::parity::assert_frame(step, flag_on, app);
     let (app_rows, flag_rows) = (rows(app), rows(flag_on));
     for row in 0..usize::from(HEIGHT) {
         assert_eq!(
@@ -420,7 +421,6 @@ pub(super) fn assert_parity(
             );
         }
     }
-    super::parity::assert_frame(step, flag_on, app);
 }
 
 /// The App path, on the same repo, with the automatic context pick off, as
