@@ -1,0 +1,42 @@
+@@@ 01 frame second true
+| feature · feature (vs main)  +2 -2
+|  1  BRANCH   2  UNSTAGED   3  STAGED   4  HISTORY                                   Claude / Sonnet 5.5   0/1 reviewed
+| FILES (1)                     │  ~ src/f000.rs  +2 -2                                                      Hunk 1/2
+| ~ src/f000.rs          +2 -2  │
+|                               │ ▶ @@ -1,14 +1,14 @@
+|                               │   1    1 │ let line_0 = 0;
+|                               │   2    2 │ let line_1 = 1;
+|                               │   3    3 │ let line_2 = 2;
+|                               │   4      │-let line_3 = 3;
+|                               │┌ OPEN (Enter=review, b=browser, Esc=close) ──────────┐
+|                               ││── Navigate ──                                       │
+|                               ││▶ Browse folders  Open a local git repo              │
+|                               ││  Switch worktree  Jump to another worktree          │
+|                               ││  Open remote PR  Review a GitHub PR by URL          │
+|                               ││  Change compare base  Diff against a different branc│
+|                               ││── Stack ──                                          │
+|                               ││  feature-2  [#8]  open                              │
+|                               ││  feature  [#7]  open                                │
+|                               ││  main  trunk                                        │
+|                               ││  Refresh stack  Look up the stack again             │
+|                               │└─────────────────────────────────────────────────────┘
+|                               │   @@ -21,20 +21,20 @@ let line_19 = 19;
+|                               │  21   21 │ let line_20 = 20;
+|                               │  22   22 │ let line_21 = 21;
+|                               │  23   23 │ let line_22 = 22;
+|                               │  24   24 │ let line_23 = 23;
+|                               │  25   25 │ let line_24 = 24;
+|                               │  26   26 │ let line_25 = 25;
+|                               │  27   27 │ let line_26 = 26;
+| j/k nav n/N hunks +/- context ␣ review / search g git a ai o open v verify ? help ^q quit
+|styles 5c1a35fcf383ace7
+@@@ 02 frame Jump to another worktree selected < 01
+11|                               ││  Browse folders  Open a local git repo              │
+12|                               ││▶ Switch worktree  Jump to another worktree          │
+30|styles 0ac0c1a084f18a93
+@@@ 03 frame second false < 01
+12|                               ││  Switch worktree  No other worktrees                │
+30|styles 2d45fc09dd85a312
+@@@ 04 frame No other worktrees selected < 02
+12|                               ││▶ Switch worktree  No other worktrees                │
+30|styles 027e346556a3a068

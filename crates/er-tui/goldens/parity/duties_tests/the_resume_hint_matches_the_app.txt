@@ -1,0 +1,4 @@
+@@@ 01 json 1 paths
+|null
+@@@ 02 json 2 paths
+|"er /tmp/########## /tmp/##########"

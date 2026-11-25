@@ -1,0 +1,188 @@
+@@@ 01 frame y
+| feature · feature (vs main)  +4 -4
+|  1  BRANCH   2  UNSTAGED   3  STAGED   4  HISTORY                          AI ON    Claude / Sonnet 5.5   0/2 reviewed
+| FILES (2) · 1 findings        │  ~ src/f000.rs  +2 -2                                                      Hunk 1/2
+| ~ src/f000.rs     ●    +2 -2  │
+| ~ src/f001.rs          +2 -2  │ ▶ @@ -1,14 +1,14 @@
+|                               │   1    1 │ let line_0 = 0;
+|                               │   2    2 │ let line_1 = 1;
+|                               │   3    3 │ let line_2 = 2;
+|                               │   4      │-let line_3 = 3;
+|                               │        4 │+let changed_3 = 3; // edited
+|                               │   5    5 │ let line_4 = 4;
+|                               │   6    6 │ let line_5 = 5;
+|                               │┌ COPY (Enter=select, Esc=close) ─────────────────────┐
+|                               ││▶ Full file diff  Copy all hunks for selected file   │
+|                               ││  File path  Copy file path to clipboard             │
+|                               ││  Hunk  Copy current hunk                            │
+|                               ││  Line  Copy current line content                    │
+|                               │└─────────────────────────────────────────────────────┘
+|                               │  13   13 │ let line_12 = 12;
+|                               │  14   14 │ let line_13 = 13;
+|                               │  ··· 6 lines hidden (+/- to expand) ···
+|                               │   @@ -21,20 +21,20 @@ let line_19 = 19;
+|                               │  21   21 │ let line_20 = 20;
+|                               │  22   22 │ let line_21 = 21;
+|                               │  23   23 │ let line_22 = 22;
+|                               │  24   24 │ let line_23 = 23;
+|                               │  25   25 │ let line_24 = 24;
+|                               │  26   26 │ let line_25 = 25;
+|                               │  27   27 │ let line_26 = 26;
+| j/k nav n/N hunks +/- context ␣ review / search g git a ai o open v verify ? help ^q quit
+|styles 171aaafe230903d9
+@@@ 02 frame Esc < 01
+12|                               │   7    7 │ let line_6 = 6;
+13|                               │   8    8 │ let line_7 = 7;
+14|                               │   9    9 │ let line_8 = 8;
+15|                               │  10   10 │ let line_9 = 9;
+16|                               │  11   11 │ let line_10 = 10;
+17|                               │  12   12 │ let line_11 = 11;
+30|styles 0e5fc413e05aa5ae
+@@@ 03 frame n < 01
+02| FILES (2) · 1 findings        │  ~ src/f000.rs  +2 -2                                                      Hunk 2/2
+03| ~ src/f000.rs     ●    +2 -2  │  ··· 6 lines hidden (+/- to expand) ···
+04| ~ src/f001.rs          +2 -2  │ ▶ @@ -21,20 +21,20 @@ let line_19 = 19;
+05|                               │  21   21 │ let line_20 = 20;
+06|                               │  22   22 │ let line_21 = 21;
+07|                               │  23   23 │ let line_22 = 22;
+08|                               │  24   24 │ let line_23 = 23;
+09|                               │  25   25 │ let line_24 = 24;
+10|                               │  26   26 │ let line_25 = 25;
+11|                               │  27   27 │ let line_26 = 26;
+12|                               │  28   28 │ let line_27 = 27;
+13|                               │  29   29 │ let line_28 = 28;
+14|                               │  30   30 │ let line_29 = 29;
+15|                               │  31      │-let line_30 = 30;
+16|                               │       31 │+let changed_30 = 30; // edited
+17|                               │  ●  Edited twice
+18|                               │    → Name it once
+19|                               │  32   32 │ let line_31 = 31;
+20|                               │  33   33 │ let line_32 = 32;
+21|                               │  34   34 │ let line_33 = 33;
+22|                               │  35   35 │ let line_34 = 34;
+23|                               │  36   36 │ let line_35 = 35;
+24|                               │  37   37 │ let line_36 = 36;
+25|                               │  38   38 │ let line_37 = 37;
+26|                               │  39   39 │ let line_38 = 38;
+27|                               │  40   40 │ let line_39 = 39;
+28|                               │
+30|styles 28246928b588ce49
+@@@ 04 frame Down < 03
+30|styles 33672f25053c31fb
+@@@ 05 frame Down < 03
+03| ~ src/f000.rs     ●    +2 -2  │ ▶ @@ -21,20 +21,20 @@ let line_19 = 19;
+04| ~ src/f001.rs          +2 -2  │  21   21 │ let line_20 = 20;
+05|                               │  22   22 │ let line_21 = 21;
+06|                               │  23   23 │ let line_22 = 22;
+07|                               │  24   24 │ let line_23 = 23;
+08|                               │  25   25 │ let line_24 = 24;
+09|                               │  26   26 │ let line_25 = 25;
+10|                               │  27   27 │ let line_26 = 26;
+11|                               │  28   28 │ let line_27 = 27;
+12|                               │  29   29 │ let line_28 = 28;
+13|                               │  30   30 │ let line_29 = 29;
+14|                               │  31      │-let line_30 = 30;
+15|                               │       31 │+let changed_30 = 30; // edited
+16|                               │  ●  Edited twice
+17|                               │    → Name it once
+18|                               │  32   32 │ let line_31 = 31;
+19|                               │  33   33 │ let line_32 = 32;
+20|                               │  34   34 │ let line_33 = 33;
+21|                               │  35   35 │ let line_34 = 34;
+22|                               │  36   36 │ let line_35 = 35;
+23|                               │  37   37 │ let line_36 = 36;
+24|                               │  38   38 │ let line_37 = 37;
+25|                               │  39   39 │ let line_38 = 38;
+26|                               │  40   40 │ let line_39 = 39;
+27|                               │
+30|styles 252901d9b96c7601
+@@@ 06 frame S-Down < 05
+03| ~ src/f000.rs     ●    +2 -2  │  21   21 │ let line_20 = 20;
+04| ~ src/f001.rs          +2 -2  │  22   22 │ let line_21 = 21;
+05|                               │  23   23 │ let line_22 = 22;
+06|                               │  24   24 │ let line_23 = 23;
+07|                               │  25   25 │ let line_24 = 24;
+08|                               │  26   26 │ let line_25 = 25;
+09|                               │  27   27 │ let line_26 = 26;
+10|                               │  28   28 │ let line_27 = 27;
+11|                               │  29   29 │ let line_28 = 28;
+12|                               │  30   30 │ let line_29 = 29;
+13|                               │  31      │-let line_30 = 30;
+14|                               │       31 │+let changed_30 = 30; // edited
+15|                               │  ●  Edited twice
+16|                               │    → Name it once
+17|                               │  32   32 │ let line_31 = 31;
+18|                               │  33   33 │ let line_32 = 32;
+19|                               │  34   34 │ let line_33 = 33;
+20|                               │  35   35 │ let line_34 = 34;
+21|                               │  36   36 │ let line_35 = 35;
+22|                               │  37   37 │ let line_36 = 36;
+23|                               │  38   38 │ let line_37 = 37;
+24|                               │  39   39 │ let line_38 = 38;
+25|                               │  40   40 │ let line_39 = 39;
+26|                               │
+30|styles 9d16eee753d607d3
+@@@ 07 frame y < 06
+12|                               │┌ COPY (Enter=select, Esc=close) ─────────────────────┐
+13|                               ││▶ Full file diff  Copy all hunks for selected file   │
+14|                               ││  File path  Copy file path to clipboard             │
+15|                               ││  Hunk  Copy current hunk                            │
+16|                               ││  Line  Copy current line content                    │
+17|                               │└─────────────────────────────────────────────────────┘
+30|styles ad8d60d44cc8ea65
+@@@ 08 frame Esc < 06
+@@@ 09 json selection
+|[
+|  "File: src/f000.rs\nBranch: feature (vs main)\nLines 22-23:\n\n @@ -21,20 +21,20 @@ let line_19 = 19;\n let line_21 = 21;\n let line_22 = 22;\n",
+|  "Copied selection (2 lines)"
+|]
+@@@ 10 frame Down < 06
+03| ~ src/f000.rs     ●    +2 -2  │  22   22 │ let line_21 = 21;
+04| ~ src/f001.rs          +2 -2  │  23   23 │ let line_22 = 22;
+05|                               │  24   24 │ let line_23 = 23;
+06|                               │  25   25 │ let line_24 = 24;
+07|                               │  26   26 │ let line_25 = 25;
+08|                               │  27   27 │ let line_26 = 26;
+09|                               │  28   28 │ let line_27 = 27;
+10|                               │  29   29 │ let line_28 = 28;
+11|                               │  30   30 │ let line_29 = 29;
+12|                               │  31      │-let line_30 = 30;
+13|                               │       31 │+let changed_30 = 30; // edited
+14|                               │  ●  Edited twice
+15|                               │    → Name it once
+16|                               │  32   32 │ let line_31 = 31;
+17|                               │  33   33 │ let line_32 = 32;
+18|                               │  34   34 │ let line_33 = 33;
+19|                               │  35   35 │ let line_34 = 34;
+20|                               │  36   36 │ let line_35 = 35;
+21|                               │  37   37 │ let line_36 = 36;
+22|                               │  38   38 │ let line_37 = 37;
+23|                               │  39   39 │ let line_38 = 38;
+24|                               │  40   40 │ let line_39 = 39;
+25|                               │
+30|styles 2ccb8456567764a4
+@@@ 11 json line
+|[
+|  "File: src/f000.rs\nBranch: feature (vs main)\nLine 24:\n\n @@ -21,20 +21,20 @@ let line_19 = 19;\n let line_23 = 23;\n",
+|  "Copied line (1 lines)"
+|]
+@@@ 12 json row 0
+|[
+|  "--- a/src/f000.rs\n+++ b/src/f000.rs\n@@ -1,14 +1,14 @@\n let line_0 = 0;\n let line_1 = 1;\n let line_2 = 2;\n-let line_3 = 3;\n+let changed_3 = 3; // edited\n let line_4 = 4;\n let line_5 = 5;\n let line_6 = 6;\n let line_7 = 7;\n let line_8 = 8;\n let line_9 = 9;\n let line_10 = 10;\n let line_11 = 11;\n let line_12 = 12;\n let line_13 = 13;\n\n@@ -21,20 +21,20 @@ let line_19 = 19;\n let line_20 = 20;\n let line_21 = 21;\n let line_22 = 22;\n let line_23 = 23;\n let line_24 = 24;\n let line_25 = 25;\n let line_26 = 26;\n let line_27 = 27;\n let line_28 = 28;\n let line_29 = 29;\n-let line_30 = 30;\n+let changed_30 = 30; // edited\n let line_31 = 31;\n let line_32 = 32;\n let line_33 = 33;\n let line_34 = 34;\n let line_35 = 35;\n let line_36 = 36;\n let line_37 = 37;\n let line_38 = 38;\n let line_39 = 39;\n\n",
+|  "Copied full file diff (2 hunks)"
+|]
+@@@ 13 json row 1
+|[
+|  "src/f000.rs",
+|  "Copied: src/f000.rs"
+|]
+@@@ 14 json row 2
+|[
+|  "@@ -21,20 +21,20 @@ let line_19 = 19;\n let line_20 = 20;\n let line_21 = 21;\n let line_22 = 22;\n let line_23 = 23;\n let line_24 = 24;\n let line_25 = 25;\n let line_26 = 26;\n let line_27 = 27;\n let line_28 = 28;\n let line_29 = 29;\n-let line_30 = 30;\n+let changed_30 = 30; // edited\n let line_31 = 31;\n let line_32 = 32;\n let line_33 = 33;\n let line_34 = 34;\n let line_35 = 35;\n let line_36 = 36;\n let line_37 = 37;\n let line_38 = 38;\n let line_39 = 39;\n",
+|  "Hunk copied to clipboard"
+|]
+@@@ 15 json row 3
+|[
+|  "let line_23 = 23;",
+|  "Line copied to clipboard"
+|]

@@ -11,6 +11,7 @@ use er_engine::github::PrRef;
 use er_engine::ports::Ports;
 use er_github::{FakeGitHub, GhError};
 
+use super::parity::assert_json;
 use super::shell::Shell;
 use super::startup::{self, Args};
 use super::tests::{
@@ -38,6 +39,7 @@ fn shown(shell: &mut Shell) -> String {
 /// do not wait, and once it lands the status bar shows it as the App's does.
 #[test]
 fn the_update_notice_lands_without_holding_a_frame() {
+    let _golden = super::parity::guard();
     let repo = fixture(2);
     let storage = storage();
     let path = path_of(&repo);
@@ -158,6 +160,7 @@ fn the_first_launch_notice_shows_once_for_longer() {
 /// tab is a remote PR.
 #[test]
 fn the_resume_hint_matches_the_app() {
+    let _golden = super::parity::guard();
     let (one, two) = (fixture(1), fixture(1));
     let storage = storage();
     let paths = vec![path_of(&one), path_of(&two)];
@@ -169,6 +172,8 @@ fn the_resume_hint_matches_the_app() {
             // Loaded, so no actor reads storage after the scope ends.
             settle(&mut shell, loaded);
             assert_eq!(shell.resume_hint(), crate::resume_hint(&app), "{paths:?}");
+            let step = format!("{} paths", paths.len());
+            assert_json(&step, &shell.resume_hint(), &crate::resume_hint(&app));
         }
     });
     let pr = |number| PrRef {
