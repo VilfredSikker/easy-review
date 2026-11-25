@@ -616,7 +616,7 @@ mod tests {
                     ]}}
                 }))
                 .unwrap(),
-            )
+            );
         });
         let mut screen = crate::service::golden_tests::screen_of(&reviewed);
         screen.tab.panel_focus = true;
