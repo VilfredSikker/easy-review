@@ -497,6 +497,12 @@ fn the_gate_follows_the_review_like_the_app() {
             app.tab().ai.arbiter_effect
         );
         let frame = shell_frame(&mut shell, &mut hl);
+        // The flag path's twin of the App's Gate check above.
+        assert_eq!(
+            state(&shell, active_key(&shell)).layers.min_trust,
+            er_engine::ai::Confidence::Tentative,
+            "the arbiter's grade did not move the flag path's Gate"
+        );
         assert_parity(&app, &frame, &mut hl, "graded");
         for _ in 0..2 {
             step(&mut app, &mut shell, &mut hl, key(KeyCode::Char('T')));

@@ -208,6 +208,11 @@ fn hub_keys_match_the_apps() {
             app_file.contains("snapshot"),
             "the cycle did not save: {app_file}"
         );
+        let flag_file = &files(config_dir.path())[0];
+        assert!(
+            flag_file.contains("snapshot"),
+            "the flag path's cycle did not save: {flag_file}"
+        );
         let mut hl = Highlighter::new();
         assert_parity(&app, &shell_frame(&mut shell, &mut hl), &mut hl, "hub");
     });
@@ -264,6 +269,11 @@ fn a_cycled_provider_saves_and_labels_like_the_app() {
         assert!(
             app.config.ai_hub.default_effort.is_some(),
             "no effort was pinned"
+        );
+        assert!(
+            read(&agents).contains("default_effort = "),
+            "the flag path pinned no effort: {}",
+            read(&agents)
         );
     });
 }
