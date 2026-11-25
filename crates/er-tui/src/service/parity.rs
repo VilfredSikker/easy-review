@@ -236,13 +236,15 @@ fn check(order: usize, kind: &str, step: &str, app: &str, flag_on: &str) {
             .iter()
             .map(|line| format!("{line}\n"))
             .collect::<String>();
-        assert_eq!(
-            want, app,
-            "{path}: {head}: the App's result is not the golden"
-        );
-        assert_eq!(
-            want, flag_on,
-            "{path}: {head}: the flag path's result is not the golden"
+        let differ: Vec<&str> = [("the App's", app), ("the flag path's", flag_on)]
+            .into_iter()
+            .filter(|(_, got)| *got != want)
+            .map(|(leg, _)| leg)
+            .collect();
+        assert!(
+            differ.is_empty(),
+            "{path}: {head}: {} result is not the golden\n--- golden\n{want}--- App\n{app}--- flag path\n{flag_on}",
+            differ.join(" and ")
         );
     });
 }
