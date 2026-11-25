@@ -13,7 +13,7 @@ use er_engine::tabs_record::TabKind;
 use er_git::{FakeGit, Worktree};
 use er_github::FakeGitHub;
 
-use super::github_tests::{calls, notice, pr_tab, settle_replies, working};
+use super::github_tests::{calls, notice, on_pr_7, overview, pr_tab, settle_replies, working};
 use super::pr_stack_tests::{app_on, app_reads_stack, press_app, select_row, stack_json, step};
 use super::shell::Shell;
 use super::startup::Args;
@@ -325,5 +325,135 @@ fn the_browser_rows_go_through_the_github_port() {
             format!("open_pr_in_browser(dir={root:?}, number=8, repo_slug=Some(\"acme/widgets\"))");
         assert_eq!(calls(&github, "open_pr_in_browser"), [want]);
         assert_eq!(notice(&shell), "Opening feature-2 (#8) in browser...");
+    });
+
+    // A remote PR tab names its repo.
+    let raw = "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n";
+    let github = Arc::new(
+        FakeGitHub::default()
+            .with_ensure_installed(Ok(()))
+            .with_pr_diff_remote(Ok(raw.to_string()))
+            .with_open_pr_in_browser(true),
+    );
+    let remote = Args {
+        paths: vec!["https://github.com/acme/widgets/pull/9".into()],
+        remote: true,
+        ..Args::default()
+    };
+    er_engine::storage::with_process_test_storage_root(storage.path(), || {
+        let ports = super::github_tests::ports(&github);
+        let start = plan_on(&remote, &ports);
+        let mut shell = shell_on(ports, &start, storage.path());
+        settle(&mut shell, loaded);
+        let content = shell
+            .active_content()
+            .unwrap_or_else(|| panic!("no content"));
+        assert_eq!(content.tab.remote_repo.as_deref(), Some("acme/widgets"));
+        open_row(&mut shell, "Open PR in browser");
+        let root = &content.tab.repo_root;
+        let want =
+            format!("open_pr_in_browser(dir={root:?}, number=9, repo_slug=Some(\"acme/widgets\"))");
+        assert_eq!(calls(&github, "open_pr_in_browser"), [want]);
+    });
+}
+
+/// The hub's box, from the row holding `from` to its bottom border, matches
+/// the App's in text and style, inside the box's columns only. Each frame's
+/// own `from` row starts the match, as the rows above it may differ.
+fn assert_box_from(app: &er_engine::app::App, shell: &mut Shell, from: &str) {
+    let mut hl = Highlighter::new();
+    let flag = shell_frame(shell, &mut hl);
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 30))
+        .unwrap_or_else(|e| panic!("{e}"));
+    let mut cache = crate::screen::ViewCache::default();
+    terminal
+        .draw(|f| crate::ui::draw(f, &crate::screen::from_app(app, &mut cache), &mut hl))
+        .unwrap_or_else(|e| panic!("{e}"));
+    let theirs = terminal.backend().buffer().clone();
+    let (app_rows, flag_rows) = (rows(&theirs), rows(&flag));
+    let shown = format!(
+        "app:\n{}\nflag-on:\n{}",
+        app_rows.join("\n"),
+        flag_rows.join("\n")
+    );
+    let start_of = |rows: &[String]| rows.iter().position(|row| row.contains(from));
+    let (Some(app_start), Some(start)) = (start_of(&app_rows), start_of(&flag_rows)) else {
+        panic!("no {from}:\n{shown}");
+    };
+    let cols: Vec<char> = flag_rows[start].chars().collect();
+    let left = cols.iter().position(|c| *c == '│').unwrap_or(0);
+    let right = cols.iter().rposition(|c| *c == '│').unwrap_or(119);
+    let bottom = (start..flag_rows.len()).find(|&row| flag_rows[row].contains('└'));
+    let bottom = bottom.unwrap_or_else(|| panic!("no box bottom:\n{shown}"));
+    for offset in 0..=bottom - start {
+        for col in left..=right {
+            let cell = |buffer: &ratatui::buffer::Buffer, row: usize| {
+                let cell = &buffer.content[row * 120 + col];
+                (cell.symbol().to_string(), cell.style())
+            };
+            let (a, b) = (
+                cell(&theirs, app_start + offset),
+                cell(&flag, start + offset),
+            );
+            assert_eq!(a, b, "row +{offset}, col {col}\n{shown}");
+        }
+    }
+}
+
+/// The Current PR section draws as the App's: on a `--pr` tab it shows
+/// "Open PR in browser"; on a working tab whose probe found a PR, whose PR
+/// section the service filled, it shows nothing, as the App's start leaves
+/// that tab's PR number unset.
+#[test]
+fn the_current_pr_rows_draw_like_the_app() {
+    let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+    let probe = er_github::BranchPrProbe::Present {
+        number: 7,
+        base: "main".into(),
+    };
+    let github = Arc::new(
+        on_pr_7()
+            .with_probe_pr_for_current_branch(Ok(probe))
+            .with_overview(Ok(Some(overview("someone"))))
+            .with_stack_view_json(Ok(stack_json(false))),
+    );
+    let (app_repo, flag_repo) = (fixture(1), fixture(1));
+    er_engine::storage::with_process_test_storage_root(storage.path(), || {
+        let mut app = app_on(&path_of(&app_repo), &github);
+        // As the App's start applies the probe's overview.
+        app.tab_mut().pr_data = Some(overview("someone"));
+        let mut shell = working(&flag_repo, &github, storage.path());
+        settle(&mut shell, |shell| {
+            let content = shell.active_content();
+            content.is_some_and(|content| content.pr.pr_number == Some(7))
+        });
+        let mut hl = Highlighter::new();
+        press_app(&mut app, key(KeyCode::Char('o')));
+        app_reads_stack(&mut app, &github);
+        app.clear_notification();
+        shell.handle_key(key(KeyCode::Char('o')));
+        settle_replies(&mut shell);
+        let frame = shell_frame(&mut shell, &mut hl);
+        super::tests::assert_parity(&app, &frame, &mut hl, "probed working tab");
+        assert!(!frame_text(&mut shell).contains("Current PR"));
+    });
+
+    er_engine::storage::with_process_test_storage_root(storage.path(), || {
+        let script = FakeGitHub::default().with_stack_view_json(Ok(stack_json(false)));
+        let (dirs, mut shell, github) = pr_tab(script, storage.path());
+        let content = shell
+            .active_content()
+            .unwrap_or_else(|| panic!("no content"));
+        let mut app = app_on(&path_of(&dirs[0]), &github);
+        app.tab_mut().pr_number = Some(7);
+        app.tab_mut()
+            .remote_repo
+            .clone_from(&content.tab.remote_repo);
+        press_app(&mut app, key(KeyCode::Char('o')));
+        app_reads_stack(&mut app, &github);
+        shell.handle_key(key(KeyCode::Char('o')));
+        settle_replies(&mut shell);
+        frame_text(&mut shell);
+        assert_box_from(&app, &mut shell, "── Current PR ──");
     });
 }
