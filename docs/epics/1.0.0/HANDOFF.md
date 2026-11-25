@@ -1,78 +1,84 @@
-# Epic 1.0.0 phase 5: handover (2026-11-23)
+# Epic 1.0.0 phase 5b: handover (2026-11-25)
 
-> **Phase 5 is done (2026-11-23, cloud session).** Everything below is the state before the cloud session; the outcome, rulings and exit list are in BUILD_LOG.md, and the timeline in `coordinator/LEDGER.md`.
-
-The goal is **"implement phase 5 fully"**: finish every item of ADDENDUM-06 (desktop protocol) on `release/v1.0.0` of VilfredSikker/easy-review. Phase 5b (TUI, P65c onward) is out of scope.
+The goal is to finish phase 5b (the TUI on the service, ADDENDUM-07) on `release/v1.0.0` of VilfredSikker/easy-review, then close the epic's bookkeeping. Phase 5 is done; its handover is in git history and its outcome in BUILD_LOG.md. The timeline of every merge and ruling is `coordinator/LEDGER.md`; read its last entries first. The builder rules and the locked-check script used in the cloud container are copied in `coordinator/cloud/`.
 
 ## Where it stands
-Merged into `release/v1.0.0` (head `7f7c08da7`):
-- P50 to P59 and P61, all done;
-- P60.1, done (#694–#696, #699, #700);
-- P60.2a (#701, #702).
+Merged into `release/v1.0.0`:
+- **P65 to P75:** all done, and #649 to #659 are closed.
+- **P76.1:** done. #748 to #758 freeze every old-versus-new parity check into delta goldens under `crates/er-tui/goldens/parity/`, rebuild the P63 suite on the flag path, and list every App dependency. #758's body holds the twin table and the App-dependency lists.
+- **P77.1:** done (#727, #728).
 
-Open, in order:
+Open:
 
-| Item | PRs (stacked) | State |
+| Item | PR | State |
 |---|---|---|
-| P60.2b (#619) | #703 `epic/p60c-jobs-triage-tasks` (b0ff2b625, base release) → #706 `…-runs` (80d2da1cd) → #707 `…-agents` (533817d07) | Built and pushed, **not reviewed**. The local finish run (`wf_0651ed27-f75`) was stopped by the owner on 2026-11-23 while it was still building #707. Its last six commits (eba165070…533817d07: validate and send-note-to-agent on the task host, the tick's agent duties dropped, the saved pick no longer copied into the App) are pushed. Gates were not confirmed on #707's head, so run them first. Read #619's split comment to check whether #707 is the last part. The last part must also remove the tick's `check_ai_files_changed` and the `tick.rs` scan exception (ruling on #620); add them to #707 or a fourth stacked PR if they are missing. Then review all three. |
-| P62.1 (#621) | #704 `epic/p62a-types-barrel` (35bc1d4c2, base release) → #705 `epic/p62a-delete-old-store-layer` (e4b8a9dd7) | **Merge verdicts on both.** Held on purpose until P60.2b lands (plan order), then merge release in and land. |
-| P62.1c | not built | Decided on #621: `TabRow` gains the four tab-row values (Working tab's live branch label, a local PR's head-branch label, `change_token`, a local PR's owner/repo). Then P60.2b's flag-off catch-up (adapters, `legacySnapshot` stops serving `agent_commands`, `agent_log`, `background_tasks`, `bg_loading`; run and triage commands routed), and `legacySnapshot.svelte.ts` and `poll` are deleted. Starts after P60.2b and P62.1 merge. Close #621 after it. |
-| P62.2 (#622) | not built | Deletes the old desktop path and the flag. Last item, after P62.1c. |
+| P76.2 (#660) | #759 `epic/p76-2-tui-switch`, head `900995ce`, 1,317 counted lines | CI green. The review is **fix-then-merge** (#759 issuecomment-7158452312). The must-fixes are listed below and nothing is being built on them yet. |
+| P77.2 (#661) | not built | Deletes `app/` and the `ui` feature. Starts after #759 merges. |
 
 ## What to do next
-1. Review #703, #706 and #707 (P60.2b) against the P60.2 entry in ADDENDUM-06 and the rulings on #619 and #620. Fix the must-fixes, then land bottom-up.
-2. Merge release into #704 and #705, gate, read `git show --remerge-diff`, and land.
-3. Build P62.1c, review, land.
-4. Build P62.2, review, land. Close #398's phase-5 items, then update STATUS.md and BUILD_LOG.md.
+1. **Land #759.** Fix the review's must-fixes on the branch, get a delta review, and merge on a merge verdict plus green CI at the head. Then close #660.
+   1. **Write guard (`crates/er-tui/tests/writes.rs`).** The guard matches narrow names, and a reviewer's plant got past it. Widen it to every write er-tui can reach:
+      - `er_git::delete_watched_file` and any `.commit(`, not only `git.commit(`;
+      - `std::fs` under an alias, and `File::options()`;
+      - every `ArtifactStore` write: `write_text`, `write_durable*`, `update`, `delete`, `delete_text`;
+      - every er-github write reachable through `er_engine::github`: the `gh_pr_*comment*`, `gh_pr_update_review_comment`, `gh_pr_edit_body` and `gh_pr_actions` functions, branch delete and restore, `github_post::execute_comment_post`, and the port's `.approve(` and `run_pr_action`.
+
+      Add a plant for each family.
+   2. **Refusal dwell.** `handle_key` sets `deferred = None`, so a notice that arrives while a refusal is held is lost when the user presses a key. Show the deferred notice instead. Add a test for that, and for a key press replacing the refusal at once.
+   3. **Release notes (`docs/release-notes/tui-on-the-service.md`):**
+      - remove the `agents.toml` banner line, which is already fixed in er-service;
+      - correct the push line: the old TUI showed "Push failed", it did not quit;
+      - correct the resume-hint line, so it matches `startup::resume_hint`;
+      - add #742's difference 7: `y` on a diff of only review-ignored files clears the review, then finds nothing to review.
+
+   The review's non-blocking notes can go into P77.2 or be named in the release notes:
+   - the long-dwell case;
+   - two refusals arriving in one tick;
+   - the scans stopping at a file's first inline test module;
+   - the manifest test missing the `[dependencies.er-engine]` table form.
+2. **Build P77.2 (#661).** Read the P77 ruling, issuecomment-7127443634, and the planner on #661. Carry-overs from earlier rulings:
+   - remove `assert_desktop_saves_gated` (#660 ruling item 12);
+   - bound the unbounded gate loop in `er-service/src/flow_tests.rs` (`deep_config`);
+   - remove the `retired_summary` gate;
+   - fix any stale App wording left in the ADRs (P77 keeps the App and D20 wording until then).
+3. **Close the epic.**
+   - Close #661.
+   - Update STATUS.md, BUILD_LOG.md and the ledger.
+   - Update the Feature Board (rules below).
+   - Post a phase-5b summary on the phase issue #399.
+4. **File the two bugs for `main`.** They are recorded in the ledger but were never filed:
+   - TUI finding navigation ignores the Gate (on `main`; fixed on release by P72.1);
+   - the App's `start_comment` never clears the draft's edit id. Repro: own question, J, Down, e, Tab, Down, q, text, Enter.
 
 ## How every merge has gone
-- **Verdict and CI:** merge only on a merge verdict at the PR's head plus green CI, with `gh pr merge N --merge --match-head-commit <full sha>`.
-- **Stacked PRs:** after a base merges, retarget the next PR to release (`gh api -X PATCH repos/VilfredSikker/easy-review/pulls/N -f base=release/v1.0.0`), then close and reopen it so CI runs.
-- **Head moved after the verdict:** if the new commits are only merges or the reviewed fix, read `git log`/`--remerge-diff` and land. Anything else gets a delta review.
-- **Conflicts with release:** merge release in; never rebase, never force-push. Take the union of enums, match arms and test lists. Regenerate the generated TypeScript (`just protocol-gen`) instead of hand-merging it. Hand resolutions get a delta review.
-- **Stop line:** 1,500 counted lines per PR (`git diff --shortstat -M base...head` insertions), with no waivers. To get under it, split into a stacked PR, or trim comments only.
-- **Rulings:** post decisions on the item's issue as **Coordinator ruling**, then close each issue when its item is fully merged.
+- **Merge rule:** merge only on a merge verdict at the PR's head plus green CI. Use the GitHub MCP merge tool with `expectedHeadSha`; the gh CLI does not work in the cloud container.
+- **Stacked PRs:** open each part against release only after the previous part merges, so CI runs. Build the next part stacked meanwhile.
+- **Merging release in:** never rebase or force-push. Take the union of conflicting sides, and regenerate TypeScript with `just protocol-gen`.
+  - A clean text merge can still leave `SOURCES`/`TEST_SOURCES` lengths or `FROZEN` wrong, so recount them by hand.
+  - Hand resolutions get a delta review.
+- **Stop line:** 1,500 counted lines (`git diff --shortstat -M base...head` insertions), with no waivers. A file moved onto an existing path counts as rewritten (ruling issuecomment-7157796922).
+- **Rulings:** post them on the item's issue as "Coordinator ruling".
+- **Shared builder rules:** `/home/user/er-v1/RULES.md`, and every check runs through `/home/user/er-v1/locked.sh <worktree> <cmd>`. Both live in the cloud container, not the repo.
+  - The rules: no real `gh`, agent CLIs or clipboard in tests; plants committed first and reverted; tests never weakened.
 
-## Rulings so far (all on GitHub)
-- #612: A9 tab switch accepted; a `diff(tab)` row cache is a follow-up.
-- #614: A9 mark-reviewed accepted.
-- #615: parity leaves out `relocated_at_hash` on unanchored notes in Conflicts and Hidden.
-- #616: click-to-paint numbers are deferred to the release preview; add-question overrun accepted.
-- #620: P60.2 removes `check_ai_files_changed`; the export rename goes through a `lib.rs` alias.
-- #621: `legacySnapshot` stays in #705; P62.1c removes it.
-
-The phase-5 exit list (P62.1/P62.2) carries:
-- the `diff(tab)` row cache;
-- the click-to-paint numbers;
-- `agent.md` for stores, rewritten in P62.2;
-- trimming `test-v1` (A12).
+## Goldens, briefly
+- `ER_UPDATE_GOLDENS=1` records from the App leg. It is refused under CI.
+- After P76.2 the goldens are the only record of the expected output, so a re-record must be reviewed as a screen change.
+- Each frozen test holds `parity::guard()`, and its module must be in `FROZEN`. Every golden file must name a `#[test] fn`.
+- Masks cover temp dirs, arena ids, clock times, agent-log offsets and the git `<age>`. Temp roots are written as `/tmp` before drawing, so the suite passes on macOS.
 
 ## Owner's standing rules
 - Never touch `~/Library/Application Support/easy-review` or `/Applications/Easy Review.app`.
 - No attribution or session lines in commits, PRs or comments.
 - Banned in prose: `load-bearing`, `mint(ed)`, `rung(s)`, and the `not X, but Y` sentence shape.
-- Commits are signed through 1Password. When signing fails, agents may commit unsigned and say so in the PR body; the owner accepted that.
-- Tests: no test is weakened or skipped to go green; any test change is stated up front in the PR; each must-fix closes with a planted break shown failing.
-- Bug fixes go to `main`; everything else goes to `release/v1.0.0`.
-- Feature Board (https://claude.ai/artifact/JfHRDzatazCcfG8dVrw1jd, `tasks` collection): `er-80`…`er-100` = P50…P62.2.
-  - Writes need `if_version` from a fresh get.
-  - Use status `in_progress` or `done` only, never backlog/todo/planned, and never set `prUrl`: those fire board automations.
-  - er-97 (P60.2) is in progress; er-99 (P62.1) is in progress; er-100 (P62.2) is not started.
-
-## Coordinator files in the repo
-`docs/epics/1.0.0/coordinator/` holds the copies the local session used:
-- `LEDGER.md`: the full timeline;
-- `epic-item-v2.js`: the workflow script, with build, finish and review modes; launch it with the Workflow tool, `scriptPath` and the args;
-- `args-*.json`: the run briefs. Reuse their `extra` and `review_focus` text, with the local paths changed to your checkout.
-
-## Local-only state (not reachable from a cloud session)
-The local coordinator kept these on the owner's Mac under `~/.claude-worktrees/er-v1/`:
-- per-item clones (`p60d` holds P60.2b, `p62a` holds P62.1);
-- `coordinator-state/LEDGER.md` (full timeline), `epic-item-v2.js` (the workflow script) and the `args-*.json` run briefs;
-- the `epic-run.sh`/`locked.sh` wrappers for heavy checks under a temp HOME.
-
-A cloud session works from the GitHub branches above and runs the repo's own gates (`just fmt-check clippy protocol-check comments-check test test-desktop test-v1 test-all lint-ui test-ui check-ui`; `check-ui` has one known error in `src/main.ts`).
-
-Also pending locally:
-- a status-docs commit (STATUS.md and BUILD_LOG.md for P58.2 to P61) is staged in `epic-docs`, unsigned-blocked by 1Password;
-- the bookkeeping for P60.2b and P62.1 still needs adding to it.
+- **Commits are signed.** If signing fails, say so in the PR body.
+- **Tests:**
+  - no test is weakened or skipped to go green;
+  - any test change is stated up front in the PR;
+  - each must-fix closes with a planted break shown failing.
+- **Where fixes go:** bug fixes go to `main`; everything else goes to `release/v1.0.0`.
+- **Escalate only important or out-of-plan decisions.**
+- **Feature Board** (https://claude.ai/artifact/JfHRDzatazCcfG8dVrw1jd, `tasks` collection):
+  - writes need `if_version` from a fresh get;
+  - use status `in_progress` or `done` only;
+  - never set `prUrl`.
