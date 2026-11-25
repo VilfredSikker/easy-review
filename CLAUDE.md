@@ -97,8 +97,8 @@ docs and release chores do land on `main`.
   that did not hand it on. Fix that before touching a timer (ADR 0072).
 - **The TUI reads the service in-process, and a key never waits on an
   actor.** No TUI module writes a sidecar, the working tree or GitHub itself:
-  each write is a command the service runs, and `crates/er-tui/tests/writes.rs`
-  fails on one that is not (ADR 0073).
+  each write is a command the service runs. `crates/er-tui/tests/writes.rs`
+  fails on a write it names; ADR 0073 lists its exemptions and its one gap.
 - **One `er` instance per worktree.** Multi-worktree tabs work through the
   worktree picker.
 - **`main` and `release/v*` can differ** — check the branch you are actually on.
