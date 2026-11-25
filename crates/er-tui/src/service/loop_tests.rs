@@ -450,8 +450,7 @@ fn a_refusal_holds_until_it_has_been_drawn() {
     });
 }
 
-/// A key press ends a refusal's hold: the notice that waited behind it shows
-/// at once, where it used to be dropped.
+/// A key press ends a refusal's hold and shows the notice that waited behind it.
 #[test]
 fn a_key_press_shows_the_notice_a_refusal_held_back() {
     let repo = fixture(2);
@@ -481,8 +480,7 @@ fn a_key_press_shows_the_notice_a_refusal_held_back() {
     });
 }
 
-/// A key's own notice replaces a held refusal at once, and the notice that
-/// waited behind the refusal with it.
+/// A key's own notice replaces a held refusal, and the notice waiting behind it.
 #[test]
 fn a_key_notice_replaces_a_held_refusal_at_once() {
     let repo = fixture(2);

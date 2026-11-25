@@ -1,9 +1,8 @@
 //! No TUI module writes a store artifact, the working tree or GitHub itself:
 //! each write is a command the service runs (ADR 0073). The one session save
 //! is `service/session.rs`'s, and the one file write is `update.rs`'s
-//! downloaded archive. Test modules are skipped. Each file's code is joined
-//! into one line, so a line break, an import group or a receiver's name
-//! hides no write.
+//! downloaded archive. Test modules are skipped. Code is matched joined into
+//! one line, so no line break, import group or receiver name hides a write.
 
 use std::path::{Path, PathBuf};
 
@@ -18,7 +17,6 @@ const STORE: [&str; 28] = [
     "update_github_comments(",
     "save_session(",
     "save_snapshot",
-    // `ArtifactStore`'s writes, called by name or through the type.
     "write_text",
     "write_durable",
     "write_locked",
@@ -29,7 +27,6 @@ const STORE: [&str; 28] = [
     "Store::write(",
     "Store::update(",
     "Store::delete(",
-    // er-store's own writes.
     "write_atomic",
     "write_typed_if_unchanged",
     "restore_if_unchanged",
@@ -54,8 +51,7 @@ const GIT: [&str; 11] = [
     "::push(",
 ];
 
-/// er-github's writes, as free functions (`er_engine::github` re-exports
-/// them all) and as the port's methods, and the engine's comment post.
+/// er-github's writes (`er_engine::github` re-exports all), its port's, the engine's post.
 const GITHUB: [&str; 19] = [
     "post_line_comment",
     "post_reply",
@@ -90,8 +86,7 @@ const FILES: [&str; 9] = [
     "fs::copy",
 ];
 
-/// Writes with common names, matched as method calls on any receiver. A call
-/// with no argument is skipped: `RwLock::write()` is a read of the lock.
+/// Method calls on any receiver; one with no argument (`RwLock::write()`) is skipped.
 const CALLS: [&str; 5] = [".write(", ".update(", ".delete(", ".commit(", ".approve("];
 
 fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
@@ -134,8 +129,7 @@ fn sources() -> Vec<(String, String)> {
     out
 }
 
-/// Whether a `use` statement names `fs`, so an alias (`fs as f`) or a
-/// grouped import (`fs::{write}`) cannot hide a file write.
+/// Whether a `use` names `fs`, so no alias or grouped import hides a file write.
 fn uses_fs(code: &str) -> bool {
     code.split(';').any(|piece| {
         let words: Vec<&str> = piece
@@ -149,10 +143,8 @@ fn uses_fs(code: &str) -> bool {
     })
 }
 
-/// Whether a `.push(` call's result is used. A `Vec`'s push gives `()`; the
-/// Git port's gives a `#[must_use]` `Result`, so a bare `g.push(r);` already
-/// fails the lint gate, and any other call is followed by `?`, `.` or `{`,
-/// or comes after `=`, `(`, `,` or `return`.
+/// Whether a `.push(` result is used (`?`, `.`, `{` after; `=`, `(`, `,`, `return` before).
+/// A `Vec`'s gives `()`; the Git port's `Result` is `#[must_use]`, so a bare one fails lint.
 fn uses_a_push(flat: &str) -> bool {
     flat.match_indices(".push(").any(|(at, needle)| {
         let after = close_of(flat, at + needle.len())
@@ -168,8 +160,7 @@ fn uses_a_push(flat: &str) -> bool {
     })
 }
 
-/// The `)` that closes a call whose arguments start at `open`, past any
-/// string or char literal.
+/// The `)` closing a call whose arguments start at `open`, past string and char literals.
 fn close_of(flat: &str, open: usize) -> Option<usize> {
     let bytes = flat.as_bytes();
     let (mut at, mut depth, mut quoted) = (open, 1, false);

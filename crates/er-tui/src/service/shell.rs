@@ -1137,8 +1137,7 @@ impl Shell {
     /// never traps the user.
     pub fn handle_key(&mut self, key: KeyEvent) {
         self.redraw = true;
-        // The person moved on: a held refusal gives way to the notice that
-        // waited behind it, and a key's own notice replaces both.
+        // A held refusal gives way to its waiting notice; the key's own replaces both.
         self.holding = None;
         if let Some(message) = self.deferred.take() {
             self.show(message);
