@@ -271,16 +271,7 @@ pub(super) fn stable_text(frame: &Buffer) -> String {
 /// The test modules whose checks are frozen, or single tests as
 /// `module::test`. Each later P76.1 PR adds its
 /// areas; the others still only compare the two legs live.
-const FROZEN: [&str; 31] = [
-    "chrome_tests::an_unset_verify_row_says_why_like_the_app",
-    "chrome_tests::closing_a_tab_focuses_the_next_and_drops_its_content",
-    "chrome_tests::one_line_fields_take_backspace_and_esc_like_the_app",
-    "chrome_tests::the_composer_line_scroll_and_cancel_keys_draw_like_the_app",
-    "chrome_tests::the_git_hub_working_tree_rows_act_like_the_app",
-    "chrome_tests::the_help_hub_draws_and_moves_like_the_app",
-    "chrome_tests::the_split_diff_focus_and_scroll_follow_the_app",
-    "chrome_tests::the_watch_scroll_and_panel_keys_draw_like_the_app",
-    "chrome_tests::up_and_shift_up_move_like_the_app",
+const FROZEN: [&str; 23] = [
     "copy_tests",
     "open_tests",
     "duties_tests",
@@ -303,6 +294,7 @@ const FROZEN: [&str; 31] = [
     "thread_writes_tests",
     "worktree_tests",
     "watched_tests",
+    "chrome_tests",
 ];
 
 /// Whether a test's checks are enforced: its module is in [`FROZEN`], or
@@ -707,20 +699,48 @@ fn key_name(key: &str) -> String {
         .map_or_else(|| key.to_string(), |(_, name)| (*name).to_string())
 }
 
-/// Every module with goldens is frozen, so a golden cannot sit unchecked.
+/// Every module with goldens is frozen, and every golden file is a frozen
+/// test's, so a golden cannot sit unread.
 #[test]
 fn every_golden_directory_is_a_frozen_module() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("goldens/parity");
     let dirs = std::fs::read_dir(&root).unwrap_or_else(|e| panic!("{e}"));
     for dir in dirs {
-        let name = dir.unwrap_or_else(|e| panic!("{e}")).file_name();
-        let name = name.to_string_lossy();
+        let dir = dir.unwrap_or_else(|e| panic!("{e}")).path();
+        let module = dir
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned());
+        let module = module.unwrap_or_default();
         assert!(
             FROZEN
                 .iter()
-                .any(|entry| entry.split("::").next() == Some(name.as_ref())),
-            "goldens/parity/{name} is not in FROZEN"
+                .any(|entry| entry.split("::").next() == Some(module.as_str())),
+            "goldens/parity/{module} is not in FROZEN"
         );
+        // Each file is read only by its own test, so a file whose test is
+        // not frozen, or does not exist, would sit unread.
+        let source = std::fs::read_to_string(
+            dir.with_extension("rs")
+                .to_string_lossy()
+                .replace("goldens/parity", "src/service"),
+        )
+        .unwrap_or_else(|e| panic!("{module}.rs: {e}"));
+        let files = std::fs::read_dir(&dir).unwrap_or_else(|e| panic!("{e}"));
+        for file in files {
+            let path = file.unwrap_or_else(|e| panic!("{e}")).path();
+            let test = path
+                .file_stem()
+                .map(|stem| stem.to_string_lossy().into_owned());
+            let test = test.unwrap_or_default();
+            assert!(
+                frozen(&module, &test),
+                "goldens/parity/{module}/{test}.txt is for a test FROZEN does not list"
+            );
+            assert!(
+                source.contains(&format!("fn {test}()")),
+                "goldens/parity/{module}/{test}.txt names no test in {module}.rs"
+            );
+        }
     }
 }
 
