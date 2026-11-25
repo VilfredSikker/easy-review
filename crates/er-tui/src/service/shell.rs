@@ -2930,6 +2930,16 @@ impl Shell {
         self.starts.remove(&key);
         self.load_errors.remove(&key);
         self.unsaved.remove(&key);
+        self.branch_prs.remove(&key);
+        self.stacks_reading.remove(&key);
+        self.parses_sent.retain(|(sent, ..)| *sent != key);
+        if self
+            .probed
+            .as_ref()
+            .is_some_and(|(probed, _)| *probed == key)
+        {
+            self.probed = None;
+        }
         self.view.forget(key);
         self.notify(format!("Closed: {name}"));
     }
