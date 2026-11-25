@@ -14,6 +14,7 @@ use er_engine::test_support::{read_sidecar, write_sidecar_json};
 use er_engine::TabKey;
 
 use super::loop_tests::{Gate, GatedGit};
+use super::parity::assert_json;
 use super::shell::Shell;
 use super::startup::Args;
 use super::tests::{
@@ -305,6 +306,7 @@ pub(super) fn both_on(
 /// and store as the App's do.
 #[test]
 fn the_composer_draws_and_writes_like_the_app() {
+    let _golden = super::parity::guard();
     let (app_repo, flag_repo) = (fixture(2), fixture(2));
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
@@ -335,6 +337,7 @@ fn the_composer_draws_and_writes_like_the_app() {
         };
         let flag_rows = rows(&er_dir(&shell));
         assert_eq!(flag_rows, rows(&app.tab().er_dir()));
+        assert_json("rows", &flag_rows, &rows(&app.tab().er_dir()));
         assert_eq!(flag_rows.len(), 2);
     });
 }
@@ -441,6 +444,7 @@ pub(super) fn seed_both(
 /// the File panel, the layer toggles and J and K act as the App's do.
 #[test]
 fn threads_layers_and_hints_draw_like_the_app() {
+    let _golden = super::parity::guard();
     let (app_repo, flag_repo) = (fixture(3), fixture(3));
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
@@ -476,6 +480,7 @@ fn threads_layers_and_hints_draw_like_the_app() {
 /// T sets it by hand.
 #[test]
 fn the_gate_follows_the_review_like_the_app() {
+    let _golden = super::parity::guard();
     let (app_repo, flag_repo) = (fixture(1), fixture(1));
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
@@ -511,6 +516,7 @@ fn the_gate_follows_the_review_like_the_app() {
 /// file parses, where the App's in-place parse scrolls.
 #[test]
 fn a_hint_on_a_stub_scrolls_once_it_parses() {
+    let _golden = super::parity::guard();
     let (app_repo, flag_repo) = (fixture(520), fixture(520));
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     er_engine::storage::with_process_test_storage_root(storage.path(), || {

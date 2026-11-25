@@ -233,10 +233,12 @@ pub(super) fn stable_text(frame: &Buffer) -> String {
 
 /// The test modules whose checks are frozen. Each later P76.1 PR adds its
 /// areas; the others still only compare the two legs live.
-const FROZEN: [&str; 5] = [
+const FROZEN: [&str; 7] = [
     "tests",
     "settings_tests",
     "github_tests",
+    "threads_tests",
+    "thread_writes_tests",
     "worktree_tests",
     "watched_tests",
 ];
@@ -666,6 +668,26 @@ fn a_broken_reference_names_the_file_and_line() {
             .unwrap_or_default();
         assert!(message.starts_with(said), "{bad}: {message}");
     }
+}
+
+/// A check takes its base only from an earlier check of its own kind, so a
+/// JSON result never reads as a frame that happens to match its lines.
+#[test]
+fn a_base_is_taken_only_from_the_same_kind() {
+    let entry = |head: &str| Entry {
+        head: head.to_string(),
+        lines: vec!["[".to_string(), "  1".to_string(), "]".to_string()],
+    };
+    let entries = [
+        entry("01 frame a"),
+        entry("02 json b"),
+        entry("03 frame c"),
+        entry("04 json d"),
+    ];
+    let text = encode(&entries);
+    assert!(text.contains("@@@ 02 json b\n|[\n"), "{text}");
+    assert!(text.contains("@@@ 03 frame c < 01\n"), "{text}");
+    assert!(text.contains("@@@ 04 json d < 02\n"), "{text}");
 }
 
 #[test]

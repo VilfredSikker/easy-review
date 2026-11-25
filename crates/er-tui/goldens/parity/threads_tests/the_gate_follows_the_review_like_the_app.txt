@@ -1,0 +1,72 @@
+@@@ 01 frame ungraded
+| feature · feature (vs main)  +2 -2
+|  1  BRANCH   2  UNSTAGED   3  STAGED   4  HISTORY                          AI ON    Claude / Sonnet 5.5   0/1 reviewed
+| FILES (1) · 2 findings        │  ~ src/f000.rs  +2 -2                                                      Hunk 1/2
+| ~ f000.rs  ●● ◆1 ▪1    +2 -2  │
+|                               │ ▶ @@ -1,14 +1,14 @@
+|                               │   1    1 │ let line_0 = 0;
+|                               │   2    2 │ let line_1 = 1;
+|                               │   3    3 │ let line_2 = 2;
+|                               │   4      │-let line_3 = 3;
+|                               │        4 │+let changed_3 = 3; // edited
+|                               │  ╭─ ❓  R4  ───────────────────────────────────────────────────────────────────────────
+|                               │  │  You
+|                               │  │    Open question
+|                               │  ╰────────────────────────────────────────────────────────────────────────────────────
+|                               │  ●  Finding f1
+|                               │   5    5 │ let line_4 = 4;
+|                               │  ●  Finding f2
+|                               │   6    6 │ let line_5 = 5;
+|                               │   7    7 │ let line_6 = 6;
+|                               │   8    8 │ let line_7 = 7;
+|                               │   9    9 │ let line_8 = 8;
+|                               │  10   10 │ let line_9 = 9;
+|                               │  11   11 │ let line_10 = 10;
+|                               │  12   12 │ let line_11 = 11;
+|                               │  13   13 │ let line_12 = 12;
+|                               │  14   14 │ let line_13 = 13;
+|                               │  ··· 6 lines hidden (+/- to expand) ···
+|                               │   @@ -21,20 +21,20 @@ let line_19 = 19;
+|                               │  21   21 │ let line_20 = 20;
+| j/k nav n/N hunks +/- context ␣ review / search g git a ai o open v verify ? help ^q quit
+|styles 79a51dd46fa7420d
+@@@ 02 frame graded < 01
+03| ~ f000.rs   ● ◆1 ▪1    +2 -2  │
+14|                               │   5    5 │ let line_4 = 4;
+15|                               │  ●  Finding f2
+16|                               │   6    6 │ let line_5 = 5;
+17|                               │   7    7 │ let line_6 = 6;
+18|                               │   8    8 │ let line_7 = 7;
+19|                               │   9    9 │ let line_8 = 8;
+20|                               │  10   10 │ let line_9 = 9;
+21|                               │  11   11 │ let line_10 = 10;
+22|                               │  12   12 │ let line_11 = 11;
+23|                               │  13   13 │ let line_12 = 12;
+24|                               │  14   14 │ let line_13 = 13;
+25|                               │  ··· 6 lines hidden (+/- to expand) ···
+26|                               │   @@ -21,20 +21,20 @@ let line_19 = 19;
+27|                               │  21   21 │ let line_20 = 20;
+28|                               │  22   22 │ let line_21 = 21;
+30|styles a253ebd179d61607
+@@@ 03 frame T < 02
+02| FILES (1) · 2 findings        │  ~ src/f000.rs  +2 -2                  ● Confidence: confirmed only — arbiter-graded
+03| ~ f000.rs     ◆1 ▪1    +2 -2  │
+15|                               │   6    6 │ let line_5 = 5;
+16|                               │   7    7 │ let line_6 = 6;
+17|                               │   8    8 │ let line_7 = 7;
+18|                               │   9    9 │ let line_8 = 8;
+19|                               │  10   10 │ let line_9 = 9;
+20|                               │  11   11 │ let line_10 = 10;
+21|                               │  12   12 │ let line_11 = 11;
+22|                               │  13   13 │ let line_12 = 12;
+23|                               │  14   14 │ let line_13 = 13;
+24|                               │  ··· 6 lines hidden (+/- to expand) ···
+25|                               │   @@ -21,20 +21,20 @@ let line_19 = 19;
+26|                               │  21   21 │ let line_20 = 20;
+27|                               │  22   22 │ let line_21 = 21;
+28|                               │  23   23 │ let line_22 = 22;
+30|styles 057a43fb62ed6bd6
+@@@ 04 frame T < 01
+02| FILES (1) · 2 findings        │  ~ src/f000.rs  +2 -2                    ● Confidence: all findings — arbiter-graded
+30|styles 205d4600c786c7d6
+@@@ 05 frame pinned < 01

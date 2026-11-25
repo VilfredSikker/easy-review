@@ -1,0 +1,32 @@
+@@@ 01 frame parsed
+| feature · feature (vs main)  +1040 -1040
+|  1  BRANCH   2  UNSTAGED   3  STAGED   4  HISTORY                        AI ON    Claude / Sonnet 5.5   0/520 reviewed
+| FILES (520) · 2 findings      │  ~ src/f001.rs  +2 -2                                                      Hunk 2/2
+| ~ f000.rs  ●● ◆1 ▪1    +2 -2  │  ··· 6 lines hidden (+/- to expand) ···
+| ~ src/f001.rs          +2 -2  │ ▶ @@ -21,20 +21,20 @@ let line_19 = 19;
+| ~ src/f002.rs          +2 -2  │  21   21 │ let line_20 = 20;
+| ~ src/f003.rs          +2 -2  │  22   22 │ let line_21 = 21;
+| ~ src/f004.rs          +2 -2  │  23   23 │ let line_22 = 22;
+| ~ src/f005.rs          +2 -2  │  24   24 │ let line_23 = 23;
+| ~ src/f006.rs          +2 -2  │  25   25 │ let line_24 = 24;
+| ~ src/f007.rs          +2 -2  │  26   26 │ let line_25 = 25;
+| ~ src/f008.rs          +2 -2  │  27   27 │ let line_26 = 26;
+| ~ src/f009.rs          +2 -2  │  28   28 │ let line_27 = 27;
+| ~ src/f010.rs          +2 -2  │  29   29 │ let line_28 = 28;
+| ~ src/f011.rs          +2 -2  │  30   30 │ let line_29 = 29;
+| ~ src/f012.rs          +2 -2  │  31      │-let line_30 = 30;
+| ~ src/f013.rs          +2 -2  │       31 │+let changed_30 = 30; // edited
+| ~ src/f014.rs          +2 -2  │  ╭─ ❓  R31  ──────────────────────────────────────────────────────────────────────────
+| ~ src/f015.rs          +2 -2  │  ▸│  You  ✓ resolved  ◆
+| ~ src/f016.rs          +2 -2  │  │    Resolved question
+| ~ src/f017.rs          +2 -2  │  ╰────────────────────────────────────────────────────────────────────────────────────
+| ~ src/f018.rs          +2 -2  │       ↳ ❓  You
+| ~ src/f019.rs          +2 -2  │            Answered here
+| ~ src/f020.rs          +2 -2  │  32   32 │ let line_31 = 31;
+| ~ src/f021.rs          +2 -2  │  33   33 │ let line_32 = 32;
+| ~ src/f022.rs          +2 -2  │  34   34 │ let line_33 = 33;
+| ~ src/f023.rs          +2 -2  │  35   35 │ let line_34 = 34;
+| ~ src/f024.rs          +2 -2  │  36   36 │ let line_35 = 35;
+| ~ src/f025.rs          +2 -2  │  37   37 │ let line_36 = 36;
+| j/k nav n/N hunks +/- context ␣ review / search r reply x delete g git a ai o open v verify ? help ^q quit
+|styles 0988f8f6c429ae40
