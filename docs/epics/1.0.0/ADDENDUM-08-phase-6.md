@@ -154,7 +154,7 @@ except where noted.
   113 lines, 23 of the files in desktop-ui, so renaming them in P79.1, as the
   planner proposed, would edit desktop-ui. All six renames go to P86.
   desktop-ui has 46 more `*Snapshot` interfaces (1,356 lines in 292 files),
-  named for the deleted snapshot path; see the open question. The
+  named for the deleted snapshot path; decision 16 renames them. The
   `AppSnapshot` strings in `crates/er-lint-gate/src/command_shape.rs` are
   test inputs of the `Snapshot` suffix rule and stay.
 - **Correction: #764's branch holds more of lane S.** Its first commit edits
@@ -221,6 +221,13 @@ Owner decisions, as given; each names its source.
     P89 add consequences to ADR 0074, and P90 adds one to ADR 0067, since
     P58.2's choice has no ADR of its own.
 
+16. **desktop-ui's other `*Snapshot` types are renamed in phase 6** (owner,
+    2026-11-25, through the coordinator, answering this addendum's open
+    question). Beyond `AppSnapshot`, desktop-ui declares 46 interfaces and
+    types named `*Snapshot`; five mirror the Rust types P86 renames and go
+    with them, and the other 41 go in P86b, P86c and P86d, each sized against
+    the stop line.
+
 Taken from the planner into this plan:
 
 15. **The MCP stability policy** (planner §3). No tool is renamed or removed;
@@ -230,17 +237,6 @@ Taken from the planner into this plan:
     beside the old one for a release. er-mcp's server version follows the
     workspace version and becomes 1.0.0 with the release; the skills keep
     their own `metadata.version`.
-
-## Open question for the owner
-
-- **desktop-ui's other `*Snapshot` interfaces.** Beyond `AppSnapshot`,
-  desktop-ui declares 46 interfaces and types named `*Snapshot`
-  (`FileSnapshot`, `AiSnapshot`, `PrSnapshot`, `SettingsSnapshot` and the
-  rest), on 1,356 lines in 292 files. They name the page's view of a
-  resource, and the name comes from the deleted snapshot path. Decision 11
-  names only `AppSnapshot`. **Recommended:** a follow-up after 1.0.0; the
-  rename changes no behaviour and would take two or three more PRs.
-  Alternative: add them to P86 as P86c onward.
 
 ## Page audit
 
@@ -325,8 +321,9 @@ sidebar and inbox are P79's and are left out.
   counts), `line_commits_cache` (a cache of the desktop's own reads), and
   `ports` until P83.2 reaches them through er-service. `desktop_revision`
   stays as the tick's wake, its bumps coming from service events after P84.
-- **App-era names.** `AppSnapshot` and the six Rust `*Snapshot` types:
-  P86. desktop-ui's other `*Snapshot` interfaces: the open question.
+- **App-era names.** `AppSnapshot`, the six Rust `*Snapshot` types and
+  their five desktop-ui mirrors: P86. desktop-ui's other 41 `*Snapshot`
+  types: P86b to P86d (decision 16).
 - **Already done.** `TabState::adopt_key` has no hit in `crates/`. The two
   docs the exit list named are fixed; one code comment citing `commands.rs`
   is left (`pr_open_cache.rs`), for P93.
@@ -365,7 +362,7 @@ structure only, with these points where a user could notice something:
   and `docs/release-notes/tui-on-the-service.md`.
 - **P** `crates/er-protocol/**` and the generated TypeScript (regenerated
   with `just protocol-gen`, never hand-merged).
-- **U** `desktop-ui/src/**`. Only P86 and P93 (comments) take it.
+- **U** `desktop-ui/src/**`. Only P86 to P86d and P93 (comments) take it.
 - **C** root `Cargo.toml` and `Cargo.lock`, `clippy.toml`, `justfile`,
   `.github/workflows/ci.yml`, `crates/er-lint-gate/**` and every front-end
   manifest.
@@ -699,8 +696,8 @@ notification display, window code and `app_owner/startup.rs`.
   carry names from `CONTEXT.md`'s vocabulary, chosen on the issue; the
   er-protocol doc comment is updated and the TypeScript regenerated with
   `just protocol-gen`; the `command_shape` test inputs stay; no wire key or
-  serialized field changes. desktop-ui's other `*Snapshot` interfaces are
-  outside this entry (the open question).
+  serialized field changes. desktop-ui's other `*Snapshot` types are
+  P86b to P86d.
 - **Tests that change:** tests that name a renamed type follow the rename;
   no assertion changes.
 - **Planted breaks:** a type renamed in Rust with its desktop-ui mirror left
@@ -709,6 +706,53 @@ notification display, window code and `app_owner/startup.rs`.
 - **Size:** about 500 (306 lines for `AppSnapshot`, 74 for the three that
   stay, 113 for the three that moved). **Fallback split:** P86a desktop-ui's
   `AppSnapshot`; P86b the Rust types and their mirrors.
+
+### P86b to P86d desktop-ui's other `*Snapshot` types
+
+Shared by the three PRs: Lanes: U. Model: `sonnet`. Each renames its group
+of desktop-ui types to names from `CONTEXT.md`'s vocabulary, chosen on the
+issue, in their declarations (`pageTypes.ts` and the module types), their
+readers, their tests and the Storybook fixtures; no wire key, field or
+resource changes, and no Rust type changes (er-engine's `ArenaRunSnapshot`,
+which `ArenaRunSnapshot` in desktop-ui mirrors, keeps its name; so do
+er-store's `ArtifactSnapshot` and `BackupSnapshot`, which are store
+snapshots). **Tests that change:** tests that name a renamed type follow
+the rename; no assertion changes. **Planted breaks:** a reader left on the
+old name fails `check-ui`; a renamed field fails the existing adapter tests
+and `check-ui`. **Fallback split:** none; each is well under the line. Sizes
+count every line that names a type, so they are upper bounds.
+
+#### P86b The diff view's types
+
+- Branch: `epic/p86b-diff-snapshot-types`. Depends on: P86.
+- **Done when:** `FileSnapshot`, `HunkSnapshot`, `LineSnapshot`,
+  `SpanSnapshot` and `PillarSnapshot` are renamed.
+- **Size:** about 460 (459 lines today).
+
+#### P86c The annotation and AI panel types
+
+- Branch: `epic/p86c-panel-snapshot-types`. Depends on: P86b.
+- **Done when:** `ThreadSnapshot`, `AiSnapshot`, `FindingResponseSnapshot`,
+  `ChecklistSnapshot`, `ChecklistItemSnapshot`, `DiagramSnapshot`,
+  `DiagramPresetSnapshot`, `TourSnapshot`, `TriageSnapshot`,
+  `TriagePriorityFileSnapshot`, `RiskFileSnapshot`, `RiskRuleSnapshot`,
+  `FileRiskSnapshot`, `FilterSuggestionSnapshot`, `OtherBucketSnapshot`,
+  `BucketSnapshot` and `GeneratorSnapshot` are renamed.
+- **Size:** about 390 (387 lines today).
+
+#### P86d The jobs, sidebar, PR, settings and chrome types
+
+- Branch: `epic/p86d-chrome-snapshot-types`. Depends on: P86c.
+- **Done when:** `ArenaRunSnapshot`, `BackgroundTaskSnapshot`,
+  `ProjectSnapshot`, `InboxItemSnapshot`, `InboxTargetSnapshot`,
+  `NotificationSnapshot`, `PrSnapshot`, `StackSnapshot`,
+  `StackLayerSnapshot`, `DiffStaleSnapshot`,
+  `LocalBranchDivergenceSnapshot`, `DetectSnapshot`, `BrowserSnapshot`,
+  `DisplayConfigSnapshot`, `FeatureFlagsSnapshot`, `SettingsSnapshot`,
+  `CountSnapshot`, `FileStepSnapshot` and `ModeSnapshot` are renamed; a
+  scan test fails when any desktop-ui type name ends in `Snapshot`, and a
+  type named `FooSnapshot` planted in `pageTypes.ts` fails it.
+- **Size:** about 330 (326 lines today, plus the scan test).
 
 ### P87 The PR card's branch actions through the service
 
@@ -872,7 +916,7 @@ notification display, window code and `app_owner/startup.rs`.
 
 - Branch: `epic/p93-app-era-leftovers`. Lanes: D, S, E, T, U, P
   (comments only, plus the one dead field; er-protocol's doc comments are
-  regenerated into the TypeScript with `just protocol-gen`). Model: `sonnet`. Depends on: P86, P83.3,
+  regenerated into the TypeScript with `just protocol-gen`). Model: `sonnet`. Depends on: P86d, P83.3,
   #762 and #765 (er-tui's `service/shell.rs` carries such comments).
 - **Goal:** no code or comment describes the App, the flag or the snapshot
   path that phases 5 and 5b deleted.
@@ -912,7 +956,8 @@ Two tracks at a time, as in phase 5, then a closing sequence.
   P79.1) → P87 (after P79.2) → P88 (after #764) → P89 → P90 → P91.
 - **Track 2, app records:** P79.1 → P79.2 → P79.3 → P84 (also after #764).
 - **Closing sequence:** P92 (after P79.3, P84 and P87 to P91) → P82 → P83.1
-  (after #762, #765) → P83.2 → { P83.3, P86 } → P93 → P85.
+  (after #762, #765) → P83.2 → { P83.3, P86 → P86b → P86c → P86d } →
+  P93 → P85. P86 to P86d and P93 hold lane U one at a time.
 - **Lane S is shared.** P79.x, P80.1, P84 and P87 to P91 all edit er-service,
   mostly in new modules (app records, `headless`, card asks) with additions
   to `lib.rs`, `protocol.rs` and the actor's match. Two entries that edit it
@@ -924,7 +969,7 @@ Two tracks at a time, as in phase 5, then a closing sequence.
 - **The Depends-on lines** become each issue's Blocked-by line and carry
   every code dependency.
 
-Totals: 15 entries, 20 PRs (more if a fallback split is taken), about 14,050
+Totals: 15 entries, 23 PRs (more if a fallback split is taken), about 15,230
 counted lines. P78, P79.2, P79.3 and P92 sit nearest the stop line and name
 their splits.
 
