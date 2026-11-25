@@ -678,6 +678,26 @@ fn a_broken_reference_names_the_file_and_line() {
     }
 }
 
+/// A check takes its base only from an earlier check of its own kind, so a
+/// JSON result never reads as a frame that happens to match its lines.
+#[test]
+fn a_base_is_taken_only_from_the_same_kind() {
+    let entry = |head: &str| Entry {
+        head: head.to_string(),
+        lines: vec!["[".to_string(), "  1".to_string(), "]".to_string()],
+    };
+    let entries = [
+        entry("01 frame a"),
+        entry("02 json b"),
+        entry("03 frame c"),
+        entry("04 json d"),
+    ];
+    let text = encode(&entries);
+    assert!(text.contains("@@@ 02 json b\n|[\n"), "{text}");
+    assert!(text.contains("@@@ 03 frame c < 01\n"), "{text}");
+    assert!(text.contains("@@@ 04 json d < 02\n"), "{text}");
+}
+
 #[test]
 fn a_delta_golden_decodes_to_the_frames_it_encodes() {
     let entry = |head: &str, lines: &[&str]| Entry {
