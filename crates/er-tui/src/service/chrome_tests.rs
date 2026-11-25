@@ -371,12 +371,7 @@ fn every_ai_hub_row_runs_or_toggles() {
 
 /// Opens the Git hub and moves to the row whose label holds `label`, with
 /// each move's frame compared.
-fn to_git_row(
-    app: &mut er_engine::app::App,
-    shell: &mut Shell,
-    hl: &mut Highlighter,
-    label: &str,
-) {
+fn to_git_row(app: &mut er_engine::app::App, shell: &mut Shell, hl: &mut Highlighter, label: &str) {
     // The App has no review row; it goes before any frame is compared.
     blind(app, shell, KeyCode::Char('g'));
     super::tests::without_review_row(shell);
