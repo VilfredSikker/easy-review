@@ -80,7 +80,7 @@ fn finding_dot_spans(findings: &[&Finding], stale: bool) -> Vec<Span<'static>> {
 /// Render the file tree panel (left side)
 pub fn render(f: &mut Frame, area: Rect, screen: &Screen) {
     let tab = &screen.tab;
-    let ai = screen.data.ai_or_empty();
+    let ai = screen.data.ai;
 
     // History mode: render commit list instead of file tree
     if tab.mode == DiffMode::History {
@@ -97,7 +97,7 @@ pub fn render(f: &mut Frame, area: Rect, screen: &Screen) {
     // Conflicts mode uses the standard file tree (falls through below)
 
     let visible = &tab.visible_files;
-    let total = screen.data.file_count();
+    let total = screen.data.files.len();
     let in_overlay = tab.layers.show_ai_findings;
     let ai_stale = ai.is_stale;
 
@@ -237,7 +237,7 @@ pub fn render(f: &mut Frame, area: Rect, screen: &Screen) {
             // Stats: +adds -dels
             let stats = format!("+{} -{}", file.adds, file.dels);
 
-            let is_reviewed = screen.data.reviewed().contains_key(&file.path);
+            let is_reviewed = screen.data.reviewed.contains_key(&file.path);
             let is_compacted = file.compacted;
 
             let line_style = if is_selected {
@@ -400,7 +400,7 @@ pub fn render(f: &mut Frame, area: Rect, screen: &Screen) {
 
 /// Render the commit list panel (left side, History mode)
 fn render_commit_list(f: &mut Frame, area: Rect, screen: &Screen) {
-    let history = screen.data.history();
+    let history = screen.data.history.as_ref();
     let visible = history.map_or(&[][..], |h| &h.visible_commits[..]);
     let total = history.map(|h| h.commits.len()).unwrap_or(0);
     let selected_commit = history.map(|h| h.selected_commit).unwrap_or(0);
@@ -546,8 +546,8 @@ fn render_commit_list(f: &mut Frame, area: Rect, screen: &Screen) {
 /// Render the tour pillar list (left panel in Tour mode). Each pillar shows its
 /// title, a foundation/importance badge, a reviewed/total count, and its files.
 fn render_pillar_list(f: &mut Frame, area: Rect, screen: &Screen) {
-    let reviewed_marks = screen.data.reviewed();
-    let Some(tour) = screen.data.tour() else {
+    let reviewed_marks = screen.data.reviewed;
+    let Some(tour) = screen.data.tour.as_ref() else {
         let block = Block::default()
             .title(Span::styled(
                 " TOUR ",

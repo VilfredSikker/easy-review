@@ -381,7 +381,7 @@ impl BlockEmitter<'_> {
 /// Render the diff view panel (right side)
 pub fn render(f: &mut Frame, area: Rect, screen: &Screen, hl: &mut Highlighter) {
     let tab = &screen.tab;
-    let ai = screen.data.ai_or_empty();
+    let ai = screen.data.ai;
 
     // History mode: render multi-file commit diff
     if tab.mode == DiffMode::History {
@@ -1026,7 +1026,7 @@ fn render_split_side(
     side: SplitSide,
 ) {
     let tab = &screen.tab;
-    let ai = screen.data.ai_or_empty();
+    let ai = screen.data.ai;
 
     // Border with focus indicator
     let border_style = if tab.split_focus == side {
@@ -1072,7 +1072,7 @@ fn render_split_side(
 
     // In History mode there is a single h_scroll shared across both sides
     let h_scroll = if tab.mode == DiffMode::History {
-        screen.data.history().map_or(0, |h| h.h_scroll)
+        screen.data.history.as_ref().map_or(0, |h| h.h_scroll)
     } else {
         match side {
             SplitSide::Old => tab.h_scroll_old,
@@ -1569,7 +1569,7 @@ fn push_split_cell(
 
 /// Render multi-file commit diff (History mode)
 fn render_history_diff(f: &mut Frame, area: Rect, screen: &Screen, hl: &mut Highlighter) {
-    let history = match screen.data.history() {
+    let history = match screen.data.history.as_ref() {
         Some(h) => h,
         None => {
             render_history_empty(f, area, "No history available");
@@ -1944,7 +1944,7 @@ fn render_history_diff(f: &mut Frame, area: Rect, screen: &Screen, hl: &mut High
 /// pillar. Files are concatenated like History mode; the current pillar's title
 /// and description are pinned at the top of the viewport as a sticky header.
 fn render_tour_diff(f: &mut Frame, area: Rect, screen: &Screen, hl: &mut Highlighter) {
-    let tour = match screen.data.tour() {
+    let tour = match screen.data.tour.as_ref() {
         Some(t) => t,
         None => {
             render_history_empty(
@@ -2022,7 +2022,7 @@ fn render_tour_diff(f: &mut Frame, area: Rect, screen: &Screen, hl: &mut Highlig
         } else {
             styles::BG()
         };
-        let reviewed = screen.data.reviewed().contains_key(&file.path);
+        let reviewed = screen.data.reviewed.contains_key(&file.path);
         let mut header_spans = vec![
             Span::styled(
                 if is_current_file { " ▶ " } else { "   " },

@@ -20,10 +20,9 @@ front ends read, and D20 keeps the TUI layout widths, selection, cursor and
 scroll in the engine until phase 5b.
 
 **Browser state is keyed on a tab key.** `TabState` carries a `TabKey`, a
-process-local number given when the tab is built and never saved. On the
-`v1-service` path the app registry issues the key and the App's tab adopts
-it, so the registry, the App, the loaded content and the view state name a
-tab by one key. The type
+process-local number given when the tab is built and never saved. The app
+registry issues the key, so the registry, the loaded content and the view
+state name a tab by one key. The type
 lives in the engine half that always compiles, so the desktop and the service
 name the same key.
 
@@ -47,7 +46,7 @@ Split ratio, annotate mode, tooltips and panels stay in memory, as before.
   before a snapshot build takes it again.
 - Source-scan tests keep the six fields out of the engine and the service, and
   keep the view-state module from writing to disk.
-- Selection and navigation live in desktop-ui on the `v1-service` path (P57,
+- Selection and navigation live in desktop-ui (P57,
   ADDENDUM-06's A10). The selected file and hunk are page state, and
   `select_file`, `next_file`, `prev_file`, `next_hunk`, `prev_hunk` and
   `jump_to_unreviewed` run as functions over `diff(tab)` and `reviewed(tab)`
@@ -56,10 +55,10 @@ Split ratio, annotate mode, tooltips and panels stay in memory, as before.
   er-desktop in phase 5. The engine's `navigation` functions stay for the TUI,
   and one fixture (`crates/er-engine/tests/fixtures/navigation_cases.json`)
   holds both to the same answers, so the two cannot drift.
-- The TUI's view state lives in er-tui on the `v1-service` path (ADR 0073).
-  Per tab key, `TuiView` holds what the App's `TabState` holds for the TUI
-  today: selection, cursor, scroll, panel, layers, filter, layout widths and
-  the comment draft. `session.json` stays the TUI's file in the tab's
-  bucket. The flag path saves it from the `TuiView` and restores it on the
-  same branch diff hash, with the draft's client id, so the App path and the
-  flag path read each other's sessions. The service never reads it.
+- The TUI's view state lives in er-tui (ADR 0073).
+  Per tab key, `TuiView` holds what the App's `TabState` held for the TUI:
+  selection, cursor, scroll, panel, layers, filter, layout widths and the
+  comment draft. `session.json` stays the TUI's file in the tab's bucket.
+  The TUI saves it from the `TuiView` and restores it on the same branch diff
+  hash, with the draft's client id, so a session the old TUI saved restores.
+  The service never reads it.

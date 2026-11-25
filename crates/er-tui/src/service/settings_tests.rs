@@ -8,11 +8,10 @@ use std::time::{Duration, Instant};
 use er_engine::config::{ConfigFieldValue, CONFIG_LOAD_BANNER};
 use er_service::SettingsCommand;
 
+use super::parity::assert_frame;
 use super::shell::Shell;
 use super::startup::Args;
-use super::tests::{
-    app_on, assert_parity, fixture, loaded, path_of, plan, rows, settle, shell_frame, shell_on,
-};
+use super::tests::{fixture, loaded, path_of, plan, rows, settle, shell_frame, shell_on};
 use crate::ui::highlight::Highlighter;
 
 fn temp() -> tempfile::TempDir {
@@ -77,10 +76,6 @@ fn a_settings_write_goes_through_the_settings_actor() {
             "the settings revision did not move"
         );
         assert_eq!(files_in(config_dir.path()), ["agents.toml", "config.toml"]);
-        assert!(
-            !storage.path().join("config.toml").exists(),
-            "the App's config file was written"
-        );
     });
 }
 
@@ -119,8 +114,10 @@ fn a_refused_save_shows_once_and_raises_the_banner() {
         assert_eq!(shell.settings().times_shown(&message), 1, "{message}");
         assert_eq!(shell.view().notification.as_deref(), Some(message.as_str()));
 
-        shell.tick(Instant::now() + Duration::from_secs(60));
+        // Drawn first, as the loop draws each frame: a refusal holds until then.
         let mut hl = Highlighter::new();
+        shell_frame(&mut shell, &mut hl);
+        shell.tick(Instant::now() + Duration::from_secs(60));
         let frame = rows(&shell_frame(&mut shell, &mut hl)).join("\n");
         assert!(frame.contains(CONFIG_LOAD_BANNER), "{frame}");
     });
@@ -208,7 +205,6 @@ fn a_failed_load_draws_the_apps_notice_and_banner() {
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
         std::fs::write(storage.path().join("config.toml"), "not = = toml")
             .unwrap_or_else(|e| panic!("{e}"));
-        let mut app = app_on(&path);
         let mut shell = shell_on(
             super::tests::test_ports(),
             &plan(&args(&path)),
@@ -218,22 +214,18 @@ fn a_failed_load_draws_the_apps_notice_and_banner() {
         let shown_at = Instant::now();
         let mut hl = Highlighter::new();
         // The notice names the config file under the temp root.
-        if let Some(notice) = app.notification.as_mut() {
-            notice.message = super::parity::tmp_rooted(&notice.message);
-        }
         let shown = shell
             .view()
             .notification
             .as_deref()
             .map(super::parity::tmp_rooted);
         shell.view_mut().notification = shown;
-        assert_parity(&app, &shell_frame(&mut shell, &mut hl), &mut hl, "notice");
-        // The App's long notice stays up 5 s; a short one would be gone.
+        assert_frame("notice", &shell_frame(&mut shell, &mut hl));
+        // A long notice stays up 5 s; a short one would be gone.
         shell.tick(shown_at + Duration::from_millis(4000));
         assert!(shell.view().notification.is_some(), "the notice left early");
-        app.clear_notification();
         shell.tick(Instant::now() + Duration::from_secs(60));
-        assert_parity(&app, &shell_frame(&mut shell, &mut hl), &mut hl, "banner");
+        assert_frame("banner", &shell_frame(&mut shell, &mut hl));
     });
 }
 
@@ -246,7 +238,6 @@ fn the_theme_follows_the_settings_view() {
     let storage = temp();
     let path = path_of(&repo);
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
-        let mut app = app_on(&path);
         let mut shell = shell_on(
             super::tests::test_ports(),
             &plan(&args(&path)),
@@ -254,8 +245,7 @@ fn the_theme_follows_the_settings_view() {
         );
         settle(&mut shell, loaded);
         let mut hl = Highlighter::new();
-        assert_parity(&app, &shell_frame(&mut shell, &mut hl), &mut hl, "start");
-        app.config.display.theme = "paper".into();
+        assert_frame("start", &shell_frame(&mut shell, &mut hl));
         shell.send_settings(SettingsCommand::ApplyConfigPatch {
             key: "display.theme".into(),
             value: ConfigFieldValue::String("paper".into()),
@@ -263,7 +253,7 @@ fn the_theme_follows_the_settings_view() {
         settle(&mut shell, |shell| {
             shell.host().settings().view().config.display.theme == "paper"
         });
-        assert_parity(&app, &shell_frame(&mut shell, &mut hl), &mut hl, "theme");
+        assert_frame("theme", &shell_frame(&mut shell, &mut hl));
     });
 }
 
@@ -275,7 +265,6 @@ fn the_saved_selection_follows_the_view() {
     let storage = temp();
     let path = path_of(&repo);
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
-        let mut app = app_on(&path);
         let mut shell = shell_on(
             super::tests::test_ports(),
             &plan(&args(&path)),
@@ -283,15 +272,13 @@ fn the_saved_selection_follows_the_view() {
         );
         settle(&mut shell, loaded);
         let mut hl = Highlighter::new();
-        assert_parity(&app, &shell_frame(&mut shell, &mut hl), &mut hl, "start");
-        app.set_ai_default_selection_with_effort("codex", Some("gpt-6-sol"), Some("high"))
-            .unwrap_or_else(|e| panic!("{e}"));
+        assert_frame("start", &shell_frame(&mut shell, &mut hl));
         shell.send_settings(codex_pick());
         settle(&mut shell, |shell| {
             let view = shell.host().settings().view();
             view.config.ai_hub.default_provider.as_deref() == Some("codex")
         });
-        assert_parity(&app, &shell_frame(&mut shell, &mut hl), &mut hl, "pick");
+        assert_frame("pick", &shell_frame(&mut shell, &mut hl));
     });
 }
 

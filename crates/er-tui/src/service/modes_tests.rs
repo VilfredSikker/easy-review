@@ -3,15 +3,15 @@
 use std::time::{Duration, Instant, SystemTime};
 
 use crossterm::event::KeyCode;
-use er_engine::app::App;
 use er_engine::tab_identity::DiffMode;
 use er_engine::watch::WatchEvent;
 
+use super::parity::assert_frame;
 use super::shell::Shell;
 use super::startup::Args;
 use super::tests::{
-    app_on, assert_parity, fixture, git, key, loaded, path_of, press_app, settle, settle_within,
-    shell, shell_frame, SOURCES,
+    fixture, git, key, loaded, path_of, save_session_of, service_sources, settle, settle_within,
+    shell, shell_frame,
 };
 use super::tui_view::Overlay;
 use crate::ui::highlight::Highlighter;
@@ -41,15 +41,13 @@ fn idle(shell: &Shell) -> bool {
     shell.in_flight() == 0
 }
 
-/// One key on both paths, then frame parity.
-fn step(app: &mut App, shell: &mut Shell, hl: &mut Highlighter, code: KeyCode) {
-    app.clear_notification();
+/// One key, then the frame against its golden.
+fn step(shell: &mut Shell, hl: &mut Highlighter, code: KeyCode) {
     shell.tick(Instant::now() + Duration::from_secs(60));
-    press_app(app, code);
     shell.handle_key(key(code));
     settle(shell, idle);
     let frame = shell_frame(shell, hl);
-    assert_parity(app, &frame, hl, &format!("{code:?}"));
+    assert_frame(&format!("{code:?}"), &frame);
 }
 
 fn write(root: &std::path::Path, file: &str, text: &str) {
@@ -83,17 +81,13 @@ fn worktree_fixture(stage: &[&str]) -> tempfile::TempDir {
 #[test]
 fn mode_keys_and_the_mtime_sort_draw_like_the_app() {
     let _golden = super::parity::guard();
-    let (app_repo, flag_repo) = (
-        worktree_fixture(&["src/f002.rs"]),
-        worktree_fixture(&["src/f002.rs"]),
-    );
+    let flag_repo = worktree_fixture(&["src/f002.rs"]);
     let storage = storage();
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
-        let mut app = app_on(&path_of(&app_repo));
         let mut shell = start(vec![path_of(&flag_repo)], None, storage.path());
         let mut hl = Highlighter::new();
         for code in ['j', '2', '3', '1', 'm', 'j', 'm'] {
-            step(&mut app, &mut shell, &mut hl, KeyCode::Char(code));
+            step(&mut shell, &mut hl, KeyCode::Char(code));
         }
         assert_eq!(content(&shell).tab.mode, DiffMode::Branch);
     });
@@ -148,10 +142,9 @@ fn the_watcher_refreshes_its_tab_and_counts_cleared_marks() {
 #[test]
 fn the_base_input_rediffs_the_tab_and_keeps_its_base() {
     let _golden = super::parity::guard();
-    let (app_repo, flag_repo) = (worktree_fixture(&[]), worktree_fixture(&[]));
+    let flag_repo = worktree_fixture(&[]);
     let storage = storage();
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
-        let mut app = app_on(&path_of(&app_repo));
         let mut shell = start(vec![path_of(&flag_repo)], None, storage.path());
         let before = content(&shell).diff.files.len();
         // The hub's first row opens the folder browser (P75.2); Esc leaves it.
@@ -176,12 +169,8 @@ fn the_base_input_rediffs_the_tab_and_keeps_its_base() {
             .active_entry()
             .and_then(|e| e.descriptor.base_ref.clone());
         assert_eq!(saved.as_deref(), Some("other"));
-        app.tab_mut()
-            .set_base_branch("other")
-            .unwrap_or_else(|e| panic!("{e}"));
-        app.notify("Base set to other");
         let mut hl = Highlighter::new();
-        assert_parity(&app, &shell_frame(&mut shell, &mut hl), &mut hl, "base");
+        assert_frame("base", &shell_frame(&mut shell, &mut hl));
     });
 }
 
@@ -211,28 +200,21 @@ fn target_is_every_tabs_base() {
 fn a_session_saved_in_another_view_restores_there_like_the_app() {
     let _golden = super::parity::guard();
     let staged = ["src/f001.rs", "src/f002.rs"];
-    let (app_repo, flag_repo) = (worktree_fixture(&staged), worktree_fixture(&staged));
+    let flag_repo = worktree_fixture(&staged);
     let storage = storage();
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
-        for repo in [&app_repo, &flag_repo] {
-            let before = app_on(&path_of(repo));
-            let mut session = before.tab().capture_session();
+        let first = start(vec![path_of(&flag_repo)], None, storage.path());
+        save_session_of(&first, |session| {
             session.diff_mode = "staged".into();
             session.selected_file = 1;
-            let scope =
-                er_store::Scope::dir(before.tab().er_dir()).unwrap_or_else(|e| panic!("{e}"));
-            let store = er_engine::store_registry::store();
-            er_engine::session_store::save_session(&store, &scope, &session)
-                .unwrap_or_else(|e| panic!("{e}"));
-        }
-        let mut app = app_on(&path_of(&app_repo));
-        assert!(app.tab_mut().restore_session());
+        });
+        drop(first);
         let mut shell = start(vec![path_of(&flag_repo)], None, storage.path());
         let staged = |shell: &Shell| idle(shell) && content(shell).tab.mode == DiffMode::Staged;
         let switched = settle_within(&mut shell, Duration::from_secs(20), staged);
         assert!(switched, "the session's view was not restored");
         let mut hl = Highlighter::new();
-        assert_parity(&app, &shell_frame(&mut shell, &mut hl), &mut hl, "restored");
+        assert_frame("restored", &shell_frame(&mut shell, &mut hl));
     });
 }
 
@@ -274,7 +256,7 @@ fn the_rule_tables_are_read_again_after_a_refresh() {
 /// Only the view orders files, through `listed_files`.
 #[test]
 fn the_file_order_comes_from_the_service() {
-    for (name, text) in SOURCES {
+    for (name, text) in &service_sources() {
         let flat: String = text.split_whitespace().collect();
         assert!(!flat.contains("Reverse("), "{name} orders files itself");
         let calls = flat.contains("listed_files(");

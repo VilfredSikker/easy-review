@@ -1,7 +1,6 @@
-//! P63's golden suite on the flag path. Each fixture fills the flag path's
-//! own view state and a tab's published content, draws them through
-//! `tui_view::screen`, and must match the same file under `goldens/` that
-//! the App's fixture records, byte for byte.
+//! P63's golden suite. Each fixture fills the TUI's own view state and a
+//! tab's published content, draws them through `tui_view::screen`, and must
+//! match its file under `goldens/`, byte for byte.
 
 use std::sync::Arc;
 
@@ -438,10 +437,8 @@ fn the_history_rows_age_collapses_in_a_frozen_frame() {
 }
 
 /// The app chrome, the hubs, the other overlays and the status-bar input
-/// modes. `input_search` is the one fixture not rebuilt: it sets the App's
-/// query without the filter typing applies, a state the flag path never
-/// holds, so the search line is pinned by the frozen frames of
-/// `filter_tests::search_keys_match_the_app` instead.
+/// modes. The search line is pinned by the frozen frames of
+/// `filter_tests::search_keys_match_the_app`.
 const CHROME: &[Fixture] = &[
     fixture_of("chrome_tabs_update_notice", 100, 16, |scene| {
         scene.tab_names.push("docs".into());

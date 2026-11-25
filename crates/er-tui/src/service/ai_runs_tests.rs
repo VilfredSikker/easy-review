@@ -15,8 +15,7 @@ use er_service::test_support::{open_gate, Agent};
 use super::ai_runs::Rerun;
 use super::shell::Shell;
 use super::tests::{
-    app_frame, app_on, fixture, key, loaded, path_of, rows, settle, settle_within, shell,
-    shell_frame, SOURCES,
+    fixture, key, loaded, path_of, rows, service_sources, settle, settle_within, shell, shell_frame,
 };
 use super::threads_tests::{active_key, args, er_dir};
 use super::tui_view::{Ask, Mode, Overlay};
@@ -107,7 +106,7 @@ fn flag_on_runs_go_through_the_host() {
         ".review_flows",
         ".arena_runs",
     ];
-    for (name, text) in SOURCES {
+    for (name, text) in &service_sources() {
         let flat: String = text.split_whitespace().collect();
         for word in banned {
             assert!(!flat.contains(word), "{name} names {word}");
@@ -300,7 +299,7 @@ fn a_pick_moves_the_model_the_next_run_uses() {
 #[test]
 fn the_log_panel_and_running_badge_draw_like_the_app() {
     let _golden = super::parity::guard();
-    let (app_repo, flag_repo, other) = (fixture(1), fixture(1), fixture(1));
+    let (flag_repo, other) = (fixture(1), fixture(1));
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
         let agent = agent_with(storage.path(), "true", "");
@@ -313,16 +312,8 @@ fn the_log_panel_and_running_badge_draw_like_the_app() {
             state.panel = Some(PanelContent::AgentLog);
         }
         shell.view_mut().notification = None;
-        let mut app = app_on(&path_of(&app_repo));
-        let app_tab = app.tab_mut();
-        app_tab.agent_log = shell.host().tasks().bucket_log(&dir).into();
-        let running = er_engine::app::CommandStatus::Running;
-        app_tab.command_status.insert("review".into(), running);
-        app_tab.panel = Some(PanelContent::AgentLog);
-        app.clear_notification();
         let mut hl = Highlighter::new();
         let flag = rows(&shell_frame(&mut shell, &mut hl));
-        let app_rows = rows(&app_frame(&app, &mut hl));
         // The flag frame lists two tabs, so its rows sit one lower.
         let panel = |rows: &[String]| -> Vec<String> {
             let top = rows.iter().position(|row| row.contains("[File] [Log]"));
@@ -333,19 +324,11 @@ fn the_log_panel_and_running_badge_draw_like_the_app() {
                 .collect()
         };
         let flag_panel = panel(&flag);
-        let app_panel = panel(&app_rows)[..flag_panel.len()].to_vec();
-        super::parity::assert_json("log", &flag_panel, &app_panel);
-        assert_eq!(
-            flag_panel,
-            panel(&app_rows)[..flag_panel.len()],
-            "the Log panel differs"
-        );
+        super::parity::assert_json("log", &flag_panel);
         let printed = flag_panel.iter().any(|row| row.contains("] line-a"));
         assert!(printed, "no output line:\n{}", flag.join("\n"));
         let badge = " ◐ Review running… ";
-        for drawn in [&flag, &app_rows] {
-            assert!(drawn.iter().any(|row| row.contains(badge)), "no badge");
-        }
+        assert!(flag.iter().any(|row| row.contains(badge)), "no badge");
         release(&mut shell, &agent);
 
         let close = er_service::AppCommand::CloseTab { key: tab };

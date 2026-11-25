@@ -73,7 +73,7 @@ fn panel(key: KeyEvent, screen: &Screen) -> Option<TuiAction> {
         && screen
             .data
             .file(tab.selected_file)
-            .and_then(|f| screen.data.ai()?.file_review(&f.path))
+            .and_then(|f| screen.data.ai.file_review(&f.path))
             .is_some_and(|fr| !fr.findings.is_empty());
     let action = match key.code {
         KeyCode::Char('j') | KeyCode::Down if has_findings => A::NavigatePanelFinding(true),

@@ -14,9 +14,6 @@ use crossterm::event::KeyEvent;
 use er_engine::config::SettingsScope;
 use er_engine::tab_identity::DiffMode;
 
-#[cfg(test)]
-pub use overlay::{review_flow_results_key_action, ReviewFlowResultsKeyAction};
-
 /// What a key asks for. A key its mode binds to nothing, or whose guard
 /// fails, is `Noop`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -271,12 +268,6 @@ pub fn key_action(key: KeyEvent, screen: &Screen) -> TuiAction {
     }
 }
 
-// The key tables are checked on the flag path's screen, so without the
-// feature only the guard and no-write tests run, and the tables sit unused.
-#[cfg_attr(
-    not(feature = "v1-service"),
-    expect(dead_code, unused_imports, reason = "the table tests need v1-service")
-)]
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -524,7 +515,6 @@ mod tests {
         *k *Up => Overlay(Prev)
         *Esc *q => Overlay(Close)";
 
-    #[cfg(feature = "v1-service")]
     #[test]
     fn the_key_table_pins_every_key_in_normal_mode() {
         let scene = crate::service::golden_tests::section_scene();
@@ -552,7 +542,6 @@ mod tests {
     }
 
     /// The guards that send one key to another action.
-    #[cfg(feature = "v1-service")]
     #[test]
     fn guards_pick_the_action_from_the_screen() {
         let scene = crate::service::golden_tests::section_scene();
@@ -625,7 +614,6 @@ mod tests {
         check(&screen, KeyCode::Up, A::NavigatePanelFinding(false));
     }
 
-    #[cfg(feature = "v1-service")]
     #[test]
     fn the_key_table_pins_every_key_in_each_overlay() {
         let scene = crate::service::golden_tests::section_scene();
@@ -733,7 +721,6 @@ mod tests {
         assert_table("hub", &screen, &[LIST, rows]);
     }
 
-    #[cfg(feature = "v1-service")]
     #[test]
     fn the_key_table_pins_every_key_in_the_text_inputs_and_the_prompt() {
         let scene = crate::service::golden_tests::section_scene();

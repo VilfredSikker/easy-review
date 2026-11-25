@@ -6,8 +6,9 @@
 //! and the rest of its row moves up to meet it, styles included.
 //!
 //! Each frozen test's checks are held in `goldens/parity/<module>/<test>.txt`,
-//! and both the App's result and the flag path's must equal them;
-//! `ER_UPDATE_GOLDENS=1` records them from the App. `ER_PARITY_DUMP=<dir>`
+//! and the TUI's result must equal them. They were recorded from the App the
+//! TUI replaced, so a re-record changes what the TUI is held to; review it
+//! as a behaviour change. `ER_UPDATE_GOLDENS=1` records them. `ER_PARITY_DUMP=<dir>`
 //! writes each frame to `<dir>/<module>/<test>.<order>.<step>.txt`, so two
 //! runs can be diffed.
 
@@ -287,8 +288,7 @@ pub(super) fn stable_text(frame: &Buffer) -> String {
 }
 
 /// The test modules whose checks are frozen, or single tests as
-/// `module::test`. Each later P76.1 PR adds its
-/// areas; the others still only compare the two legs live.
+/// `module::test`.
 const FROZEN: [&str; 23] = [
     "copy_tests",
     "open_tests",
@@ -381,27 +381,26 @@ impl Drop for Guard {
     }
 }
 
-/// Both frames, masked, equal the golden's frame for this check.
-pub(super) fn assert_frame(step: &str, flag_on: &Buffer, app: &Buffer) {
+/// The frame, masked, equals the golden's frame for this check.
+pub(super) fn assert_frame(step: &str, frame: &Buffer) {
     let order = next_order();
-    let app = stable_text(app);
-    dump(order, step, &app);
-    check(order, "frame", step, &app, &stable_text(flag_on));
+    let text = stable_text(frame);
+    dump(order, step, &text);
+    check(order, "frame", step, &text);
 }
 
-/// Both results, as masked pretty JSON, equal the golden's JSON for this
-/// check. The caller passes them as its live comparison takes them.
-pub(super) fn assert_json<T: serde::Serialize>(step: &str, flag_on: &T, app: &T) {
-    let json = |value: &T| {
-        // Through a `Value`, whose maps sort their keys, so a `HashMap`
-        // reads the same on every run.
-        let value = serde_json::to_value(value).unwrap_or_else(|e| panic!("{e}"));
-        let text = serde_json::to_string_pretty(&value).unwrap_or_else(|e| panic!("{e}"));
-        text.lines()
-            .map(|line| mask(line) + "\n")
-            .collect::<String>()
-    };
-    check(next_order(), "json", step, &json(app), &json(flag_on));
+/// The result, as masked pretty JSON, equals the golden's JSON for this
+/// check.
+pub(super) fn assert_json<T: serde::Serialize>(step: &str, result: &T) {
+    // Through a `Value`, whose maps sort their keys, so a `HashMap` reads
+    // the same on every run.
+    let value = serde_json::to_value(result).unwrap_or_else(|e| panic!("{e}"));
+    let text = serde_json::to_string_pretty(&value).unwrap_or_else(|e| panic!("{e}"));
+    let json = text
+        .lines()
+        .map(|line| mask(line) + "\n")
+        .collect::<String>();
+    check(next_order(), "json", step, &json);
 }
 
 fn next_order() -> usize {
@@ -421,7 +420,7 @@ fn test_name() -> (String, String) {
     (module, name)
 }
 
-fn check(order: usize, kind: &str, step: &str, app: &str, flag_on: &str) {
+fn check(order: usize, kind: &str, step: &str, got: &str) {
     let (module, name) = test_name();
     if !frozen(&module, &name) {
         return;
@@ -449,11 +448,7 @@ fn check(order: usize, kind: &str, step: &str, app: &str, flag_on: &str) {
         let golden = cell.get_or_insert_with(|| Golden::open(&module, &name));
         assert_eq!(golden.module, module, "one thread ran two tests");
         if update {
-            assert_eq!(
-                app, flag_on,
-                "{head}: the legs differ, so no golden is recorded"
-            );
-            golden.record(head, app);
+            golden.record(head, got);
             return;
         }
         let path = golden.path.display().to_string();
@@ -465,18 +460,9 @@ fn check(order: usize, kind: &str, step: &str, app: &str, flag_on: &str) {
             let _ = writeln!(want, "{line}");
             want
         });
-        let differ: Vec<&str> = [("the App's", app), ("the flag path's", flag_on)]
-            .into_iter()
-            .filter(|(_, got)| *got != want)
-            .map(|(leg, _)| leg)
-            .collect();
         assert!(
-            differ.is_empty(),
-            "{path}: {head}: {} not the golden\n--- golden\n{want}--- App\n{app}--- flag path\n{flag_on}",
-            match differ.as_slice() {
-                [leg] => format!("{leg} result is"),
-                _ => "both legs' results are".to_string(),
-            }
+            got == want,
+            "{path}: {head}: the result is not the golden\n--- golden\n{want}--- drawn\n{got}"
         );
     });
 }

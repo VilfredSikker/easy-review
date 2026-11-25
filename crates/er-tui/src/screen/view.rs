@@ -1,6 +1,4 @@
-//! The view types the renderers read. Each mirrors an App type of the same
-//! name, so a renderer reads the same fields on either path; `screen::from_app`
-//! converts the App's.
+//! The view types the renderers read.
 
 use er_engine::config::{ConfigItem, SettingsScope};
 use er_engine::git::Worktree;
@@ -22,14 +20,6 @@ pub struct TourPillar {
     pub description: String,
     pub importance: u32,
     pub foundation: bool,
-}
-
-/// One reference in the symbol references panel.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SymbolRef {
-    pub file: String,
-    pub line_num: usize,
-    pub line_content: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -61,10 +51,6 @@ pub enum InputMode<'a> {
     BaseBranch,
     /// The pending review's summary; only the flag path's review hub asks
     /// for it.
-    #[cfg_attr(
-        not(feature = "v1-service"),
-        expect(dead_code, reason = "only the flag path's review hub opens it")
-    )]
     ReviewSummary,
 }
 
@@ -87,10 +73,6 @@ pub enum ConfirmAction<'a> {
     RunAgentNotes,
     ApprovePR,
     /// A comment of the pending review; only the flag path asks.
-    #[cfg_attr(
-        not(feature = "v1-service"),
-        expect(dead_code, reason = "only the flag path's review hub asks it")
-    )]
     RemoveReviewComment,
 }
 

@@ -1901,7 +1901,7 @@ fn project_root_for_remote(remote: &str) -> String {
         .unwrap_or_default()
 }
 
-/// The desktop side of the `v1-service` open path. App-scoped records are
+/// The desktop side of the service's open path. App-scoped records are
 /// resolved here, where they live, so the actor's command carries the repo
 /// root and the remote and the service never reads the store. The actor is
 /// the one the opened tab keys, so the open and the tab's content meet there.
@@ -2029,7 +2029,7 @@ pub(crate) fn freshness_from_pr_info(pr: &PrInfo, diff_head_oid: Option<&str>) -
     }
 }
 
-/// With `v1-service` the app registry warms its own cache through the ports.
+/// The app registry warms its own cache through the ports.
 pub(crate) fn prefetch_pr_open_impl(
     project_id: String,
     pr_number: u64,

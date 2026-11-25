@@ -13,7 +13,9 @@ use er_engine::test_support::write_sidecar_json;
 
 use super::parity::assert_json;
 use super::shell::Shell;
-use super::tests::{fixture, git, key, loaded, path_of, rows, settle, shell, shell_frame, SOURCES};
+use super::tests::{
+    fixture, git, key, loaded, path_of, rows, service_sources, settle, shell, shell_frame,
+};
 use super::threads_tests::{active_key, args, both_on, er_dir, settle_replies, state, step};
 use crate::ui::highlight::Highlighter;
 
@@ -37,12 +39,8 @@ fn write_tour(dir: &str, hash: &str) {
     );
 }
 
-/// Seeds the tour in both buckets; the App reads it at once, and the flag
-/// path on its reload tick.
-fn seed_tour(app: &mut er_engine::app::App, shell: &mut Shell) {
-    let hash = app.tab().branch_diff_hash.clone();
-    write_tour(&app.tab().er_dir(), &hash);
-    app.tab_mut().reload_ai_state();
+/// Seeds the tour in the bucket, and waits for the reload tick.
+fn seed_tour(shell: &mut Shell) {
     let before = shell
         .active_content()
         .unwrap_or_else(|| panic!("no content"));
@@ -68,26 +66,20 @@ fn wait_for_tour(shell: &mut Shell) {
     super::tests::let_the_reload_notice_go(shell);
 }
 
-/// Both paths on their own fixture with the tour seeded, on a line of the
-/// diff and then in Tour mode, the frames compared.
-fn in_tour(
-    app_repo: &tempfile::TempDir,
-    flag_repo: &tempfile::TempDir,
-    storage: &Path,
-    hl: &mut Highlighter,
-) -> (er_engine::app::App, Shell) {
-    let (mut app, mut shell) = both_on(app_repo, flag_repo, storage);
-    seed_tour(&mut app, &mut shell);
+/// A shell with the tour seeded, on a line of the diff and then in Tour
+/// mode, the frames checked.
+fn in_tour(flag_repo: &tempfile::TempDir, storage: &Path, hl: &mut Highlighter) -> Shell {
+    let mut shell = both_on(flag_repo, storage);
+    seed_tour(&mut shell);
     // A line cursor the Tour drops, so leaving it shows where it went.
     for code in [KeyCode::Down, KeyCode::Down, KeyCode::Char('5')] {
-        step(&mut app, &mut shell, hl, key(code));
+        step(&mut shell, hl, key(code));
     }
-    assert_eq!(app.tab().mode, DiffMode::Tour);
     let content = shell
         .active_content()
         .unwrap_or_else(|| panic!("no content"));
     assert_eq!(content.tab.mode, DiffMode::Tour);
-    (app, shell)
+    shell
 }
 
 fn marks(dir: &str) -> HashMap<String, String> {
@@ -96,10 +88,9 @@ fn marks(dir: &str) -> HashMap<String, String> {
     er_engine::session_store::load_reviewed(&store, &scope).unwrap_or_else(|e| panic!("{e}"))
 }
 
-fn assert_same_marks(app: &er_engine::app::App, shell: &Shell, expected: &[&str]) {
-    let (app_marks, flag_marks) = (marks(&app.tab().er_dir()), marks(&er_dir(shell)));
-    assert_eq!(flag_marks, app_marks);
-    assert_json("marks", &flag_marks, &app_marks);
+fn assert_same_marks(shell: &Shell, expected: &[&str]) {
+    let flag_marks = marks(&er_dir(shell));
+    assert_json("marks", &flag_marks);
     let mut paths: Vec<&str> = flag_marks.keys().map(String::as_str).collect();
     paths.sort_unstable();
     assert_eq!(paths, expected);
@@ -111,11 +102,11 @@ fn assert_same_marks(app: &er_engine::app::App, shell: &Shell, expected: &[&str]
 #[test]
 fn the_tour_draws_and_moves_like_the_app() {
     let _golden = super::parity::guard();
-    let (app_repo, flag_repo) = (fixture(4), fixture(4));
+    let flag_repo = fixture(4);
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
         let mut hl = Highlighter::new();
-        let (mut app, mut shell) = in_tour(&app_repo, &flag_repo, storage.path(), &mut hl);
+        let mut shell = in_tour(&flag_repo, storage.path(), &mut hl);
         let text = rows(&shell_frame(&mut shell, &mut hl)).join("\n");
         assert!(text.contains("Other changes"), "{text}");
         assert!(text.contains("↳"), "{text}");
@@ -135,7 +126,7 @@ fn the_tour_draws_and_moves_like_the_app() {
             KeyCode::Char('1'),
         ];
         for code in codes {
-            step(&mut app, &mut shell, &mut hl, key(code));
+            step(&mut shell, &mut hl, key(code));
         }
     });
 }
@@ -144,11 +135,11 @@ fn the_tour_draws_and_moves_like_the_app() {
 #[test]
 fn the_tour_scroll_keys_draw_like_the_app() {
     let _golden = super::parity::guard();
-    let (app_repo, flag_repo) = (fixture(4), fixture(4));
+    let flag_repo = fixture(4);
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
         let mut hl = Highlighter::new();
-        let (mut app, mut shell) = in_tour(&app_repo, &flag_repo, storage.path(), &mut hl);
+        let mut shell = in_tour(&flag_repo, storage.path(), &mut hl);
         let codes = [
             KeyCode::Char('l'),
             KeyCode::Right,
@@ -160,7 +151,7 @@ fn the_tour_scroll_keys_draw_like_the_app() {
             KeyCode::PageUp,
         ];
         for code in codes {
-            step(&mut app, &mut shell, &mut hl, key(code));
+            step(&mut shell, &mut hl, key(code));
         }
     });
 }
@@ -170,15 +161,15 @@ fn the_tour_scroll_keys_draw_like_the_app() {
 #[test]
 fn the_tour_toggle_marks_like_the_app() {
     let _golden = super::parity::guard();
-    let (app_repo, flag_repo) = (fixture(4), fixture(4));
+    let flag_repo = fixture(4);
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
         let mut hl = Highlighter::new();
-        let (mut app, mut shell) = in_tour(&app_repo, &flag_repo, storage.path(), &mut hl);
+        let mut shell = in_tour(&flag_repo, storage.path(), &mut hl);
         for code in [' ', ' ', 'n', ' '] {
-            step(&mut app, &mut shell, &mut hl, key(KeyCode::Char(code)));
+            step(&mut shell, &mut hl, key(KeyCode::Char(code)));
         }
-        assert_same_marks(&app, &shell, &["src/f001.rs"]);
+        assert_same_marks(&shell, &["src/f001.rs"]);
     });
 }
 
@@ -187,13 +178,13 @@ fn the_tour_toggle_marks_like_the_app() {
 #[test]
 fn a_pillar_review_marks_like_the_app() {
     let _golden = super::parity::guard();
-    let (app_repo, flag_repo) = (fixture(4), fixture(4));
+    let flag_repo = fixture(4);
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
         let mut hl = Highlighter::new();
-        let (mut app, mut shell) = in_tour(&app_repo, &flag_repo, storage.path(), &mut hl);
-        step(&mut app, &mut shell, &mut hl, key(KeyCode::Char('b')));
-        assert_same_marks(&app, &shell, &["src/f000.rs", "src/f001.rs"]);
+        let mut shell = in_tour(&flag_repo, storage.path(), &mut hl);
+        step(&mut shell, &mut hl, key(KeyCode::Char('b')));
+        assert_same_marks(&shell, &["src/f000.rs", "src/f001.rs"]);
         assert_eq!(
             shell.view().notification.as_deref(),
             Some("Reviewed all files in pillar")
@@ -205,11 +196,11 @@ fn a_pillar_review_marks_like_the_app() {
 #[test]
 fn frames_with_nothing_new_build_the_tour_once() {
     let _golden = super::parity::guard();
-    let (app_repo, flag_repo) = (fixture(2), fixture(2));
+    let flag_repo = fixture(2);
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
         let mut hl = Highlighter::new();
-        let (_app, mut shell) = in_tour(&app_repo, &flag_repo, storage.path(), &mut hl);
+        let mut shell = in_tour(&flag_repo, storage.path(), &mut hl);
         let tab = active_key(&shell);
         let before = state(&shell, tab).tour.builds;
         assert!(before >= 1, "the tour was never built");
@@ -225,7 +216,7 @@ fn frames_with_nothing_new_build_the_tour_once() {
 /// App's tour: the rows come from the service's tour builder.
 #[test]
 fn flag_on_modules_build_no_tour_of_their_own() {
-    for (name, text) in SOURCES {
+    for (name, text) in &service_sources() {
         for needle in ["pillar_ownership", "ordered_pillars", "rebuild_tour_state"] {
             assert!(!text.contains(needle), "{name} names {needle}");
         }

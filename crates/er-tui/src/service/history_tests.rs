@@ -6,16 +6,16 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crossterm::event::KeyCode;
-use er_engine::app::App;
 use er_engine::tab_identity::DiffMode;
 use er_service::{Command, TabContent};
 
 use super::history::HistoryPos;
+use super::parity::assert_frame;
 use super::shell::Shell;
 use super::startup::Args;
 use super::tests::{
-    app_on, assert_parity, fixture, git, key, loaded, path_of, press_app, settle, settle_within,
-    shell, shell_frame, SOURCES, WAIT,
+    fixture, git, key, loaded, path_of, save_session_of, service_sources, settle, settle_within,
+    shell, shell_frame, WAIT,
 };
 use crate::ui::highlight::Highlighter;
 
@@ -41,40 +41,22 @@ fn idle(shell: &Shell) -> bool {
 
 /// Presses `k` twice on both paths, the flag path's second press before its
 /// first lands, and compares the frames once its replies have landed.
-fn two_k(app: &mut App, shell: &mut Shell, hl: &mut Highlighter, step: &str) {
+fn two_k(shell: &mut Shell, hl: &mut Highlighter, step: &str) {
     for _ in 0..2 {
-        press_app(app, KeyCode::Char('k'));
         shell.handle_key(key(KeyCode::Char('k')));
     }
     settle(shell, idle);
-    assert_parity(app, &shell_frame(shell, hl), hl, step);
+    assert_frame(step, &shell_frame(shell, hl));
 }
 
 /// Presses `code` on both paths and compares the frames once the flag
 /// path's replies have landed.
-fn step(app: &mut App, shell: &mut Shell, hl: &mut Highlighter, code: KeyCode) {
-    app.clear_notification();
+fn step(shell: &mut Shell, hl: &mut Highlighter, code: KeyCode) {
     shell.tick(Instant::now() + Duration::from_secs(60));
-    press_app(app, code);
     shell.handle_key(key(code));
     settle(shell, idle);
     let frame = shell_frame(shell, hl);
-    assert_parity(app, &frame, hl, &format!("{code:?}"));
-}
-
-/// Two copies of one repo, so their commits share hashes.
-// The lint gate reads this file alone, without the module's `cfg(test)`.
-#[cfg(test)]
-fn twins(make: fn() -> tempfile::TempDir) -> (tempfile::TempDir, tempfile::TempDir) {
-    let repo = make();
-    let copy = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
-    let from = format!("{}/.", repo.path().display());
-    let done = std::process::Command::new("cp")
-        .args(["-a", &from])
-        .arg(copy.path())
-        .status();
-    assert!(done.is_ok_and(|status| status.success()));
-    (repo, copy)
+    assert_frame(&format!("{code:?}"), &frame);
 }
 
 /// Dates the fixture's last commit in the past, so History's relative dates
@@ -140,19 +122,19 @@ fn merging() -> tempfile::TempDir {
 #[test]
 fn history_draws_like_the_app() {
     let _golden = super::parity::guard();
-    let (app_repo, flag_repo) = twins(two_commits);
+    let flag_repo = two_commits();
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
         // Unstaged lists `f002` alone, which Branch lists third.
-        for repo in [&app_repo, &flag_repo] {
+        {
+            let repo = &flag_repo;
             let file = repo.path().join("src/f002.rs");
             std::fs::write(file, "let unstaged = 1;\n").unwrap_or_else(|e| panic!("{e}"));
         }
-        let mut app = app_on(&path_of(&app_repo));
         let mut shell = start(&path_of(&flag_repo), storage.path());
         let mut hl = Highlighter::new();
         for code in ['2', '4', 'k', 'n', 'j', 'n'] {
-            step(&mut app, &mut shell, &mut hl, KeyCode::Char(code));
+            step(&mut shell, &mut hl, KeyCode::Char(code));
         }
         for code in [
             KeyCode::Down,
@@ -160,7 +142,7 @@ fn history_draws_like_the_app() {
             KeyCode::Up,
             KeyCode::Char('1'),
         ] {
-            step(&mut app, &mut shell, &mut hl, code);
+            step(&mut shell, &mut hl, code);
         }
         assert_eq!(content(&shell).tab.mode, DiffMode::Branch);
     });
@@ -170,10 +152,9 @@ fn history_draws_like_the_app() {
 #[test]
 fn history_scroll_keys_draw_like_the_app() {
     let _golden = super::parity::guard();
-    let (app_repo, flag_repo) = twins(two_commits);
+    let flag_repo = two_commits();
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
-        let mut app = app_on(&path_of(&app_repo));
         let mut shell = start(&path_of(&flag_repo), storage.path());
         let mut hl = Highlighter::new();
         let codes = [
@@ -190,7 +171,7 @@ fn history_scroll_keys_draw_like_the_app() {
             KeyCode::PageUp,
         ];
         for code in codes {
-            step(&mut app, &mut shell, &mut hl, code);
+            step(&mut shell, &mut hl, code);
         }
     });
 }
@@ -201,7 +182,7 @@ fn history_scroll_keys_draw_like_the_app() {
 #[test]
 fn history_lists_its_next_page_like_the_app() {
     let _golden = super::parity::guard();
-    let (app_repo, flag_repo) = twins(|| {
+    let flag_repo = {
         let repo = fixture(1);
         dated(repo.path());
         for n in 0..55 {
@@ -218,19 +199,14 @@ fn history_lists_its_next_page_like_the_app() {
             );
         }
         repo
-    });
+    };
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
-        let mut app = app_on(&path_of(&app_repo));
         let mut shell = start(&path_of(&flag_repo), storage.path());
         let mut hl = Highlighter::new();
-        step(&mut app, &mut shell, &mut hl, KeyCode::Char('4'));
-        two_k(&mut app, &mut shell, &mut hl, "k k");
-        // Both go to the 50th commit, the first page's last.
-        if let Some(history) = app.tab_mut().history.as_mut() {
-            history.selected_commit = 49;
-        }
-        app.tab_mut().history_load_selected_diff();
+        step(&mut shell, &mut hl, KeyCode::Char('4'));
+        two_k(&mut shell, &mut hl, "k k");
+        // The 50th commit, the first page's last.
         let held = content(&shell).history.clone();
         let sha = held.and_then(|h| h.commits.get(49).map(|c| c.hash.clone()));
         let tabs = shell.host().registry().tabs_view();
@@ -243,7 +219,7 @@ fn history_lists_its_next_page_like_the_app() {
             .host()
             .post(&entry.descriptor.workspace_key(), command);
         assert!(replies.recv_timeout(WAIT).is_ok_and(|reply| reply.is_ok()));
-        two_k(&mut app, &mut shell, &mut hl, "k k at the page's edge");
+        two_k(&mut shell, &mut hl, "k k at the page's edge");
         let held = content(&shell).history.clone();
         let listed = held.as_ref().map(|h| h.commits.len());
         assert_eq!(listed, Some(56), "the fixture's 56 commits");
@@ -344,15 +320,14 @@ fn queued_commit_moves_go_nowhere_outside_history() {
 #[test]
 fn conflicts_show_while_a_merge_runs_like_the_app() {
     let _golden = super::parity::guard();
-    let (app_repo, flag_repo) = twins(merging);
+    let flag_repo = merging();
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
-        let mut app = app_on(&path_of(&app_repo));
         let mut shell = start(&path_of(&flag_repo), storage.path());
         let mut hl = Highlighter::new();
-        assert_parity(&app, &shell_frame(&mut shell, &mut hl), &mut hl, "merging");
+        assert_frame("merging", &shell_frame(&mut shell, &mut hl));
         for code in ['j', '5', 'j', '1'] {
-            step(&mut app, &mut shell, &mut hl, KeyCode::Char(code));
+            step(&mut shell, &mut hl, KeyCode::Char(code));
         }
     });
 }
@@ -396,19 +371,19 @@ fn a_refresh_leaves_history_alone() {
 #[test]
 fn a_staged_resolution_drops_the_unresolved_count_like_the_app() {
     let _golden = super::parity::guard();
-    let (app_repo, flag_repo) = twins(merging);
+    let flag_repo = merging();
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
-        let mut app = app_on(&path_of(&app_repo));
         let mut shell = start(&path_of(&flag_repo), storage.path());
         let mut hl = Highlighter::new();
-        step(&mut app, &mut shell, &mut hl, KeyCode::Char('5'));
+        step(&mut shell, &mut hl, KeyCode::Char('5'));
         assert_eq!(content(&shell).diff.meta.unresolved, 1);
-        for repo in [&app_repo, &flag_repo] {
+        {
+            let repo = &flag_repo;
             let file = repo.path().join("src/f000.rs");
             std::fs::write(file, "let resolved = 1;\n").unwrap_or_else(|e| panic!("{e}"));
         }
-        step(&mut app, &mut shell, &mut hl, KeyCode::Char('s'));
+        step(&mut shell, &mut hl, KeyCode::Char('s'));
         let content = content(&shell);
         assert_eq!(content.tab.mode, DiffMode::Conflicts);
         assert_eq!(
@@ -434,13 +409,11 @@ fn hidden_shows_the_watched_files_like_the_app() {
         super::watched_tests::aged(&repo.path().join("a.env"), 1800);
         repo
     };
-    let (app_repo, flag_repo) = (make(), make());
+    let flag_repo = make();
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
-        let mut app = app_on(&path_of(&app_repo));
         let mut shell = start(&path_of(&flag_repo), storage.path());
         let mut hl = Highlighter::new();
-        step(&mut app, &mut shell, &mut hl, KeyCode::Char('W'));
-        press_app(&mut app, KeyCode::Char('5'));
+        step(&mut shell, &mut hl, KeyCode::Char('W'));
         shell.handle_key(key(KeyCode::Char('5')));
         let listed = settle_within(&mut shell, WAIT, |shell| {
             let key = shell.host().registry().tabs_view().active;
@@ -450,7 +423,7 @@ fn hidden_shows_the_watched_files_like_the_app() {
         assert!(listed, "Hidden listed no watched file");
         assert_eq!(content(&shell).tab.mode, DiffMode::Hidden);
         let frame = shell_frame(&mut shell, &mut hl);
-        assert_parity(&app, &frame, &mut hl, "hidden");
+        assert_frame("hidden", &frame);
     });
 }
 
@@ -467,22 +440,15 @@ fn sessions_saved_in_history_or_conflicts_restore_there() {
         ),
         (DiffMode::History, "history", two_commits),
     ] {
-        let (app_repo, flag_repo) = twins(make);
+        let flag_repo = make();
         let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
         er_engine::storage::with_process_test_storage_root(storage.path(), || {
-            for repo in [&app_repo, &flag_repo] {
-                let before = app_on(&path_of(repo));
-                let mut session = before.tab().capture_session();
+            let first = start(&path_of(&flag_repo), storage.path());
+            save_session_of(&first, |session| {
                 session.diff_mode = saved.into();
                 session.selected_file = 1;
-                let scope =
-                    er_store::Scope::dir(before.tab().er_dir()).unwrap_or_else(|e| panic!("{e}"));
-                let store = er_engine::store_registry::store();
-                er_engine::session_store::save_session(&store, &scope, &session)
-                    .unwrap_or_else(|e| panic!("{e}"));
-            }
-            let mut app = app_on(&path_of(&app_repo));
-            assert!(app.tab_mut().restore_session());
+            });
+            drop(first);
             let mut shell = start(&path_of(&flag_repo), storage.path());
             let there = |shell: &Shell| idle(shell) && content(shell).tab.mode == mode;
             assert!(
@@ -490,7 +456,7 @@ fn sessions_saved_in_history_or_conflicts_restore_there() {
                 "{saved}: not restored"
             );
             let mut hl = Highlighter::new();
-            assert_parity(&app, &shell_frame(&mut shell, &mut hl), &mut hl, saved);
+            assert_frame(saved, &shell_frame(&mut shell, &mut hl));
         });
     }
 }
@@ -508,7 +474,7 @@ fn history_and_conflicts_come_from_the_service() {
         "refresh_conflicts",
         "refresh_watched_files",
     ];
-    for (name, text) in SOURCES {
+    for (name, text) in &service_sources() {
         let flat: String = text.split_whitespace().collect();
         for needle in banned {
             assert!(!flat.contains(needle), "{name} names {needle}");

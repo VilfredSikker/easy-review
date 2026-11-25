@@ -127,6 +127,13 @@ impl Landing {
     }
 }
 
+/// A held refusal: not yet drawn, or first drawn at.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Hold {
+    Unseen,
+    DrawnAt(Instant),
+}
+
 /// The loop's state: the host, the view state, and the commands in flight.
 pub struct Shell {
     host: ServiceHost,
@@ -146,6 +153,11 @@ pub struct Shell {
     redraw: bool,
     notified_at: Option<Instant>,
     dwell: Duration,
+    /// The shown message is a refusal or an error, which an ordinary notice
+    /// does not replace until it has been drawn for its dwell. An ordinary
+    /// notice told meanwhile waits in `deferred`.
+    holding: Option<Hold>,
+    deferred: Option<String>,
     /// The sidecar reloads in flight, whose failures pair with their events.
     reloads: Vec<ReplyReceiver>,
     reloaded_at: Option<Instant>,
@@ -248,6 +260,8 @@ impl Shell {
             redraw: true,
             notified_at: None,
             dwell: NOTIFICATION_DWELL,
+            holding: None,
+            deferred: None,
             reloads: Vec::new(),
             reloaded_at: None,
             unsaved: HashSet::new(),
@@ -397,6 +411,7 @@ impl Shell {
     pub fn clear_notification(&mut self) {
         self.view.notification = None;
         self.notified_at = None;
+        self.holding = None;
     }
 
     #[cfg(test)]
@@ -431,10 +446,60 @@ impl Shell {
     fn notify(&mut self, message: String) {
         #[cfg(test)]
         self.told.push(message.clone());
+        if self.holding.is_some() {
+            self.deferred = Some(message);
+            return;
+        }
+        self.show(message);
+    }
+
+    /// Shows a refusal or an error, held until it has been drawn for its
+    /// dwell or a key is pressed, so a task's ordinary notice in the same
+    /// tick cannot hide it.
+    fn refuse(&mut self, message: String) {
+        #[cfg(test)]
+        self.told.push(message.clone());
+        self.show(message);
+        self.holding = Some(Hold::Unseen);
+    }
+
+    fn show(&mut self, message: String) {
+        self.holding = None;
         self.view.notification = Some(message);
         self.notified_at = Some(Instant::now());
         self.dwell = NOTIFICATION_DWELL;
         self.redraw = true;
+    }
+
+    /// Gives `key` an entry in each record kept per tab, as a probe, a PR
+    /// lookup, a stack read and a parse would.
+    #[cfg(test)]
+    pub fn hold_tab_records(&mut self, key: TabKey) {
+        self.branch_prs.insert(key, (7, "feature".into()));
+        self.stacks_reading.insert(key);
+        self.parses_sent.insert((key, 1, "src/f000.rs".into()));
+        self.probed = Some((key, BranchPrProbe::Absent));
+    }
+
+    /// The records per tab that still hold `key`.
+    #[cfg(test)]
+    pub fn tab_records_of(&self, key: TabKey) -> Vec<&'static str> {
+        let held = [
+            ("branch_prs", self.branch_prs.contains_key(&key)),
+            ("stacks_reading", self.stacks_reading.contains(&key)),
+            (
+                "parses_sent",
+                self.parses_sent.iter().any(|(k, ..)| *k == key),
+            ),
+            (
+                "probed",
+                self.probed.as_ref().is_some_and(|(k, _)| *k == key),
+            ),
+        ];
+        held.into_iter()
+            .filter(|(_, held)| *held)
+            .map(|(name, _)| name)
+            .collect()
     }
 
     /// Runs a failed reply through the same path a landed one takes.
@@ -446,7 +511,7 @@ impl Shell {
     /// Shows an actor's failure, once for its event and its reply together.
     fn failure(&mut self, side: Side, message: String) {
         if self.settings.admit_failure(side, &message) {
-            self.notify(message);
+            self.refuse(message);
         }
     }
 
@@ -477,7 +542,12 @@ impl Shell {
                     self.review_changed(&context);
                 }
                 Ok(Event::TaskNotice { message, long }) => {
-                    self.notify(message);
+                    // A task's failure is told as "<task> failed (<tab>): …".
+                    if message.contains(" failed (") {
+                        self.refuse(message);
+                    } else {
+                        self.notify(message);
+                    }
                     if long {
                         self.dwell = NOTIFICATION_DWELL_LONG;
                     }
@@ -551,15 +621,25 @@ impl Shell {
         }
         let loaded = self.parse_selected_stub();
         self.send_restore();
+        let held = match self.holding {
+            Some(Hold::Unseen) => true,
+            Some(Hold::DrawnAt(at)) => now.duration_since(at) < self.dwell,
+            None => false,
+        };
         if !loaded && self.notified_at.is_some() {
             self.notified_at = Some(now);
-        } else if self
-            .notified_at
-            .is_some_and(|at| now.duration_since(at) >= self.dwell)
+        } else if !held
+            && self
+                .notified_at
+                .is_some_and(|at| now.duration_since(at) >= self.dwell)
         {
             self.notified_at = None;
             self.view.notification = None;
             self.redraw = true;
+            self.holding = None;
+            if let Some(message) = self.deferred.take() {
+                self.show(message);
+            }
         }
     }
 
@@ -599,7 +679,7 @@ impl Shell {
             }
         });
         for message in said {
-            self.notify(message);
+            self.refuse(message);
         }
     }
 
@@ -979,13 +1059,13 @@ impl Shell {
                 Err(error) if matches!(after, After::Rerun(_)) => {
                     if let After::Rerun(rerun) = after {
                         self.settings.claim_reply(&error.to_string());
-                        self.notify(rerun.refused(&error.to_string()));
+                        self.refuse(rerun.refused(&error.to_string()));
                     }
                 }
                 Err(error) if matches!(after, After::Cleared(_)) => {
                     if let After::Cleared(clear) = after {
                         self.settings.claim_reply(&error.to_string());
-                        self.notify(clears::refused(clear, &error.to_string()));
+                        self.refuse(clears::refused(clear, &error.to_string()));
                     }
                 }
                 Ok(Reply::ReviewSubmitted { .. }) if after == After::Approved => {
@@ -1057,6 +1137,11 @@ impl Shell {
     /// never traps the user.
     pub fn handle_key(&mut self, key: KeyEvent) {
         self.redraw = true;
+        // A held refusal gives way to its waiting notice; the key's own replaces both.
+        self.holding = None;
+        if let Some(message) = self.deferred.take() {
+            self.show(message);
+        }
         let Some((tab, workspace, Some(content))) = self.active() else {
             match key.code {
                 KeyCode::Char('q') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -2885,6 +2970,16 @@ impl Shell {
         self.starts.remove(&key);
         self.load_errors.remove(&key);
         self.unsaved.remove(&key);
+        self.branch_prs.remove(&key);
+        self.stacks_reading.remove(&key);
+        self.parses_sent.retain(|(sent, ..)| *sent != key);
+        if self
+            .probed
+            .as_ref()
+            .is_some_and(|(probed, _)| *probed == key)
+        {
+            self.probed = None;
+        }
         self.view.forget(key);
         self.notify(format!("Closed: {name}"));
     }
@@ -2940,6 +3035,9 @@ impl Shell {
     /// start's notice and the status line, each once.
     pub fn draw(&mut self, f: &mut ratatui::Frame, highlighter: &mut Highlighter) {
         self.terminal_width = f.area().width;
+        if self.holding == Some(Hold::Unseen) {
+            self.holding = Some(Hold::DrawnAt(Instant::now()));
+        }
         let Some((key, _, content)) = self.active() else {
             return f.render_widget(Paragraph::new("No tab is open"), f.area());
         };

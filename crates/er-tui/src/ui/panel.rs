@@ -9,7 +9,7 @@ use ratatui::{
 use super::file_tree::shorten_path;
 use super::styles;
 use super::utils::{horizontal_rule, word_wrap};
-use crate::screen::{AppData, Screen, UNPORTED};
+use crate::screen::Screen;
 use er_engine::ai::{CommentRef, CommentType, Confidence, PanelContent, ReviewFocus, RiskLevel};
 
 // PR check conclusion display helpers
@@ -44,12 +44,12 @@ pub fn render(f: &mut Frame, area: Rect, screen: &Screen) {
 
 fn render_panel(f: &mut Frame, area: Rect, screen: &Screen, content: PanelContent) {
     let tab = &screen.tab;
-    let ai = screen.data.ai_or_empty();
+    let ai = screen.data.ai;
     let mut lines: Vec<Line> = Vec::new();
 
     // Title bar: [File] [AI] [PR] — AI and PR only shown when available
     let has_ai = ai.has_data();
-    let has_pr = screen.data.pr_data().is_some();
+    let has_pr = screen.data.pr.is_some();
 
     let file_style = if content == PanelContent::FileDetail {
         Style::default()
@@ -91,23 +91,6 @@ fn render_panel(f: &mut Frame, area: Rect, screen: &Screen, content: PanelConten
         tab_spans.push(Span::styled("]", Style::default().fg(styles::MUTED())));
     }
 
-    if screen
-        .data
-        .app()
-        .is_some_and(|data| data.symbol_refs.is_some())
-    {
-        let refs_style = if content == PanelContent::SymbolRefs {
-            Style::default()
-                .fg(styles::PURPLE())
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(styles::DIM())
-        };
-        tab_spans.push(Span::styled(" [", Style::default().fg(styles::MUTED())));
-        tab_spans.push(Span::styled("Refs", refs_style));
-        tab_spans.push(Span::styled("]", Style::default().fg(styles::MUTED())));
-    }
-
     let log_style = if content == PanelContent::AgentLog {
         Style::default()
             .fg(styles::PURPLE())
@@ -131,13 +114,8 @@ fn render_panel(f: &mut Frame, area: Rect, screen: &Screen, content: PanelConten
         PanelContent::PrOverview => render_pr_overview(&mut lines, area, screen),
         PanelContent::AiSummary => render_ai_summary(&mut lines, area, screen, ai),
         PanelContent::AgentLog => render_agent_log(&mut lines, area, screen),
-        PanelContent::SymbolRefs => match screen.data.app() {
-            Some(data) => render_symbol_refs(&mut lines, area, screen, data),
-            None => lines.push(Line::from(Span::styled(
-                UNPORTED,
-                Style::default().fg(styles::MUTED()),
-            ))),
-        },
+        // Symbol references were struck from the TUI, so nothing opens it.
+        PanelContent::SymbolRefs => {}
     }
 
     let border_style = if tab.panel_focus {
@@ -156,7 +134,7 @@ fn render_panel(f: &mut Frame, area: Rect, screen: &Screen, content: PanelConten
     // or more lines — so the stored offset under-shoots the bottom. Recompute here, where
     // the wrapped line count is known. Only borders LEFT + horizontal padding, so the inner
     // height is the full area height.
-    let scroll = if content == PanelContent::AgentLog && screen.data.agent_log().1 {
+    let scroll = if content == PanelContent::AgentLog {
         lines
             .len()
             .saturating_sub(area.height as usize)
@@ -174,7 +152,7 @@ fn render_panel(f: &mut Frame, area: Rect, screen: &Screen, content: PanelConten
 
 fn render_file_detail<'a>(lines: &mut Vec<Line<'a>>, area: Rect, screen: &'a Screen<'a>) {
     let tab = &screen.tab;
-    let ai = screen.data.ai_or_empty();
+    let ai = screen.data.ai;
     let ai_stale = ai.is_stale;
 
     let file = tab.selected_diff_file;
@@ -412,7 +390,7 @@ fn render_file_detail<'a>(lines: &mut Vec<Line<'a>>, area: Rect, screen: &'a Scr
 /// All findings for this file — sorted by severity, then location.
 fn render_file_findings(lines: &mut Vec<Line<'_>>, area: Rect, screen: &Screen, path: &str) {
     let tab = &screen.tab;
-    let ai = screen.data.ai_or_empty();
+    let ai = screen.data.ai;
     if !tab.layers.show_ai_findings {
         return;
     }
@@ -512,7 +490,6 @@ fn sorted_file_findings(fr: &er_engine::ai::ErFileReview) -> Vec<&er_engine::ai:
 /// The findings the File panel draws for `path`, top to bottom: the rows
 /// that pass the Gate, with duplicates collapsed and security first. The
 /// flag path's panel j/k steps through this list.
-#[cfg(feature = "v1-service")]
 pub fn drawn_file_findings<'a>(
     ai: &'a er_engine::ai::AiState,
     layers: &er_engine::ai::InlineLayers,
@@ -593,7 +570,7 @@ fn push_arbiter_effect(
     findings: &[er_engine::ai::Finding],
 ) {
     let tab = &screen.tab;
-    let ai = screen.data.ai_or_empty();
+    let ai = screen.data.ai;
     // A filter that hides things without saying so is how people
     // stop trusting it, so the arbiter's rulings are counted here
     // rather than the list just being shorter.
@@ -1061,7 +1038,7 @@ fn render_ai_summary<'a>(
 // ── PrOverview ──
 
 fn render_pr_overview<'a>(lines: &mut Vec<Line<'a>>, area: Rect, screen: &'a Screen<'a>) {
-    let ai = screen.data.ai_or_empty();
+    let ai = screen.data.ai;
     lines.push(Line::from(vec![Span::styled(
         " PR Overview",
         Style::default()
@@ -1070,7 +1047,7 @@ fn render_pr_overview<'a>(lines: &mut Vec<Line<'a>>, area: Rect, screen: &'a Scr
     )]));
     lines.push(Line::from(""));
 
-    let Some(pr) = screen.data.pr_data() else {
+    let Some(pr) = screen.data.pr else {
         lines.push(Line::from(vec![Span::styled(
             " No PR data loaded",
             Style::default().fg(styles::DIM()),
@@ -1301,154 +1278,11 @@ fn render_pr_overview<'a>(lines: &mut Vec<Line<'a>>, area: Rect, screen: &'a Scr
     }
 }
 
-// ── SymbolRefs ──
-
-fn render_symbol_refs<'a>(
-    lines: &mut Vec<Line<'a>>,
-    area: Rect,
-    screen: &'a Screen<'a>,
-    data: &'a AppData<'a>,
-) {
-    let state = match data.symbol_refs.as_ref() {
-        Some(s) => s,
-        None => {
-            lines.push(Line::from(vec![Span::styled(
-                " No symbol references",
-                Style::default().fg(styles::MUTED()),
-            )]));
-            return;
-        }
-    };
-
-    // Header: symbol name
-    lines.push(Line::from(vec![
-        Span::styled(" Symbol: ", Style::default().fg(styles::DIM())),
-        Span::styled(
-            state.symbol,
-            Style::default()
-                .fg(styles::BLUE())
-                .add_modifier(Modifier::BOLD),
-        ),
-    ]));
-    lines.push(Line::from(""));
-
-    let max_w = area.width.saturating_sub(4) as usize;
-    let mut entry_idx: usize = 0;
-
-    // In-diff section
-    if !state.in_diff.is_empty() {
-        lines.push(Line::from(vec![Span::styled(
-            format!(" In this diff ({})", state.in_diff.len()),
-            Style::default()
-                .fg(styles::CYAN())
-                .add_modifier(Modifier::BOLD),
-        )]));
-
-        for entry in state.in_diff {
-            let is_selected = entry_idx == state.cursor && screen.tab.panel_focus;
-            let loc = format!(" {}:{}", entry.file, entry.line_num);
-            let content = entry.line_content.trim();
-            let truncated = if content.chars().count() > max_w {
-                format!(
-                    "{}…",
-                    content
-                        .chars()
-                        .take(max_w.saturating_sub(1))
-                        .collect::<String>()
-                )
-            } else {
-                content.to_string()
-            };
-
-            let style = if is_selected {
-                Style::default().fg(styles::TEXT()).bg(styles::PANEL())
-            } else {
-                Style::default().fg(styles::TEXT())
-            };
-            let loc_style = if is_selected {
-                Style::default()
-                    .fg(styles::BLUE())
-                    .bg(styles::PANEL())
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(styles::BLUE())
-            };
-
-            lines.push(Line::from(vec![Span::styled(loc, loc_style)]));
-            lines.push(Line::from(vec![Span::styled(
-                format!("   {}", truncated),
-                style,
-            )]));
-
-            entry_idx += 1;
-        }
-        lines.push(Line::from(""));
-    }
-
-    // External section
-    if !state.external.is_empty() {
-        lines.push(Line::from(vec![Span::styled(
-            format!(" Other files ({})", state.external.len()),
-            Style::default()
-                .fg(styles::DIM())
-                .add_modifier(Modifier::BOLD),
-        )]));
-
-        for entry in state.external {
-            let is_selected = entry_idx == state.cursor && screen.tab.panel_focus;
-            let loc = format!(" {}:{}", entry.file, entry.line_num);
-            let content = entry.line_content.trim();
-            let truncated = if content.chars().count() > max_w {
-                format!(
-                    "{}…",
-                    content
-                        .chars()
-                        .take(max_w.saturating_sub(1))
-                        .collect::<String>()
-                )
-            } else {
-                content.to_string()
-            };
-
-            let style = if is_selected {
-                Style::default().fg(styles::DIM()).bg(styles::PANEL())
-            } else {
-                Style::default().fg(styles::DIM())
-            };
-            let loc_style = if is_selected {
-                Style::default()
-                    .fg(styles::MUTED())
-                    .bg(styles::PANEL())
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(styles::MUTED())
-            };
-
-            lines.push(Line::from(vec![Span::styled(loc, loc_style)]));
-            lines.push(Line::from(vec![Span::styled(
-                format!("   {}", truncated),
-                style,
-            )]));
-
-            entry_idx += 1;
-        }
-    }
-
-    if state.in_diff.is_empty() && state.external.is_empty() {
-        lines.push(Line::from(vec![Span::styled(
-            " No references found",
-            Style::default().fg(styles::MUTED()),
-        )]));
-    }
-}
-
-// ── AgentLog ──
-
 fn render_agent_log<'a>(lines: &mut Vec<Line<'a>>, area: Rect, screen: &Screen<'a>) {
     use crate::screen::view::AgentLogSource;
 
     let max_w = area.width.saturating_sub(4) as usize; // panel padding + border
-    let (agent_log, _, running_count) = screen.data.agent_log();
+    let (agent_log, running_count) = (screen.data.agent_log, screen.data.running_commands.len());
 
     // Header
 
@@ -1606,7 +1440,6 @@ mod tests {
     /// The rows the File panel draws for a file, top to bottom, are the list
     /// the flag path's j/k steps through: the Gate, the order, the collapsed
     /// duplicate and the security group come from one place.
-    #[cfg(feature = "v1-service")]
     #[test]
     fn the_drawn_finding_rows_are_the_step_list() {
         use ratatui::{backend::TestBackend, Terminal};

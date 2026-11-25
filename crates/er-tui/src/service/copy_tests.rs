@@ -8,18 +8,17 @@ use std::sync::Arc;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use er_engine::ai::ErReview;
-use er_engine::copy_text::{self, Built};
+use er_engine::copy_text;
 use er_engine::ports::Ports;
-use er_engine::review_export::{render_markdown, ExportOpts};
 use er_engine::tab_identity::DiffMode;
 use er_engine::test_support::write_sidecar_json;
 
-use super::findings_tests::seed_both;
+use super::findings_tests::seed_shell;
 use super::handoff::Launched;
 use super::parity::assert_json;
 use super::shell::Shell;
 use super::tests::{
-    app_on, fixture, git, key, loaded, path_of, plan, press_app, settle, shell, shell_on, SOURCES,
+    fixture, git, key, loaded, path_of, plan, service_sources, settle, shell, shell_on,
 };
 use super::threads_tests::{args, both_on, er_dir, settle_replies, step, type_text};
 use super::tui_view::Overlay;
@@ -41,12 +40,11 @@ fn copied(shell: &Shell) -> String {
     }
 }
 
-fn assert_copied(shell: &Shell, built: Built, step: &str) {
-    let want = built.unwrap_or_else(|message| panic!("{step}: the App copies nothing: {message}"));
-    let text = copied(shell);
-    assert_eq!(text, want.text, "{step}: text");
-    assert_eq!(notice(shell), want.notice, "{step}: notice");
-    assert_json(step, &(text, notice(shell)), &(want.text, want.notice));
+/// The one copy and its notice, checked against the golden.
+fn assert_copied(shell: &Shell, step: &str) -> (String, String) {
+    let got = (copied(shell), notice(shell));
+    assert_json(step, &got);
+    got
 }
 
 /// A finding on the first file's second hunk, with a suggestion.
@@ -100,7 +98,7 @@ fn copies_reach_no_app_copy_and_launch_only_through_the_seam() {
         "open_in_editor",
         ".tab()",
     ];
-    for (name, text) in SOURCES {
+    for (name, text) in &service_sources() {
         let flat: String = text.split_whitespace().collect();
         for needle in banned {
             assert!(!flat.contains(needle), "{name} names {needle}");
@@ -153,58 +151,42 @@ fn an_export_holds_a_question_added_on_the_flag_path() {
 #[test]
 fn the_export_picker_toggles_and_renders_like_the_app() {
     let _golden = super::parity::guard();
-    let (app_repo, flag_repo) = (fixture(2), fixture(2));
+    let flag_repo = fixture(2);
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
-        let (mut app, mut shell) = both_on(&app_repo, &flag_repo, storage.path());
-        seed_both(&mut app, &mut shell, seed_review);
+        let mut shell = both_on(&flag_repo, storage.path());
+        seed_shell(&mut shell, seed_review);
         let mut hl = Highlighter::new();
         let keys = [shift(KeyCode::Char('E')), key(KeyCode::Char('j'))];
         for event in keys.into_iter().chain([key(KeyCode::Char(' '))]) {
-            step(&mut app, &mut shell, &mut hl, event);
+            step(&mut shell, &mut hl, event);
         }
-        let Some(er_engine::app::OverlayData::ExportPicker {
-            include_comments,
-            include_findings,
-            include_questions,
-            include_notes,
-            ..
-        }) = app.overlay.clone()
+        let Some(Overlay::ExportPicker {
+            include_findings, ..
+        }) = shell.view().overlay
         else {
-            panic!("the App's picker closed");
+            panic!("the picker closed");
         };
         assert!(!include_findings, "Space did not turn findings off");
-        let opts = ExportOpts {
-            include_comments,
-            include_questions,
-            include_notes,
-            include_findings,
-            only_unresolved: false,
-            include_annotations: false,
-            ..ExportOpts::default()
-        };
-        let want = render_markdown(app.tab(), &opts);
-        assert!(want.contains("Edited twice") == include_findings, "{want}");
         shell.handle_key(key(KeyCode::Enter));
         let got = copied(&shell);
-        assert_eq!(got, want);
-        assert_json("export", &got, &want);
-        let count = want.len();
+        assert!(!got.contains("Edited twice"), "{got}");
+        assert_json("export", &got);
+        let count = got.len();
         assert_eq!(
             notice(&shell),
             format!("Copied review export ({count} chars)")
         );
 
         // Every row off: both say so and open the picker again, all on.
-        app.overlay = None;
-        step(&mut app, &mut shell, &mut hl, shift(KeyCode::Char('E')));
+        step(&mut shell, &mut hl, shift(KeyCode::Char('E')));
         for row in 0..4 {
             if row > 0 {
-                step(&mut app, &mut shell, &mut hl, key(KeyCode::Char('j')));
+                step(&mut shell, &mut hl, key(KeyCode::Char('j')));
             }
-            step(&mut app, &mut shell, &mut hl, key(KeyCode::Char(' ')));
+            step(&mut shell, &mut hl, key(KeyCode::Char(' ')));
         }
-        step(&mut app, &mut shell, &mut hl, key(KeyCode::Enter));
+        step(&mut shell, &mut hl, key(KeyCode::Enter));
         assert_eq!(notice(&shell), "Select at least one section to export");
         assert!(shell.recorder.taken().is_empty(), "an empty export copied");
     });
@@ -235,29 +217,9 @@ fn a_copy_after_a_move_reads_the_new_file() {
             .unwrap_or_else(|| panic!("no content"));
         let [first, second] = [0, 1].map(|at| copy_text::hunk(Some(&content.diff.files[at]), 0));
         assert_ne!(first, second, "the two hunks read alike");
-        let want = second;
-        assert_copied(&shell, want, "hunk");
+        let want = second.unwrap_or_else(|message| panic!("no hunk: {message}"));
+        assert_eq!(assert_copied(&shell, "hunk"), (want.text, want.notice));
     });
-}
-
-/// What the App's builders copy from the App's tab: a Copy hub row by
-/// index, else the context.
-fn app_copy(app: &er_engine::app::App, pick: usize) -> Built {
-    let tab = app.tab();
-    let file = tab.selected_diff_file();
-    match pick {
-        0 => copy_text::full_file(file),
-        1 => copy_text::path(file),
-        2 => copy_text::hunk(tab.files.get(tab.selected_file), tab.current_hunk),
-        3 => copy_text::line(file, &tab.copy_cursor()),
-        _ => copy_text::context(
-            file,
-            &tab.copy_cursor(),
-            (&tab.current_branch, &tab.base_branch),
-            &tab.ai,
-            &tab.layers,
-        ),
-    }
 }
 
 fn copy_context(shell: &mut Shell) {
@@ -273,11 +235,11 @@ fn copy_context(shell: &mut Shell) {
 #[test]
 fn copies_match_the_app_after_the_same_keys() {
     let _golden = super::parity::guard();
-    let (app_repo, flag_repo) = (fixture(2), fixture(2));
+    let flag_repo = fixture(2);
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
-        let (mut app, mut shell) = both_on(&app_repo, &flag_repo, storage.path());
-        seed_both(&mut app, &mut shell, seed_review);
+        let mut shell = both_on(&flag_repo, storage.path());
+        seed_shell(&mut shell, seed_review);
         let mut hl = Highlighter::new();
         let hub = [key(KeyCode::Char('y')), key(KeyCode::Esc)];
         let moves = [
@@ -287,22 +249,16 @@ fn copies_match_the_app_after_the_same_keys() {
             shift(KeyCode::Down),
         ];
         for event in hub.into_iter().chain(moves).chain(hub) {
-            step(&mut app, &mut shell, &mut hl, event);
+            step(&mut shell, &mut hl, event);
         }
-        let selection = app_copy(&app, 4);
-        let notice_of = |built: &Built| built.clone().map(|c| c.notice);
-        assert_eq!(
-            notice_of(&selection),
-            Ok("Copied selection (2 lines)".to_string())
-        );
         copy_context(&mut shell);
-        assert_copied(&shell, selection, "selection");
+        let (_, said) = assert_copied(&shell, "selection");
+        assert_eq!(said, "Copied selection (2 lines)");
 
-        step(&mut app, &mut shell, &mut hl, key(KeyCode::Down));
-        let line = app_copy(&app, 4);
-        assert_eq!(notice_of(&line), Ok("Copied line (1 lines)".to_string()));
+        step(&mut shell, &mut hl, key(KeyCode::Down));
         copy_context(&mut shell);
-        assert_copied(&shell, line, "line");
+        let (_, said) = assert_copied(&shell, "line");
+        assert_eq!(said, "Copied line (1 lines)");
 
         for row in 0..4 {
             shell.handle_key(key(KeyCode::Char('y')));
@@ -310,7 +266,7 @@ fn copies_match_the_app_after_the_same_keys() {
                 shell.handle_key(key(KeyCode::Char('j')));
             }
             shell.handle_key(key(KeyCode::Enter));
-            assert_copied(&shell, app_copy(&app, row), &format!("row {row}"));
+            assert_copied(&shell, &format!("row {row}"));
         }
     });
 }
@@ -457,11 +413,11 @@ fn seed_second(dir: &str, hash: &str) {
 #[test]
 fn a_jump_to_another_file_drops_the_selection() {
     let _golden = super::parity::guard();
-    let (app_repo, flag_repo) = (fixture(2), fixture(2));
+    let flag_repo = fixture(2);
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
-        let (mut app, mut shell) = both_on(&app_repo, &flag_repo, storage.path());
-        seed_both(&mut app, &mut shell, seed_second);
+        let mut shell = both_on(&flag_repo, storage.path());
+        seed_shell(&mut shell, seed_second);
         let mut hl = Highlighter::new();
         let keys = [
             key(KeyCode::Down),
@@ -471,15 +427,12 @@ fn a_jump_to_another_file_drops_the_selection() {
             shift(KeyCode::Down),
         ];
         for event in keys {
-            step(&mut app, &mut shell, &mut hl, event);
+            step(&mut shell, &mut hl, event);
         }
-        let want = app_copy(&app, 4);
-        let head = want
-            .clone()
-            .map(|c| (c.text.contains("Lines 4-6"), c.notice));
-        assert_eq!(head, Ok((true, "Copied selection (3 lines)".to_string())));
         copy_context(&mut shell);
-        assert_copied(&shell, want, "selection after the jump");
+        let (text, said) = assert_copied(&shell, "selection after the jump");
+        assert!(text.contains("Lines 4-6"), "{text}");
+        assert_eq!(said, "Copied selection (3 lines)");
     });
 }
 
@@ -491,11 +444,9 @@ fn history_copies_and_edits_the_commit_file() {
     let repo = fixture(2);
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
-        let mut app = app_on(&path_of(&repo));
         let mut shell = shell(&args(vec![path_of(&repo)]), storage.path());
         settle(&mut shell, loaded);
         for code in [KeyCode::Char('4'), KeyCode::Char('n')] {
-            press_app(&mut app, code);
             shell.handle_key(key(code));
             settle(&mut shell, |shell| {
                 shell.in_flight() == 0
@@ -504,8 +455,6 @@ fn history_copies_and_edits_the_commit_file() {
                         .is_some_and(|c| c.tab.mode == DiffMode::History)
             });
         }
-        let path = app.tab().selected_diff_file().map(|f| f.path.clone());
-        assert_eq!(path.as_deref(), Some("src/f001.rs"));
         shell.handle_key(key(KeyCode::Char('e')));
         let opened = shell.recorder.taken();
         let opened_path = match opened.as_slice() {
@@ -514,7 +463,7 @@ fn history_copies_and_edits_the_commit_file() {
         };
         assert!(opened_path.ends_with("src/f001.rs"), "{opened_path:?}");
         copy_context(&mut shell);
-        assert_copied(&shell, app_copy(&app, 4), "history context");
+        assert_copied(&shell, "history context");
 
         // A watched file selected: no diff file, in History as elsewhere.
         let tab = shell.active_content().map(|c| c.key);
@@ -535,10 +484,10 @@ fn history_copies_and_edits_the_commit_file() {
 #[test]
 fn a_refresh_that_moves_the_file_keeps_its_selection() {
     let _golden = super::parity::guard();
-    let (app_repo, flag_repo) = (fixture(2), fixture(2));
+    let flag_repo = fixture(2);
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
-        let (mut app, mut shell) = both_on(&app_repo, &flag_repo, storage.path());
+        let mut shell = both_on(&flag_repo, storage.path());
         let mut hl = Highlighter::new();
         let keys = [
             key(KeyCode::Char('k')),
@@ -546,16 +495,16 @@ fn a_refresh_that_moves_the_file_keeps_its_selection() {
             shift(KeyCode::Down),
         ];
         for event in keys {
-            step(&mut app, &mut shell, &mut hl, event);
+            step(&mut shell, &mut hl, event);
         }
         // A file that sorts first moves src/f001.rs from index 1 to 2.
-        for repo in [&app_repo, &flag_repo] {
+        {
+            let repo = &flag_repo;
             std::fs::write(repo.path().join("src/a.rs"), "fn a() {}\n")
                 .unwrap_or_else(|e| panic!("{e}"));
             git(repo.path(), &["add", "."]);
             git(repo.path(), &["commit", "-q", "-m", "a"]);
         }
-        press_app(&mut app, KeyCode::Char('R'));
         shell.handle_key(key(KeyCode::Char('R')));
         settle(&mut shell, |shell| {
             shell.in_flight() == 0
@@ -564,13 +513,11 @@ fn a_refresh_that_moves_the_file_keeps_its_selection() {
                     .is_some_and(|c| c.diff.files.len() == 3)
         });
         for _ in 0..2 {
-            step(&mut app, &mut shell, &mut hl, shift(KeyCode::Down));
+            step(&mut shell, &mut hl, shift(KeyCode::Down));
         }
-        let want = app_copy(&app, 4);
-        let notice_of = want.clone().map(|c| c.notice);
-        assert_eq!(notice_of, Ok("Copied selection (4 lines)".to_string()));
         copy_context(&mut shell);
-        assert_copied(&shell, want, "after the refresh");
+        let (_, said) = assert_copied(&shell, "after the refresh");
+        assert_eq!(said, "Copied selection (4 lines)");
     });
 }
 
@@ -598,48 +545,40 @@ fn seed_both_files(dir: &str, hash: &str) {
 #[test]
 fn a_jump_away_and_back_leaves_no_selection() {
     let _golden = super::parity::guard();
-    let (app_repo, flag_repo) = (fixture(2), fixture(2));
+    let flag_repo = fixture(2);
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
-        let (mut app, mut shell) = both_on(&app_repo, &flag_repo, storage.path());
-        seed_both(&mut app, &mut shell, seed_both_files);
+        let mut shell = both_on(&flag_repo, storage.path());
+        seed_shell(&mut shell, seed_both_files);
         let mut hl = Highlighter::new();
         let ctrl = |c: char| KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL);
         for event in [key(KeyCode::Down), shift(KeyCode::Down)] {
-            step(&mut app, &mut shell, &mut hl, event);
+            step(&mut shell, &mut hl, event);
         }
-        for _ in 0..3 {
-            if app.tab().selected_file == 1 {
-                break;
-            }
-            step(&mut app, &mut shell, &mut hl, ctrl('k'));
-        }
-        assert_eq!(
-            app.tab().selected_file,
-            1,
-            "the jumps did not reach src/f001.rs"
-        );
         let selected = |shell: &Shell| {
             let key = super::threads_tests::active_key(shell);
             super::threads_tests::state(shell, key).selected_file
         };
+        for _ in 0..3 {
+            if selected(&shell) == 1 {
+                break;
+            }
+            step(&mut shell, &mut hl, ctrl('k'));
+        }
         assert_eq!(
             selected(&shell),
             1,
             "the flag path's jumps did not reach src/f001.rs"
         );
-        step(&mut app, &mut shell, &mut hl, ctrl('j'));
-        assert_eq!(app.tab().selected_file, 0, "the jump did not come back");
+        step(&mut shell, &mut hl, ctrl('j'));
         assert_eq!(
             selected(&shell),
             0,
             "the flag path's jump did not come back"
         );
-        let want = app_copy(&app, 4);
-        let notice_of = want.clone().map(|c| c.notice);
-        assert_eq!(notice_of, Ok("Copied line (1 lines)".to_string()));
         copy_context(&mut shell);
-        assert_copied(&shell, want, "after the jumps");
+        let (_, said) = assert_copied(&shell, "after the jumps");
+        assert_eq!(said, "Copied line (1 lines)");
     });
 }
 
@@ -650,10 +589,10 @@ fn a_jump_away_and_back_leaves_no_selection() {
 #[test]
 fn a_refresh_that_removes_the_anchored_file_starts_a_new_selection() {
     let _golden = super::parity::guard();
-    let (app_repo, flag_repo) = (fixture(2), fixture(2));
+    let flag_repo = fixture(2);
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
-        let (mut app, mut shell) = both_on(&app_repo, &flag_repo, storage.path());
+        let mut shell = both_on(&flag_repo, storage.path());
         let mut hl = Highlighter::new();
         let keys = [
             key(KeyCode::Char('k')),
@@ -661,17 +600,17 @@ fn a_refresh_that_removes_the_anchored_file_starts_a_new_selection() {
             shift(KeyCode::Down),
         ];
         for event in keys {
-            step(&mut app, &mut shell, &mut hl, event);
+            step(&mut shell, &mut hl, event);
         }
         // src/f001.rs back to main's text: it leaves the diff.
-        for repo in [&app_repo, &flag_repo] {
+        {
+            let repo = &flag_repo;
             git(
                 repo.path(),
                 &["checkout", "-q", "main", "--", "src/f001.rs"],
             );
             git(repo.path(), &["commit", "-q", "-m", "drop"]);
         }
-        press_app(&mut app, KeyCode::Char('R'));
         shell.handle_key(key(KeyCode::Char('R')));
         settle(&mut shell, |shell| {
             shell.in_flight() == 0
@@ -680,15 +619,8 @@ fn a_refresh_that_removes_the_anchored_file_starts_a_new_selection() {
                     .is_some_and(|c| c.diff.files.len() == 1)
         });
         for _ in 0..2 {
-            step(&mut app, &mut shell, &mut hl, shift(KeyCode::Down));
+            step(&mut shell, &mut hl, shift(KeyCode::Down));
         }
-        let app_notice = app_copy(&app, 4).map(|c| c.notice);
-        assert!(
-            app_notice
-                .as_ref()
-                .is_ok_and(|n| n.starts_with("Copied selection")),
-            "{app_notice:?}"
-        );
         copy_context(&mut shell);
         let flag = copied(&shell);
         assert!(

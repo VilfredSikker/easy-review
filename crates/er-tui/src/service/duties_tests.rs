@@ -11,12 +11,12 @@ use er_engine::github::PrRef;
 use er_engine::ports::Ports;
 use er_github::{FakeGitHub, GhError};
 
+use super::parity::assert_frame;
 use super::parity::assert_json;
 use super::shell::Shell;
 use super::startup::{self, Args};
 use super::tests::{
-    app_on, assert_parity, fixture, key, loaded, path_of, press_app, rows, settle, settle_within,
-    shell, shell_frame,
+    fixture, key, loaded, path_of, rows, settle, settle_within, shell, shell_frame,
 };
 use crate::ui::highlight::Highlighter;
 
@@ -44,15 +44,12 @@ fn the_update_notice_lands_without_holding_a_frame() {
     let storage = storage();
     let path = path_of(&repo);
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
-        let mut app = app_on(&path);
-        app.available_update = Some("9.9.9".into());
         let mut shell = shell(&args(vec![path.clone()]), storage.path());
         let (tx, updates) = mpsc::channel();
         shell.listen_for_update(updates);
         settle(&mut shell, loaded);
         assert!(!shown(&mut shell).contains("er update"));
         for code in [KeyCode::Char('j'), KeyCode::Char('k')] {
-            press_app(&mut app, code);
             shell.handle_key(key(code));
         }
         shell.tick(Instant::now());
@@ -63,7 +60,7 @@ fn the_update_notice_lands_without_holding_a_frame() {
         shell.tick(Instant::now());
         assert!(shell.take_redraw(), "the landed version asked for no draw");
         let mut hl = Highlighter::new();
-        assert_parity(&app, &shell_frame(&mut shell, &mut hl), &mut hl, "update");
+        assert_frame("update", &shell_frame(&mut shell, &mut hl));
     });
 }
 
@@ -166,19 +163,12 @@ fn the_resume_hint_matches_the_app() {
     let paths = vec![path_of(&one), path_of(&two)];
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
         for paths in [paths[..1].to_vec(), paths.clone()] {
-            let app = er_engine::app::App::new_with_args(&paths, Ports::cli())
-                .unwrap_or_else(|e| panic!("{e:#}"));
             let mut shell = shell(&args(paths.clone()), storage.path());
             // Loaded, so no actor reads storage after the scope ends.
             settle(&mut shell, loaded);
-            assert_eq!(shell.resume_hint(), crate::resume_hint(&app), "{paths:?}");
             let step = format!("{} paths", paths.len());
             let rooted = |hint: Option<String>| hint.map(|hint| super::parity::tmp_rooted(&hint));
-            assert_json(
-                &step,
-                &rooted(shell.resume_hint()),
-                &rooted(crate::resume_hint(&app)),
-            );
+            assert_json(&step, &rooted(shell.resume_hint()));
         }
     });
     let pr = |number| PrRef {
@@ -211,8 +201,6 @@ fn an_outside_ai_write_says_the_data_refreshed() {
     let storage = storage();
     let path = path_of(&repo);
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
-        let mut app = app_on(&path);
-        assert!(!app.tab_mut().check_ai_files_changed());
         let mut shell = shell(&args(vec![path.clone()]), storage.path());
         settle(&mut shell, loaded);
         let quiet = settle_within(&mut shell, Duration::from_millis(2500), |shell| {
@@ -235,10 +223,6 @@ fn an_outside_ai_write_says_the_data_refreshed() {
                     "line_content": "c", "text": "outside", "resolved": false
                 }]
             }),
-        );
-        assert!(
-            app.tab_mut().check_ai_files_changed(),
-            "the App saw no write"
         );
         let refreshed =
             |shell: &Shell| shell.view().notification.as_deref() == Some("✓ AI data refreshed");

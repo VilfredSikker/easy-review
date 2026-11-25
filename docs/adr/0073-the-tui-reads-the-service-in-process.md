@@ -2,7 +2,7 @@
 
 ## Context
 
-Phase 5b moves the TUI off the App and onto the Workspace actors (ADR 0067).
+Phase 5b moved the TUI off the App and onto the Workspace actors (ADR 0067).
 The desktop reaches the actors through versioned resources over IPC (ADR
 0072), and its tab list is the app registry that saves `tabs.json` and
 `pr-open-cache.json` (ADR 0070). The TUI runs the service in its own process,
@@ -11,7 +11,7 @@ waiting on anything.
 
 ## Decision
 
-On the `v1-service` path the TUI holds one `ServiceHost`
+The TUI holds one `ServiceHost`
 (`crates/er-service/src/host.rs`): an actor per workspace key, the settings
 actor and one app registry, each started on first use.
 
@@ -48,13 +48,25 @@ actor and one app registry, each started on first use.
 
 ## Consequences
 
-- An area with no builder or no command route yet draws the unported-area
-  message on the flag path until the entry that ports it.
-- A source scan keeps every flag-on module from naming the App, from
-  calling `send_and_wait` or `recv_timeout`, from writing or discovering
-  settings itself, and from starting a thread. The watched-file reader alone
-  may start one, and the scan holds it to er-git's read functions. A test holds a load on a gated
-  git port and bounds each key's frame.
+- er-tui builds with er-engine's `ui` half off, so the App is outside its
+  graph. Its manifest test holds the dependency lines to that, and the
+  own-graph check (`cargo check -p er-tui --all-targets`) fails if a module
+  names the App, since a workspace build turns `ui` on through er-engine's own
+  tests.
+- A source scan walks `crates/er-tui/src` and keeps every module from naming
+  the App, from calling `send_and_wait` or `recv_timeout`, from writing or
+  discovering settings itself, and from starting a thread. Three threads are
+  allowed, each a reader: the watched-file reader (`service/watched.rs`), which
+  the scan holds to er-git's read functions; the PR probe
+  (`service/pr_probe.rs`), whose calls `github_tests` checks; and the
+  background update check `main.rs` starts from `update.rs`, whose result the
+  loop reads without waiting. A test holds a load on a gated git port and
+  bounds each key's frame.
+- A write guard (`crates/er-tui/tests/writes.rs`) fails on a write via the git
+  or GitHub ports, er-github, er-store or `std::fs`; P77.2 widens it to
+  er-engine's writers. It exempts `service/session.rs`'s save and
+  `update.rs`'s archive. The same walk fails on any path that says an area is
+  not on this build, so no key, hub row or panel falls back to one.
 - The TUI and the desktop each run a settings actor over one `config.toml`,
   as the two processes did before; ADR 0005's rule against a reload that
   overwrites live config still holds.

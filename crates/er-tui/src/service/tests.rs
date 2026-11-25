@@ -1,6 +1,5 @@
-//! The flag-on path's tests: what the start opens, what each frame draws
-//! beside the App path's frame, and that no key waits on an actor. The tests
-//! build the App to compare against; the modules they test never name it.
+//! The TUI's tests: what the start opens, that each frame draws its golden,
+//! and that no key waits on an actor.
 
 use std::path::{Path, PathBuf};
 use std::process::Command as Git;
@@ -16,6 +15,7 @@ use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
 use ratatui::Terminal;
 
+use super::parity::assert_frame;
 use super::shell::Shell;
 use super::startup::{self, Args, Start};
 use super::tui_view::Overlay;
@@ -25,53 +25,74 @@ pub(super) const WAIT: Duration = Duration::from_secs(20);
 const WIDTH: u16 = 120;
 const HEIGHT: u16 = 30;
 
-/// The flag-on modules, as text.
-pub(super) const SOURCES: [(&str, &str); 34] = [
-    ("agent_log.rs", include_str!("agent_log.rs")),
-    ("ai_picker.rs", include_str!("ai_picker.rs")),
-    ("ai_runs.rs", include_str!("ai_runs.rs")),
-    ("chrome.rs", include_str!("chrome.rs")),
-    ("clears.rs", include_str!("clears.rs")),
-    ("config_hub.rs", include_str!("config_hub.rs")),
-    ("context.rs", include_str!("context.rs")),
-    ("copy.rs", include_str!("copy.rs")),
-    ("export.rs", include_str!("export.rs")),
-    ("filter.rs", include_str!("filter.rs")),
-    ("findings.rs", include_str!("findings.rs")),
-    ("flows.rs", include_str!("flows.rs")),
-    ("github.rs", include_str!("github.rs")),
-    ("handoff.rs", include_str!("handoff.rs")),
-    ("history.rs", include_str!("history.rs")),
-    ("layers.rs", include_str!("layers.rs")),
-    ("mod.rs", include_str!("mod.rs")),
-    ("modes.rs", include_str!("modes.rs")),
-    ("open.rs", include_str!("open.rs")),
-    ("open_hub.rs", include_str!("open_hub.rs")),
-    ("open_pr.rs", include_str!("open_pr.rs")),
-    ("pr_probe.rs", include_str!("pr_probe.rs")),
-    ("review_hub.rs", include_str!("review_hub.rs")),
-    ("reviewed.rs", include_str!("reviewed.rs")),
-    ("session.rs", include_str!("session.rs")),
-    ("settings.rs", include_str!("settings.rs")),
-    ("shell.rs", include_str!("shell.rs")),
-    ("startup.rs", include_str!("startup.rs")),
-    ("threads.rs", include_str!("threads.rs")),
-    ("tour.rs", include_str!("tour.rs")),
-    ("tui_view.rs", include_str!("tui_view.rs")),
-    ("watched.rs", include_str!("watched.rs")),
-    ("watcher.rs", include_str!("watcher.rs")),
-    ("worktree.rs", include_str!("worktree.rs")),
-];
+/// Every source under `src/`, as text, cut where its test module starts,
+/// each named by its path from `service/`.
+pub(super) fn sources() -> Vec<(String, String)> {
+    fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
+        for entry in std::fs::read_dir(dir).unwrap_or_else(|e| panic!("{e}")) {
+            let path = entry.unwrap_or_else(|e| panic!("{e}")).path();
+            if path.is_dir() {
+                walk(&path, out);
+            } else if path.extension().is_some_and(|ext| ext == "rs") {
+                out.push(path);
+            }
+        }
+    }
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut paths = Vec::new();
+    walk(&src, &mut paths);
+    paths.sort();
+    paths
+        .into_iter()
+        .filter(|path| {
+            let name = path.file_name().map(|n| n.to_string_lossy().into_owned());
+            let name = name.unwrap_or_default();
+            !name.ends_with("tests.rs") && name != "golden.rs" && name != "parity.rs"
+        })
+        .map(|path| {
+            let relative = path.strip_prefix(&src).unwrap_or(&path).to_string_lossy();
+            let name = match relative.strip_prefix("service/") {
+                Some(name) => name.to_string(),
+                None => format!("../{relative}"),
+            };
+            let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{e}"));
+            (
+                name,
+                text.get(..test_module(&text)).unwrap_or(&text).to_string(),
+            )
+        })
+        .collect()
+}
 
-/// No flag-on module reaches the App, fetches a PR's refs itself, writes or
+/// The sources under `service/`.
+pub(super) fn service_sources() -> Vec<(String, String)> {
+    let mut sources = sources();
+    sources.retain(|(name, _)| !name.starts_with("../"));
+    sources
+}
+
+/// Where a file's inline test module starts, or its end.
+fn test_module(text: &str) -> usize {
+    text.match_indices("#[cfg(test)]")
+        .map(|(at, _)| at)
+        .find(|&at| {
+            let rest = text.get(at..).unwrap_or_default();
+            let item = rest.lines().nth(1).unwrap_or_default().trim();
+            item.starts_with("mod ") && item.ends_with('{')
+        })
+        .unwrap_or(text.len())
+}
+
+/// No module reaches the App, fetches a PR's refs itself, writes or
 /// discovers settings itself, writes the working tree itself, starts a
 /// thread, or waits on an actor: the service owns the domain, and a key never
 /// blocks the loop. Two modules may start a thread, and both only read: the
 /// watched-file reader makes none of the calls a write takes, and every er-git
 /// name it uses is a read; the PR probe's calls are checked in
-/// `github_tests`.
+/// `github_tests`. Outside `service/`, only `update.rs` starts one: the
+/// background update check, whose result the loop reads without waiting.
 #[test]
-fn flag_on_modules_name_no_app_and_never_wait() {
+fn modules_name_no_app_and_never_wait() {
     let banned = [
         "er_engine::app",
         "app::",
@@ -89,7 +110,7 @@ fn flag_on_modules_name_no_app_and_never_wait() {
         "git.commit(",
         "git.push(",
     ];
-    for (name, text) in SOURCES {
+    for (name, text) in &sources() {
         // Joined into one line, so a grouped import or a split call is seen.
         let flat: String = text.split_whitespace().collect();
         for needle in banned {
@@ -115,7 +136,7 @@ fn flag_on_modules_name_no_app_and_never_wait() {
                     "{name} names er-git's {named}"
                 );
             }
-        } else if name != "pr_probe.rs" {
+        } else if name != "pr_probe.rs" && name != "../update.rs" {
             for spawn in ["thread::spawn", "thread::Builder"] {
                 assert!(!flat.contains(spawn), "{name} names {spawn}");
             }
@@ -327,8 +348,7 @@ pub(super) fn shell_on(ports: Ports, start: &Start, config_dir: &Path) -> Shell 
     let git = Arc::clone(&ports.git);
     let host = ServiceHost::new(ports, config_dir.join("config.toml")).with_events(tx);
     let mut shell = Shell::start(host, events, start, git).unwrap_or_else(|e| panic!("{e:#}"));
-    // The App these tests compare against runs no watcher and no automatic
-    // context pick.
+    // The goldens were drawn with no watcher and no automatic context pick.
     shell.watch_mut().on = false;
     shell.auto_context = Some(0);
     shell
@@ -375,16 +395,6 @@ pub(super) fn shell_frame(shell: &mut Shell, highlighter: &mut Highlighter) -> B
     terminal.backend().buffer().clone()
 }
 
-pub(super) fn app_frame(app: &er_engine::app::App, highlighter: &mut Highlighter) -> Buffer {
-    let mut terminal =
-        Terminal::new(TestBackend::new(WIDTH, HEIGHT)).unwrap_or_else(|e| panic!("{e}"));
-    let mut cache = crate::screen::ViewCache::default();
-    terminal
-        .draw(|f| crate::ui::draw(f, &crate::screen::from_app(app, &mut cache), highlighter))
-        .unwrap_or_else(|e| panic!("{e}"));
-    terminal.backend().buffer().clone()
-}
-
 pub(super) fn rows(buffer: &Buffer) -> Vec<String> {
     buffer
         .content
@@ -393,55 +403,9 @@ pub(super) fn rows(buffer: &Buffer) -> Vec<String> {
         .collect()
 }
 
-/// Every cell matches in text and style.
-pub(super) fn assert_parity(
-    app: &er_engine::app::App,
-    flag_on: &Buffer,
-    hl: &mut Highlighter,
-    step: &str,
-) {
-    let app = &app_frame(app, hl);
-    super::parity::assert_frame(step, flag_on, app);
-    let (app_rows, flag_rows) = (rows(app), rows(flag_on));
-    for row in 0..usize::from(HEIGHT) {
-        assert_eq!(
-            app_rows[row],
-            flag_rows[row],
-            "{step}: row {row} differs\napp:\n{}\nflag-on:\n{}",
-            app_rows.join("\n"),
-            flag_rows.join("\n")
-        );
-        let at =
-            |buffer: &Buffer, col: usize| buffer.content[row * usize::from(WIDTH) + col].style();
-        for col in 0..usize::from(WIDTH) {
-            assert_eq!(
-                at(app, col),
-                at(flag_on, col),
-                "{step}: style at row {row}, col {col}"
-            );
-        }
-    }
-}
-
-/// The App path, on the same repo, with the automatic context pick off, as
-/// the test shell has it.
-pub(super) fn app_on(path: &str) -> er_engine::app::App {
-    let mut app = er_engine::app::App::new_with_args(&[path.to_string()], Ports::cli())
-        .unwrap_or_else(|e| panic!("{e:#}"));
-    app.config.display.auto_context_threshold = 0;
-    app
-}
-
-pub(super) fn press_app(app: &mut er_engine::app::App, code: KeyCode) {
-    let (tx, _rx) = mpsc::channel();
-    let mut cache = crate::screen::ViewCache::default();
-    crate::handle_key(app, key(code), &tx, &mut None, &mut cache).unwrap_or_else(|e| panic!("{e}"));
-}
-
 /// A seed written beside the shell reaches it on the reload tick, which says
-/// "✓ AI data refreshed"; the App leg reads its seed in place and says
-/// nothing. Waits for the reload's reply to land, then takes that notice
-/// down, as the App legs clear theirs.
+/// "✓ AI data refreshed", and the goldens were drawn without it. Waits for
+/// the reload's reply to land, then takes that notice down.
 pub(super) fn let_the_reload_notice_go(shell: &mut Shell) {
     let deadline = Instant::now() + WAIT;
     while shell.reloads_in_flight() > 0 && Instant::now() < deadline {
@@ -451,6 +415,26 @@ pub(super) fn let_the_reload_notice_go(shell: &mut Shell) {
     if shell.view().notification.as_deref() == Some("✓ AI data refreshed") {
         shell.clear_notification();
     }
+}
+
+/// Saves the active tab's session as another view would leave it: the
+/// shell's own, changed by `edit`.
+pub(super) fn save_session_of(
+    shell: &Shell,
+    edit: impl FnOnce(&mut er_engine::session_store::SessionState),
+) {
+    let loaded = shell
+        .active_content()
+        .unwrap_or_else(|| panic!("no content"));
+    let view = shell
+        .view()
+        .tab(loaded.key)
+        .unwrap_or_else(|| panic!("no view"));
+    let mut session = super::session::capture(&loaded, view);
+    edit(&mut session);
+    let scope = er_store::Scope::dir(&loaded.context.er_dir).unwrap_or_else(|e| panic!("{e}"));
+    er_engine::session_store::save_session(&er_engine::store_registry::store(), &scope, &session)
+        .unwrap_or_else(|e| panic!("{e}"));
 }
 
 pub(super) fn loaded(shell: &Shell) -> bool {
@@ -467,18 +451,22 @@ fn flag_on_frames_match_the_app_frames() {
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     let path = path_of(&repo);
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
-        let mut app = app_on(&path);
-        // A reviewed mark, saved where the service reads it.
-        app.toggle_reviewed().unwrap_or_else(|e| panic!("{e}"));
-        app.clear_notification();
         let args = Args {
             paths: vec![path.clone()],
             ..Args::default()
         };
         let mut shell = shell(&args, storage.path());
         settle(&mut shell, loaded);
+        // A reviewed mark on the first file, as the golden's start has.
+        shell.handle_key(key(KeyCode::Char(' ')));
+        settle(&mut shell, |shell| {
+            shell
+                .active_content()
+                .is_some_and(|c| !c.reviewed.marks.is_empty())
+        });
+        shell.clear_notification();
         let mut hl = Highlighter::new();
-        assert_parity(&app, &shell_frame(&mut shell, &mut hl), &mut hl, "start");
+        assert_frame("start", &shell_frame(&mut shell, &mut hl));
         let steps = [
             KeyCode::Char('k'),
             KeyCode::Char('n'),
@@ -491,16 +479,13 @@ fn flag_on_frames_match_the_app_frames() {
         ];
         for code in steps {
             // Each path lets the last step's message go before the next key.
-            app.clear_notification();
             shell.tick(Instant::now() + Duration::from_secs(60));
-            press_app(&mut app, code);
             shell.handle_key(key(code));
             shell.tick(Instant::now());
             let step = format!("{code:?}");
-            assert_parity(&app, &shell_frame(&mut shell, &mut hl), &mut hl, &step);
+            assert_frame(&step, &shell_frame(&mut shell, &mut hl));
         }
-        // An overlay the view holds draws as the App draws the same one.
-        app.open_export_picker();
+        // An overlay the view holds draws as the golden's.
         shell.view_mut().overlay = Some(Overlay::ExportPicker {
             include_comments: true,
             include_findings: true,
@@ -508,7 +493,7 @@ fn flag_on_frames_match_the_app_frames() {
             include_notes: true,
             selected: 0,
         });
-        assert_parity(&app, &shell_frame(&mut shell, &mut hl), &mut hl, "overlay");
+        assert_frame("overlay", &shell_frame(&mut shell, &mut hl));
     });
 }
 
@@ -521,7 +506,6 @@ fn a_selected_stub_parses_and_draws_like_the_app() {
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     let path = path_of(&repo);
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
-        let mut app = app_on(&path);
         let args = Args {
             paths: vec![path.clone()],
             ..Args::default()
@@ -537,17 +521,11 @@ fn a_selected_stub_parses_and_draws_like_the_app() {
         // The first file is selected from the start, so it parses with no key.
         settle_within(&mut shell, Duration::from_secs(5), |shell| !stub(shell, 0));
         let mut hl = Highlighter::new();
-        assert_parity(
-            &app,
-            &shell_frame(&mut shell, &mut hl),
-            &mut hl,
-            "stub-start",
-        );
-        press_app(&mut app, KeyCode::Char('k'));
+        assert_frame("stub-start", &shell_frame(&mut shell, &mut hl));
         shell.handle_key(key(KeyCode::Char('k')));
         // Without a parse the stub never fills; the frames then differ.
         settle_within(&mut shell, Duration::from_secs(5), |shell| !stub(shell, 1));
-        assert_parity(&app, &shell_frame(&mut shell, &mut hl), &mut hl, "stub");
+        assert_frame("stub", &shell_frame(&mut shell, &mut hl));
     });
 }
 
