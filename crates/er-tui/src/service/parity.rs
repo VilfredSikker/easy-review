@@ -24,7 +24,7 @@ thread_local! {
 /// One mask: how many chars from `at` it covers, or 0.
 type Rule = fn(&[char], usize) -> usize;
 
-const RULES: [Rule; 3] = [temp_dir, arena_id, clock];
+const RULES: [Rule; 4] = [temp_dir, arena_id, clock, elapsed];
 
 /// `.tmpAb12Cd`, as `tempfile` names a dir; a clipped name masks what shows.
 /// Storage keys a repo as its dir name and a hash of its path,
@@ -66,6 +66,43 @@ fn arena_id(chars: &[char], at: usize) -> usize {
 }
 
 /// `01:27` or `01:27:07`, standing alone: a digit or `:` on either side
+/// An agent-log offset, `[   +0s]` or `[+1m05s]`: how long after the run
+/// began a line came, which a slow spawn moves.
+fn elapsed(chars: &[char], at: usize) -> usize {
+    if chars.get(at) != Some(&'[') {
+        return 0;
+    }
+    let digits = |from: usize| {
+        chars[from.min(chars.len())..]
+            .iter()
+            .take_while(|c| c.is_ascii_digit())
+            .count()
+    };
+    let mut end = at + 1;
+    end += chars[end..].iter().take_while(|c| **c == ' ').count();
+    if chars.get(end) != Some(&'+') {
+        return 0;
+    }
+    end += 1;
+    let count = digits(end);
+    if count == 0 {
+        return 0;
+    }
+    end += count;
+    if chars.get(end) == Some(&'m') {
+        let seconds = digits(end + 1);
+        if seconds == 0 {
+            return 0;
+        }
+        end += 1 + seconds;
+    }
+    if chars.get(end..end + 2) == Some(&['s', ']'][..]) {
+        end + 2 - at
+    } else {
+        0
+    }
+}
+
 /// makes it part of something else, such as `f000.rs:12:34`.
 fn clock(chars: &[char], at: usize) -> usize {
     let pair = |from: usize| {
@@ -776,6 +813,10 @@ fn masks_keep_the_width_and_cover_only_the_runs_own_text() {
         ("12:345", "12:345"),
         ("f000.rs:12:34", "f000.rs:12:34"),
         ("12:34:567", "12:34:567"),
+        ("[   +0s] [review] line-a", "######## [review] line-a"),
+        ("[  +12s] x", "######## x"),
+        ("[+1m05s] x", "######## x"),
+        ("[x] [+s] [ 3s]", "[x] [+s] [ 3s]"),
         ("+2 -40 · 12 files · line 3", "+2 -40 · 12 files · line 3"),
     ];
     for (row, masked) in cases {
