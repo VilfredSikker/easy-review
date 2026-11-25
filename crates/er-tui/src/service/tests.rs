@@ -126,7 +126,7 @@ fn block_end(text: &str, open: usize) -> usize {
             }
             b'\'' if bytes.get(at + 2) == Some(&b'\'') => at += 2,
             b'\'' if next == Some(b'\\') => {
-                at = find(at + 3, "'").map_or(text.len(), |n| at + 3 + n)
+                at = find(at + 3, "'").map_or(text.len(), |n| at + 3 + n);
             }
             b'{' => depth += 1,
             b'}' => {
