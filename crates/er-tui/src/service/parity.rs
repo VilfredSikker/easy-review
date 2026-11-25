@@ -243,8 +243,11 @@ fn check(order: usize, kind: &str, step: &str, app: &str, flag_on: &str) {
             .collect();
         assert!(
             differ.is_empty(),
-            "{path}: {head}: {} result is not the golden\n--- golden\n{want}--- App\n{app}--- flag path\n{flag_on}",
-            differ.join(" and ")
+            "{path}: {head}: {} not the golden\n--- golden\n{want}--- App\n{app}--- flag path\n{flag_on}",
+            match differ.as_slice() {
+                [leg] => format!("{leg} result is"),
+                _ => "both legs' results are".to_string(),
+            }
         );
     });
 }
