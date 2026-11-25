@@ -345,7 +345,7 @@ const PANES: &[Fixture] = &[
         scene.merge(true, 1);
     }),
     fixture_of("diff_history", 110, 16, |scene| {
-        history(scene, "2 days ago")
+        history(scene, "2 days ago");
     }),
     fixture_of("diff_split", 120, 14, |scene| {
         scene.config.display.split_diff = true;
