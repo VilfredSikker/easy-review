@@ -490,12 +490,16 @@ fn a_key_notice_replaces_a_held_refusal_at_once() {
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
         let mut shell = shell(&args(vec![path_of(&repo)]), storage.path());
         settle(&mut shell, loaded);
+        let shown = |shell: &Shell| shell.view().notification.clone().unwrap_or_default();
         shell.land_failed_reply("summary failed (feature): no agent".into());
+        shell.handle_key(key(KeyCode::Char('!')));
+        assert_eq!(shown(&shell), "Showing unreviewed only");
+
+        shell.land_failed_reply("review failed (feature): no agent".into());
         (shell.host().task_hooks().notify)("tour completed (feature)".into(), false);
         shell.tick(Instant::now());
         shell.handle_key(key(KeyCode::Char('!')));
-        let shown = |shell: &Shell| shell.view().notification.clone().unwrap_or_default();
-        assert_eq!(shown(&shell), "Showing unreviewed only");
+        assert_eq!(shown(&shell), "Showing all files");
         shell_frame(&mut shell, &mut Highlighter::new());
         shell.tick(Instant::now() + Duration::from_secs(60));
         assert_ne!(shown(&shell), "tour completed (feature)");
