@@ -62,12 +62,14 @@ actor and one app registry, each started on first use.
   background update check `main.rs` starts from `update.rs`, whose result the
   loop reads without waiting. A test holds a load on a gated git port and
   bounds each key's frame.
-- A write guard (`crates/er-tui/tests/writes.rs`) keeps every module from
-  writing a store artifact, the working tree or GitHub itself, through the
-  ports, er-github, er-store, er-engine's writers or `std::fs`. It exempts
-  `service/session.rs`'s save and `update.rs`'s archive and binary. One form
-  is out of its reach: a git push whose result a match arm or a closure
-  returns, which reads the same as a list's push. The same walk fails on any path that says an area is
+- A write guard (`crates/er-tui/tests/writes.rs`) fails on a module that
+  calls a write it names: the git and GitHub ports, er-github, er-store,
+  er-engine's writers and `std::fs`. It exempts `service/session.rs`'s save,
+  `update.rs`'s archive and binary, `service/shell.rs`'s first-launch notice
+  (a one-time import of legacy projects) and `main.rs`'s `er uninstall`,
+  which runs with no service. A git push whose result a match arm or a
+  closure returns is out of its reach, since it reads the same as a list's
+  push. The same walk fails on any path that says an area is
   not on this build, so no key, hub row or panel falls back to one.
 - The TUI and the desktop each run a settings actor over one `config.toml`,
   as the two processes did before; ADR 0005's rule against a reload that

@@ -1,7 +1,10 @@
-//! No TUI module writes a store artifact, the working tree or GitHub itself:
-//! each write is a command the service runs (ADR 0073). The one session save
-//! is `service/session.rs`'s, and the one file write is `update.rs`'s
-//! downloaded archive and installed binary. Inline test modules are skipped,
+//! No TUI module calls a write named here (the store, the git and GitHub
+//! ports, er-github, er-engine's writers, `std::fs`): each write is a command
+//! the service runs (ADR 0073). Four are allowed, each in one file: the session
+//! save in `service/session.rs`; the downloaded archive and installed binary in
+//! `update.rs`; `first_launch::notice` in `service/shell.rs`, which imports
+//! legacy projects once per machine; and `uninstall::execute` in `main.rs`,
+//! which `er uninstall` runs with no service. Inline test modules are skipped,
 //! and the scan goes on after one. Code is matched joined into one line, so no
 //! line break, import group or receiver name hides a write. One form is out of
 //! reach: a git push whose result a match arm or a closure returns, since a
@@ -83,7 +86,7 @@ const GITHUB: [&str; 20] = [
 
 /// er-engine's own writers of a store artifact, a sidecar, a job's inputs or
 /// the app's records, and the runs that write as they go.
-const ENGINE: [&str; 79] = [
+const ENGINE: [&str; 110] = [
     "save_tabs",
     "save_persisted_pr_open_cache",
     "prune_pr_open_cache",
@@ -163,6 +166,37 @@ const ENGINE: [&str; 79] = [
     "start_arena_batch",
     "launch_agent_prompt",
     "launch_shell_command",
+    "pin_pr",
+    "unpin_pr",
+    "resolve_project_for_pin",
+    "import_legacy_projects_once",
+    "mark_imported",
+    "first_launch::notice",
+    "uninstall::execute",
+    "adopt_pr_bucket_comments",
+    "relocate_all_comments",
+    "override_finding",
+    "ensure_dirs",
+    "confirm_review_flow",
+    "decline_review_flow",
+    "cancel_review_flow",
+    "advance_review_flow",
+    "rerun_review_flow",
+    "run_review_flow_standard",
+    "reconcile_workflow_record",
+    "reconcile_stale_runs",
+    "begin_arena_run",
+    "end_arena_run",
+    "accepted_findings::rollback",
+    "with_finding_in_overlay",
+    "commit_contract",
+    "sweep_stale",
+    "stage_job::",
+    "job_staging::",
+    "discover_and_cache",
+    "prepare_pr_diff_tmp",
+    "prepare_review_kit",
+    "prepare_diagram_kit",
 ];
 
 /// The installer's writes, which only `update.rs` makes.
@@ -231,9 +265,11 @@ fn without_test_modules(text: &str) -> String {
     while let Some(at) = rest.find(ATTR) {
         let item = rest.get(at + ATTR.len()..).unwrap_or_default().trim_start();
         let open = item.find('{').map(|open| rest.len() - item.len() + open);
-        let header = item.split('{').next().unwrap_or_default();
+        let header = item.split('{').next().unwrap_or_default().trim();
+        let name = header.strip_prefix("mod ").unwrap_or_default();
+        let is_mod = !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_');
         let cut = match open {
-            Some(open) if header.starts_with("mod ") && !header.contains(';') => {
+            Some(open) if is_mod => {
                 out.push_str(rest.get(..at).unwrap_or_default());
                 block_end(rest, open)
             }
@@ -379,6 +415,10 @@ fn no_tui_module_writes_for_itself() {
             let allowed = match *needle {
                 "save_session(" => name == "service/session.rs",
                 _ if FILES.contains(needle) || INSTALL.contains(needle) => name == "update.rs",
+                // The legacy projects import runs once per machine, at start.
+                "first_launch::notice" => name == "service/shell.rs",
+                // `er uninstall` removes er's own files, with no service running.
+                "uninstall::execute" => name == "main.rs",
                 _ => false,
             };
             assert!(allowed || !flat.contains(needle), "{name} names {needle}");

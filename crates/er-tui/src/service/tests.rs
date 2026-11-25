@@ -77,9 +77,11 @@ fn without_test_modules(text: &str) -> String {
     while let Some(at) = rest.find(ATTR) {
         let item = rest.get(at + ATTR.len()..).unwrap_or_default().trim_start();
         let open = item.find('{').map(|open| rest.len() - item.len() + open);
-        let header = item.split('{').next().unwrap_or_default();
+        let header = item.split('{').next().unwrap_or_default().trim();
+        let name = header.strip_prefix("mod ").unwrap_or_default();
+        let is_mod = !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_');
         let cut = match open {
-            Some(open) if header.starts_with("mod ") && !header.contains(';') => {
+            Some(open) if is_mod => {
                 out.push_str(rest.get(..at).unwrap_or_default());
                 block_end(rest, open)
             }
