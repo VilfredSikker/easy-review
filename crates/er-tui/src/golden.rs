@@ -97,6 +97,7 @@ pub fn check(fixtures: &[Fixture]) {
     );
 }
 
+#[cfg(feature = "v1-service")]
 /// How a frame drawn elsewhere differs from the golden file `name`, or
 /// `None` when it matches. The flag path's suite reads the same files and
 /// never rewrites them: the App's fixtures record them.

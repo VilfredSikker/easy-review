@@ -219,16 +219,12 @@ fn with_loaded(run: impl FnOnce(&TabContent, &er_service::SettingsView)) {
     });
 }
 
-/// A `SectionData` scene for a renderer's unit test: `golden.rs`'s base
-/// tab on the flag path, changed by `build`, handed to `test`, which draws
-/// it through [`screen_of`].
-pub(crate) fn with_section_screen(build: impl FnOnce(&mut Scene), test: impl FnOnce(&Scene)) {
-    with_loaded(|loaded, settings| {
-        let mut scene = scene(loaded, settings);
-        build(&mut scene);
-        super::tour::follow(&mut scene.state.tour, &scene.content);
-        test(&scene);
-    });
+/// `golden.rs`'s base tab as a `SectionData` scene, for a renderer's unit
+/// test to change and draw through [`screen_of`].
+pub(crate) fn section_scene() -> Scene {
+    let mut built = None;
+    with_loaded(|loaded, settings| built = Some(scene(loaded, settings)));
+    built.unwrap_or_else(|| panic!("no scene"))
 }
 
 fn check(fixtures: &[Fixture]) {

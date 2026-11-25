@@ -272,6 +272,12 @@ pub fn key_action(key: KeyEvent, screen: &Screen) -> TuiAction {
 }
 
 #[cfg(test)]
+// The key tables are checked on the flag path's screen, so without the
+// feature only the guard and no-write tests run, and the tables sit unused.
+#[cfg_attr(
+    not(feature = "v1-service"),
+    expect(dead_code, unused_imports, reason = "the table tests need v1-service")
+)]
 mod tests {
     use super::*;
     use crate::screen::view::{self, ConfigEditState, OverlayData};
@@ -521,31 +527,27 @@ mod tests {
     #[cfg(feature = "v1-service")]
     #[test]
     fn the_key_table_pins_every_key_in_normal_mode() {
-        crate::service::golden_tests::with_section_screen(
-            |_| {},
-            |scene| {
-                let mut screen = crate::service::golden_tests::screen_of(scene);
-                screen.tab.mode = DiffMode::Branch;
-                screen.tab.modes = vec![DiffMode::Branch, DiffMode::Unstaged, DiffMode::Staged];
-                screen.chrome.split_diff = false;
-                assert_table("normal", &screen, &[GLOBAL, SHARED, DIFF_ONLY, NAVIGATION]);
+        let scene = crate::service::golden_tests::section_scene();
+        let mut screen = crate::service::golden_tests::screen_of(&scene);
+        screen.tab.mode = DiffMode::Branch;
+        screen.tab.modes = vec![DiffMode::Branch, DiffMode::Unstaged, DiffMode::Staged];
+        screen.chrome.split_diff = false;
+        assert_table("normal", &screen, &[GLOBAL, SHARED, DIFF_ONLY, NAVIGATION]);
 
-                screen.tab.mode = DiffMode::History;
-                assert_table("history", &screen, &[GLOBAL, SHARED, HISTORY]);
-                screen.tab.mode = DiffMode::Tour;
-                assert_table("tour", &screen, &[GLOBAL, SHARED, TOUR]);
+        screen.tab.mode = DiffMode::History;
+        assert_table("history", &screen, &[GLOBAL, SHARED, HISTORY]);
+        screen.tab.mode = DiffMode::Tour;
+        assert_table("tour", &screen, &[GLOBAL, SHARED, TOUR]);
 
-                screen.tab.mode = DiffMode::Branch;
-                screen.tab.panel_focus = true;
-                screen.tab.panel = Some(er_engine::ai::PanelContent::AiSummary);
-                assert_table("ai summary focused", &screen, &[GLOBAL, AI_SUMMARY]);
-                screen.tab.panel = Some(er_engine::ai::PanelContent::FileDetail);
-                assert_table(
-                    "panel focused",
-                    &screen,
-                    &[GLOBAL, PANEL, SHARED, DIFF_ONLY, NAVIGATION],
-                );
-            },
+        screen.tab.mode = DiffMode::Branch;
+        screen.tab.panel_focus = true;
+        screen.tab.panel = Some(er_engine::ai::PanelContent::AiSummary);
+        assert_table("ai summary focused", &screen, &[GLOBAL, AI_SUMMARY]);
+        screen.tab.panel = Some(er_engine::ai::PanelContent::FileDetail);
+        assert_table(
+            "panel focused",
+            &screen,
+            &[GLOBAL, PANEL, SHARED, DIFF_ONLY, NAVIGATION],
         );
     }
 
@@ -553,304 +555,279 @@ mod tests {
     #[cfg(feature = "v1-service")]
     #[test]
     fn guards_pick_the_action_from_the_screen() {
-        crate::service::golden_tests::with_section_screen(
-            |_| {},
-            |scene| {
-                let mut screen = crate::service::golden_tests::screen_of(scene);
-                let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
-                let action = |screen: &Screen, code| key_action(key(code), screen);
-                let check = |screen: &Screen, code, want: NormalAction| {
-                    assert_eq!(action(screen, code), want.into());
-                };
-                use NormalAction as A;
-                let compacted = er_engine::git::DiffFile {
-                    compacted: true,
-                    ..screen.tab.selected_diff_file.unwrap().clone()
-                };
+        let scene = crate::service::golden_tests::section_scene();
+        let mut screen = crate::service::golden_tests::screen_of(&scene);
+        let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
+        let action = |screen: &Screen, code| key_action(key(code), screen);
+        let check = |screen: &Screen, code, want: NormalAction| {
+            assert_eq!(action(screen, code), want.into());
+        };
+        use NormalAction as A;
+        let compacted = er_engine::git::DiffFile {
+            compacted: true,
+            ..screen.tab.selected_diff_file.unwrap().clone()
+        };
 
-                screen.tab.mode = DiffMode::Hidden;
-                check(&screen, KeyCode::Char('x'), A::AskDeleteWatchedFile);
-                screen.tab.mode = DiffMode::Staged;
-                check(&screen, KeyCode::Char('c'), A::StartCommit);
-                screen.tab.focused_comment_id = Some("c1");
-                check(&screen, KeyCode::Char('x'), A::AskDeleteComment);
+        screen.tab.mode = DiffMode::Hidden;
+        check(&screen, KeyCode::Char('x'), A::AskDeleteWatchedFile);
+        screen.tab.mode = DiffMode::Staged;
+        check(&screen, KeyCode::Char('c'), A::StartCommit);
+        screen.tab.focused_comment_id = Some("c1");
+        check(&screen, KeyCode::Char('x'), A::AskDeleteComment);
 
-                screen.chrome.split_diff = true;
-                check(&screen, KeyCode::Tab, A::ToggleSplitFocus);
-                screen.tab.mode = DiffMode::History;
-                check(&screen, KeyCode::Tab, A::TogglePanelFocus);
-                screen.chrome.has_comment_draft = true;
-                check(&screen, KeyCode::Tab, A::ResumeComment);
+        screen.chrome.split_diff = true;
+        check(&screen, KeyCode::Tab, A::ToggleSplitFocus);
+        screen.tab.mode = DiffMode::History;
+        check(&screen, KeyCode::Tab, A::TogglePanelFocus);
+        screen.chrome.has_comment_draft = true;
+        check(&screen, KeyCode::Tab, A::ResumeComment);
 
-                screen.tab.mode = DiffMode::Branch;
-                screen.tab.filter_expr = "+*.rs";
-                check(&screen, KeyCode::Esc, A::ClearFilter);
-                screen.tab.search_query = "auth";
-                check(&screen, KeyCode::Esc, A::ClearSearch);
-                screen.tab.selected_diff_file = Some(&compacted);
-                check(&screen, KeyCode::Enter, A::ToggleCompacted);
+        screen.tab.mode = DiffMode::Branch;
+        screen.tab.filter_expr = "+*.rs";
+        check(&screen, KeyCode::Esc, A::ClearFilter);
+        screen.tab.search_query = "auth";
+        check(&screen, KeyCode::Esc, A::ClearSearch);
+        screen.tab.selected_diff_file = Some(&compacted);
+        check(&screen, KeyCode::Enter, A::ToggleCompacted);
 
-                screen.tab.selected_watched_index = Some(0);
-                check(&screen, KeyCode::Char('s'), A::UpdateWatchedSnapshot);
-                screen.tab.is_remote = true;
-                assert_eq!(action(&screen, KeyCode::Char('s')), TuiAction::Noop);
+        screen.tab.selected_watched_index = Some(0);
+        check(&screen, KeyCode::Char('s'), A::UpdateWatchedSnapshot);
+        screen.tab.is_remote = true;
+        assert_eq!(action(&screen, KeyCode::Char('s')), TuiAction::Noop);
 
-                screen.tab.modes = vec![DiffMode::PrDiff];
-                check(&screen, KeyCode::Char('1'), A::SwitchMode(DiffMode::PrDiff));
-                assert_eq!(action(&screen, KeyCode::Char('2')), TuiAction::Noop);
+        screen.tab.modes = vec![DiffMode::PrDiff];
+        check(&screen, KeyCode::Char('1'), A::SwitchMode(DiffMode::PrDiff));
+        assert_eq!(action(&screen, KeyCode::Char('2')), TuiAction::Noop);
 
-                screen.tab.panel_focus = true;
-                screen.tab.panel = Some(er_engine::ai::PanelContent::FileDetail);
-                screen.tab.focused_finding_id = Some("f1");
-                check(&screen, KeyCode::Enter, A::JumpToFocusedFinding);
-            },
-        );
+        screen.tab.panel_focus = true;
+        screen.tab.panel = Some(er_engine::ai::PanelContent::FileDetail);
+        screen.tab.focused_finding_id = Some("f1");
+        check(&screen, KeyCode::Enter, A::JumpToFocusedFinding);
+
         // A file with findings: j and k step through them.
-        crate::service::golden_tests::with_section_screen(
-            |scene| {
-                let path = scene.content.diff.files[0].path.clone();
-                scene.ai(|ai| {
-                    ai.review = Some(
-                        serde_json::from_value(serde_json::json!({
-                            "version": 1, "diff_hash": "hash",
-                            "files": {path: {"risk": "high", "summary": "s", "findings": [
-                                {"id": "f1", "severity": "high", "title": "t", "hunk_index": 0}
-                            ]}}
-                        }))
-                        .unwrap(),
-                    );
-                });
-            },
-            |scene| {
-                use NormalAction as A;
-                let mut screen = crate::service::golden_tests::screen_of(scene);
-                let key = KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE);
-                let up = KeyEvent::new(KeyCode::Up, KeyModifiers::NONE);
-                screen.tab.panel_focus = true;
-                screen.tab.panel = Some(er_engine::ai::PanelContent::FileDetail);
-                assert_eq!(
-                    key_action(key, &screen),
-                    A::NavigatePanelFinding(true).into()
-                );
-                assert_eq!(
-                    key_action(up, &screen),
-                    A::NavigatePanelFinding(false).into()
-                );
-            },
-        );
+        let mut reviewed = crate::service::golden_tests::section_scene();
+        let path = reviewed.content.diff.files[0].path.clone();
+        reviewed.ai(|ai| {
+            ai.review = Some(
+                serde_json::from_value(serde_json::json!({
+                    "version": 1, "diff_hash": "hash",
+                    "files": {path: {"risk": "high", "summary": "s", "findings": [
+                        {"id": "f1", "severity": "high", "title": "t", "hunk_index": 0}
+                    ]}}
+                }))
+                .unwrap(),
+            )
+        });
+        let mut screen = crate::service::golden_tests::screen_of(&reviewed);
+        screen.tab.panel_focus = true;
+        screen.tab.panel = Some(er_engine::ai::PanelContent::FileDetail);
+        check(&screen, KeyCode::Char('j'), A::NavigatePanelFinding(true));
+        check(&screen, KeyCode::Up, A::NavigatePanelFinding(false));
     }
 
     #[cfg(feature = "v1-service")]
     #[test]
     fn the_key_table_pins_every_key_in_each_overlay() {
-        crate::service::golden_tests::with_section_screen(
-            |_| {},
-            |scene| {
-                let mut screen = crate::service::golden_tests::screen_of(scene);
-                let flow = er_engine::ai::review_flow::ReviewFlow::new("hash");
-                let results = er_engine::review_flow_driver::ReviewFlowResults {
-                    er_dir: String::new(),
-                    run_id: String::new(),
-                    diff_hash: String::new(),
-                    findings: Vec::new(),
-                };
-                let selected_ids = HashSet::new();
-                let buffer = String::new();
+        let scene = crate::service::golden_tests::section_scene();
+        let mut screen = crate::service::golden_tests::screen_of(&scene);
+        let flow = er_engine::ai::review_flow::ReviewFlow::new("hash");
+        let results = er_engine::review_flow_driver::ReviewFlowResults {
+            er_dir: String::new(),
+            run_id: String::new(),
+            diff_hash: String::new(),
+            findings: Vec::new(),
+        };
+        let selected_ids = HashSet::new();
+        let buffer = String::new();
 
-                screen.chrome.overlay = Some(OverlayData::ReviewFlowProgress {
-                    er_dir: "",
-                    flow: &flow,
-                    selected: 0,
-                    detail_scroll: 0,
-                });
-                let progress = "
-                *PageDown => Overlay(ScrollDetail(8))
-                *PageUp => Overlay(ScrollDetail(-8))
-                *r => Overlay(RerunReviewFlow)";
-                assert_table("review progress", &screen, &[LIST, progress]);
+        screen.chrome.overlay = Some(OverlayData::ReviewFlowProgress {
+            er_dir: "",
+            flow: &flow,
+            selected: 0,
+            detail_scroll: 0,
+        });
+        let progress = "
+            *PageDown => Overlay(ScrollDetail(8))
+            *PageUp => Overlay(ScrollDetail(-8))
+            *r => Overlay(RerunReviewFlow)";
+        assert_table("review progress", &screen, &[LIST, progress]);
 
-                screen.chrome.overlay = Some(OverlayData::ReviewFlowResults {
-                    results: &results,
-                    selected: 0,
-                    selected_ids: &selected_ids,
-                    detail_scroll: 0,
-                });
-                let flow_results = "
-                *PageDown => Overlay(ScrollDetail(8))
-                *PageUp => Overlay(ScrollDetail(-8))
-                *Space *Enter => Overlay(ToggleFlowFinding)
-                *a => Overlay(AcceptFlowFindings)";
-                assert_table("review results", &screen, &[LIST, flow_results]);
+        screen.chrome.overlay = Some(OverlayData::ReviewFlowResults {
+            results: &results,
+            selected: 0,
+            selected_ids: &selected_ids,
+            detail_scroll: 0,
+        });
+        let flow_results = "
+            *PageDown => Overlay(ScrollDetail(8))
+            *PageUp => Overlay(ScrollDetail(-8))
+            *Space *Enter => Overlay(ToggleFlowFinding)
+            *a => Overlay(AcceptFlowFindings)";
+        assert_table("review results", &screen, &[LIST, flow_results]);
 
-                screen.chrome.overlay = Some(OverlayData::ExportPicker {
-                    include_comments: true,
-                    include_findings: true,
-                    include_questions: true,
-                    include_notes: true,
-                    selected: 0,
-                });
-                let export = "
-                *Space => Overlay(ToggleExportKind)
-                *Enter => Overlay(Export)";
-                assert_table("export picker", &screen, &[LIST, export]);
+        screen.chrome.overlay = Some(OverlayData::ExportPicker {
+            include_comments: true,
+            include_findings: true,
+            include_questions: true,
+            include_notes: true,
+            selected: 0,
+        });
+        let export = "
+            *Space => Overlay(ToggleExportKind)
+            *Enter => Overlay(Export)";
+        assert_table("export picker", &screen, &[LIST, export]);
 
-                screen.chrome.overlay = Some(OverlayData::ConfigHub {
-                    tab: SettingsScope::General,
-                    items: &[],
-                    selected: 0,
-                    editing: None,
-                });
-                let settings = "
-                *j *Down => Overlay(Next)
-                *k *Up => Overlay(Prev)
-                *Enter *Space *Right => Overlay(ActivateSetting)
-                *Left => Overlay(ActivateSettingBack)
-                *d => Overlay(DeleteSetting)
-                *1 => Overlay(SwitchSettingsTab(General))
-                *2 *[ *] => Overlay(SwitchSettingsTab(Terminal))
-                *s *S *q *Esc => Overlay(CloseSettings)";
-                assert_table("settings", &screen, &[settings]);
-                screen.chrome.overlay = Some(OverlayData::ConfigHub {
-                    tab: SettingsScope::Terminal,
-                    items: &[],
-                    selected: 0,
-                    editing: None,
-                });
-                let back = KeyEvent::new(KeyCode::Char('['), KeyModifiers::NONE);
-                assert_eq!(
-                    key_action(back, &screen),
-                    TuiAction::Overlay(OverlayAction::SwitchSettingsTab(SettingsScope::General))
-                );
-
-                screen.chrome.overlay = Some(OverlayData::ConfigHub {
-                    tab: SettingsScope::General,
-                    items: &[],
-                    selected: 0,
-                    editing: Some(ConfigEditState {
-                        item_index: 0,
-                        buffer: &buffer,
-                    }),
-                });
-                let editing = typing(&|edit| format!("Overlay(EditSetting({edit}))"))
-                    + "
-                *Left => Overlay(EditSetting(Left))
-                *Right => Overlay(EditSetting(Right))";
-                assert_table("settings edit", &screen, &[&editing]);
-
-                screen.chrome.overlay = Some(OverlayData::ModalHub {
-                    kind: view::HubKind::Git,
-                    title: None,
-                    items: &[],
-                    selected: 0,
-                });
-                let rows = "
-                *b => Overlay(SecondaryRow)
-                *Enter => Overlay(SelectRow)
-                *Backspace => Overlay(GoUp)";
-                assert_table("hub", &screen, &[LIST, rows]);
-            },
+        screen.chrome.overlay = Some(OverlayData::ConfigHub {
+            tab: SettingsScope::General,
+            items: &[],
+            selected: 0,
+            editing: None,
+        });
+        let settings = "
+            *j *Down => Overlay(Next)
+            *k *Up => Overlay(Prev)
+            *Enter *Space *Right => Overlay(ActivateSetting)
+            *Left => Overlay(ActivateSettingBack)
+            *d => Overlay(DeleteSetting)
+            *1 => Overlay(SwitchSettingsTab(General))
+            *2 *[ *] => Overlay(SwitchSettingsTab(Terminal))
+            *s *S *q *Esc => Overlay(CloseSettings)";
+        assert_table("settings", &screen, &[settings]);
+        screen.chrome.overlay = Some(OverlayData::ConfigHub {
+            tab: SettingsScope::Terminal,
+            items: &[],
+            selected: 0,
+            editing: None,
+        });
+        let back = KeyEvent::new(KeyCode::Char('['), KeyModifiers::NONE);
+        assert_eq!(
+            key_action(back, &screen),
+            TuiAction::Overlay(OverlayAction::SwitchSettingsTab(SettingsScope::General))
         );
+
+        screen.chrome.overlay = Some(OverlayData::ConfigHub {
+            tab: SettingsScope::General,
+            items: &[],
+            selected: 0,
+            editing: Some(ConfigEditState {
+                item_index: 0,
+                buffer: &buffer,
+            }),
+        });
+        let editing = typing(&|edit| format!("Overlay(EditSetting({edit}))"))
+            + "
+            *Left => Overlay(EditSetting(Left))
+            *Right => Overlay(EditSetting(Right))";
+        assert_table("settings edit", &screen, &[&editing]);
+
+        screen.chrome.overlay = Some(OverlayData::ModalHub {
+            kind: view::HubKind::Git,
+            title: None,
+            items: &[],
+            selected: 0,
+        });
+        let rows = "
+            *b => Overlay(SecondaryRow)
+            *Enter => Overlay(SelectRow)
+            *Backspace => Overlay(GoUp)";
+        assert_table("hub", &screen, &[LIST, rows]);
     }
 
     #[cfg(feature = "v1-service")]
     #[test]
     fn the_key_table_pins_every_key_in_the_text_inputs_and_the_prompt() {
-        crate::service::golden_tests::with_section_screen(
-            |_| {},
-            |scene| {
-                let mut screen = crate::service::golden_tests::screen_of(scene);
-                for (mode, name) in [
-                    (InputMode::Search, "Search"),
-                    (InputMode::Filter, "Filter"),
-                    (InputMode::Commit, "Commit"),
-                    (InputMode::RemoteUrl, "RemoteUrl"),
-                    (InputMode::BaseBranch, "BaseBranch"),
-                    (InputMode::ReviewSummary, "ReviewSummary"),
-                ] {
-                    screen.chrome.input_mode = mode;
-                    assert_table(name, &screen, &[&typing(&|edit| format!("{name}({edit})"))]);
-                }
+        let scene = crate::service::golden_tests::section_scene();
+        let mut screen = crate::service::golden_tests::screen_of(&scene);
+        for (mode, name) in [
+            (InputMode::Search, "Search"),
+            (InputMode::Filter, "Filter"),
+            (InputMode::Commit, "Commit"),
+            (InputMode::RemoteUrl, "RemoteUrl"),
+            (InputMode::BaseBranch, "BaseBranch"),
+            (InputMode::ReviewSummary, "ReviewSummary"),
+        ] {
+            screen.chrome.input_mode = mode;
+            assert_table(name, &screen, &[&typing(&|edit| format!("{name}({edit})"))]);
+        }
 
-                // Every key the comment composer does not bind goes to its text area.
-                screen.chrome.input_mode = InputMode::Comment;
-                let mut comment = String::from(
-                    "
-                S-Enter => Comment(NewLine)
-                Enter C-Enter => Comment(Submit)
-                *Esc => Comment(Cancel)
-                *Tab *BackTab => Comment(Pause)
-                C-t => Comment(ToggleType)
-                C-d => Comment(ScrollDown(10))
-                C-u => Comment(ScrollUp(10))
-                *PageDown => Comment(ScrollDown(20))
-                *PageUp => Comment(ScrollUp(20))",
-                );
-                for key in probe_keys() {
-                    comment.push_str(&format!("\n{} => Comment(Type({key:?}))", key_name(key)));
-                }
-                assert_table("comment", &screen, &[&comment]);
+        // Every key the comment composer does not bind goes to its text area.
+        screen.chrome.input_mode = InputMode::Comment;
+        let mut comment = String::from(
+            "
+            S-Enter => Comment(NewLine)
+            Enter C-Enter => Comment(Submit)
+            *Esc => Comment(Cancel)
+            *Tab *BackTab => Comment(Pause)
+            C-t => Comment(ToggleType)
+            C-d => Comment(ScrollDown(10))
+            C-u => Comment(ScrollUp(10))
+            *PageDown => Comment(ScrollDown(20))
+            *PageUp => Comment(ScrollUp(20))",
+        );
+        for key in probe_keys() {
+            comment.push_str(&format!("\n{} => Comment(Type({key:?}))", key_name(key)));
+        }
+        assert_table("comment", &screen, &[&comment]);
 
-                for (asked, write, keep) in [
-                    (view::ConfirmAction::DeleteComment, "DeleteComment", None),
-                    (
-                        view::ConfirmAction::DeleteWatchedFile { path: "a.env" },
-                        "DeleteWatchedFile",
-                        None,
-                    ),
-                    (view::ConfirmAction::Push, "Push", None),
-                    (
-                        view::ConfirmAction::CleanupQuestions { count: 1 },
-                        "ClearQuestionsAndNotes",
-                        None,
-                    ),
-                    (
-                        view::ConfirmAction::CleanupReviews { count: 1 },
-                        "ClearReviews",
-                        None,
-                    ),
-                    (
-                        view::ConfirmAction::RunAgentReview,
-                        "ClearReviewAndRun",
-                        Some("KeepAndRunReview"),
-                    ),
-                    (
-                        view::ConfirmAction::RunAgentQuestions,
-                        "ClearAnswersAndRunQuestions",
-                        Some("KeepAndRunQuestions"),
-                    ),
-                    (
-                        view::ConfirmAction::RunAgentNotes,
-                        "ClearRepliesAndRunNotes",
-                        Some("KeepAndRunNotes"),
-                    ),
-                    (view::ConfirmAction::ApprovePR, "ApprovePr", None),
-                    (
-                        view::ConfirmAction::RemoveReviewComment,
-                        "RemoveReviewComment",
-                        None,
-                    ),
-                ] {
-                    screen.chrome.input_mode = InputMode::Confirm(asked);
-                    let mut table = format!("*y => Write({write})\n*n *Esc => Confirm(Cancel)\n");
-                    if let Some(keep) = keep {
-                        table.push_str(&format!("*k => Confirm({keep})"));
-                    }
-                    assert_table(write, &screen, &[&table]);
-                }
+        for (asked, write, keep) in [
+            (view::ConfirmAction::DeleteComment, "DeleteComment", None),
+            (
+                view::ConfirmAction::DeleteWatchedFile { path: "a.env" },
+                "DeleteWatchedFile",
+                None,
+            ),
+            (view::ConfirmAction::Push, "Push", None),
+            (
+                view::ConfirmAction::CleanupQuestions { count: 1 },
+                "ClearQuestionsAndNotes",
+                None,
+            ),
+            (
+                view::ConfirmAction::CleanupReviews { count: 1 },
+                "ClearReviews",
+                None,
+            ),
+            (
+                view::ConfirmAction::RunAgentReview,
+                "ClearReviewAndRun",
+                Some("KeepAndRunReview"),
+            ),
+            (
+                view::ConfirmAction::RunAgentQuestions,
+                "ClearAnswersAndRunQuestions",
+                Some("KeepAndRunQuestions"),
+            ),
+            (
+                view::ConfirmAction::RunAgentNotes,
+                "ClearRepliesAndRunNotes",
+                Some("KeepAndRunNotes"),
+            ),
+            (view::ConfirmAction::ApprovePR, "ApprovePr", None),
+            (
+                view::ConfirmAction::RemoveReviewComment,
+                "RemoveReviewComment",
+                None,
+            ),
+        ] {
+            screen.chrome.input_mode = InputMode::Confirm(asked);
+            let mut table = format!("*y => Write({write})\n*n *Esc => Confirm(Cancel)\n");
+            if let Some(keep) = keep {
+                table.push_str(&format!("*k => Confirm({keep})"));
+            }
+            assert_table(write, &screen, &[&table]);
+        }
 
-                // An open overlay takes the key before the input mode.
-                screen.chrome.overlay = Some(OverlayData::ModalHub {
-                    kind: view::HubKind::Git,
-                    title: None,
-                    items: &[],
-                    selected: 0,
-                });
-                let next = KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE);
-                assert_eq!(
-                    key_action(next, &screen),
-                    TuiAction::Overlay(OverlayAction::Next)
-                );
-            },
+        // An open overlay takes the key before the input mode.
+        screen.chrome.overlay = Some(OverlayData::ModalHub {
+            kind: view::HubKind::Git,
+            title: None,
+            items: &[],
+            selected: 0,
+        });
+        let next = KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE);
+        assert_eq!(
+            key_action(next, &screen),
+            TuiAction::Overlay(OverlayAction::Next)
         );
     }
 

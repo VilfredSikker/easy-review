@@ -340,51 +340,70 @@ mod tests {
     /// The service path draws the reviewed count it was given.
     #[test]
     fn sections_draw_their_reviewed_count() {
-        crate::service::golden_tests::with_section_screen(
-            |scene| scene.marks(&["src/auth.rs"]),
-            |scene| {
-                let screen = crate::service::golden_tests::screen_of(scene);
-                let mut terminal = Terminal::new(TestBackend::new(120, 12)).unwrap();
-                let mut hl = crate::ui::highlight::Highlighter::new();
-                terminal
-                    .draw(|f| crate::ui::draw(f, &screen, &mut hl))
-                    .unwrap();
-                let top: String = terminal.backend().buffer().content[120..240]
-                    .iter()
-                    .map(|cell| cell.symbol())
-                    .collect();
-                assert!(top.contains("1/2 reviewed"), "{top}");
-                assert!(!top.contains(UNPORTED), "{top}");
-            },
-        );
+        let scene = crate::service::golden_tests::section_scene();
+        let files = scene.content.diff.files.clone();
+        let mut screen = crate::service::golden_tests::screen_of(&scene);
+        let reviewed = std::collections::HashMap::new();
+        screen.data = TabData::Sections(SectionData {
+            files: &files,
+            reviewed: &reviewed,
+            pr: None,
+            ai: &scene.content.ai.state,
+            reviewed_count: (1, 2),
+            filtered_reviewed_count: None,
+            history: None,
+            tour: None,
+            agent_log: &[],
+            running_commands: Vec::new(),
+        });
+        let mut terminal = Terminal::new(TestBackend::new(120, 12)).unwrap();
+        let mut hl = crate::ui::highlight::Highlighter::new();
+        terminal
+            .draw(|f| crate::ui::draw(f, &screen, &mut hl))
+            .unwrap();
+        let top: String = terminal.backend().buffer().content[120..240]
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(top.contains("1/2 reviewed"), "{top}");
+        assert!(!top.contains(UNPORTED), "{top}");
     }
 
     /// The service path draws the AI Summary panel from the AI state it was
     /// given.
     #[test]
     fn sections_draw_the_ai_summary_panel() {
-        crate::service::golden_tests::with_section_screen(
-            |scene| {
-                scene.ai(|ai| ai.summary = Some("Reads the audience early.".into()));
-                scene.state.panel = Some(PanelContent::AiSummary);
-            },
-            |scene| {
-                let screen = crate::service::golden_tests::screen_of(scene);
-                let mut terminal = Terminal::new(TestBackend::new(140, 12)).unwrap();
-                let mut hl = crate::ui::highlight::Highlighter::new();
-                terminal
-                    .draw(|f| crate::ui::draw(f, &screen, &mut hl))
-                    .unwrap();
-                let drawn: String = terminal
-                    .backend()
-                    .buffer()
-                    .content
-                    .iter()
-                    .map(|cell| cell.symbol())
-                    .collect();
-                assert!(!drawn.contains(UNPORTED), "{drawn}");
-                assert!(drawn.contains("audience early"), "{drawn}");
-            },
-        );
+        let mut scene = crate::service::golden_tests::section_scene();
+        scene.ai(|ai| ai.summary = Some("Reads the audience early.".into()));
+        scene.state.panel = Some(PanelContent::AiSummary);
+        let files = scene.content.diff.files.clone();
+        let reviewed = std::collections::HashMap::new();
+        let mut screen = crate::service::golden_tests::screen_of(&scene);
+        screen.data = TabData::Sections(SectionData {
+            files: &files,
+            reviewed: &reviewed,
+            pr: None,
+            ai: &scene.content.ai.state,
+            reviewed_count: (0, 0),
+            filtered_reviewed_count: None,
+            history: None,
+            tour: None,
+            agent_log: &[],
+            running_commands: Vec::new(),
+        });
+        let mut terminal = Terminal::new(TestBackend::new(140, 12)).unwrap();
+        let mut hl = crate::ui::highlight::Highlighter::new();
+        terminal
+            .draw(|f| crate::ui::draw(f, &screen, &mut hl))
+            .unwrap();
+        let drawn: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(!drawn.contains(UNPORTED), "{drawn}");
+        assert!(drawn.contains("audience early"), "{drawn}");
     }
 }
