@@ -1,0 +1,1099 @@
+@@@ 01 frame lt
+| feature · feature (vs main)  +4 -4
+|  1  BRANCH   2  UNSTAGED   3  STAGED   4  HISTORY                                   Claude / Sonnet 5.5   0/2 reviewed
+| FILES (2)                   │  ~ src/f000.rs  +2 -2                                                        Hunk 1/2
+| ~ src/f000.rs        +2 -2  │
+| ~ src/f001.rs        +2 -2  │ ▶ @@ -1,14 +1,14 @@
+|                             │   1    1 │ let line_0 = 0;
+|                             │   2    2 │ let line_1 = 1;
+|                             │   3    3 │ let line_2 = 2;
+|                             │   4      │-let line_3 = 3;
+|                             │        4 │+let changed_3 = 3; // edited
+|                             │   5    5 │ let line_4 = 4;
+|                             │   6    6 │ let line_5 = 5;
+|                             │   7    7 │ let line_6 = 6;
+|                             │   8    8 │ let line_7 = 7;
+|                             │   9    9 │ let line_8 = 8;
+|                             │  10   10 │ let line_9 = 9;
+|                             │  11   11 │ let line_10 = 10;
+|                             │  12   12 │ let line_11 = 11;
+|                             │  13   13 │ let line_12 = 12;
+|                             │  14   14 │ let line_13 = 13;
+|                             │  ··· 6 lines hidden (+/- to expand) ···
+|                             │   @@ -21,20 +21,20 @@ let line_19 = 19;
+|                             │  21   21 │ let line_20 = 20;
+|                             │  22   22 │ let line_21 = 21;
+|                             │  23   23 │ let line_22 = 22;
+|                             │  24   24 │ let line_23 = 23;
+|                             │  25   25 │ let line_24 = 24;
+|                             │  26   26 │ let line_25 = 25;
+|                             │  27   27 │ let line_26 = 26;
+| j/k nav n/N hunks +/- context ␣ review / search g git a ai o open v verify ? help ^q quit
+|styles 69ea4f8e72b90b9b
+@@@ 02 json lt
+|[
+|  30,
+|  40
+|]
+@@@ 03 frame lt < 01
+02| FILES (2)                 │  ~ src/f000.rs  +2 -2                                                          Hunk 1/2
+03| ~ src/f000.rs      +2 -2  │
+04| ~ src/f001.rs      +2 -2  │ ▶ @@ -1,14 +1,14 @@
+05|                           │   1    1 │ let line_0 = 0;
+06|                           │   2    2 │ let line_1 = 1;
+07|                           │   3    3 │ let line_2 = 2;
+08|                           │   4      │-let line_3 = 3;
+09|                           │        4 │+let changed_3 = 3; // edited
+10|                           │   5    5 │ let line_4 = 4;
+11|                           │   6    6 │ let line_5 = 5;
+12|                           │   7    7 │ let line_6 = 6;
+13|                           │   8    8 │ let line_7 = 7;
+14|                           │   9    9 │ let line_8 = 8;
+15|                           │  10   10 │ let line_9 = 9;
+16|                           │  11   11 │ let line_10 = 10;
+17|                           │  12   12 │ let line_11 = 11;
+18|                           │  13   13 │ let line_12 = 12;
+19|                           │  14   14 │ let line_13 = 13;
+20|                           │  ··· 6 lines hidden (+/- to expand) ···
+21|                           │   @@ -21,20 +21,20 @@ let line_19 = 19;
+22|                           │  21   21 │ let line_20 = 20;
+23|                           │  22   22 │ let line_21 = 21;
+24|                           │  23   23 │ let line_22 = 22;
+25|                           │  24   24 │ let line_23 = 23;
+26|                           │  25   25 │ let line_24 = 24;
+27|                           │  26   26 │ let line_25 = 25;
+28|                           │  27   27 │ let line_26 = 26;
+30|styles 5832e04c86bc078d
+@@@ 04 json lt < 02
+01|  28,
+@@@ 05 frame lt < 01
+02| FILES (2)               │  ~ src/f000.rs  +2 -2                                                            Hunk 1/2
+03| ~ f000.rs        +2 -2  │
+04| ~ f001.rs        +2 -2  │ ▶ @@ -1,14 +1,14 @@
+05|                         │   1    1 │ let line_0 = 0;
+06|                         │   2    2 │ let line_1 = 1;
+07|                         │   3    3 │ let line_2 = 2;
+08|                         │   4      │-let line_3 = 3;
+09|                         │        4 │+let changed_3 = 3; // edited
+10|                         │   5    5 │ let line_4 = 4;
+11|                         │   6    6 │ let line_5 = 5;
+12|                         │   7    7 │ let line_6 = 6;
+13|                         │   8    8 │ let line_7 = 7;
+14|                         │   9    9 │ let line_8 = 8;
+15|                         │  10   10 │ let line_9 = 9;
+16|                         │  11   11 │ let line_10 = 10;
+17|                         │  12   12 │ let line_11 = 11;
+18|                         │  13   13 │ let line_12 = 12;
+19|                         │  14   14 │ let line_13 = 13;
+20|                         │  ··· 6 lines hidden (+/- to expand) ···
+21|                         │   @@ -21,20 +21,20 @@ let line_19 = 19;
+22|                         │  21   21 │ let line_20 = 20;
+23|                         │  22   22 │ let line_21 = 21;
+24|                         │  23   23 │ let line_22 = 22;
+25|                         │  24   24 │ let line_23 = 23;
+26|                         │  25   25 │ let line_24 = 24;
+27|                         │  26   26 │ let line_25 = 25;
+28|                         │  27   27 │ let line_26 = 26;
+30|styles 867d85849a471d0f
+@@@ 06 json lt < 02
+01|  26,
+@@@ 07 frame lt < 01
+02| FILES (2)             │  ~ src/f000.rs  +2 -2                                                              Hunk 1/2
+03| ~ f000.rs             │
+04| ~ f001.rs             │ ▶ @@ -1,14 +1,14 @@
+05|                       │   1    1 │ let line_0 = 0;
+06|                       │   2    2 │ let line_1 = 1;
+07|                       │   3    3 │ let line_2 = 2;
+08|                       │   4      │-let line_3 = 3;
+09|                       │        4 │+let changed_3 = 3; // edited
+10|                       │   5    5 │ let line_4 = 4;
+11|                       │   6    6 │ let line_5 = 5;
+12|                       │   7    7 │ let line_6 = 6;
+13|                       │   8    8 │ let line_7 = 7;
+14|                       │   9    9 │ let line_8 = 8;
+15|                       │  10   10 │ let line_9 = 9;
+16|                       │  11   11 │ let line_10 = 10;
+17|                       │  12   12 │ let line_11 = 11;
+18|                       │  13   13 │ let line_12 = 12;
+19|                       │  14   14 │ let line_13 = 13;
+20|                       │  ··· 6 lines hidden (+/- to expand) ···
+21|                       │   @@ -21,20 +21,20 @@ let line_19 = 19;
+22|                       │  21   21 │ let line_20 = 20;
+23|                       │  22   22 │ let line_21 = 21;
+24|                       │  23   23 │ let line_22 = 22;
+25|                       │  24   24 │ let line_23 = 23;
+26|                       │  25   25 │ let line_24 = 24;
+27|                       │  26   26 │ let line_25 = 25;
+28|                       │  27   27 │ let line_26 = 26;
+30|styles b08c8d5e4ea57938
+@@@ 08 json lt < 02
+01|  24,
+@@@ 09 frame lt < 01
+02| FILES (2)           │  ~ src/f000.rs  +2 -2                                                                Hunk 1/2
+03| ~ f000.…            │
+04| ~ f001.…            │ ▶ @@ -1,14 +1,14 @@
+05|                     │   1    1 │ let line_0 = 0;
+06|                     │   2    2 │ let line_1 = 1;
+07|                     │   3    3 │ let line_2 = 2;
+08|                     │   4      │-let line_3 = 3;
+09|                     │        4 │+let changed_3 = 3; // edited
+10|                     │   5    5 │ let line_4 = 4;
+11|                     │   6    6 │ let line_5 = 5;
+12|                     │   7    7 │ let line_6 = 6;
+13|                     │   8    8 │ let line_7 = 7;
+14|                     │   9    9 │ let line_8 = 8;
+15|                     │  10   10 │ let line_9 = 9;
+16|                     │  11   11 │ let line_10 = 10;
+17|                     │  12   12 │ let line_11 = 11;
+18|                     │  13   13 │ let line_12 = 12;
+19|                     │  14   14 │ let line_13 = 13;
+20|                     │  ··· 6 lines hidden (+/- to expand) ···
+21|                     │   @@ -21,20 +21,20 @@ let line_19 = 19;
+22|                     │  21   21 │ let line_20 = 20;
+23|                     │  22   22 │ let line_21 = 21;
+24|                     │  23   23 │ let line_22 = 22;
+25|                     │  24   24 │ let line_23 = 23;
+26|                     │  25   25 │ let line_24 = 24;
+27|                     │  26   26 │ let line_25 = 25;
+28|                     │  27   27 │ let line_26 = 26;
+30|styles 73a21554cdb6167e
+@@@ 10 json lt < 02
+01|  22,
+@@@ 11 frame lt < 01
+02| FILES (2)         │  ~ src/f000.rs  +2 -2                                                                  Hunk 1/2
+03| ~ f00…            │
+04| ~ f00…            │ ▶ @@ -1,14 +1,14 @@
+05|                   │   1    1 │ let line_0 = 0;
+06|                   │   2    2 │ let line_1 = 1;
+07|                   │   3    3 │ let line_2 = 2;
+08|                   │   4      │-let line_3 = 3;
+09|                   │        4 │+let changed_3 = 3; // edited
+10|                   │   5    5 │ let line_4 = 4;
+11|                   │   6    6 │ let line_5 = 5;
+12|                   │   7    7 │ let line_6 = 6;
+13|                   │   8    8 │ let line_7 = 7;
+14|                   │   9    9 │ let line_8 = 8;
+15|                   │  10   10 │ let line_9 = 9;
+16|                   │  11   11 │ let line_10 = 10;
+17|                   │  12   12 │ let line_11 = 11;
+18|                   │  13   13 │ let line_12 = 12;
+19|                   │  14   14 │ let line_13 = 13;
+20|                   │  ··· 6 lines hidden (+/- to expand) ···
+21|                   │   @@ -21,20 +21,20 @@ let line_19 = 19;
+22|                   │  21   21 │ let line_20 = 20;
+23|                   │  22   22 │ let line_21 = 21;
+24|                   │  23   23 │ let line_22 = 22;
+25|                   │  24   24 │ let line_23 = 23;
+26|                   │  25   25 │ let line_24 = 24;
+27|                   │  26   26 │ let line_25 = 25;
+28|                   │  27   27 │ let line_26 = 26;
+30|styles c205682a23a4b2cc
+@@@ 12 json lt < 02
+01|  20,
+@@@ 13 frame lt < 01
+02| FILES (2)       │  ~ src/f000.rs  +2 -2                                                                    Hunk 1/2
+03| ~ f…            │
+04| ~ f…            │ ▶ @@ -1,14 +1,14 @@
+05|                 │   1    1 │ let line_0 = 0;
+06|                 │   2    2 │ let line_1 = 1;
+07|                 │   3    3 │ let line_2 = 2;
+08|                 │   4      │-let line_3 = 3;
+09|                 │        4 │+let changed_3 = 3; // edited
+10|                 │   5    5 │ let line_4 = 4;
+11|                 │   6    6 │ let line_5 = 5;
+12|                 │   7    7 │ let line_6 = 6;
+13|                 │   8    8 │ let line_7 = 7;
+14|                 │   9    9 │ let line_8 = 8;
+15|                 │  10   10 │ let line_9 = 9;
+16|                 │  11   11 │ let line_10 = 10;
+17|                 │  12   12 │ let line_11 = 11;
+18|                 │  13   13 │ let line_12 = 12;
+19|                 │  14   14 │ let line_13 = 13;
+20|                 │  ··· 6 lines hidden (+/- to expand) ···
+21|                 │   @@ -21,20 +21,20 @@ let line_19 = 19;
+22|                 │  21   21 │ let line_20 = 20;
+23|                 │  22   22 │ let line_21 = 21;
+24|                 │  23   23 │ let line_22 = 22;
+25|                 │  24   24 │ let line_23 = 23;
+26|                 │  25   25 │ let line_24 = 24;
+27|                 │  26   26 │ let line_25 = 25;
+28|                 │  27   27 │ let line_26 = 26;
+30|styles 5b9b65eb8f013692
+@@@ 14 json lt < 02
+01|  18,
+@@@ 15 frame lt < 01
+02| FILES (2)     │  ~ src/f000.rs  +2 -2                                                                      Hunk 1/2
+03| ~ …           │
+04| ~ …           │ ▶ @@ -1,14 +1,14 @@
+05|               │   1    1 │ let line_0 = 0;
+06|               │   2    2 │ let line_1 = 1;
+07|               │   3    3 │ let line_2 = 2;
+08|               │   4      │-let line_3 = 3;
+09|               │        4 │+let changed_3 = 3; // edited
+10|               │   5    5 │ let line_4 = 4;
+11|               │   6    6 │ let line_5 = 5;
+12|               │   7    7 │ let line_6 = 6;
+13|               │   8    8 │ let line_7 = 7;
+14|               │   9    9 │ let line_8 = 8;
+15|               │  10   10 │ let line_9 = 9;
+16|               │  11   11 │ let line_10 = 10;
+17|               │  12   12 │ let line_11 = 11;
+18|               │  13   13 │ let line_12 = 12;
+19|               │  14   14 │ let line_13 = 13;
+20|               │  ··· 6 lines hidden (+/- to expand) ···
+21|               │   @@ -21,20 +21,20 @@ let line_19 = 19;
+22|               │  21   21 │ let line_20 = 20;
+23|               │  22   22 │ let line_21 = 21;
+24|               │  23   23 │ let line_22 = 22;
+25|               │  24   24 │ let line_23 = 23;
+26|               │  25   25 │ let line_24 = 24;
+27|               │  26   26 │ let line_25 = 25;
+28|               │  27   27 │ let line_26 = 26;
+30|styles b0b9f3d1d23fd340
+@@@ 16 json lt < 02
+01|  16,
+@@@ 17 frame lt < 15
+@@@ 18 json lt < 16
+@@@ 19 frame lt < 15
+@@@ 20 json lt < 16
+@@@ 21 frame gt < 13
+@@@ 22 json gt < 14
+@@@ 23 frame gt < 11
+@@@ 24 json gt < 12
+@@@ 25 frame gt < 09
+@@@ 26 json gt < 10
+@@@ 27 frame gt < 07
+@@@ 28 json gt < 08
+@@@ 29 frame gt < 05
+@@@ 30 json gt < 06
+@@@ 31 frame gt < 03
+@@@ 32 json gt < 04
+@@@ 33 frame gt < 01
+@@@ 34 json gt < 02
+@@@ 35 frame gt < 01
+02| FILES (2)                     │  ~ src/f000.rs  +2 -2                                                      Hunk 1/2
+03| ~ src/f000.rs          +2 -2  │
+04| ~ src/f001.rs          +2 -2  │ ▶ @@ -1,14 +1,14 @@
+05|                               │   1    1 │ let line_0 = 0;
+06|                               │   2    2 │ let line_1 = 1;
+07|                               │   3    3 │ let line_2 = 2;
+08|                               │   4      │-let line_3 = 3;
+09|                               │        4 │+let changed_3 = 3; // edited
+10|                               │   5    5 │ let line_4 = 4;
+11|                               │   6    6 │ let line_5 = 5;
+12|                               │   7    7 │ let line_6 = 6;
+13|                               │   8    8 │ let line_7 = 7;
+14|                               │   9    9 │ let line_8 = 8;
+15|                               │  10   10 │ let line_9 = 9;
+16|                               │  11   11 │ let line_10 = 10;
+17|                               │  12   12 │ let line_11 = 11;
+18|                               │  13   13 │ let line_12 = 12;
+19|                               │  14   14 │ let line_13 = 13;
+20|                               │  ··· 6 lines hidden (+/- to expand) ···
+21|                               │   @@ -21,20 +21,20 @@ let line_19 = 19;
+22|                               │  21   21 │ let line_20 = 20;
+23|                               │  22   22 │ let line_21 = 21;
+24|                               │  23   23 │ let line_22 = 22;
+25|                               │  24   24 │ let line_23 = 23;
+26|                               │  25   25 │ let line_24 = 24;
+27|                               │  26   26 │ let line_25 = 25;
+28|                               │  27   27 │ let line_26 = 26;
+30|styles d914ea27d7fef8e9
+@@@ 36 json gt < 02
+01|  32,
+@@@ 37 frame gt < 01
+02| FILES (2)                       │  ~ src/f000.rs  +2 -2                                                    Hunk 1/2
+03| ~ src/f000.rs            +2 -2  │
+04| ~ src/f001.rs            +2 -2  │ ▶ @@ -1,14 +1,14 @@
+05|                                 │   1    1 │ let line_0 = 0;
+06|                                 │   2    2 │ let line_1 = 1;
+07|                                 │   3    3 │ let line_2 = 2;
+08|                                 │   4      │-let line_3 = 3;
+09|                                 │        4 │+let changed_3 = 3; // edited
+10|                                 │   5    5 │ let line_4 = 4;
+11|                                 │   6    6 │ let line_5 = 5;
+12|                                 │   7    7 │ let line_6 = 6;
+13|                                 │   8    8 │ let line_7 = 7;
+14|                                 │   9    9 │ let line_8 = 8;
+15|                                 │  10   10 │ let line_9 = 9;
+16|                                 │  11   11 │ let line_10 = 10;
+17|                                 │  12   12 │ let line_11 = 11;
+18|                                 │  13   13 │ let line_12 = 12;
+19|                                 │  14   14 │ let line_13 = 13;
+20|                                 │  ··· 6 lines hidden (+/- to expand) ···
+21|                                 │   @@ -21,20 +21,20 @@ let line_19 = 19;
+22|                                 │  21   21 │ let line_20 = 20;
+23|                                 │  22   22 │ let line_21 = 21;
+24|                                 │  23   23 │ let line_22 = 22;
+25|                                 │  24   24 │ let line_23 = 23;
+26|                                 │  25   25 │ let line_24 = 24;
+27|                                 │  26   26 │ let line_25 = 25;
+28|                                 │  27   27 │ let line_26 = 26;
+30|styles a61d1603b8a70ac7
+@@@ 38 json gt < 02
+01|  34,
+@@@ 39 frame gt < 01
+02| FILES (2)                         │  ~ src/f000.rs  +2 -2                                                  Hunk 1/2
+03| ~ src/f000.rs              +2 -2  │
+04| ~ src/f001.rs              +2 -2  │ ▶ @@ -1,14 +1,14 @@
+05|                                   │   1    1 │ let line_0 = 0;
+06|                                   │   2    2 │ let line_1 = 1;
+07|                                   │   3    3 │ let line_2 = 2;
+08|                                   │   4      │-let line_3 = 3;
+09|                                   │        4 │+let changed_3 = 3; // edited
+10|                                   │   5    5 │ let line_4 = 4;
+11|                                   │   6    6 │ let line_5 = 5;
+12|                                   │   7    7 │ let line_6 = 6;
+13|                                   │   8    8 │ let line_7 = 7;
+14|                                   │   9    9 │ let line_8 = 8;
+15|                                   │  10   10 │ let line_9 = 9;
+16|                                   │  11   11 │ let line_10 = 10;
+17|                                   │  12   12 │ let line_11 = 11;
+18|                                   │  13   13 │ let line_12 = 12;
+19|                                   │  14   14 │ let line_13 = 13;
+20|                                   │  ··· 6 lines hidden (+/- to expand) ···
+21|                                   │   @@ -21,20 +21,20 @@ let line_19 = 19;
+22|                                   │  21   21 │ let line_20 = 20;
+23|                                   │  22   22 │ let line_21 = 21;
+24|                                   │  23   23 │ let line_22 = 22;
+25|                                   │  24   24 │ let line_23 = 23;
+26|                                   │  25   25 │ let line_24 = 24;
+27|                                   │  26   26 │ let line_25 = 25;
+28|                                   │  27   27 │ let line_26 = 26;
+30|styles dceac86dce938f85
+@@@ 40 json gt < 02
+01|  36,
+@@@ 41 frame gt < 01
+02| FILES (2)                           │  ~ src/f000.rs  +2 -2                                                Hunk 1/2
+03| ~ src/f000.rs                +2 -2  │
+04| ~ src/f001.rs                +2 -2  │ ▶ @@ -1,14 +1,14 @@
+05|                                     │   1    1 │ let line_0 = 0;
+06|                                     │   2    2 │ let line_1 = 1;
+07|                                     │   3    3 │ let line_2 = 2;
+08|                                     │   4      │-let line_3 = 3;
+09|                                     │        4 │+let changed_3 = 3; // edited
+10|                                     │   5    5 │ let line_4 = 4;
+11|                                     │   6    6 │ let line_5 = 5;
+12|                                     │   7    7 │ let line_6 = 6;
+13|                                     │   8    8 │ let line_7 = 7;
+14|                                     │   9    9 │ let line_8 = 8;
+15|                                     │  10   10 │ let line_9 = 9;
+16|                                     │  11   11 │ let line_10 = 10;
+17|                                     │  12   12 │ let line_11 = 11;
+18|                                     │  13   13 │ let line_12 = 12;
+19|                                     │  14   14 │ let line_13 = 13;
+20|                                     │  ··· 6 lines hidden (+/- to expand) ···
+21|                                     │   @@ -21,20 +21,20 @@ let line_19 = 19;
+22|                                     │  21   21 │ let line_20 = 20;
+23|                                     │  22   22 │ let line_21 = 21;
+24|                                     │  23   23 │ let line_22 = 22;
+25|                                     │  24   24 │ let line_23 = 23;
+26|                                     │  25   25 │ let line_24 = 24;
+27|                                     │  26   26 │ let line_25 = 25;
+28|                                     │  27   27 │ let line_26 = 26;
+30|styles 6023e0503871d3b3
+@@@ 42 json gt < 02
+01|  38,
+@@@ 43 frame gt < 01
+02| FILES (2)                             │  ~ src/f000.rs  +2 -2                                              Hunk 1/2
+03| ~ src/f000.rs                  +2 -2  │
+04| ~ src/f001.rs                  +2 -2  │ ▶ @@ -1,14 +1,14 @@
+05|                                       │   1    1 │ let line_0 = 0;
+06|                                       │   2    2 │ let line_1 = 1;
+07|                                       │   3    3 │ let line_2 = 2;
+08|                                       │   4      │-let line_3 = 3;
+09|                                       │        4 │+let changed_3 = 3; // edited
+10|                                       │   5    5 │ let line_4 = 4;
+11|                                       │   6    6 │ let line_5 = 5;
+12|                                       │   7    7 │ let line_6 = 6;
+13|                                       │   8    8 │ let line_7 = 7;
+14|                                       │   9    9 │ let line_8 = 8;
+15|                                       │  10   10 │ let line_9 = 9;
+16|                                       │  11   11 │ let line_10 = 10;
+17|                                       │  12   12 │ let line_11 = 11;
+18|                                       │  13   13 │ let line_12 = 12;
+19|                                       │  14   14 │ let line_13 = 13;
+20|                                       │  ··· 6 lines hidden (+/- to expand) ···
+21|                                       │   @@ -21,20 +21,20 @@ let line_19 = 19;
+22|                                       │  21   21 │ let line_20 = 20;
+23|                                       │  22   22 │ let line_21 = 21;
+24|                                       │  23   23 │ let line_22 = 22;
+25|                                       │  24   24 │ let line_23 = 23;
+26|                                       │  25   25 │ let line_24 = 24;
+27|                                       │  26   26 │ let line_25 = 25;
+28|                                       │  27   27 │ let line_26 = 26;
+30|styles 55fb5ee841685261
+@@@ 44 json gt < 02
+01|  40,
+@@@ 45 frame gt < 01
+02| FILES (2)                               │  ~ src/f000.rs  +2 -2                                            Hunk 1/2
+03| ~ src/f000.rs                    +2 -2  │
+04| ~ src/f001.rs                    +2 -2  │ ▶ @@ -1,14 +1,14 @@
+05|                                         │   1    1 │ let line_0 = 0;
+06|                                         │   2    2 │ let line_1 = 1;
+07|                                         │   3    3 │ let line_2 = 2;
+08|                                         │   4      │-let line_3 = 3;
+09|                                         │        4 │+let changed_3 = 3; // edited
+10|                                         │   5    5 │ let line_4 = 4;
+11|                                         │   6    6 │ let line_5 = 5;
+12|                                         │   7    7 │ let line_6 = 6;
+13|                                         │   8    8 │ let line_7 = 7;
+14|                                         │   9    9 │ let line_8 = 8;
+15|                                         │  10   10 │ let line_9 = 9;
+16|                                         │  11   11 │ let line_10 = 10;
+17|                                         │  12   12 │ let line_11 = 11;
+18|                                         │  13   13 │ let line_12 = 12;
+19|                                         │  14   14 │ let line_13 = 13;
+20|                                         │  ··· 6 lines hidden (+/- to expand) ···
+21|                                         │   @@ -21,20 +21,20 @@ let line_19 = 19;
+22|                                         │  21   21 │ let line_20 = 20;
+23|                                         │  22   22 │ let line_21 = 21;
+24|                                         │  23   23 │ let line_22 = 22;
+25|                                         │  24   24 │ let line_23 = 23;
+26|                                         │  25   25 │ let line_24 = 24;
+27|                                         │  26   26 │ let line_25 = 25;
+28|                                         │  27   27 │ let line_26 = 26;
+30|styles f0b38da36debb95f
+@@@ 46 json gt < 02
+01|  42,
+@@@ 47 frame gt < 01
+02| FILES (2)                                 │  ~ src/f000.rs  +2 -2                                          Hunk 1/2
+03| ~ src/f000.rs                      +2 -2  │
+04| ~ src/f001.rs                      +2 -2  │ ▶ @@ -1,14 +1,14 @@
+05|                                           │   1    1 │ let line_0 = 0;
+06|                                           │   2    2 │ let line_1 = 1;
+07|                                           │   3    3 │ let line_2 = 2;
+08|                                           │   4      │-let line_3 = 3;
+09|                                           │        4 │+let changed_3 = 3; // edited
+10|                                           │   5    5 │ let line_4 = 4;
+11|                                           │   6    6 │ let line_5 = 5;
+12|                                           │   7    7 │ let line_6 = 6;
+13|                                           │   8    8 │ let line_7 = 7;
+14|                                           │   9    9 │ let line_8 = 8;
+15|                                           │  10   10 │ let line_9 = 9;
+16|                                           │  11   11 │ let line_10 = 10;
+17|                                           │  12   12 │ let line_11 = 11;
+18|                                           │  13   13 │ let line_12 = 12;
+19|                                           │  14   14 │ let line_13 = 13;
+20|                                           │  ··· 6 lines hidden (+/- to expand) ···
+21|                                           │   @@ -21,20 +21,20 @@ let line_19 = 19;
+22|                                           │  21   21 │ let line_20 = 20;
+23|                                           │  22   22 │ let line_21 = 21;
+24|                                           │  23   23 │ let line_22 = 22;
+25|                                           │  24   24 │ let line_23 = 23;
+26|                                           │  25   25 │ let line_24 = 24;
+27|                                           │  26   26 │ let line_25 = 25;
+28|                                           │  27   27 │ let line_26 = 26;
+30|styles b6c419b777ae249d
+@@@ 48 json gt < 02
+01|  44,
+@@@ 49 frame gt < 01
+02| FILES (2)                                   │  ~ src/f000.rs  +2 -2                                        Hunk 1/2
+03| ~ src/f000.rs                        +2 -2  │
+04| ~ src/f001.rs                        +2 -2  │ ▶ @@ -1,14 +1,14 @@
+05|                                             │   1    1 │ let line_0 = 0;
+06|                                             │   2    2 │ let line_1 = 1;
+07|                                             │   3    3 │ let line_2 = 2;
+08|                                             │   4      │-let line_3 = 3;
+09|                                             │        4 │+let changed_3 = 3; // edited
+10|                                             │   5    5 │ let line_4 = 4;
+11|                                             │   6    6 │ let line_5 = 5;
+12|                                             │   7    7 │ let line_6 = 6;
+13|                                             │   8    8 │ let line_7 = 7;
+14|                                             │   9    9 │ let line_8 = 8;
+15|                                             │  10   10 │ let line_9 = 9;
+16|                                             │  11   11 │ let line_10 = 10;
+17|                                             │  12   12 │ let line_11 = 11;
+18|                                             │  13   13 │ let line_12 = 12;
+19|                                             │  14   14 │ let line_13 = 13;
+20|                                             │  ··· 6 lines hidden (+/- to expand) ···
+21|                                             │   @@ -21,20 +21,20 @@ let line_19 = 19;
+22|                                             │  21   21 │ let line_20 = 20;
+23|                                             │  22   22 │ let line_21 = 21;
+24|                                             │  23   23 │ let line_22 = 22;
+25|                                             │  24   24 │ let line_23 = 23;
+26|                                             │  25   25 │ let line_24 = 24;
+27|                                             │  26   26 │ let line_25 = 25;
+28|                                             │  27   27 │ let line_26 = 26;
+30|styles a388ae97e6d99deb
+@@@ 50 json gt < 02
+01|  46,
+@@@ 51 frame gt < 01
+02| FILES (2)                                     │  ~ src/f000.rs  +2 -2                                      Hunk 1/2
+03| ~ src/f000.rs                          +2 -2  │
+04| ~ src/f001.rs                          +2 -2  │ ▶ @@ -1,14 +1,14 @@
+05|                                               │   1    1 │ let line_0 = 0;
+06|                                               │   2    2 │ let line_1 = 1;
+07|                                               │   3    3 │ let line_2 = 2;
+08|                                               │   4      │-let line_3 = 3;
+09|                                               │        4 │+let changed_3 = 3; // edited
+10|                                               │   5    5 │ let line_4 = 4;
+11|                                               │   6    6 │ let line_5 = 5;
+12|                                               │   7    7 │ let line_6 = 6;
+13|                                               │   8    8 │ let line_7 = 7;
+14|                                               │   9    9 │ let line_8 = 8;
+15|                                               │  10   10 │ let line_9 = 9;
+16|                                               │  11   11 │ let line_10 = 10;
+17|                                               │  12   12 │ let line_11 = 11;
+18|                                               │  13   13 │ let line_12 = 12;
+19|                                               │  14   14 │ let line_13 = 13;
+20|                                               │  ··· 6 lines hidden (+/- to expand) ···
+21|                                               │   @@ -21,20 +21,20 @@ let line_19 = 19;
+22|                                               │  21   21 │ let line_20 = 20;
+23|                                               │  22   22 │ let line_21 = 21;
+24|                                               │  23   23 │ let line_22 = 22;
+25|                                               │  24   24 │ let line_23 = 23;
+26|                                               │  25   25 │ let line_24 = 24;
+27|                                               │  26   26 │ let line_25 = 25;
+28|                                               │  27   27 │ let line_26 = 26;
+30|styles bc15b4af5b993af9
+@@@ 52 json gt < 02
+01|  48,
+@@@ 53 frame gt < 01
+02| FILES (2)                                       │  ~ src/f000.rs  +2 -2                                    Hunk 1/2
+03| ~ src/f000.rs                            +2 -2  │
+04| ~ src/f001.rs                            +2 -2  │ ▶ @@ -1,14 +1,14 @@
+05|                                                 │   1    1 │ let line_0 = 0;
+06|                                                 │   2    2 │ let line_1 = 1;
+07|                                                 │   3    3 │ let line_2 = 2;
+08|                                                 │   4      │-let line_3 = 3;
+09|                                                 │        4 │+let changed_3 = 3; // edited
+10|                                                 │   5    5 │ let line_4 = 4;
+11|                                                 │   6    6 │ let line_5 = 5;
+12|                                                 │   7    7 │ let line_6 = 6;
+13|                                                 │   8    8 │ let line_7 = 7;
+14|                                                 │   9    9 │ let line_8 = 8;
+15|                                                 │  10   10 │ let line_9 = 9;
+16|                                                 │  11   11 │ let line_10 = 10;
+17|                                                 │  12   12 │ let line_11 = 11;
+18|                                                 │  13   13 │ let line_12 = 12;
+19|                                                 │  14   14 │ let line_13 = 13;
+20|                                                 │  ··· 6 lines hidden (+/- to expand) ···
+21|                                                 │   @@ -21,20 +21,20 @@ let line_19 = 19;
+22|                                                 │  21   21 │ let line_20 = 20;
+23|                                                 │  22   22 │ let line_21 = 21;
+24|                                                 │  23   23 │ let line_22 = 22;
+25|                                                 │  24   24 │ let line_23 = 23;
+26|                                                 │  25   25 │ let line_24 = 24;
+27|                                                 │  26   26 │ let line_25 = 25;
+28|                                                 │  27   27 │ let line_26 = 26;
+30|styles a460ad55053db917
+@@@ 54 json gt < 02
+01|  50,
+@@@ 55 frame gt < 01
+02| FILES (2)                                         │  ~ src/f000.rs  +2 -2                                  Hunk 1/2
+03| ~ src/f000.rs                              +2 -2  │
+04| ~ src/f001.rs                              +2 -2  │ ▶ @@ -1,14 +1,14 @@
+05|                                                   │   1    1 │ let line_0 = 0;
+06|                                                   │   2    2 │ let line_1 = 1;
+07|                                                   │   3    3 │ let line_2 = 2;
+08|                                                   │   4      │-let line_3 = 3;
+09|                                                   │        4 │+let changed_3 = 3; // edited
+10|                                                   │   5    5 │ let line_4 = 4;
+11|                                                   │   6    6 │ let line_5 = 5;
+12|                                                   │   7    7 │ let line_6 = 6;
+13|                                                   │   8    8 │ let line_7 = 7;
+14|                                                   │   9    9 │ let line_8 = 8;
+15|                                                   │  10   10 │ let line_9 = 9;
+16|                                                   │  11   11 │ let line_10 = 10;
+17|                                                   │  12   12 │ let line_11 = 11;
+18|                                                   │  13   13 │ let line_12 = 12;
+19|                                                   │  14   14 │ let line_13 = 13;
+20|                                                   │  ··· 6 lines hidden (+/- to expand) ···
+21|                                                   │   @@ -21,20 +21,20 @@ let line_19 = 19;
+22|                                                   │  21   21 │ let line_20 = 20;
+23|                                                   │  22   22 │ let line_21 = 21;
+24|                                                   │  23   23 │ let line_22 = 22;
+25|                                                   │  24   24 │ let line_23 = 23;
+26|                                                   │  25   25 │ let line_24 = 24;
+27|                                                   │  26   26 │ let line_25 = 25;
+28|                                                   │  27   27 │ let line_26 = 26;
+30|styles 95f79d7e07bb2855
+@@@ 56 json gt < 02
+01|  52,
+@@@ 57 frame gt < 01
+02| FILES (2)                                           │  ~ src/f000.rs  +2 -2                                Hunk 1/2
+03| ~ src/f000.rs                                +2 -2  │
+04| ~ src/f001.rs                                +2 -2  │ ▶ @@ -1,14 +1,14 @@
+05|                                                     │   1    1 │ let line_0 = 0;
+06|                                                     │   2    2 │ let line_1 = 1;
+07|                                                     │   3    3 │ let line_2 = 2;
+08|                                                     │   4      │-let line_3 = 3;
+09|                                                     │        4 │+let changed_3 = 3; // edited
+10|                                                     │   5    5 │ let line_4 = 4;
+11|                                                     │   6    6 │ let line_5 = 5;
+12|                                                     │   7    7 │ let line_6 = 6;
+13|                                                     │   8    8 │ let line_7 = 7;
+14|                                                     │   9    9 │ let line_8 = 8;
+15|                                                     │  10   10 │ let line_9 = 9;
+16|                                                     │  11   11 │ let line_10 = 10;
+17|                                                     │  12   12 │ let line_11 = 11;
+18|                                                     │  13   13 │ let line_12 = 12;
+19|                                                     │  14   14 │ let line_13 = 13;
+20|                                                     │  ··· 6 lines hidden (+/- to expand) ···
+21|                                                     │   @@ -21,20 +21,20 @@ let line_19 = 19;
+22|                                                     │  21   21 │ let line_20 = 20;
+23|                                                     │  22   22 │ let line_21 = 21;
+24|                                                     │  23   23 │ let line_22 = 22;
+25|                                                     │  24   24 │ let line_23 = 23;
+26|                                                     │  25   25 │ let line_24 = 24;
+27|                                                     │  26   26 │ let line_25 = 25;
+28|                                                     │  27   27 │ let line_26 = 26;
+30|styles 672e6e32cd65d8c3
+@@@ 58 json gt < 02
+01|  54,
+@@@ 59 frame gt < 01
+02| FILES (2)                                             │  ~ src/f000.rs  +2 -2                              Hunk 1/2
+03| ~ src/f000.rs                                  +2 -2  │
+04| ~ src/f001.rs                                  +2 -2  │ ▶ @@ -1,14 +1,14 @@
+05|                                                       │   1    1 │ let line_0 = 0;
+06|                                                       │   2    2 │ let line_1 = 1;
+07|                                                       │   3    3 │ let line_2 = 2;
+08|                                                       │   4      │-let line_3 = 3;
+09|                                                       │        4 │+let changed_3 = 3; // edited
+10|                                                       │   5    5 │ let line_4 = 4;
+11|                                                       │   6    6 │ let line_5 = 5;
+12|                                                       │   7    7 │ let line_6 = 6;
+13|                                                       │   8    8 │ let line_7 = 7;
+14|                                                       │   9    9 │ let line_8 = 8;
+15|                                                       │  10   10 │ let line_9 = 9;
+16|                                                       │  11   11 │ let line_10 = 10;
+17|                                                       │  12   12 │ let line_11 = 11;
+18|                                                       │  13   13 │ let line_12 = 12;
+19|                                                       │  14   14 │ let line_13 = 13;
+20|                                                       │  ··· 6 lines hidden (+/- to expand) ···
+21|                                                       │   @@ -21,20 +21,20 @@ let line_19 = 19;
+22|                                                       │  21   21 │ let line_20 = 20;
+23|                                                       │  22   22 │ let line_21 = 21;
+24|                                                       │  23   23 │ let line_22 = 22;
+25|                                                       │  24   24 │ let line_23 = 23;
+26|                                                       │  25   25 │ let line_24 = 24;
+27|                                                       │  26   26 │ let line_25 = 25;
+28|                                                       │  27   27 │ let line_26 = 26;
+30|styles 72a866ccffc566f1
+@@@ 60 json gt < 02
+01|  56,
+@@@ 61 frame gt < 01
+02| FILES (2)                                               │  ~ src/f000.rs  +2 -2                            Hunk 1/2
+03| ~ src/f000.rs                                    +2 -2  │
+04| ~ src/f001.rs                                    +2 -2  │ ▶ @@ -1,14 +1,14 @@
+05|                                                         │   1    1 │ let line_0 = 0;
+06|                                                         │   2    2 │ let line_1 = 1;
+07|                                                         │   3    3 │ let line_2 = 2;
+08|                                                         │   4      │-let line_3 = 3;
+09|                                                         │        4 │+let changed_3 = 3; // edited
+10|                                                         │   5    5 │ let line_4 = 4;
+11|                                                         │   6    6 │ let line_5 = 5;
+12|                                                         │   7    7 │ let line_6 = 6;
+13|                                                         │   8    8 │ let line_7 = 7;
+14|                                                         │   9    9 │ let line_8 = 8;
+15|                                                         │  10   10 │ let line_9 = 9;
+16|                                                         │  11   11 │ let line_10 = 10;
+17|                                                         │  12   12 │ let line_11 = 11;
+18|                                                         │  13   13 │ let line_12 = 12;
+19|                                                         │  14   14 │ let line_13 = 13;
+20|                                                         │  ··· 6 lines hidden (+/- to expand) ···
+21|                                                         │   @@ -21,20 +21,20 @@ let line_19 = 19;
+22|                                                         │  21   21 │ let line_20 = 20;
+23|                                                         │  22   22 │ let line_21 = 21;
+24|                                                         │  23   23 │ let line_22 = 22;
+25|                                                         │  24   24 │ let line_23 = 23;
+26|                                                         │  25   25 │ let line_24 = 24;
+27|                                                         │  26   26 │ let line_25 = 25;
+28|                                                         │  27   27 │ let line_26 = 26;
+30|styles 3db7f1a12f84092f
+@@@ 62 json gt < 02
+01|  58,
+@@@ 63 frame gt < 01
+02| FILES (2)                                                 │  ~ src/f000.rs  +2 -2                          Hunk 1/2
+03| ~ src/f000.rs                                      +2 -2  │
+04| ~ src/f001.rs                                      +2 -2  │ ▶ @@ -1,14 +1,14 @@
+05|                                                           │   1    1 │ let line_0 = 0;
+06|                                                           │   2    2 │ let line_1 = 1;
+07|                                                           │   3    3 │ let line_2 = 2;
+08|                                                           │   4      │-let line_3 = 3;
+09|                                                           │        4 │+let changed_3 = 3; // edited
+10|                                                           │   5    5 │ let line_4 = 4;
+11|                                                           │   6    6 │ let line_5 = 5;
+12|                                                           │   7    7 │ let line_6 = 6;
+13|                                                           │   8    8 │ let line_7 = 7;
+14|                                                           │   9    9 │ let line_8 = 8;
+15|                                                           │  10   10 │ let line_9 = 9;
+16|                                                           │  11   11 │ let line_10 = 10;
+17|                                                           │  12   12 │ let line_11 = 11;
+18|                                                           │  13   13 │ let line_12 = 12;
+19|                                                           │  14   14 │ let line_13 = 13;
+20|                                                           │  ··· 6 lines hidden (+/- to expand) ···
+21|                                                           │   @@ -21,20 +21,20 @@ let line_19 = 19;
+22|                                                           │  21   21 │ let line_20 = 20;
+23|                                                           │  22   22 │ let line_21 = 21;
+24|                                                           │  23   23 │ let line_22 = 22;
+25|                                                           │  24   24 │ let line_23 = 23;
+26|                                                           │  25   25 │ let line_24 = 24;
+27|                                                           │  26   26 │ let line_25 = 25;
+28|                                                           │  27   27 │ let line_26 = 26;
+30|styles 93e144c7033577ad
+@@@ 64 json gt < 02
+01|  60,
+@@@ 65 frame gt < 63
+@@@ 66 json gt < 64
+@@@ 67 frame gt < 63
+@@@ 68 json gt < 64
+@@@ 69 frame gt < 63
+@@@ 70 json gt < 64
+@@@ 71 frame lt < 61
+@@@ 72 json lt < 62
+@@@ 73 frame lt < 59
+@@@ 74 json lt < 60
+@@@ 75 frame lt < 57
+@@@ 76 json lt < 58
+@@@ 77 frame lt < 55
+@@@ 78 json lt < 56
+@@@ 79 frame lt < 53
+@@@ 80 json lt < 54
+@@@ 81 frame lt < 51
+@@@ 82 json lt < 52
+@@@ 83 frame lt < 49
+@@@ 84 json lt < 50
+@@@ 85 frame lt < 47
+@@@ 86 json lt < 48
+@@@ 87 frame p < 01
+01|  1  BRANCH   2  UNSTAGED   3  STAGED   4  HISTORY                    Claude / Sonnet 5.5    File Detail   0/2 reviewed
+02| FILES (2)                                 │  ~ src/f000.rs  +2 -2  Hunk 1/2    │ [File] [Log]
+03| ~ src/f000.rs                      +2 -2  │                                    │──────────────────────────────────────
+04| ~ src/f001.rs                      +2 -2  │ ▶ @@ -1,14 +1,14 @@                │ src/f000.rs
+05|                                           │   1    1 │ let line_0 = 0;         │
+06|                                           │   2    2 │ let line_1 = 1;         │ No comments for this file
+07|                                           │   3    3 │ let line_2 = 2;         │
+08|                                           │   4      │-let line_3 = 3;         │
+09|                                           │        4 │+let changed_3 = 3; // e │
+10|                                           │   5    5 │ let line_4 = 4;         │
+11|                                           │   6    6 │ let line_5 = 5;         │
+12|                                           │   7    7 │ let line_6 = 6;         │
+13|                                           │   8    8 │ let line_7 = 7;         │
+14|                                           │   9    9 │ let line_8 = 8;         │
+15|                                           │  10   10 │ let line_9 = 9;         │
+16|                                           │  11   11 │ let line_10 = 10;       │
+17|                                           │  12   12 │ let line_11 = 11;       │
+18|                                           │  13   13 │ let line_12 = 12;       │
+19|                                           │  14   14 │ let line_13 = 13;       │
+20|                                           │  ··· 6 lines hidden (+/- to expand │
+21|                                           │   @@ -21,20 +21,20 @@ let line_19  │
+22|                                           │  21   21 │ let line_20 = 20;       │
+23|                                           │  22   22 │ let line_21 = 21;       │
+24|                                           │  23   23 │ let line_22 = 22;       │
+25|                                           │  24   24 │ let line_23 = 23;       │
+26|                                           │  25   25 │ let line_24 = 24;       │
+27|                                           │  26   26 │ let line_25 = 25;       │
+28|                                           │  27   27 │ let line_26 = 26;       │
+29| j/k nav n/N hunks Tab focus panel p close panel g git a ai o open v verify ? help ^q quit
+30|styles ccaa0e8a52ca13d3
+@@@ 88 json p < 48
+@@@ 89 frame rbrace < 87
+02| FILES (2)                                 │  ~ src/f000.rs  +2 Hunk 1/2    │ [File] [Log]
+03| ~ src/f000.rs                      +2 -2  │                                │──────────────────────────────────────────
+04| ~ src/f001.rs                      +2 -2  │ ▶ @@ -1,14 +1,14 @@            │ src/f000.rs
+05|                                           │   1    1 │ let line_0 = 0;     │
+06|                                           │   2    2 │ let line_1 = 1;     │ No comments for this file
+07|                                           │   3    3 │ let line_2 = 2;     │
+08|                                           │   4      │-let line_3 = 3;     │
+09|                                           │        4 │+let changed_3 = 3;  │
+10|                                           │   5    5 │ let line_4 = 4;     │
+11|                                           │   6    6 │ let line_5 = 5;     │
+12|                                           │   7    7 │ let line_6 = 6;     │
+13|                                           │   8    8 │ let line_7 = 7;     │
+14|                                           │   9    9 │ let line_8 = 8;     │
+15|                                           │  10   10 │ let line_9 = 9;     │
+16|                                           │  11   11 │ let line_10 = 10;   │
+17|                                           │  12   12 │ let line_11 = 11;   │
+18|                                           │  13   13 │ let line_12 = 12;   │
+19|                                           │  14   14 │ let line_13 = 13;   │
+20|                                           │  ··· 6 lines hidden (+/- to ex │
+21|                                           │   @@ -21,20 +21,20 @@ let line │
+22|                                           │  21   21 │ let line_20 = 20;   │
+23|                                           │  22   22 │ let line_21 = 21;   │
+24|                                           │  23   23 │ let line_22 = 22;   │
+25|                                           │  24   24 │ let line_23 = 23;   │
+26|                                           │  25   25 │ let line_24 = 24;   │
+27|                                           │  26   26 │ let line_25 = 25;   │
+28|                                           │  27   27 │ let line_26 = 26;   │
+30|styles 9a08c100390a5265
+@@@ 90 json rbrace < 48
+02|  44
+@@@ 91 frame rbrace < 87
+02| FILES (2)                                 │  ~ src/f000.rs Hunk 1/2    │ [File] [Log]
+03| ~ src/f000.rs                      +2 -2  │                            │──────────────────────────────────────────────
+04| ~ src/f001.rs                      +2 -2  │ ▶ @@ -1,14 +1,14 @@        │ src/f000.rs
+05|                                           │   1    1 │ let line_0 = 0; │
+06|                                           │   2    2 │ let line_1 = 1; │ No comments for this file
+07|                                           │   3    3 │ let line_2 = 2; │
+08|                                           │   4      │-let line_3 = 3; │
+09|                                           │        4 │+let changed_3 = │
+10|                                           │   5    5 │ let line_4 = 4; │
+11|                                           │   6    6 │ let line_5 = 5; │
+12|                                           │   7    7 │ let line_6 = 6; │
+13|                                           │   8    8 │ let line_7 = 7; │
+14|                                           │   9    9 │ let line_8 = 8; │
+15|                                           │  10   10 │ let line_9 = 9; │
+16|                                           │  11   11 │ let line_10 = 1 │
+17|                                           │  12   12 │ let line_11 = 1 │
+18|                                           │  13   13 │ let line_12 = 1 │
+19|                                           │  14   14 │ let line_13 = 1 │
+20|                                           │  ··· 6 lines hidden (+/- t │
+21|                                           │   @@ -21,20 +21,20 @@ let  │
+22|                                           │  21   21 │ let line_20 = 2 │
+23|                                           │  22   22 │ let line_21 = 2 │
+24|                                           │  23   23 │ let line_22 = 2 │
+25|                                           │  24   24 │ let line_23 = 2 │
+26|                                           │  25   25 │ let line_24 = 2 │
+27|                                           │  26   26 │ let line_25 = 2 │
+28|                                           │  27   27 │ let line_26 = 2 │
+30|styles 168e044034a45ac3
+@@@ 92 json rbrace < 48
+02|  48
+@@@ 93 frame rbrace < 87
+02| FILES (2)                                 │  ~ src/f000Hunk 1/2-2  │ [File] [Log]
+03| ~ src/f000.rs                      +2 -2  │                        │──────────────────────────────────────────────────
+04| ~ src/f001.rs                      +2 -2  │ ▶ @@ -1,14 +1,14 @@    │ src/f000.rs
+05|                                           │   1    1 │ let line_0  │
+06|                                           │   2    2 │ let line_1  │ No comments for this file
+07|                                           │   3    3 │ let line_2  │
+08|                                           │   4      │-let line_3  │
+09|                                           │        4 │+let changed │
+10|                                           │   5    5 │ let line_4  │
+11|                                           │   6    6 │ let line_5  │
+12|                                           │   7    7 │ let line_6  │
+13|                                           │   8    8 │ let line_7  │
+14|                                           │   9    9 │ let line_8  │
+15|                                           │  10   10 │ let line_9  │
+16|                                           │  11   11 │ let line_10 │
+17|                                           │  12   12 │ let line_11 │
+18|                                           │  13   13 │ let line_12 │
+19|                                           │  14   14 │ let line_13 │
+20|                                           │  ··· 6 lines hidden (+ │
+21|                                           │   @@ -21,20 +21,20 @@  │
+22|                                           │  21   21 │ let line_20 │
+23|                                           │  22   22 │ let line_21 │
+24|                                           │  23   23 │ let line_22 │
+25|                                           │  24   24 │ let line_23 │
+26|                                           │  25   25 │ let line_24 │
+27|                                           │  26   26 │ let line_25 │
+28|                                           │  27   27 │ let line_26 │
+30|styles 9843979e3f157754
+@@@ 94 json rbrace < 48
+02|  52
+@@@ 95 frame rbrace < 87
+02| FILES (2)                                 │  ~ src/Hunk 1/2 +2 │ [File] [Log]
+03| ~ src/f000.rs                      +2 -2  │                    │──────────────────────────────────────────────────────
+04| ~ src/f001.rs                      +2 -2  │ ▶ @@ -1,14 +1,14 @ │ src/f000.rs
+05|                                           │   1    1 │ let lin │
+06|                                           │   2    2 │ let lin │ No comments for this file
+07|                                           │   3    3 │ let lin │
+08|                                           │   4      │-let lin │
+09|                                           │        4 │+let cha │
+10|                                           │   5    5 │ let lin │
+11|                                           │   6    6 │ let lin │
+12|                                           │   7    7 │ let lin │
+13|                                           │   8    8 │ let lin │
+14|                                           │   9    9 │ let lin │
+15|                                           │  10   10 │ let lin │
+16|                                           │  11   11 │ let lin │
+17|                                           │  12   12 │ let lin │
+18|                                           │  13   13 │ let lin │
+19|                                           │  14   14 │ let lin │
+20|                                           │  ··· 6 lines hidde │
+21|                                           │   @@ -21,20 +21,20 │
+22|                                           │  21   21 │ let lin │
+23|                                           │  22   22 │ let lin │
+24|                                           │  23   23 │ let lin │
+25|                                           │  24   24 │ let lin │
+26|                                           │  25   25 │ let lin │
+27|                                           │  26   26 │ let lin │
+28|                                           │  27   27 │ let lin │
+30|styles a3238944e2c6bb08
+@@@ 96 json rbrace < 48
+02|  56
+@@@ 97 frame rbrace < 95
+@@@ 98 json rbrace < 96
+@@@ 99 frame rbrace < 95
+@@@ 100 json rbrace < 96
+@@@ 101 frame rbrace < 95
+@@@ 102 json rbrace < 96
+@@@ 103 frame rbrace < 95
+@@@ 104 json rbrace < 96
+@@@ 105 frame rbrace < 95
+@@@ 106 json rbrace < 96
+@@@ 107 frame rbrace < 95
+@@@ 108 json rbrace < 96
+@@@ 109 frame rbrace < 95
+@@@ 110 json rbrace < 96
+@@@ 111 frame rbrace < 95
+@@@ 112 json rbrace < 96
+@@@ 113 frame gt < 95
+@@@ 114 json gt < 96
+@@@ 115 frame gt < 95
+@@@ 116 json gt < 96
+@@@ 117 frame gt < 95
+@@@ 118 json gt < 96
+@@@ 119 frame gt < 95
+@@@ 120 json gt < 96
+@@@ 121 frame gt < 95
+@@@ 122 json gt < 96
+@@@ 123 frame gt < 95
+@@@ 124 json gt < 96
+@@@ 125 frame gt < 95
+@@@ 126 json gt < 96
+@@@ 127 frame gt < 95
+@@@ 128 json gt < 96
+@@@ 129 frame gt < 95
+@@@ 130 json gt < 96
+@@@ 131 frame gt < 95
+@@@ 132 json gt < 96
+@@@ 133 frame gt < 95
+@@@ 134 json gt < 96
+@@@ 135 frame gt < 95
+@@@ 136 json gt < 96
+@@@ 137 frame lbrace < 93
+@@@ 138 json lbrace < 94
+@@@ 139 frame lbrace < 91
+@@@ 140 json lbrace < 92
+@@@ 141 frame lbrace < 89
+@@@ 142 json lbrace < 90
+@@@ 143 frame lbrace < 87
+@@@ 144 json lbrace < 48
+@@@ 145 frame lbrace < 87
+02| FILES (2)                                 │  ~ src/f000.rs  +2 -2      Hunk 1/2    │ [File] [Log]
+03| ~ src/f000.rs                      +2 -2  │                                        │──────────────────────────────────
+04| ~ src/f001.rs                      +2 -2  │ ▶ @@ -1,14 +1,14 @@                    │ src/f000.rs
+05|                                           │   1    1 │ let line_0 = 0;             │
+06|                                           │   2    2 │ let line_1 = 1;             │ No comments for this file
+07|                                           │   3    3 │ let line_2 = 2;             │
+08|                                           │   4      │-let line_3 = 3;             │
+09|                                           │        4 │+let changed_3 = 3; // edite │
+10|                                           │   5    5 │ let line_4 = 4;             │
+11|                                           │   6    6 │ let line_5 = 5;             │
+12|                                           │   7    7 │ let line_6 = 6;             │
+13|                                           │   8    8 │ let line_7 = 7;             │
+14|                                           │   9    9 │ let line_8 = 8;             │
+15|                                           │  10   10 │ let line_9 = 9;             │
+16|                                           │  11   11 │ let line_10 = 10;           │
+17|                                           │  12   12 │ let line_11 = 11;           │
+18|                                           │  13   13 │ let line_12 = 12;           │
+19|                                           │  14   14 │ let line_13 = 13;           │
+20|                                           │  ··· 6 lines hidden (+/- to expand) ·· │
+21|                                           │   @@ -21,20 +21,20 @@ let line_19 = 19 │
+22|                                           │  21   21 │ let line_20 = 20;           │
+23|                                           │  22   22 │ let line_21 = 21;           │
+24|                                           │  23   23 │ let line_22 = 22;           │
+25|                                           │  24   24 │ let line_23 = 23;           │
+26|                                           │  25   25 │ let line_24 = 24;           │
+27|                                           │  26   26 │ let line_25 = 25;           │
+28|                                           │  27   27 │ let line_26 = 26;           │
+30|styles 12b005b33f3ac7d7
+@@@ 146 json lbrace < 48
+02|  36
+@@@ 147 frame lbrace < 87
+02| FILES (2)                                 │  ~ src/f000.rs  +2 -2          Hunk 1/2    │ [File] [Log]
+03| ~ src/f000.rs                      +2 -2  │                                            │──────────────────────────────
+04| ~ src/f001.rs                      +2 -2  │ ▶ @@ -1,14 +1,14 @@                        │ src/f000.rs
+05|                                           │   1    1 │ let line_0 = 0;                 │
+06|                                           │   2    2 │ let line_1 = 1;                 │ No comments for this file
+07|                                           │   3    3 │ let line_2 = 2;                 │
+08|                                           │   4      │-let line_3 = 3;                 │
+09|                                           │        4 │+let changed_3 = 3; // edited    │
+10|                                           │   5    5 │ let line_4 = 4;                 │
+11|                                           │   6    6 │ let line_5 = 5;                 │
+12|                                           │   7    7 │ let line_6 = 6;                 │
+13|                                           │   8    8 │ let line_7 = 7;                 │
+14|                                           │   9    9 │ let line_8 = 8;                 │
+15|                                           │  10   10 │ let line_9 = 9;                 │
+16|                                           │  11   11 │ let line_10 = 10;               │
+17|                                           │  12   12 │ let line_11 = 11;               │
+18|                                           │  13   13 │ let line_12 = 12;               │
+19|                                           │  14   14 │ let line_13 = 13;               │
+20|                                           │  ··· 6 lines hidden (+/- to expand) ···    │
+21|                                           │   @@ -21,20 +21,20 @@ let line_19 = 19;    │
+22|                                           │  21   21 │ let line_20 = 20;               │
+23|                                           │  22   22 │ let line_21 = 21;               │
+24|                                           │  23   23 │ let line_22 = 22;               │
+25|                                           │  24   24 │ let line_23 = 23;               │
+26|                                           │  25   25 │ let line_24 = 24;               │
+27|                                           │  26   26 │ let line_25 = 25;               │
+28|                                           │  27   27 │ let line_26 = 26;               │
+30|styles a5c049b9265394b6
+@@@ 148 json lbrace < 48
+02|  32
+@@@ 149 frame lbrace < 87
+02| FILES (2)                                 │  ~ src/f000.rs  +2 -2              Hunk 1/2    │ [File] [Log]
+03| ~ src/f000.rs                      +2 -2  │                                                │──────────────────────────
+04| ~ src/f001.rs                      +2 -2  │ ▶ @@ -1,14 +1,14 @@                            │ src/f000.rs
+05|                                           │   1    1 │ let line_0 = 0;                     │
+06|                                           │   2    2 │ let line_1 = 1;                     │ No comments for this file
+07|                                           │   3    3 │ let line_2 = 2;                     │
+08|                                           │   4      │-let line_3 = 3;                     │
+09|                                           │        4 │+let changed_3 = 3; // edited        │
+10|                                           │   5    5 │ let line_4 = 4;                     │
+11|                                           │   6    6 │ let line_5 = 5;                     │
+12|                                           │   7    7 │ let line_6 = 6;                     │
+13|                                           │   8    8 │ let line_7 = 7;                     │
+14|                                           │   9    9 │ let line_8 = 8;                     │
+15|                                           │  10   10 │ let line_9 = 9;                     │
+16|                                           │  11   11 │ let line_10 = 10;                   │
+17|                                           │  12   12 │ let line_11 = 11;                   │
+18|                                           │  13   13 │ let line_12 = 12;                   │
+19|                                           │  14   14 │ let line_13 = 13;                   │
+20|                                           │  ··· 6 lines hidden (+/- to expand) ···        │
+21|                                           │   @@ -21,20 +21,20 @@ let line_19 = 19;        │
+22|                                           │  21   21 │ let line_20 = 20;                   │
+23|                                           │  22   22 │ let line_21 = 21;                   │
+24|                                           │  23   23 │ let line_22 = 22;                   │
+25|                                           │  24   24 │ let line_23 = 23;                   │
+26|                                           │  25   25 │ let line_24 = 24;                   │
+27|                                           │  26   26 │ let line_25 = 25;                   │
+28|                                           │  27   27 │ let line_26 = 26;                   │
+30|styles 80c669c377099582
+@@@ 150 json lbrace < 48
+02|  28
+@@@ 151 frame lbrace < 87
+02| FILES (2)                                 │  ~ src/f000.rs  +2 -2                  Hunk 1/2    │ [File] [Log]
+03| ~ src/f000.rs                      +2 -2  │                                                    │──────────────────────
+04| ~ src/f001.rs                      +2 -2  │ ▶ @@ -1,14 +1,14 @@                                │ src/f000.rs
+05|                                           │   1    1 │ let line_0 = 0;                         │
+06|                                           │   2    2 │ let line_1 = 1;                         │ No comments for this
+07|                                           │   3    3 │ let line_2 = 2;                         │
+08|                                           │   4      │-let line_3 = 3;                         │
+09|                                           │        4 │+let changed_3 = 3; // edited            │
+10|                                           │   5    5 │ let line_4 = 4;                         │
+11|                                           │   6    6 │ let line_5 = 5;                         │
+12|                                           │   7    7 │ let line_6 = 6;                         │
+13|                                           │   8    8 │ let line_7 = 7;                         │
+14|                                           │   9    9 │ let line_8 = 8;                         │
+15|                                           │  10   10 │ let line_9 = 9;                         │
+16|                                           │  11   11 │ let line_10 = 10;                       │
+17|                                           │  12   12 │ let line_11 = 11;                       │
+18|                                           │  13   13 │ let line_12 = 12;                       │
+19|                                           │  14   14 │ let line_13 = 13;                       │
+20|                                           │  ··· 6 lines hidden (+/- to expand) ···            │
+21|                                           │   @@ -21,20 +21,20 @@ let line_19 = 19;            │
+22|                                           │  21   21 │ let line_20 = 20;                       │
+23|                                           │  22   22 │ let line_21 = 21;                       │
+24|                                           │  23   23 │ let line_22 = 22;                       │
+25|                                           │  24   24 │ let line_23 = 23;                       │
+26|                                           │  25   25 │ let line_24 = 24;                       │
+27|                                           │  26   26 │ let line_25 = 25;                       │
+28|                                           │  27   27 │ let line_26 = 26;                       │
+30|styles bcbe6e2910c32d7e
+@@@ 152 json lbrace < 48
+02|  24
+@@@ 153 frame lbrace < 151
+@@@ 154 json lbrace < 152
+@@@ 155 frame lbrace < 151
+@@@ 156 json lbrace < 152
+@@@ 157 frame lbrace < 151
+@@@ 158 json lbrace < 152
+@@@ 159 frame lbrace < 151
+@@@ 160 json lbrace < 152
+@@@ 161 frame lbrace < 151
+@@@ 162 json lbrace < 152
+@@@ 163 frame lbrace < 151
+@@@ 164 json lbrace < 152

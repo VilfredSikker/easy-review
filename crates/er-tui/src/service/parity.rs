@@ -234,16 +234,7 @@ pub(super) fn stable_text(frame: &Buffer) -> String {
 /// The test modules whose checks are frozen, or single tests as
 /// `module::test`. Each later P76.1 PR adds its
 /// areas; the others still only compare the two legs live.
-const FROZEN: [&str; 31] = [
-    "chrome_tests::an_unset_verify_row_says_why_like_the_app",
-    "chrome_tests::closing_a_tab_focuses_the_next_and_drops_its_content",
-    "chrome_tests::one_line_fields_take_backspace_and_esc_like_the_app",
-    "chrome_tests::the_composer_line_scroll_and_cancel_keys_draw_like_the_app",
-    "chrome_tests::the_git_hub_working_tree_rows_act_like_the_app",
-    "chrome_tests::the_help_hub_draws_and_moves_like_the_app",
-    "chrome_tests::the_split_diff_focus_and_scroll_follow_the_app",
-    "chrome_tests::the_watch_scroll_and_panel_keys_draw_like_the_app",
-    "chrome_tests::up_and_shift_up_move_like_the_app",
+const FROZEN: [&str; 23] = [
     "copy_tests",
     "open_tests",
     "duties_tests",
@@ -266,6 +257,7 @@ const FROZEN: [&str; 31] = [
     "thread_writes_tests",
     "worktree_tests",
     "watched_tests",
+    "chrome_tests",
 ];
 
 /// Whether a test's checks are enforced: its module is in [`FROZEN`], or

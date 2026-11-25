@@ -135,6 +135,7 @@ fn closing_a_tab_focuses_the_next_and_drops_its_content() {
 /// range and to a diff at least 20 columns wide at the drawn width.
 #[test]
 fn the_width_keys_hold_the_apps_limits() {
+    let _golden = super::parity::guard();
     let (app_repo, flag_repo) = (fixture(2), fixture(2));
     let storage = storage();
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
