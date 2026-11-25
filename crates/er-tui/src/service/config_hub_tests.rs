@@ -9,13 +9,11 @@ use crossterm::event::KeyCode;
 use er_engine::config::{ConfigFieldValue, ErConfig};
 use er_service::SettingsCommand;
 
+use super::parity::assert_frame;
 use super::parity::assert_json;
 use super::shell::Shell;
 use super::startup::Args;
-use super::tests::{
-    app_on, assert_parity, fixture, key, loaded, path_of, plan, press_app, settle, shell_frame,
-    shell_on,
-};
+use super::tests::{fixture, key, loaded, path_of, plan, settle, shell_frame, shell_on};
 use super::tui_view::Overlay;
 use crate::ui::highlight::Highlighter;
 
@@ -143,10 +141,6 @@ fn a_hub_edit_goes_through_the_settings_actor() {
             .collect();
         files.sort();
         assert_eq!(files, ["agents.toml", "config.toml"]);
-        assert!(
-            !storage.path().join("config.toml").exists(),
-            "the App's config file was written"
-        );
     });
 }
 
@@ -160,9 +154,8 @@ fn hub_keys_match_the_apps() {
     let (storage, config_dir) = (temp(), temp());
     let path = path_of(&repo);
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
-        let mut app = app_on(&path);
         let mut shell = start(&path, config_dir.path());
-        // `app_on` turns context expansion off; the actor's config follows.
+        // The goldens were drawn with context expansion off.
         patch(
             &mut shell,
             "display.auto_context",
@@ -190,7 +183,6 @@ fn hub_keys_match_the_apps() {
         add(vec![KeyCode::Char('d')]);
         for (code, sends) in steps {
             let before = revision(&shell);
-            press_app(&mut app, code);
             shell.handle_key(key(code));
             if sends {
                 settle(&mut shell, |shell| revision(shell) > before);
@@ -198,23 +190,17 @@ fn hub_keys_match_the_apps() {
         }
         let files = |dir: &Path| ["config.toml", "agents.toml"].map(|name| read(&dir.join(name)));
         settle_quietly(&mut shell, || {
-            files(storage.path()) == files(config_dir.path())
+            files(config_dir.path())[0].contains("snapshot")
         });
-        assert_eq!(files(config_dir.path()), files(storage.path()));
         let lines = |dir: &Path| files(dir).map(|file| toml_lines(&file));
-        assert_json("files", &lines(config_dir.path()), &lines(storage.path()));
-        let app_file = &files(storage.path())[0];
-        assert!(
-            app_file.contains("snapshot"),
-            "the cycle did not save: {app_file}"
-        );
+        assert_json("files", &lines(config_dir.path()));
         let flag_file = &files(config_dir.path())[0];
         assert!(
             flag_file.contains("snapshot"),
             "the flag path's cycle did not save: {flag_file}"
         );
         let mut hl = Highlighter::new();
-        assert_parity(&app, &shell_frame(&mut shell, &mut hl), &mut hl, "hub");
+        assert_frame("hub", &shell_frame(&mut shell, &mut hl));
     });
 }
 
@@ -227,7 +213,6 @@ fn a_cycled_provider_saves_and_labels_like_the_app() {
     let (storage, config_dir) = (temp(), temp());
     let path = path_of(&repo);
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
-        let mut app = app_on(&path);
         let mut shell = start(&path, config_dir.path());
         patch(
             &mut shell,
@@ -235,41 +220,29 @@ fn a_cycled_provider_saves_and_labels_like_the_app() {
             ConfigFieldValue::Bool(false),
         );
         let mut hl = Highlighter::new();
-        assert_parity(&app, &shell_frame(&mut shell, &mut hl), &mut hl, "start");
+        assert_frame("start", &shell_frame(&mut shell, &mut hl));
         let mut keys = vec![KeyCode::Char(',')];
         keys.extend([J; 7]);
         keys.push(KeyCode::Enter);
         for code in keys {
-            press_app(&mut app, code);
             shell.handle_key(key(code));
         }
-        let provider = app.config.ai_hub.default_provider.clone();
-        assert!(provider.is_some(), "the App's cycle chose no provider");
+        // The provider the old TUI's cycle chose, which the golden draws.
         let agents = config_dir.path().join("agents.toml");
-        let saved = format!("default_provider = \"{}\"", provider.unwrap_or_default());
-        settle_quietly(&mut shell, || read(&agents).contains(&saved));
-        assert!(read(&agents).contains(&saved), "{}", read(&agents));
-        assert_parity(&app, &shell_frame(&mut shell, &mut hl), &mut hl, "cycle");
+        let saved = "default_provider = \"codex\"";
+        settle_quietly(&mut shell, || read(&agents).contains(saved));
+        assert!(read(&agents).contains(saved), "{}", read(&agents));
+        assert_frame("cycle", &shell_frame(&mut shell, &mut hl));
         // Then the Model and Effort rows below it, one key each.
-        let app_agents = storage.path().join("agents.toml");
         for step in ["model", "effort"] {
+            let before = read(&agents);
             for code in [J, KeyCode::Enter] {
-                press_app(&mut app, code);
                 shell.handle_key(key(code));
             }
-            settle_quietly(&mut shell, || read(&agents) == read(&app_agents));
-            assert_eq!(read(&agents), read(&app_agents), "{step}");
-            assert_json(
-                step,
-                &toml_lines(&read(&agents)),
-                &toml_lines(&read(&app_agents)),
-            );
-            assert_parity(&app, &shell_frame(&mut shell, &mut hl), &mut hl, step);
+            settle_quietly(&mut shell, || read(&agents) != before);
+            assert_json(step, &toml_lines(&read(&agents)));
+            assert_frame(step, &shell_frame(&mut shell, &mut hl));
         }
-        assert!(
-            app.config.ai_hub.default_effort.is_some(),
-            "no effort was pinned"
-        );
         assert!(
             read(&agents).contains("default_effort = "),
             "the flag path pinned no effort: {}",
@@ -375,7 +348,6 @@ fn tab_cancel_back_and_close_keys_match_the_apps() {
     let (storage, config_dir) = (temp(), temp());
     let path = path_of(&repo);
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
-        let mut app = app_on(&path);
         let mut shell = start(&path, config_dir.path());
         patch(
             &mut shell,
@@ -402,29 +374,21 @@ fn tab_cancel_back_and_close_keys_match_the_apps() {
         ]);
         keys.extend([J; 7]);
         for code in keys {
-            press_app(&mut app, code);
             shell.handle_key(key(code));
             shell.tick(Instant::now());
             let step = format!("{code:?}");
-            assert_parity(&app, &shell_frame(&mut shell, &mut hl), &mut hl, &step);
+            assert_frame(&step, &shell_frame(&mut shell, &mut hl));
         }
         let agents = config_dir.path().join("agents.toml");
-        let app_agents = storage.path().join("agents.toml");
         for code in [KeyCode::Left, KeyCode::Left] {
-            press_app(&mut app, code);
+            let before = read(&agents);
             shell.handle_key(key(code));
-            settle_quietly(&mut shell, || read(&agents) == read(&app_agents));
-            assert_eq!(read(&agents), read(&app_agents), "Left");
-            assert_json(
-                "Left",
-                &toml_lines(&read(&agents)),
-                &toml_lines(&read(&app_agents)),
-            );
+            settle_quietly(&mut shell, || read(&agents) != before);
+            assert_json("Left", &toml_lines(&read(&agents)));
         }
-        press_app(&mut app, KeyCode::Char('s'));
         shell.handle_key(key(KeyCode::Char('s')));
         assert!(shell.view().overlay.is_none(), "s left the hub open");
-        assert_parity(&app, &shell_frame(&mut shell, &mut hl), &mut hl, "closed");
+        assert_frame("closed", &shell_frame(&mut shell, &mut hl));
     });
 }
 
@@ -489,7 +453,7 @@ fn the_effort_list_goes_back_to_the_models() {
 /// `char_boundaries_step_over_multibyte_chars`.
 #[test]
 fn a_setting_edit_steps_over_multibyte_chars() {
-    use crate::input::keys::{Edit, OverlayAction};
+    use crate::input::{Edit, OverlayAction};
     let repo = fixture(1);
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     let path = path_of(&repo);
@@ -536,7 +500,7 @@ fn a_setting_edit_steps_over_multibyte_chars() {
 fn a_model_pick_saves_once_its_effort_is_known() {
     use super::ai_picker::{act, open_ai_hub, HubFacts, Picker};
     use super::config_hub::Step;
-    use crate::input::keys::OverlayAction as O;
+    use crate::input::OverlayAction as O;
     use er_engine::config::{AiModelConfig, AiProviderConfig};
     let repo = fixture(1);
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));

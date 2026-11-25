@@ -14,12 +14,12 @@ use er_git::{FakeGit, Worktree};
 use er_github::FakeGitHub;
 
 use super::github_tests::{calls, notice, on_pr_7, overview, pr_tab, settle_replies, working};
-use super::pr_stack_tests::{app_on, app_reads_stack, press_app, select_row, stack_json};
+use super::pr_stack_tests::{select_row, stack_json};
 use super::shell::Shell;
 use super::startup::Args;
 use super::tests::{
-    fake_github, fixture, git, key, loaded, path_of, plan_on, rows, settle, settle_within,
-    shell_frame, shell_on, SOURCES,
+    fake_github, fixture, git, key, loaded, path_of, plan_on, rows, service_sources, settle,
+    settle_within, shell_frame, shell_on,
 };
 use super::tui_view::Overlay;
 use crate::ui::highlight::Highlighter;
@@ -46,7 +46,7 @@ fn frame_text(shell: &mut Shell) -> String {
 fn open_row(shell: &mut Shell, label: &str) {
     shell.handle_key(key(KeyCode::Char('o')));
     settle_replies(shell);
-    select_row(None, shell, label);
+    select_row(shell, label);
     shell.handle_key(key(KeyCode::Enter));
 }
 
@@ -54,7 +54,7 @@ fn open_row(shell: &mut Shell, label: &str) {
 /// list comes from the service, and a folder from the engine's reader.
 #[test]
 fn open_modules_list_no_worktrees_and_read_no_directory() {
-    for (name, text) in SOURCES {
+    for (name, text) in &service_sources() {
         let flat: String = text.split_whitespace().collect();
         for needle in ["list_worktrees", "read_dir("] {
             assert!(!flat.contains(needle), "{name} names {needle}");
@@ -71,22 +71,17 @@ fn the_open_hub_draws_like_the_app() {
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     let github = Arc::new(FakeGitHub::default().with_stack_view_json(Ok(stack_json(false))));
     for second in [true, false] {
-        let (app_repo, flag_repo) = (fixture(1), fixture(1));
+        let flag_repo = fixture(1);
         if second {
-            add_worktree(&app_repo);
             add_worktree(&flag_repo);
         }
         er_engine::storage::with_process_test_storage_root(storage.path(), || {
-            let mut app = app_on(&path_of(&app_repo), &github);
             let mut shell = working(&flag_repo, &github, storage.path());
             let mut hl = Highlighter::new();
-            press_app(&mut app, key(KeyCode::Char('o')));
-            app_reads_stack(&mut app, &github);
-            app.clear_notification();
             shell.handle_key(key(KeyCode::Char('o')));
             settle(&mut shell, known_worktrees);
             let frame = shell_frame(&mut shell, &mut hl);
-            super::tests::assert_parity(&app, &frame, &mut hl, &format!("second {second}"));
+            super::parity::assert_frame(&format!("second {second}"), &frame);
             let text = frame_text(&mut shell);
             let want = if second {
                 "Jump to another worktree"
@@ -94,9 +89,9 @@ fn the_open_hub_draws_like_the_app() {
                 "No other worktrees"
             };
             assert!(text.contains("Switch worktree"), "{text}");
-            select_row(Some(&mut app), &mut shell, "Switch worktree");
+            select_row(&mut shell, "Switch worktree");
             let frame = shell_frame(&mut shell, &mut hl);
-            super::tests::assert_parity(&app, &frame, &mut hl, &format!("{want} selected"));
+            super::parity::assert_frame(&format!("{want} selected"), &frame);
             assert!(frame_text(&mut shell).contains(want));
         });
     }
@@ -249,7 +244,6 @@ fn browse_folders_draws_like_the_app_and_opens_a_repo() {
         .to_string_lossy()
         .into_owned();
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
-        let mut app = app_on(&root, &github);
         let args = Args {
             paths: vec![root.clone()],
             ..Args::default()
@@ -262,18 +256,16 @@ fn browse_folders_draws_like_the_app_and_opens_a_repo() {
         );
         settle(&mut shell, loaded);
         let mut hl = Highlighter::new();
-        press_app(&mut app, key(KeyCode::Char('o')));
-        app_reads_stack(&mut app, &github);
         shell.handle_key(key(KeyCode::Char('o')));
         settle_replies(&mut shell);
-        select_row(Some(&mut app), &mut shell, "Browse folders");
+        select_row(&mut shell, "Browse folders");
         for code in [
             KeyCode::Enter,
             KeyCode::Char('j'),
             KeyCode::Enter,
             KeyCode::Backspace,
         ] {
-            browse_step(&mut app, &mut shell, &mut hl, code);
+            browse_step(&mut shell, &mut hl, code);
         }
         let text = frame_text(&mut shell);
         assert!(text.contains("beta"), "{text}");
@@ -291,38 +283,21 @@ fn browse_folders_draws_like_the_app_and_opens_a_repo() {
     });
 }
 
-/// `step`, with both legs' browsed directory written under `/tmp` for its
-/// frame only, as `tmp_rooted` says, and put back before the next key.
-fn browse_step(
-    app: &mut er_engine::app::App,
-    shell: &mut Shell,
-    hl: &mut Highlighter,
-    code: KeyCode,
-) {
-    app.clear_notification();
+/// `step`, with the browsed directory written under `/tmp` for its frame
+/// only, as `tmp_rooted` says, and put back before the next key.
+fn browse_step(shell: &mut Shell, hl: &mut Highlighter, code: KeyCode) {
     shell.tick(Instant::now() + Duration::from_secs(60));
-    press_app(app, key(code));
     shell.handle_key(key(code));
     settle_replies(shell);
-    let own = rooted_paths(app, shell, None);
+    let own = rooted_paths(shell, None);
     let frame = super::tests::shell_frame(shell, hl);
-    super::tests::assert_parity(app, &frame, hl, &format!("{code:?}"));
-    rooted_paths(app, shell, Some(own));
+    super::parity::assert_frame(&format!("{code:?}"), &frame);
+    rooted_paths(shell, Some(own));
 }
 
-/// Writes both legs' browsed directory under `/tmp`, and answers the paths
-/// it replaced; given those, puts them back.
-fn rooted_paths(
-    app: &mut er_engine::app::App,
-    shell: &mut Shell,
-    restore: Option<(Option<String>, Option<String>)>,
-) -> (Option<String>, Option<String>) {
-    let app_path = match app.overlay.as_mut() {
-        Some(er_engine::app::OverlayData::DirectoryBrowser { current_path, .. }) => {
-            Some(current_path)
-        }
-        _ => None,
-    };
+/// Writes the browsed directory under `/tmp`, and answers the path it
+/// replaced; given that, puts it back.
+fn rooted_paths(shell: &mut Shell, restore: Option<Option<String>>) -> Option<String> {
     let flag_path = match shell.view_mut().overlay.as_mut() {
         Some(Overlay::Directory(browser)) => Some(&mut browser.current_path),
         _ => None,
@@ -333,10 +308,7 @@ fn rooted_paths(
             std::mem::replace(path, to)
         })
     };
-    match restore {
-        Some((app_old, flag_old)) => (swap(app_path, app_old), swap(flag_path, flag_old)),
-        None => (swap(app_path, None), swap(flag_path, None)),
-    }
+    swap(flag_path, restore.flatten())
 }
 
 /// "Open PR in browser" names the tab's PR and repo; `b` on a stack row
@@ -368,7 +340,7 @@ fn the_browser_rows_go_through_the_github_port() {
         shell.handle_key(key(KeyCode::Char('o')));
         settle_replies(&mut shell);
         frame_text(&mut shell);
-        select_row(None, &mut shell, "feature-2");
+        select_row(&mut shell, "feature-2");
         shell.handle_key(key(KeyCode::Char('b')));
         let root = path_of(&repo);
         let want =
@@ -407,27 +379,14 @@ fn the_browser_rows_go_through_the_github_port() {
     });
 }
 
-/// The hub's box, from the row holding `from` to its bottom border, matches
-/// the App's in text and style, inside the box's columns only. Each frame's
-/// own `from` row starts the match, as the rows above it may differ.
-fn assert_box_from(app: &er_engine::app::App, shell: &mut Shell, from: &str) {
+/// The hub's box, from the row holding `from` to its bottom border, inside
+/// the box's columns only, against the golden.
+fn assert_box_from(shell: &mut Shell, from: &str) {
     let mut hl = Highlighter::new();
     let flag = shell_frame(shell, &mut hl);
-    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 30))
-        .unwrap_or_else(|e| panic!("{e}"));
-    let mut cache = crate::screen::ViewCache::default();
-    terminal
-        .draw(|f| crate::ui::draw(f, &crate::screen::from_app(app, &mut cache), &mut hl))
-        .unwrap_or_else(|e| panic!("{e}"));
-    let theirs = terminal.backend().buffer().clone();
-    let (app_rows, flag_rows) = (rows(&theirs), rows(&flag));
-    let shown = format!(
-        "app:\n{}\nflag-on:\n{}",
-        app_rows.join("\n"),
-        flag_rows.join("\n")
-    );
-    let start_of = |rows: &[String]| rows.iter().position(|row| row.contains(from));
-    let (Some(app_start), Some(start)) = (start_of(&app_rows), start_of(&flag_rows)) else {
+    let flag_rows = rows(&flag);
+    let shown = flag_rows.join("\n");
+    let Some(start) = flag_rows.iter().position(|row| row.contains(from)) else {
         panic!("no {from}:\n{shown}");
     };
     let cols: Vec<char> = flag_rows[start].chars().collect();
@@ -435,38 +394,18 @@ fn assert_box_from(app: &er_engine::app::App, shell: &mut Shell, from: &str) {
     let right = cols.iter().rposition(|c| *c == '│').unwrap_or(119);
     let bottom = (start..flag_rows.len()).find(|&row| flag_rows[row].contains('└'));
     let bottom = bottom.unwrap_or_else(|| panic!("no box bottom:\n{shown}"));
-    // The box alone, cut out of each frame, is what the golden holds.
-    let cut = |buffer: &ratatui::buffer::Buffer, top: usize| {
-        let (width, height) = (right + 1 - left, bottom + 1 - start);
-        let size = |n: usize| u16::try_from(n).unwrap_or_else(|e| panic!("{e}"));
-        let mut cut = ratatui::buffer::Buffer::empty(ratatui::layout::Rect::new(
-            0,
-            0,
-            size(width),
-            size(height),
-        ));
-        cut.content = (0..height)
-            .flat_map(|offset| {
-                let row = (top + offset) * 120;
-                buffer.content[row + left..=row + right].to_vec()
-            })
-            .collect();
-        cut
-    };
-    super::parity::assert_frame(from, &cut(&flag, start), &cut(&theirs, app_start));
-    for offset in 0..=bottom - start {
-        for col in left..=right {
-            let cell = |buffer: &ratatui::buffer::Buffer, row: usize| {
-                let cell = &buffer.content[row * 120 + col];
-                (cell.symbol().to_string(), cell.style())
-            };
-            let (a, b) = (
-                cell(&theirs, app_start + offset),
-                cell(&flag, start + offset),
-            );
-            assert_eq!(a, b, "row +{offset}, col {col}\n{shown}");
-        }
-    }
+    // The box alone, cut out of the frame, is what the golden holds.
+    let (width, height) = (right + 1 - left, bottom + 1 - start);
+    let size = |n: usize| u16::try_from(n).unwrap_or_else(|e| panic!("{e}"));
+    let area = ratatui::layout::Rect::new(0, 0, size(width), size(height));
+    let mut cut = ratatui::buffer::Buffer::empty(area);
+    cut.content = (0..height)
+        .flat_map(|offset| {
+            let row = (start + offset) * 120;
+            flag.content[row + left..=row + right].to_vec()
+        })
+        .collect();
+    super::parity::assert_frame(from, &cut);
 }
 
 /// The Current PR section draws as the App's: on a `--pr` tab it shows
@@ -487,43 +426,27 @@ fn the_current_pr_rows_draw_like_the_app() {
             .with_overview(Ok(Some(overview("someone"))))
             .with_stack_view_json(Ok(stack_json(false))),
     );
-    let (app_repo, flag_repo) = (fixture(1), fixture(1));
+    let flag_repo = fixture(1);
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
-        let mut app = app_on(&path_of(&app_repo), &github);
-        // As the App's start applies the probe's overview.
-        app.tab_mut().pr_data = Some(overview("someone"));
         let mut shell = working(&flag_repo, &github, storage.path());
         settle(&mut shell, |shell| {
             let content = shell.active_content();
             content.is_some_and(|content| content.pr.pr_number == Some(7))
         });
         let mut hl = Highlighter::new();
-        press_app(&mut app, key(KeyCode::Char('o')));
-        app_reads_stack(&mut app, &github);
-        app.clear_notification();
         shell.handle_key(key(KeyCode::Char('o')));
         settle_replies(&mut shell);
         let frame = shell_frame(&mut shell, &mut hl);
-        super::tests::assert_parity(&app, &frame, &mut hl, "probed working tab");
+        super::parity::assert_frame("probed working tab", &frame);
         assert!(!frame_text(&mut shell).contains("Current PR"));
     });
 
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
         let script = FakeGitHub::default().with_stack_view_json(Ok(stack_json(false)));
-        let (dirs, mut shell, github) = pr_tab(script, storage.path());
-        let content = shell
-            .active_content()
-            .unwrap_or_else(|| panic!("no content"));
-        let mut app = app_on(&path_of(&dirs[0]), &github);
-        app.tab_mut().pr_number = Some(7);
-        app.tab_mut()
-            .remote_repo
-            .clone_from(&content.tab.remote_repo);
-        press_app(&mut app, key(KeyCode::Char('o')));
-        app_reads_stack(&mut app, &github);
+        let (_dirs, mut shell, _github) = pr_tab(script, storage.path());
         shell.handle_key(key(KeyCode::Char('o')));
         settle_replies(&mut shell);
         frame_text(&mut shell);
-        assert_box_from(&app, &mut shell, "── Current PR ──");
+        assert_box_from(&mut shell, "── Current PR ──");
     });
 }

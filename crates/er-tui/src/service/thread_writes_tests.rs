@@ -16,11 +16,9 @@ use super::loop_tests::{Gate, GatedGit};
 use super::parity::assert_json;
 use super::shell::Shell;
 use super::startup::After;
-use super::tests::{
-    fixture, key, loaded, path_of, plan, press_app, settle, shell, shell_on, SOURCES,
-};
+use super::tests::{fixture, key, loaded, path_of, plan, service_sources, settle, shell, shell_on};
 use super::threads_tests::{
-    active_key, args, both_on, draft_text, early_in_a_second, er_dir, seed_both, settle_replies,
+    active_key, args, both_on, draft_text, early_in_a_second, er_dir, seed_notes, settle_replies,
     state, step, type_text,
 };
 use super::tui_view::{Mode, Overlay};
@@ -59,10 +57,10 @@ fn rows(dir: &str) -> Vec<serde_json::Value> {
 #[test]
 fn reply_and_delete_write_and_draw_like_the_app() {
     let _golden = super::parity::guard();
-    let (app_repo, flag_repo) = (fixture(2), fixture(2));
+    let flag_repo = fixture(2);
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
-        let (mut app, mut shell) = both_on(&app_repo, &flag_repo, storage.path());
+        let mut shell = both_on(&flag_repo, storage.path());
         let mut hl = Highlighter::new();
         let typed = |text: &str| {
             text.chars()
@@ -80,11 +78,10 @@ fn reply_and_delete_write_and_draw_like_the_app() {
             if event.code == KeyCode::Enter {
                 early_in_a_second();
             }
-            step(&mut app, &mut shell, &mut hl, event);
+            step(&mut shell, &mut hl, event);
         }
         let replied = rows(&er_dir(&shell));
-        assert_eq!(replied, rows(&app.tab().er_dir()));
-        assert_json("replied", &replied, &rows(&app.tab().er_dir()));
+        assert_json("replied", &replied);
         let replies = replied.iter().filter(|row| row["is_reply"] == true);
         assert_eq!(replies.count(), 1, "{replied:?}");
 
@@ -92,11 +89,10 @@ fn reply_and_delete_write_and_draw_like_the_app() {
         // second lands on the question and takes the thread.
         for left in [1, 0] {
             for code in [KeyCode::Char('J'), KeyCode::Char('x'), KeyCode::Char('y')] {
-                step(&mut app, &mut shell, &mut hl, key(code));
+                step(&mut shell, &mut hl, key(code));
             }
             let deleted = rows(&er_dir(&shell));
-            assert_eq!(deleted, rows(&app.tab().er_dir()));
-            assert_json("deleted", &deleted, &rows(&app.tab().er_dir()));
+            assert_json("deleted", &deleted);
             assert_eq!(deleted.len(), left, "{deleted:?}");
             assert!(deleted.iter().all(|row| row["is_reply"] == false));
         }
@@ -299,8 +295,8 @@ fn a_whitespace_body_is_refused_and_kept() {
     });
 }
 
-/// Moves the open AI hub to `label` on both paths, which must agree on it.
-pub(super) fn hub_to(app: &mut er_engine::app::App, shell: &mut Shell, label: &str) {
+/// Moves the open AI hub to `label`.
+pub(super) fn hub_to(shell: &mut Shell, label: &str) {
     let selected = |shell: &Shell| match &shell.view().overlay {
         Some(Overlay::Picker(picker)) => picker.rows[picker.selected].label.clone(),
         _ => panic!("the AI hub is not open"),
@@ -309,17 +305,9 @@ pub(super) fn hub_to(app: &mut er_engine::app::App, shell: &mut Shell, label: &s
         if selected(shell) == label {
             break;
         }
-        press_app(app, KeyCode::Char('j'));
         shell.handle_key(key(KeyCode::Char('j')));
     }
     assert_eq!(selected(shell), label);
-    let on_app = match &app.overlay {
-        Some(er_engine::app::OverlayData::ModalHub {
-            items, selected, ..
-        }) => items[*selected].label.clone(),
-        _ => panic!("the App's AI hub is not open"),
-    };
-    assert_eq!(on_app, label);
 }
 
 /// Each layer row of the AI hub, chosen on both paths, draws the same
@@ -327,11 +315,11 @@ pub(super) fn hub_to(app: &mut er_engine::app::App, shell: &mut Shell, label: &s
 #[test]
 fn the_hub_layer_rows_act_like_the_app() {
     let _golden = super::parity::guard();
-    let (app_repo, flag_repo) = (fixture(3), fixture(3));
+    let flag_repo = fixture(3);
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
-        let (mut app, mut shell) = both_on(&app_repo, &flag_repo, storage.path());
-        seed_both(&mut app, &mut shell, false, "A note");
+        let mut shell = both_on(&flag_repo, storage.path());
+        seed_notes(&mut shell, false, "A note");
         let mut hl = Highlighter::new();
         let labels = [
             "Toggle AI findings",
@@ -344,10 +332,9 @@ fn the_hub_layer_rows_act_like_the_app() {
             "Toggle AI findings",
         ];
         for label in labels {
-            press_app(&mut app, KeyCode::Char('a'));
             shell.handle_key(key(KeyCode::Char('a')));
-            hub_to(&mut app, &mut shell, label);
-            step(&mut app, &mut shell, &mut hl, key(KeyCode::Enter));
+            hub_to(&mut shell, label);
+            step(&mut shell, &mut hl, key(KeyCode::Enter));
             assert!(shell.view().overlay.is_none(), "{label} left the hub open");
         }
     });
@@ -357,10 +344,11 @@ fn the_hub_layer_rows_act_like_the_app() {
 /// are view state (ADDENDUM-05 risk 6).
 #[test]
 fn the_hub_layer_rows_stay_in_the_view() {
-    let shell_rs = SOURCES
+    let sources = service_sources();
+    let shell_rs = sources
         .iter()
-        .find(|(name, _)| *name == "shell.rs")
-        .map_or("", |(_, text)| text);
+        .find(|(name, _)| name == "shell.rs")
+        .map_or("", |(_, text)| text.as_str());
     let arm = shell_rs
         .split("if let Step::Layer(row) = step {")
         .nth(1)

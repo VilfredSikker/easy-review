@@ -3,34 +3,27 @@
 use std::time::{Duration, Instant};
 
 use crossterm::event::KeyCode;
-use er_engine::app::App;
 
+use super::parity::assert_frame;
 use super::shell::Shell;
 use super::startup::Args;
-use super::tests::{
-    app_on, assert_parity, fixture, key, loaded, path_of, press_app, settle, shell, shell_frame,
-    SOURCES,
-};
+use super::tests::{fixture, key, loaded, path_of, service_sources, settle, shell, shell_frame};
 use crate::ui::highlight::Highlighter;
 
-/// One key on both paths, then frame parity.
-fn step(app: &mut App, shell: &mut Shell, hl: &mut Highlighter, code: KeyCode) {
-    app.clear_notification();
+/// One key, then the frame against its golden.
+fn step(shell: &mut Shell, hl: &mut Highlighter, code: KeyCode) {
     shell.tick(Instant::now() + Duration::from_secs(60));
-    press_app(app, code);
     shell.handle_key(key(code));
     settle(shell, |shell| shell.in_flight() == 0);
     let frame = shell_frame(shell, hl);
-    assert_parity(app, &frame, hl, &format!("{code:?}"));
+    assert_frame(&format!("{code:?}"), &frame);
 }
 
-/// `keys` on two clones, with the automatic pick at `threshold` on both.
+/// `keys`, with the automatic pick at `threshold`.
 fn parity(threshold: usize, keys: &str) {
-    let (app_repo, flag_repo) = (fixture(3), fixture(3));
+    let flag_repo = fixture(3);
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
-        let mut app = app_on(&path_of(&app_repo));
-        app.config.display.auto_context_threshold = threshold;
         let args = Args {
             paths: vec![path_of(&flag_repo)],
             ..Args::default()
@@ -40,7 +33,7 @@ fn parity(threshold: usize, keys: &str) {
         settle(&mut shell, loaded);
         let mut hl = Highlighter::new();
         for code in keys.chars() {
-            step(&mut app, &mut shell, &mut hl, KeyCode::Char(code));
+            step(&mut shell, &mut hl, KeyCode::Char(code));
         }
     });
 }
@@ -63,7 +56,7 @@ fn the_automatic_pick_draws_like_the_app() {
 /// file: no flag-on module fetches or measures one itself.
 #[test]
 fn the_service_fetches_the_context() {
-    for (name, text) in SOURCES {
+    for (name, text) in &service_sources() {
         let flat: String = text.split_whitespace().collect();
         for needle in [
             "refetch_file_with_context",

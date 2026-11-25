@@ -16,10 +16,10 @@ use er_service::test_support::{open_gate, Agent};
 use er_service::LiveReviewFlow;
 
 use super::ai_runs_tests::{choose, notice};
+use super::parity::assert_frame;
 use super::shell::Shell;
 use super::tests::{
-    app_on, assert_parity, fixture, key, loaded, path_of, press_app, settle, settle_within, shell,
-    shell_frame, SOURCES,
+    fixture, key, loaded, path_of, service_sources, settle, settle_within, shell, shell_frame,
 };
 use super::thread_writes_tests::hub_to;
 use super::threads_tests::{active_key, args, er_dir, step};
@@ -110,34 +110,14 @@ fn done(live: &LiveReviewFlow) -> bool {
     matches!(live.flow.state, FlowState::Done { .. }) && !live.draining
 }
 
-fn app_until(app: &mut er_engine::app::App, what: &str, done: impl Fn(&FlowState, bool) -> bool) {
-    let deadline = Instant::now() + FLOW_WAIT;
-    loop {
-        let er_dir = app.tab().er_dir();
-        let draining = app.review_flow_is_draining(&er_dir);
-        if app
-            .review_flow_for(&er_dir)
-            .is_some_and(|flow| done(&flow.state, draining))
-        {
-            return;
-        }
-        assert!(Instant::now() < deadline, "the App never reached {what}");
-        app.poll_background_tasks();
-        std::thread::sleep(Duration::from_millis(20));
-    }
-}
-
-/// Opens the AI hub on both paths and compares the frames.
-fn hub_parity(app: &mut er_engine::app::App, shell: &mut Shell, hl: &mut Highlighter, at: &str) {
-    app.clear_notification();
+/// Opens the AI hub and checks the frame against its golden.
+fn hub_parity(shell: &mut Shell, hl: &mut Highlighter, at: &str) {
     shell.view_mut().notification = None;
-    press_app(app, KeyCode::Char('a'));
     shell.handle_key(key(KeyCode::Char('a')));
-    assert_parity(app, &shell_frame(shell, hl), hl, at);
+    assert_frame(at, &shell_frame(shell, hl));
 }
 
-fn enter_both(app: &mut er_engine::app::App, shell: &mut Shell) {
-    press_app(app, KeyCode::Enter);
+fn enter_both(shell: &mut Shell) {
     shell.handle_key(key(KeyCode::Enter));
 }
 
@@ -153,7 +133,7 @@ fn flag_on_flows_go_through_the_host() {
         "flow_run_results",
         "toggle_show_dropped",
     ];
-    for (name, text) in SOURCES {
+    for (name, text) in &service_sources() {
         let flat: String = text.split_whitespace().collect();
         for word in banned {
             assert!(!flat.contains(word), "{name} names {word}");
@@ -247,55 +227,40 @@ fn the_flow_rows_cancel_and_decline() {
 #[test]
 fn the_ai_hub_draws_like_the_app_in_each_flow_state() {
     let _golden = super::parity::guard();
-    let (app_repo, flag_repo) = (fixture(1), fixture(1));
+    let flag_repo = fixture(1);
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
         let agent = flow_agent(storage.path(), true);
         let _release = Release(agent.first.clone());
-        let mut app = app_on(&path_of(&app_repo));
         let mut shell = flow_shell(&flag_repo, storage.path());
         let mut hl = Highlighter::new();
-        hub_parity(&mut app, &mut shell, &mut hl, "no flow");
-        enter_both(&mut app, &mut shell);
-        app_until(&mut app, "triage", |state, _| *state == FlowState::Triaging);
+        hub_parity(&mut shell, &mut hl, "no flow");
+        enter_both(&mut shell);
         flow_until(&mut shell, "triage", |live| {
             live.flow.state == FlowState::Triaging
         });
-        hub_parity(&mut app, &mut shell, &mut hl, "triage running");
-        press_app(&mut app, KeyCode::Esc);
+        hub_parity(&mut shell, &mut hl, "triage running");
         shell.handle_key(key(KeyCode::Esc));
 
         open_gate(&agent.first);
         let awaiting = |state: &FlowState| *state == FlowState::AwaitingConfirmation;
-        app_until(&mut app, "Deep to confirm", |state, _| awaiting(state));
         flow_until(&mut shell, "Deep to confirm", |live| {
             awaiting(&live.flow.state)
         });
-        hub_parity(&mut app, &mut shell, &mut hl, "awaiting Deep");
-        enter_both(&mut app, &mut shell);
-        app_until(&mut app, "done", |state, draining| {
-            matches!(state, FlowState::Done { .. }) && !draining
-        });
+        hub_parity(&mut shell, &mut hl, "awaiting Deep");
+        enter_both(&mut shell);
         flow_until(&mut shell, "done", done);
-        hub_parity(&mut app, &mut shell, &mut hl, "done with findings");
-        enter_both(&mut app, &mut shell);
+        hub_parity(&mut shell, &mut hl, "done with findings");
+        enter_both(&mut shell);
         let open = |shell: &Shell| matches!(shell.view().overlay, Some(Overlay::FlowResults(_)));
         settle(&mut shell, open);
-        app.clear_notification();
         shell.view_mut().notification = None;
-        // Each path names its own run by its start time.
-        let app_run = match &app.overlay {
-            Some(er_engine::app::OverlayData::ReviewFlowResults { results, .. }) => {
-                results.run_id.clone()
-            }
-            _ => panic!("the App's results are not open"),
-        };
+        // The run is named by its start time, which the golden masks.
         let published = live(&shell).and_then(|live| live.flow.arena_run_id);
-        if let Some(Overlay::FlowResults(results)) = shell.view_mut().overlay.as_mut() {
+        if let Some(Overlay::FlowResults(results)) = shell.view().overlay.as_ref() {
             assert_eq!(Some(&results.found.run_id), published.as_ref());
-            results.found.run_id = app_run;
         }
-        assert_parity(&app, &shell_frame(&mut shell, &mut hl), &mut hl, "results");
+        assert_frame("results", &shell_frame(&mut shell, &mut hl));
     });
 }
 
@@ -305,37 +270,30 @@ fn the_ai_hub_draws_like_the_app_in_each_flow_state() {
 #[test]
 fn an_interrupted_flow_shows_and_reruns_like_the_app() {
     let _golden = super::parity::guard();
-    let (app_repo, flag_repo) = (fixture(1), fixture(1));
+    let flag_repo = fixture(1);
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
         let _agent = flow_agent(storage.path(), false);
-        for repo in [&app_repo, &flag_repo] {
-            let bucket = app_on(&path_of(repo)).tab().er_dir();
-            interrupted_record(Path::new(&bucket));
-        }
-        let mut app = app_on(&path_of(&app_repo));
+        // The record goes in the bucket before the start that loads it.
+        let first = flow_shell(&flag_repo, storage.path());
+        interrupted_record(Path::new(&er_dir(&first)));
+        drop(first);
         let mut shell = flow_shell(&flag_repo, storage.path());
         let interrupted =
             |live: &LiveReviewFlow| matches!(live.flow.state, FlowState::Interrupted { .. });
         flow_until(&mut shell, "the record shows", interrupted);
         let mut hl = Highlighter::new();
-        hub_parity(&mut app, &mut shell, &mut hl, "interrupted");
-        hub_to(&mut app, &mut shell, "Review task progress");
-        enter_both(&mut app, &mut shell);
-        // Each path's bucket is under its own repo.
+        hub_parity(&mut shell, &mut hl, "interrupted");
+        hub_to(&mut shell, "Review task progress");
+        enter_both(&mut shell);
         let bucket = er_dir(&shell);
         let Some(Overlay::FlowProgress(progress)) = shell.view_mut().overlay.as_mut() else {
             panic!("the progress is not open");
         };
         assert_eq!(progress.er_dir, bucket);
-        let shown = super::parity::tmp_rooted(&app.tab().er_dir());
-        let own = std::mem::replace(&mut progress.er_dir, shown.clone());
-        if let Some(er_engine::app::OverlayData::ReviewFlowProgress { er_dir, .. }) =
-            app.overlay.as_mut()
-        {
-            *er_dir = shown;
-        }
-        assert_parity(&app, &shell_frame(&mut shell, &mut hl), &mut hl, "progress");
+        let shown = super::parity::tmp_rooted(&bucket);
+        let own = std::mem::replace(&mut progress.er_dir, shown);
+        assert_frame("progress", &shell_frame(&mut shell, &mut hl));
         if let Some(Overlay::FlowProgress(progress)) = shell.view_mut().overlay.as_mut() {
             progress.er_dir = own;
         }
@@ -367,15 +325,10 @@ fn interrupted_record(bucket: &Path) {
 #[test]
 fn the_drops_row_lists_like_the_app() {
     let _golden = super::parity::guard();
-    let (app_repo, flag_repo) = (fixture(1), fixture(1));
+    let flag_repo = fixture(1);
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
-        let mut app = app_on(&path_of(&app_repo));
         let mut shell = flow_shell(&flag_repo, storage.path());
-        let hash = app.tab().branch_diff_hash.clone();
-        dropped_review(&app.tab().er_dir(), &hash);
-        app.tab_mut().reload_ai_state();
-        app.tab_mut().panel = Some(PanelContent::AiSummary);
         let content = shell
             .active_content()
             .unwrap_or_else(|| panic!("no content"));
@@ -397,10 +350,9 @@ fn the_drops_row_lists_like_the_app() {
         }
         let mut hl = Highlighter::new();
         for _ in 0..2 {
-            press_app(&mut app, KeyCode::Char('a'));
             shell.handle_key(key(KeyCode::Char('a')));
-            hub_to(&mut app, &mut shell, "Show arbiter's drops");
-            step(&mut app, &mut shell, &mut hl, key(KeyCode::Enter));
+            hub_to(&mut shell, "Show arbiter's drops");
+            step(&mut shell, &mut hl, key(KeyCode::Enter));
         }
     });
 }
@@ -459,7 +411,7 @@ fn results_of(findings: &[(&str, bool)]) -> super::flows::Results {
 #[test]
 fn the_progress_keys_only_move_and_scroll() {
     use super::flows::{progress_key, Progress, Then};
-    use crate::input::keys::OverlayAction as O;
+    use crate::input::OverlayAction as O;
     let mut flow = er_engine::ai::review_flow::ReviewFlow::new("hash");
     for id in ["a", "b"] {
         flow.tasks
@@ -499,7 +451,7 @@ fn the_progress_keys_only_move_and_scroll() {
 #[test]
 fn only_a_selectable_result_row_toggles() {
     use super::flows::{results_key, Then};
-    use crate::input::keys::OverlayAction as O;
+    use crate::input::OverlayAction as O;
     let mut results = results_of(&[("dropped", false), ("kept", true)]);
     assert!(matches!(
         results_key(&mut results, O::ToggleFlowFinding),
@@ -519,7 +471,7 @@ fn only_a_selectable_result_row_toggles() {
 #[test]
 fn accept_sends_the_captured_bucket_and_sorted_ids() {
     use super::flows::{results_key, Then};
-    use crate::input::keys::OverlayAction as O;
+    use crate::input::OverlayAction as O;
     let mut results = results_of(&[("b", true), ("a", true)]);
     assert!(matches!(
         results_key(&mut results, O::AcceptFlowFindings),

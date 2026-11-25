@@ -14,7 +14,7 @@ use er_engine::TabKey;
 use er_service::{Command, TabContent};
 
 use super::modes::Follow;
-use crate::input::keys::HistoryAction;
+use crate::input::HistoryAction;
 use crate::screen::HistoryView;
 
 /// One tab's place in History.

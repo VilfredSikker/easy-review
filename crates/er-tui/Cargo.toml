@@ -12,13 +12,14 @@ path = "src/main.rs"
 
 [dependencies]
 er-agent = { path = "../er-agent" }
-er-engine = { path = "../er-engine" }
+# No `ui`: the TUI reads the service, and the App stays out of its graph.
+er-engine = { path = "../er-engine", default-features = false, features = ["watch", "highlight"] }
 er-git = { path = "../er-git" }
-er-service = { path = "../er-service", optional = true }
-# The flag path saves its view file through the store.
-er-store = { path = "../er-store", optional = true }
-# The flag path names the builders' wire types.
-er-protocol = { path = "../er-protocol", optional = true }
+er-service = { path = "../er-service" }
+# The view file is saved through the store.
+er-store = { path = "../er-store" }
+# The builders' wire types.
+er-protocol = { path = "../er-protocol" }
 
 # TUI
 ratatui = "0.30"
@@ -38,14 +39,9 @@ anyhow.workspace = true
 ureq = { version = "3", default-features = false, features = ["rustls"] }
 tempfile = "3"
 
-[features]
-default = []
-# Compiles the v1 service path beside the App path. Off by default.
-v1-service = ["dep:er-service", "dep:er-store", "dep:er-protocol"]
-
 [dev-dependencies]
 # Thread-scoped ER_STORAGE_ROOT override for tests that seed the projects record.
-er-engine = { path = "../er-engine", features = ["test-support"] }
+er-engine = { path = "../er-engine", default-features = false, features = ["watch", "highlight", "test-support"] }
 # The scripted GitHub port, for the flag-on `--pr` start.
 er-github = { path = "../er-github" }
 # The gated fake agent and the planning worker, for the flag-on run tests.

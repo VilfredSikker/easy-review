@@ -15,12 +15,13 @@ use er_engine::TabKey;
 use er_github::{BranchPrProbe, CreatedComment, FakeGitHub, GhError, PrLookup, PrOverviewData};
 use er_service::{EARLIER_VERSION_POSTED, OWN_PR_APPROVAL_REFUSED};
 
+use super::parity::assert_frame;
 use super::parity::assert_json;
 use super::shell::Shell;
 use super::startup::Args;
 use super::tests::{
-    assert_parity, fixture, git, key, loaded, path_of, plan, plan_on, settle, settle_within,
-    shell_frame, shell_on, without_review_row, SOURCES, WAIT,
+    fixture, git, key, loaded, path_of, plan, plan_on, service_sources, settle, settle_within,
+    shell_frame, shell_on, without_review_row, WAIT,
 };
 use super::tui_view::{Ask, Mode, PrKnown, TabViewState};
 use crate::ui::highlight::Highlighter;
@@ -296,26 +297,15 @@ fn approving_your_own_pr_shows_the_refusal() {
     });
 }
 
-/// Presses `event` on both paths and compares the frames once the flag
-/// path's replies have landed.
-fn step(app: &mut er_engine::app::App, shell: &mut Shell, hl: &mut Highlighter, event: KeyEvent) {
-    app.clear_notification();
+/// Presses `event` and checks the frame against its golden once the
+/// replies have landed.
+fn step(shell: &mut Shell, hl: &mut Highlighter, event: KeyEvent) {
     shell.tick(Instant::now() + Duration::from_secs(60));
-    let (tx, _rx) = std::sync::mpsc::channel();
-    let mut cache = crate::screen::ViewCache::default();
-    crate::handle_key(app, event, &tx, &mut None, &mut cache).unwrap_or_else(|e| panic!("{e}"));
     shell.handle_key(event);
     settle_replies(shell);
     without_review_row(shell);
     let frame = shell_frame(shell, hl);
-    assert_parity(app, &frame, hl, &format!("{event:?}"));
-}
-
-fn app_on(path: &str, github: &Arc<FakeGitHub>) -> er_engine::app::App {
-    let mut app = er_engine::app::App::new_with_args(&[path.to_string()], ports(github))
-        .unwrap_or_else(|e| panic!("{e:#}"));
-    app.config.display.auto_context_threshold = 0;
-    app
+    assert_frame(&format!("{event:?}"), &frame);
 }
 
 /// On a tab the probe found PR-less, `c` and "Comment on PR" refuse with
@@ -323,23 +313,21 @@ fn app_on(path: &str, github: &Arc<FakeGitHub>) -> er_engine::app::App {
 #[test]
 fn a_tab_known_to_have_no_pr_refuses_the_github_composer() {
     let _golden = super::parity::guard();
-    let (app_repo, flag_repo) = (fixture(1), fixture(1));
+    let flag_repo = fixture(1);
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     let github =
         Arc::new(FakeGitHub::default().with_probe_pr_for_current_branch(Ok(BranchPrProbe::Absent)));
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
-        let mut app = app_on(&path_of(&app_repo), &github);
-        app.tab_mut().pr_absent = true;
         let mut shell = working(&flag_repo, &github, storage.path());
         settle(&mut shell, |shell| known(shell) == PrKnown::Absent);
         let mut hl = Highlighter::new();
-        step(&mut app, &mut shell, &mut hl, key(KeyCode::Char('c')));
+        step(&mut shell, &mut hl, key(KeyCode::Char('c')));
         assert_eq!(notice(&shell), NO_PR_FOR_COMMENT);
         let mut hub = vec![key(KeyCode::Char('g'))];
         hub.extend(vec![key(KeyCode::Down); COMMENT_ROW]);
         hub.push(key(KeyCode::Enter));
         for event in hub {
-            step(&mut app, &mut shell, &mut hl, event);
+            step(&mut shell, &mut hl, event);
         }
         assert_eq!(shell.view().input_mode, Mode::Normal);
         assert_eq!(notice(&shell), NO_PR_FOR_COMMENT);
@@ -444,12 +432,11 @@ fn comment_on_pr_posts_pr_wide_once() {
 #[test]
 fn a_github_line_comment_posts_like_the_app() {
     let _golden = super::parity::guard();
-    let (app_repo, flag_repo) = (fixture(1), fixture(1));
+    let flag_repo = fixture(1);
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     let script = || Arc::new(on_pr_7().with_post_line_comment(Ok(created(901))));
-    let (app_github, flag_github) = (script(), script());
+    let flag_github = script();
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
-        let mut app = app_on(&path_of(&app_repo), &app_github);
         let mut shell = working(&flag_repo, &flag_github, storage.path());
         let mut hl = Highlighter::new();
         let mut keys = vec![key(KeyCode::Down); 4];
@@ -457,7 +444,7 @@ fn a_github_line_comment_posts_like_the_app() {
         keys.extend("Why gone?".chars().map(|c| key(KeyCode::Char(c))));
         keys.push(key(KeyCode::Enter));
         for event in keys {
-            step(&mut app, &mut shell, &mut hl, event);
+            step(&mut shell, &mut hl, event);
         }
         let rows = |dir: &str| {
             let rows = read_sidecar::<ErGithubComments>(Path::new(dir)).comments;
@@ -465,12 +452,7 @@ fn a_github_line_comment_posts_like_the_app() {
         };
         let content = shell.active_content().unwrap_or_else(|| panic!("gone"));
         let flag_rows = rows(&content.context.comments_dir);
-        assert_eq!(flag_rows, rows(&app.tab().github_comments_dir()));
-        assert_json(
-            "sidecar",
-            &flag_rows,
-            &rows(&app.tab().github_comments_dir()),
-        );
+        assert_json("sidecar", &flag_rows);
         assert_eq!(flag_rows[0]["side"], "LEFT", "{flag_rows}");
         assert_eq!(calls(&flag_github, "post_line_comment").len(), 1);
     });
@@ -676,7 +658,7 @@ fn github_writes_reach_github_only_through_the_service() {
         ".submit_review(",
         "pending_review_submit",
     ];
-    for (name, text) in SOURCES {
+    for (name, text) in &service_sources() {
         let flat: String = text.split_whitespace().collect();
         for word in banned {
             assert!(!flat.contains(word), "{name} names {word}");

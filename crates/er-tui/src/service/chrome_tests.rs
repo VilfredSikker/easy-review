@@ -4,13 +4,11 @@
 use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use er_engine::ports::Ports;
 
+use super::parity::assert_frame;
 use super::parity::assert_json;
 use super::shell::Shell;
-use super::tests::{
-    assert_parity, fixture, git, key, loaded, path_of, press_app, settle, shell, shell_frame, WAIT,
-};
+use super::tests::{fixture, git, key, loaded, path_of, settle, shell, shell_frame, WAIT};
 use super::threads_tests::{active_key, args, both_on, state, step};
 use crate::ui::highlight::Highlighter;
 
@@ -18,8 +16,8 @@ fn storage() -> tempfile::TempDir {
     tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"))
 }
 
-fn press(app: &mut er_engine::app::App, shell: &mut Shell, hl: &mut Highlighter, code: KeyCode) {
-    step(app, shell, hl, KeyEvent::new(code, KeyModifiers::NONE));
+fn press(shell: &mut Shell, hl: &mut Highlighter, code: KeyCode) {
+    step(shell, hl, KeyEvent::new(code, KeyModifiers::NONE));
 }
 
 /// `?` opens the Help hub as the App's: the same rows, the cursor skipping
@@ -27,10 +25,10 @@ fn press(app: &mut er_engine::app::App, shell: &mut Shell, hl: &mut Highlighter,
 #[test]
 fn the_help_hub_draws_and_moves_like_the_app() {
     let _golden = super::parity::guard();
-    let (app_repo, flag_repo) = (fixture(1), fixture(1));
+    let flag_repo = fixture(1);
     let storage = storage();
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
-        let (mut app, mut shell) = both_on(&app_repo, &flag_repo, storage.path());
+        let mut shell = both_on(&flag_repo, storage.path());
         let mut hl = Highlighter::new();
         let codes = [
             KeyCode::Char('?'),
@@ -41,27 +39,20 @@ fn the_help_hub_draws_and_moves_like_the_app() {
             KeyCode::Char('k'),
         ];
         for code in codes {
-            press(&mut app, &mut shell, &mut hl, code);
+            press(&mut shell, &mut hl, code);
         }
         for _ in 0..12 {
-            press(&mut app, &mut shell, &mut hl, KeyCode::Char('j'));
+            press(&mut shell, &mut hl, KeyCode::Char('j'));
         }
         for _ in 0..4 {
-            press(&mut app, &mut shell, &mut hl, KeyCode::Char('k'));
+            press(&mut shell, &mut hl, KeyCode::Char('k'));
         }
-        press(&mut app, &mut shell, &mut hl, KeyCode::Enter);
+        press(&mut shell, &mut hl, KeyCode::Enter);
         assert!(shell.view().overlay.is_none(), "Enter left the hub open");
-        press(&mut app, &mut shell, &mut hl, KeyCode::Char('?'));
-        press(&mut app, &mut shell, &mut hl, KeyCode::Esc);
+        press(&mut shell, &mut hl, KeyCode::Char('?'));
+        press(&mut shell, &mut hl, KeyCode::Esc);
         assert!(shell.view().overlay.is_none(), "Esc left the hub open");
     });
-}
-
-fn app_with(paths: &[String]) -> er_engine::app::App {
-    let mut app =
-        er_engine::app::App::new_with_args(paths, Ports::cli()).unwrap_or_else(|e| panic!("{e:#}"));
-    app.config.display.auto_context_threshold = 0;
-    app
 }
 
 /// `x` closes the active tab as the App's: the tab that moves into its place
@@ -74,11 +65,9 @@ fn closing_a_tab_focuses_the_next_and_drops_its_content() {
     let storage = storage();
     let paths: Vec<String> = repos.iter().map(path_of).collect();
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
-        let mut app = app_with(&paths);
         let mut shell = shell(&args(paths.clone()), storage.path());
         settle(&mut shell, loaded);
         let mut hl = Highlighter::new();
-        press_app(&mut app, KeyCode::Char(']'));
         shell.handle_key(key(KeyCode::Char(']')));
         settle(&mut shell, loaded);
         let closed = active_key(&shell);
@@ -92,12 +81,8 @@ fn closing_a_tab_focuses_the_next_and_drops_its_content() {
             .map(|entry| entry.descriptor.workspace_key())
             .unwrap_or_else(|| panic!("no closed tab"));
 
-        app.clear_notification();
-        press_app(&mut app, KeyCode::Char('x'));
         shell.handle_key(key(KeyCode::Char('x')));
-        let message = app.notification.as_ref().map(|n| n.message.clone());
-        assert_eq!(shell.view().notification, message);
-        assert_json("notice", &shell.view().notification, &message);
+        assert_json("notice", &shell.view().notification);
         settle(&mut shell, loaded);
         let tabs = shell.host().registry().tabs_view();
         assert_eq!(tabs.tabs.len(), 2);
@@ -107,7 +92,7 @@ fn closing_a_tab_focuses_the_next_and_drops_its_content() {
             "the next tab did not take focus"
         );
         let frame = shell_frame(&mut shell, &mut hl);
-        assert_parity(&app, &frame, &mut hl, "closed");
+        assert_frame("closed", &frame);
 
         let deadline = Instant::now() + WAIT;
         while shell.host().content(&workspace, closed).is_some() && Instant::now() < deadline {
@@ -120,7 +105,7 @@ fn closing_a_tab_focuses_the_next_and_drops_its_content() {
         );
 
         for _ in 0..2 {
-            press(&mut app, &mut shell, &mut hl, KeyCode::Char('x'));
+            press(&mut shell, &mut hl, KeyCode::Char('x'));
             settle(&mut shell, loaded);
         }
         assert_eq!(shell.host().registry().tabs_view().tabs.len(), 1);
@@ -136,11 +121,10 @@ fn closing_a_tab_focuses_the_next_and_drops_its_content() {
 #[test]
 fn the_width_keys_hold_the_apps_limits() {
     let _golden = super::parity::guard();
-    let (app_repo, flag_repo) = (fixture(2), fixture(2));
+    let flag_repo = fixture(2);
     let storage = storage();
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
-        let (mut app, mut shell) = both_on(&app_repo, &flag_repo, storage.path());
-        app.last_terminal_width = 120;
+        let mut shell = both_on(&flag_repo, storage.path());
         let mut hl = Highlighter::new();
         shell_frame(&mut shell, &mut hl);
         let mut codes = vec![KeyCode::Char('<'); 10];
@@ -152,17 +136,11 @@ fn the_width_keys_hold_the_apps_limits() {
         codes.extend([KeyCode::Char('{'); 14]);
         let key = active_key(&shell);
         for code in codes {
-            press(&mut app, &mut shell, &mut hl, code);
+            press(&mut shell, &mut hl, code);
             let view = state(&shell, key);
-            assert_eq!(
-                (view.file_tree_width, view.panel_width),
-                (app.tab().file_tree_width, app.tab().panel_width),
-                "{code:?}"
-            );
             assert_json(
                 &format!("{code:?}"),
                 &(view.file_tree_width, view.panel_width),
-                &(app.tab().file_tree_width, app.tab().panel_width),
             );
         }
         assert!(state(&shell, key).panel.is_some(), "no panel to resize");
@@ -175,10 +153,10 @@ fn the_width_keys_hold_the_apps_limits() {
 #[test]
 fn the_split_diff_focus_and_scroll_follow_the_app() {
     let _golden = super::parity::guard();
-    let (app_repo, flag_repo) = (fixture(1), fixture(1));
+    let flag_repo = fixture(1);
     // Three lines added at the top, so the old and new numbers differ on
     // the context lines below them.
-    for repo in [&app_repo, &flag_repo] {
+    for repo in [&flag_repo] {
         let file = repo.path().join("src/f000.rs");
         let body = std::fs::read_to_string(&file).unwrap_or_else(|e| panic!("{e}"));
         std::fs::write(&file, format!("let a = 1;\nlet b = 2;\nlet c = 3;\n{body}"))
@@ -189,8 +167,7 @@ fn the_split_diff_focus_and_scroll_follow_the_app() {
     let config = storage.path().join("config.toml");
     std::fs::write(&config, "[display]\nsplit_diff = true\n").unwrap_or_else(|e| panic!("{e}"));
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
-        let (mut app, mut shell) = both_on(&app_repo, &flag_repo, storage.path());
-        app.config.display.split_diff = true;
+        let mut shell = both_on(&flag_repo, storage.path());
         let mut hl = Highlighter::new();
         let codes = [
             KeyCode::Char('l'),
@@ -206,38 +183,23 @@ fn the_split_diff_focus_and_scroll_follow_the_app() {
             KeyCode::Char('l'),
         ];
         for code in codes {
-            press(&mut app, &mut shell, &mut hl, code);
+            press(&mut shell, &mut hl, code);
         }
         let key = active_key(&shell);
         let view = state(&shell, key);
-        assert_eq!(
-            (view.h_scroll_old, view.h_scroll_new),
-            (app.tab().h_scroll_old, app.tab().h_scroll_new)
-        );
-        assert_json(
-            "scroll",
-            &(view.h_scroll_old, view.h_scroll_new),
-            &(app.tab().h_scroll_old, app.tab().h_scroll_new),
-        );
-        press(&mut app, &mut shell, &mut hl, KeyCode::Char('q'));
+        assert_json("scroll", &(view.h_scroll_old, view.h_scroll_new));
+        press(&mut shell, &mut hl, KeyCode::Char('q'));
         let draft = &state(&shell, key).draft;
-        let tab = app.tab();
-        assert_eq!(
-            (draft.line, draft.side.as_deref()),
-            (tab.comment_line_num, tab.comment_side.as_deref())
-        );
-        assert_json(
-            "draft",
-            &(draft.line, draft.side.as_deref()),
-            &(tab.comment_line_num, tab.comment_side.as_deref()),
-        );
+        assert_json("draft", &(draft.line, draft.side.as_deref()));
         assert_eq!(draft.side.as_deref(), Some("LEFT"));
         // The cursor is on a context line whose old number is three less
         // than its new one; the old side takes the old number.
-        let line = app
-            .tab()
+        let content = shell
+            .active_content()
+            .unwrap_or_else(|| panic!("no content"));
+        let line = state(&shell, key)
             .current_line
-            .and_then(|at| app.tab().files[0].hunks[0].lines.get(at))
+            .and_then(|at| content.diff.files[0].hunks[0].lines.get(at))
             .unwrap_or_else(|| panic!("no cursor line"));
         assert_eq!(line.new_num, line.old_num.map(|old| old + 3), "{line:?}");
         assert_eq!(draft.line, line.old_num);
@@ -249,10 +211,10 @@ fn the_split_diff_focus_and_scroll_follow_the_app() {
 #[test]
 fn up_and_shift_up_move_like_the_app() {
     let _golden = super::parity::guard();
-    let (app_repo, flag_repo) = (fixture(1), fixture(1));
+    let flag_repo = fixture(1);
     let storage = storage();
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
-        let (mut app, mut shell) = both_on(&app_repo, &flag_repo, storage.path());
+        let mut shell = both_on(&flag_repo, storage.path());
         let mut hl = Highlighter::new();
         let none = KeyModifiers::NONE;
         let shift = KeyModifiers::SHIFT;
@@ -268,19 +230,10 @@ fn up_and_shift_up_move_like_the_app() {
         ];
         let key = active_key(&shell);
         for event in events {
-            step(&mut app, &mut shell, &mut hl, event);
+            step(&mut shell, &mut hl, event);
             let view = state(&shell, key);
             let anchor = view.selection_anchor.as_ref().map(|(_, at)| *at);
-            assert_eq!(
-                (view.current_line, anchor),
-                (app.tab().current_line, app.tab().selection_anchor),
-                "{event:?}"
-            );
-            assert_json(
-                &format!("{event:?}"),
-                &(view.current_line, anchor),
-                &(app.tab().current_line, app.tab().selection_anchor),
-            );
+            assert_json(&format!("{event:?}"), &(view.current_line, anchor));
         }
     });
 }
@@ -290,10 +243,10 @@ fn up_and_shift_up_move_like_the_app() {
 #[test]
 fn the_watch_scroll_and_panel_keys_draw_like_the_app() {
     let _golden = super::parity::guard();
-    let (app_repo, flag_repo) = (fixture(2), fixture(2));
+    let flag_repo = fixture(2);
     let storage = storage();
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
-        let (mut app, mut shell) = both_on(&app_repo, &flag_repo, storage.path());
+        let mut shell = both_on(&flag_repo, storage.path());
         let mut hl = Highlighter::new();
         let codes = [
             KeyCode::Char('w'),
@@ -316,7 +269,7 @@ fn the_watch_scroll_and_panel_keys_draw_like_the_app() {
             KeyCode::Esc,
         ];
         for code in codes {
-            press(&mut app, &mut shell, &mut hl, code);
+            press(&mut shell, &mut hl, code);
         }
     });
 }
@@ -326,17 +279,16 @@ fn the_watch_scroll_and_panel_keys_draw_like_the_app() {
 #[test]
 fn an_unset_verify_row_says_why_like_the_app() {
     let _golden = super::parity::guard();
-    let (app_repo, flag_repo) = (fixture(1), fixture(1));
+    let flag_repo = fixture(1);
     let storage = storage();
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
-        let (mut app, mut shell) = both_on(&app_repo, &flag_repo, storage.path());
+        let mut shell = both_on(&flag_repo, storage.path());
         let mut hl = Highlighter::new();
         for code in [KeyCode::Char('v'), KeyCode::Enter] {
-            press(&mut app, &mut shell, &mut hl, code);
+            press(&mut shell, &mut hl, code);
         }
-        let message = app.notification.as_ref().map(|n| n.message.clone());
-        assert_eq!(shell.view().notification, message);
-        assert_json("notice", &shell.view().notification, &message);
+        assert_json("notice", &shell.view().notification);
+        let message = shell.view().notification.clone();
         assert!(message.is_some_and(|m| m.contains("[commands]")));
     });
 }
@@ -349,10 +301,10 @@ fn with(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
 #[test]
 fn the_composer_line_scroll_and_cancel_keys_draw_like_the_app() {
     let _golden = super::parity::guard();
-    let (app_repo, flag_repo) = (fixture(1), fixture(1));
+    let flag_repo = fixture(1);
     let storage = storage();
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
-        let (mut app, mut shell) = both_on(&app_repo, &flag_repo, storage.path());
+        let mut shell = both_on(&flag_repo, storage.path());
         let mut hl = Highlighter::new();
         let none = KeyModifiers::NONE;
         let ctrl = KeyModifiers::CONTROL;
@@ -369,21 +321,20 @@ fn the_composer_line_scroll_and_cancel_keys_draw_like_the_app() {
             with(KeyCode::Esc, none),
         ];
         for event in events {
-            step(&mut app, &mut shell, &mut hl, event);
+            step(&mut shell, &mut hl, event);
         }
     });
 }
 
 /// The keys on both paths, with no frame compared.
-fn blind(app: &mut er_engine::app::App, shell: &mut Shell, code: KeyCode) {
-    press_app(app, code);
+fn blind(shell: &mut Shell, code: KeyCode) {
     shell.handle_key(key(code));
 }
 
 /// Opens the Open hub and moves to the row whose label holds `label`, on
 /// both paths. The hub's frames are P75.2's to compare.
-fn to_open_row(app: &mut er_engine::app::App, shell: &mut Shell, label: &str) {
-    blind(app, shell, KeyCode::Char('o'));
+fn to_open_row(shell: &mut Shell, label: &str) {
+    blind(shell, KeyCode::Char('o'));
     for _ in 0..32 {
         let on = match shell.view().overlay.as_ref() {
             Some(super::tui_view::Overlay::Open(hub)) => hub
@@ -395,7 +346,7 @@ fn to_open_row(app: &mut er_engine::app::App, shell: &mut Shell, label: &str) {
         if on {
             return;
         }
-        blind(app, shell, KeyCode::Char('j'));
+        blind(shell, KeyCode::Char('j'));
     }
     panic!("no row {label}");
 }
@@ -405,10 +356,10 @@ fn to_open_row(app: &mut er_engine::app::App, shell: &mut Shell, label: &str) {
 #[test]
 fn one_line_fields_take_backspace_and_esc_like_the_app() {
     let _golden = super::parity::guard();
-    let (app_repo, flag_repo) = (fixture(1), fixture(1));
+    let flag_repo = fixture(1);
     let storage = storage();
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
-        let (mut app, mut shell) = both_on(&app_repo, &flag_repo, storage.path());
+        let mut shell = both_on(&flag_repo, storage.path());
         let mut hl = Highlighter::new();
         let typed = [
             KeyCode::Char('a'),
@@ -417,23 +368,23 @@ fn one_line_fields_take_backspace_and_esc_like_the_app() {
             KeyCode::Esc,
         ];
         for opener in ['/', 'f'] {
-            press(&mut app, &mut shell, &mut hl, KeyCode::Char(opener));
+            press(&mut shell, &mut hl, KeyCode::Char(opener));
             for code in typed {
-                press(&mut app, &mut shell, &mut hl, code);
+                press(&mut shell, &mut hl, code);
             }
         }
         for label in ["Change compare base", "Open remote PR"] {
-            to_open_row(&mut app, &mut shell, label);
-            press(&mut app, &mut shell, &mut hl, KeyCode::Enter);
+            to_open_row(&mut shell, label);
+            press(&mut shell, &mut hl, KeyCode::Enter);
             for code in typed {
-                press(&mut app, &mut shell, &mut hl, code);
+                press(&mut shell, &mut hl, code);
             }
         }
-        press(&mut app, &mut shell, &mut hl, KeyCode::Char('3'));
+        press(&mut shell, &mut hl, KeyCode::Char('3'));
         settle(&mut shell, loaded);
-        press(&mut app, &mut shell, &mut hl, KeyCode::Char('c'));
+        press(&mut shell, &mut hl, KeyCode::Char('c'));
         for code in typed {
-            press(&mut app, &mut shell, &mut hl, code);
+            press(&mut shell, &mut hl, code);
         }
     });
 }
@@ -458,9 +409,9 @@ fn every_ai_hub_row_runs_or_toggles() {
 
 /// Opens the Git hub and moves to the row whose label holds `label`, with
 /// each move's frame compared.
-fn to_git_row(app: &mut er_engine::app::App, shell: &mut Shell, hl: &mut Highlighter, label: &str) {
-    // The App has no review row; it goes before any frame is compared.
-    blind(app, shell, KeyCode::Char('g'));
+fn to_git_row(shell: &mut Shell, hl: &mut Highlighter, label: &str) {
+    // The goldens were drawn without the review row.
+    blind(shell, KeyCode::Char('g'));
     super::tests::without_review_row(shell);
     for _ in 0..16 {
         let on = match shell.view().overlay.as_ref() {
@@ -473,7 +424,7 @@ fn to_git_row(app: &mut er_engine::app::App, shell: &mut Shell, hl: &mut Highlig
         if on {
             return;
         }
-        press(app, shell, hl, KeyCode::Char('j'));
+        press(shell, hl, KeyCode::Char('j'));
     }
     panic!("no row {label}");
 }
@@ -482,8 +433,8 @@ fn to_git_row(app: &mut er_engine::app::App, shell: &mut Shell, hl: &mut Highlig
 #[test]
 fn the_git_hub_working_tree_rows_act_like_the_app() {
     let _golden = super::parity::guard();
-    let (app_repo, flag_repo) = (fixture(2), fixture(2));
-    for repo in [&app_repo, &flag_repo] {
+    let flag_repo = fixture(2);
+    for repo in [&flag_repo] {
         for file in ["src/f000.rs", "src/f001.rs"] {
             std::fs::write(repo.path().join(file), "let unstaged = 1;\n")
                 .unwrap_or_else(|e| panic!("{e}"));
@@ -491,9 +442,9 @@ fn the_git_hub_working_tree_rows_act_like_the_app() {
     }
     let storage = storage();
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
-        let (mut app, mut shell) = both_on(&app_repo, &flag_repo, storage.path());
+        let mut shell = both_on(&flag_repo, storage.path());
         let mut hl = Highlighter::new();
-        press(&mut app, &mut shell, &mut hl, KeyCode::Char('2'));
+        press(&mut shell, &mut hl, KeyCode::Char('2'));
         let labels = [
             "Push to remote",
             "Stage current file",
@@ -501,12 +452,12 @@ fn the_git_hub_working_tree_rows_act_like_the_app() {
             "Stage all files",
         ];
         for label in labels {
-            to_git_row(&mut app, &mut shell, &mut hl, label);
-            press(&mut app, &mut shell, &mut hl, KeyCode::Enter);
+            to_git_row(&mut shell, &mut hl, label);
+            press(&mut shell, &mut hl, KeyCode::Enter);
         }
-        press(&mut app, &mut shell, &mut hl, KeyCode::Char('3'));
-        to_git_row(&mut app, &mut shell, &mut hl, "Push to remote");
-        press(&mut app, &mut shell, &mut hl, KeyCode::Enter);
-        press(&mut app, &mut shell, &mut hl, KeyCode::Esc);
+        press(&mut shell, &mut hl, KeyCode::Char('3'));
+        to_git_row(&mut shell, &mut hl, "Push to remote");
+        press(&mut shell, &mut hl, KeyCode::Enter);
+        press(&mut shell, &mut hl, KeyCode::Esc);
     });
 }

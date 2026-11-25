@@ -10,11 +10,11 @@ use er_engine::config::ConfigFieldValue;
 use er_engine::tab_identity::DiffMode;
 use er_service::{Command, SettingsCommand};
 
+use super::parity::assert_frame;
 use super::shell::Shell;
 use super::startup::Args;
 use super::tests::{
-    app_on, assert_parity, fixture, key, loaded, path_of, press_app, settle, settle_within, shell,
-    shell_frame, WAIT,
+    fixture, key, loaded, path_of, settle, settle_within, shell, shell_frame, WAIT,
 };
 use super::watched::TabWatched;
 use crate::screen::watched::SnapshotDiff;
@@ -102,57 +102,42 @@ fn the_watched_files_draw_like_the_app() {
     let repo = watched_repo(storage.path());
     let path = path_of(&repo);
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
-        let mut app = app_on(&path);
         let mut shell = start(&path, storage.path());
         let mut hl = Highlighter::new();
-        assert_parity(&app, &shell_frame(&mut shell, &mut hl), &mut hl, "listed");
+        assert_frame("listed", &shell_frame(&mut shell, &mut hl));
 
-        press_app(&mut app, KeyCode::Char('k'));
         shell.handle_key(key(KeyCode::Char('k')));
         settle(&mut shell, |shell| {
             showing(shell, |diff| matches!(diff, SnapshotDiff::Created))
         });
-        let flag_on = shell_frame(&mut shell, &mut hl);
-        // The App's draw reads the diff and saves the snapshot it finds
-        // missing; it must find none, as the flag path's read did.
+        assert_frame("created", &shell_frame(&mut shell, &mut hl));
         let selected = selected_path(&shell);
-        let _ = std::fs::remove_file(snapshot_of(&shell, &selected));
-        assert_parity(&app, &flag_on, &mut hl, "created");
 
         settle(&mut shell, |shell| showing(shell, unchanged));
-        assert_parity(
-            &app,
-            &shell_frame(&mut shell, &mut hl),
-            &mut hl,
-            "unchanged",
-        );
+        assert_frame("unchanged", &shell_frame(&mut shell, &mut hl));
 
         std::fs::write(repo.path().join(&selected), "A=2\n").unwrap_or_else(|e| panic!("{e}"));
         aged(&repo.path().join(&selected), 1200);
-        // Both rescan, the App as its loop does every five seconds.
-        app.tab_mut().refresh_watched_files();
+        // The loop rescans every five seconds.
         shell.tick(Instant::now() + Duration::from_secs(6));
         settle(&mut shell, |shell| {
             showing(shell, |diff| matches!(diff, SnapshotDiff::Changed(_)))
         });
-        assert_parity(&app, &shell_frame(&mut shell, &mut hl), &mut hl, "changed");
+        assert_frame("changed", &shell_frame(&mut shell, &mut hl));
 
-        press_app(&mut app, KeyCode::Char('s'));
         shell.handle_key(key(KeyCode::Char('s')));
         settle(&mut shell, |shell| {
             notice(shell) == "Snapshot updated" && showing(shell, unchanged)
         });
-        assert_parity(&app, &shell_frame(&mut shell, &mut hl), &mut hl, "updated");
+        assert_frame("updated", &shell_frame(&mut shell, &mut hl));
 
         for (step, listed) in [("hidden", false), ("shown", true)] {
-            app.clear_notification();
             shell.tick(Instant::now() + Duration::from_secs(60));
-            press_app(&mut app, KeyCode::Char('W'));
             shell.handle_key(key(KeyCode::Char('W')));
             settle(&mut shell, |shell| {
                 watched(shell).is_some_and(|w| w.files.is_empty() != listed)
             });
-            assert_parity(&app, &shell_frame(&mut shell, &mut hl), &mut hl, step);
+            assert_frame(step, &shell_frame(&mut shell, &mut hl));
         }
     });
 }
@@ -198,11 +183,6 @@ fn a_watched_delete_writes_and_draws_like_the_app() {
     let path = path_of(&repo);
     let a_env = repo.path().join("a.env");
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
-        let mut app = app_on(&path);
-        app.tab_mut().set_mode(DiffMode::Hidden);
-        press_app(&mut app, KeyCode::Char('x'));
-        press_app(&mut app, KeyCode::Char('y'));
-        assert!(!a_env.exists(), "the App did not delete");
         std::fs::write(&a_env, "A=1\n").unwrap_or_else(|e| panic!("{e}"));
         aged(&a_env, 1800);
 
@@ -231,7 +211,7 @@ fn a_watched_delete_writes_and_draws_like_the_app() {
         let mut hl = Highlighter::new();
         let flag_on = shell_frame(&mut shell, &mut hl);
         let _ = std::fs::remove_file(snapshot_of(&shell, "b.env"));
-        assert_parity(&app, &flag_on, &mut hl, "deleted");
+        assert_frame("deleted", &flag_on);
     });
 }
 

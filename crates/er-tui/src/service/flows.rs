@@ -9,7 +9,7 @@ use er_engine::ai::review_flow::{FlowState, ReviewFlow};
 use er_engine::review_flow_driver::ReviewFlowResults;
 use er_service::{FlowRequest, LiveReviewFlow, Reply, ServiceHost, TabContent, WorkspaceError};
 
-use crate::input::keys::OverlayAction;
+use crate::input::OverlayAction;
 
 /// What a Review row does.
 #[derive(Clone, Debug, PartialEq, Eq)]

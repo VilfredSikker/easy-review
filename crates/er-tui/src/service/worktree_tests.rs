@@ -9,12 +9,12 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use er_engine::tab_identity::DiffMode;
 use er_service::Command;
 
+use super::parity::assert_frame;
 use super::parity::assert_json;
 use super::shell::Shell;
 use super::startup::Args;
 use super::tests::{
-    app_on, assert_parity, fixture, git, key, loaded, path_of, press_app, settle, shell,
-    shell_frame, without_review_row, WAIT,
+    fixture, git, key, loaded, path_of, settle, shell, shell_frame, without_review_row, WAIT,
 };
 use super::tui_view::Mode;
 use crate::ui::highlight::Highlighter;
@@ -134,8 +134,8 @@ fn a_refused_push_shows_the_ports_message() {
     });
 }
 
-/// `s` in Unstaged stages the selected file on both paths: the index and
-/// the frame match the App's.
+/// `s` in Unstaged stages the selected file: the index and the frame match
+/// the goldens.
 #[test]
 fn a_stage_writes_and_draws_like_the_app() {
     let _golden = super::parity::guard();
@@ -143,12 +143,6 @@ fn a_stage_writes_and_draws_like_the_app() {
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     let path = path_of(&repo);
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
-        let mut app = app_on(&path);
-        press_app(&mut app, KeyCode::Char('2'));
-        press_app(&mut app, KeyCode::Char('s'));
-        let app_index = porcelain(repo.path());
-        git(repo.path(), &["reset", "-q"]);
-
         let args = Args {
             paths: vec![path.clone()],
             ..Args::default()
@@ -158,10 +152,9 @@ fn a_stage_writes_and_draws_like_the_app() {
         to_mode(&mut shell, DiffMode::Unstaged);
         shell.handle_key(key(KeyCode::Char('s')));
         settle(&mut shell, |shell| !notice(shell).is_empty());
-        assert_eq!(porcelain(repo.path()), app_index, "the index differs");
-        assert_json("index", &porcelain(repo.path()), &app_index);
+        assert_json("index", &porcelain(repo.path()));
         let mut hl = Highlighter::new();
-        assert_parity(&app, &shell_frame(&mut shell, &mut hl), &mut hl, "staged");
+        assert_frame("staged", &shell_frame(&mut shell, &mut hl));
     });
 }
 
@@ -175,9 +168,6 @@ fn a_commit_draws_like_the_app() {
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     let path = path_of(&repo);
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
-        let mut app = app_on(&path);
-        press_app(&mut app, KeyCode::Char('3'));
-        app.clear_notification();
         let args = Args {
             paths: vec![path.clone()],
             ..Args::default()
@@ -187,25 +177,16 @@ fn a_commit_draws_like_the_app() {
         to_mode(&mut shell, DiffMode::Staged);
         expire(&mut shell);
         let mut hl = Highlighter::new();
-        assert_parity(&app, &shell_frame(&mut shell, &mut hl), &mut hl, "staged");
+        assert_frame("staged", &shell_frame(&mut shell, &mut hl));
 
         for code in [KeyCode::Char('c'), KeyCode::Char('o'), KeyCode::Char('k')] {
-            press_app(&mut app, code);
             shell.handle_key(key(code));
         }
-        assert_parity(&app, &shell_frame(&mut shell, &mut hl), &mut hl, "typing");
+        assert_frame("typing", &shell_frame(&mut shell, &mut hl));
 
-        // The App commits first; the flag path commits the same index again.
-        press_app(&mut app, KeyCode::Enter);
-        git(repo.path(), &["reset", "-q", "--soft", "HEAD~1"]);
         shell.handle_key(key(KeyCode::Enter));
         settle(&mut shell, |shell| notice(shell).starts_with("Committed!"));
-        assert_parity(
-            &app,
-            &shell_frame(&mut shell, &mut hl),
-            &mut hl,
-            "committed",
-        );
+        assert_frame("committed", &shell_frame(&mut shell, &mut hl));
     });
 }
 
@@ -217,7 +198,6 @@ fn the_git_hub_draws_like_the_app() {
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     let path = path_of(&repo);
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
-        let mut app = app_on(&path);
         let args = Args {
             paths: vec![path.clone()],
             ..Args::default()
@@ -226,11 +206,10 @@ fn the_git_hub_draws_like_the_app() {
         settle(&mut shell, loaded);
         let mut hl = Highlighter::new();
         for code in [KeyCode::Char('g'), KeyCode::Char('j')] {
-            press_app(&mut app, code);
             shell.handle_key(key(code));
             without_review_row(&mut shell);
             let step = format!("{code:?}");
-            assert_parity(&app, &shell_frame(&mut shell, &mut hl), &mut hl, &step);
+            assert_frame(&step, &shell_frame(&mut shell, &mut hl));
         }
     });
 }

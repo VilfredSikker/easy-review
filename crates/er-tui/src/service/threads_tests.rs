@@ -14,12 +14,13 @@ use er_engine::test_support::{read_sidecar, write_sidecar_json};
 use er_engine::TabKey;
 
 use super::loop_tests::{Gate, GatedGit};
+use super::parity::assert_frame;
 use super::parity::assert_json;
 use super::shell::Shell;
 use super::startup::Args;
 use super::tests::{
-    app_on, assert_parity, fixture, key, loaded, path_of, plan, press_app, settle, settle_within,
-    shell, shell_frame, shell_on, SOURCES,
+    fixture, key, loaded, path_of, plan, service_sources, settle, settle_within, shell,
+    shell_frame, shell_on,
 };
 use super::tui_view::{Mode, TabViewState};
 use crate::ui::highlight::Highlighter;
@@ -257,23 +258,14 @@ fn comparable(row: &PrivateAnnotation) -> serde_json::Value {
     value
 }
 
-/// Presses `event` on both paths, the last message gone first, and compares
-/// the frames once the flag path's replies have landed.
-pub(super) fn step(
-    app: &mut er_engine::app::App,
-    shell: &mut Shell,
-    hl: &mut Highlighter,
-    event: KeyEvent,
-) {
-    app.clear_notification();
+/// Presses `event`, the last message gone first, and checks the frame
+/// against its golden once the replies have landed.
+pub(super) fn step(shell: &mut Shell, hl: &mut Highlighter, event: KeyEvent) {
     shell.tick(Instant::now() + Duration::from_secs(60));
-    let (tx, _rx) = std::sync::mpsc::channel();
-    let mut cache = crate::screen::ViewCache::default();
-    crate::handle_key(app, event, &tx, &mut None, &mut cache).unwrap_or_else(|e| panic!("{e}"));
     shell.handle_key(event);
     settle_replies(shell);
     let frame = shell_frame(shell, hl);
-    assert_parity(app, &frame, hl, &format!("{event:?}"));
+    assert_frame(&format!("{event:?}"), &frame);
 }
 
 /// Waits for the start of a wall-clock second, so two writes a step apart
@@ -290,16 +282,11 @@ pub(super) fn early_in_a_second() {
     }
 }
 
-/// The App and the flag path, each on its own clone of one fixture.
-pub(super) fn both_on(
-    app_repo: &tempfile::TempDir,
-    flag_repo: &tempfile::TempDir,
-    config_dir: &Path,
-) -> (er_engine::app::App, Shell) {
-    let app = app_on(&path_of(app_repo));
+/// A shell on the fixture, its first tab loaded.
+pub(super) fn both_on(flag_repo: &tempfile::TempDir, config_dir: &Path) -> Shell {
     let mut shell = shell(&args(vec![path_of(flag_repo)]), config_dir);
     settle(&mut shell, loaded);
-    (app, shell)
+    shell
 }
 
 /// The composer's keys, a pause and a resume, and the rows they write draw
@@ -307,10 +294,10 @@ pub(super) fn both_on(
 #[test]
 fn the_composer_draws_and_writes_like_the_app() {
     let _golden = super::parity::guard();
-    let (app_repo, flag_repo) = (fixture(2), fixture(2));
+    let flag_repo = fixture(2);
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
-        let (mut app, mut shell) = both_on(&app_repo, &flag_repo, storage.path());
+        let mut shell = both_on(&flag_repo, storage.path());
         let mut hl = Highlighter::new();
         let mut keys = vec![key(KeyCode::Down); 3];
         keys.push(key(KeyCode::Char('q')));
@@ -323,7 +310,7 @@ fn the_composer_draws_and_writes_like_the_app() {
             if event.code == KeyCode::Enter {
                 early_in_a_second();
             }
-            step(&mut app, &mut shell, &mut hl, event);
+            step(&mut shell, &mut hl, event);
         }
         let rows = |dir: &str| {
             let dir = Path::new(dir);
@@ -336,8 +323,7 @@ fn the_composer_draws_and_writes_like_the_app() {
                 .collect::<Vec<_>>()
         };
         let flag_rows = rows(&er_dir(&shell));
-        assert_eq!(flag_rows, rows(&app.tab().er_dir()));
-        assert_json("rows", &flag_rows, &rows(&app.tab().er_dir()));
+        assert_json("rows", &flag_rows);
         assert_eq!(flag_rows.len(), 2);
     });
 }
@@ -398,18 +384,8 @@ fn seed(dir: &str, hash: &str, graded: bool, note: &str) {
     }
 }
 
-/// Seeds both paths' buckets; the App reads them at once, and the flag path
-/// on its reload tick.
-pub(super) fn seed_both(
-    app: &mut er_engine::app::App,
-    shell: &mut Shell,
-    graded: bool,
-    note: &str,
-) {
-    let hash = app.tab().branch_diff_hash.clone();
-    seed(&app.tab().er_dir(), &hash, graded, note);
-    app.tab_mut().reload_ai_state();
-    app.clear_notification();
+/// Seeds the shell's bucket, and waits for its reload tick.
+pub(super) fn seed_notes(shell: &mut Shell, graded: bool, note: &str) {
     let before = shell
         .active_content()
         .unwrap_or_else(|| panic!("no content"));
@@ -445,14 +421,14 @@ pub(super) fn seed_both(
 #[test]
 fn threads_layers_and_hints_draw_like_the_app() {
     let _golden = super::parity::guard();
-    let (app_repo, flag_repo) = (fixture(3), fixture(3));
+    let flag_repo = fixture(3);
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
-        let (mut app, mut shell) = both_on(&app_repo, &flag_repo, storage.path());
-        seed_both(&mut app, &mut shell, false, "A note");
+        let mut shell = both_on(&flag_repo, storage.path());
+        seed_notes(&mut shell, false, "A note");
         let mut hl = Highlighter::new();
         let frame = shell_frame(&mut shell, &mut hl);
-        assert_parity(&app, &frame, &mut hl, "seeded");
+        assert_frame("seeded", &frame);
         let codes = [
             KeyCode::Char('p'),
             KeyCode::Tab,
@@ -471,7 +447,7 @@ fn threads_layers_and_hints_draw_like_the_app() {
             KeyCode::Char('P'),
         ];
         for code in codes {
-            step(&mut app, &mut shell, &mut hl, key(code));
+            step(&mut shell, &mut hl, key(code));
         }
     });
 }
@@ -481,40 +457,32 @@ fn threads_layers_and_hints_draw_like_the_app() {
 #[test]
 fn the_gate_follows_the_review_like_the_app() {
     let _golden = super::parity::guard();
-    let (app_repo, flag_repo) = (fixture(1), fixture(1));
+    let flag_repo = fixture(1);
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
-        let (mut app, mut shell) = both_on(&app_repo, &flag_repo, storage.path());
-        seed_both(&mut app, &mut shell, false, "A note");
+        let mut shell = both_on(&flag_repo, storage.path());
+        seed_notes(&mut shell, false, "A note");
         let mut hl = Highlighter::new();
         let frame = shell_frame(&mut shell, &mut hl);
-        assert_parity(&app, &frame, &mut hl, "ungraded");
-        seed_both(&mut app, &mut shell, true, "A note");
-        assert_eq!(
-            app.tab().layers.min_trust,
-            er_engine::ai::Confidence::Tentative,
-            "the arbiter's grade did not move the App's Gate: {:?}",
-            app.tab().ai.arbiter_effect
-        );
+        assert_frame("ungraded", &frame);
+        seed_notes(&mut shell, true, "A note");
         let frame = shell_frame(&mut shell, &mut hl);
-        // The flag path's twin of the App's Gate check above.
         assert_eq!(
             state(&shell, active_key(&shell)).layers.min_trust,
             er_engine::ai::Confidence::Tentative,
             "the arbiter's grade did not move the flag path's Gate"
         );
-        assert_parity(&app, &frame, &mut hl, "graded");
+        assert_frame("graded", &frame);
         for _ in 0..2 {
-            step(&mut app, &mut shell, &mut hl, key(KeyCode::Char('T')));
+            step(&mut shell, &mut hl, key(KeyCode::Char('T')));
         }
         // A Gate set by hand holds through the next AI revision.
-        seed_both(&mut app, &mut shell, true, "A later note");
+        seed_notes(&mut shell, true, "A later note");
         let informational = er_engine::ai::Confidence::Informational;
-        assert_eq!(app.tab().layers.min_trust, informational);
         let tab = active_key(&shell);
         assert_eq!(state(&shell, tab).layers.min_trust, informational);
         let frame = shell_frame(&mut shell, &mut hl);
-        assert_parity(&app, &frame, &mut hl, "pinned");
+        assert_frame("pinned", &frame);
     });
 }
 
@@ -523,11 +491,11 @@ fn the_gate_follows_the_review_like_the_app() {
 #[test]
 fn a_hint_on_a_stub_scrolls_once_it_parses() {
     let _golden = super::parity::guard();
-    let (app_repo, flag_repo) = (fixture(520), fixture(520));
+    let flag_repo = fixture(520);
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
-        let (mut app, mut shell) = both_on(&app_repo, &flag_repo, storage.path());
-        seed_both(&mut app, &mut shell, false, "A note");
+        let mut shell = both_on(&flag_repo, storage.path());
+        seed_notes(&mut shell, false, "A note");
         let stub = |shell: &Shell| {
             shell
                 .active_content()
@@ -535,14 +503,12 @@ fn a_hint_on_a_stub_scrolls_once_it_parses() {
         };
         assert!(stub(&shell), "the hinted file loaded parsed");
         for _ in 0..2 {
-            press_app(&mut app, KeyCode::Char('K'));
             shell.handle_key(key(KeyCode::Char('K')));
         }
-        app.clear_notification();
         settle_within(&mut shell, Duration::from_secs(5), |shell| !stub(shell));
         let mut hl = Highlighter::new();
         let frame = shell_frame(&mut shell, &mut hl);
-        assert_parity(&app, &frame, &mut hl, "parsed");
+        assert_frame("parsed", &frame);
     });
 }
 
@@ -550,11 +516,12 @@ fn a_hint_on_a_stub_scrolls_once_it_parses() {
 /// orders threads itself: the order is the AI state's.
 #[test]
 fn layers_stay_in_the_view_and_threads_keep_the_engine_order() {
+    let sources = service_sources();
     let source = |file: &str| {
-        SOURCES
+        sources
             .iter()
-            .find(|(name, _)| *name == file)
-            .map_or("", |(_, text)| text)
+            .find(|(name, _)| name == file)
+            .map_or("", |(_, text)| text.as_str())
     };
     let shell_rs = source("shell.rs");
     let arms = shell_rs
@@ -571,7 +538,7 @@ fn layers_stay_in_the_view_and_threads_keep_the_engine_order() {
             assert!(!text.contains(word), "{name} names {word}");
         }
     }
-    for (name, text) in SOURCES {
+    for (name, text) in &sources {
         let flat: String = text.split_whitespace().collect();
         for word in [
             "sort_by(",

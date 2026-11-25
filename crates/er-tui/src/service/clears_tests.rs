@@ -12,9 +12,11 @@ use er_engine::test_support::write_sidecar_json;
 use er_service::{Command, ReviewArtifact};
 
 use super::clears::{self, Clear};
-use super::findings_tests::{seed_both, seed_shell};
+use super::findings_tests::seed_shell;
 use super::shell::Shell;
-use super::tests::{fixture, key, loaded, path_of, settle, shell, shell_frame, SOURCES, WAIT};
+use super::tests::{
+    fixture, key, loaded, path_of, service_sources, settle, shell, shell_frame, WAIT,
+};
 use super::threads_tests::{args, both_on, er_dir, settle_replies, step};
 use super::tui_view::Ask;
 use crate::ui::highlight::Highlighter;
@@ -90,44 +92,39 @@ fn notice(shell: &Shell) -> Option<&str> {
 #[test]
 fn z_and_shift_z_ask_and_clear_like_the_app() {
     let _golden = super::parity::guard();
-    let (app_repo, flag_repo) = (fixture(1), fixture(1));
+    let flag_repo = fixture(1);
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
-        let (mut app, mut shell) = both_on(&app_repo, &flag_repo, storage.path());
-        seed_both(&mut app, &mut shell, seed_drafts);
+        let mut shell = both_on(&flag_repo, storage.path());
+        seed_shell(&mut shell, seed_drafts);
         let mut hl = Highlighter::new();
         for code in ['z', 'n', 'z', 'y'] {
-            step(&mut app, &mut shell, &mut hl, key(KeyCode::Char(code)));
+            step(&mut shell, &mut hl, key(KeyCode::Char(code)));
         }
         assert_eq!(notice(&shell), Some("Questions & notes cleared"));
         for code in ['Z', 'n', 'Z', 'y'] {
-            step(&mut app, &mut shell, &mut hl, key(KeyCode::Char(code)));
+            step(&mut shell, &mut hl, key(KeyCode::Char(code)));
         }
         assert_eq!(notice(&shell), Some("Review cleared"));
         let mut files = DRAFTS.to_vec();
         files.push("review.json");
-        for dir in [app.tab().er_dir(), er_dir(&shell)] {
-            assert_eq!(present(&dir, &files), Vec::<String>::new(), "{dir}");
-        }
+        let dir = er_dir(&shell);
+        assert_eq!(present(&dir, &files), Vec::<String>::new(), "{dir}");
     });
 }
 
 /// `Z` follows the service's review delete: the professor and expert
-/// results and the scoped overlays go, and only the triage stays. The App's
-/// `Z` keeps the professor and expert files; that difference is named for
-/// P76.
+/// results and the scoped overlays go, and only the triage stays. The old
+/// TUI's `Z` kept the professor and expert files.
 #[test]
 fn the_review_clear_takes_the_professor_and_expert_results() {
-    let (app_repo, flag_repo) = (fixture(1), fixture(1));
+    let flag_repo = fixture(1);
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
-        let (mut app, mut shell) = both_on(&app_repo, &flag_repo, storage.path());
+        let mut shell = both_on(&flag_repo, storage.path());
         seed_shell(&mut shell, seed_reviews);
-        seed_reviews(&app.tab().er_dir(), "");
-        app.tab_mut().reload_ai_state();
         for code in ['Z', 'y'] {
             shell.handle_key(key(KeyCode::Char(code)));
-            super::tests::press_app(&mut app, KeyCode::Char(code));
         }
         settle_replies(&mut shell);
         let files = [
@@ -139,16 +136,6 @@ fn the_review_clear_takes_the_professor_and_expert_results() {
             "triage.json",
         ];
         assert_eq!(present(&er_dir(&shell), &files), ["triage.json"]);
-        assert_eq!(
-            present(&app.tab().er_dir(), &files),
-            [
-                "professor.json",
-                "experts/sec.json",
-                "experts/sec.prev.json",
-                "scoped",
-                "triage.json"
-            ]
-        );
     });
 }
 
@@ -346,7 +333,7 @@ fn flag_on_modules_send_every_clear_to_the_service() {
         "annotation_cleanup",
         "bucket_admission",
     ];
-    for (name, text) in SOURCES {
+    for (name, text) in &service_sources() {
         let flat: String = text.split_whitespace().collect();
         for needle in banned {
             assert!(!flat.contains(needle), "{name} names {needle}");

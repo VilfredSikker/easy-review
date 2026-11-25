@@ -58,7 +58,7 @@ use super::tui_view::{self, Ask, Mode, Overlay, PrKnown, TuiView};
 use super::watched::{Landed, Reader};
 use super::watcher::Watch;
 use super::worktree::{self, GitHub, GitPick, HubStep};
-use crate::input::keys::{
+use crate::input::{
     key_action, AiSummaryAction, CommentAction, ConfirmKey, Edit, HistoryAction, NormalAction,
     OverlayAction, TourAction, TuiAction, Write,
 };

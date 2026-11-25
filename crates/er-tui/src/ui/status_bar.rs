@@ -62,7 +62,7 @@ pub const fn top_bar_height(screen: &Screen, _width: u16) -> u16 {
 pub fn render_top_bar(f: &mut Frame, area: Rect, screen: &Screen) {
     let tab = &screen.tab;
     let data = &screen.data;
-    let ai = data.ai_or_empty();
+    let ai = data.ai;
     let bar_width = area.width as usize;
 
     let mode_style = |mode: DiffMode, current: DiffMode| {
@@ -158,8 +158,7 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, screen: &Screen) {
         DiffMode::Branch | DiffMode::History | DiffMode::Tour
     ) {
         let base = if er_engine::github::is_pinned_pr_base(tab.base_branch) {
-            data.pr_data()
-                .map_or("PR base", |pr| pr.base_branch.as_str())
+            data.pr.map_or("PR base", |pr| pr.base_branch.as_str())
         } else {
             tab.base_branch
         };
@@ -176,7 +175,7 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, screen: &Screen) {
     }
     // In History mode, show selected commit info
     if tab.mode == DiffMode::History {
-        if let Some(history) = data.history() {
+        if let Some(history) = data.history.as_ref() {
             if let Some(commit) = history.commits.get(history.selected_commit) {
                 info_spans.push(Span::styled(
                     format!(" · {} · {}", commit.short_hash, commit.relative_date),
@@ -239,7 +238,7 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, screen: &Screen) {
     }
 
     // Agent command status badges (persistent while running)
-    for &name in data.running_commands() {
+    for &name in &data.running_commands {
         let display_name = match name {
             "review" => "Review",
             "questions" => "Questions",
@@ -323,7 +322,7 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, screen: &Screen) {
 
     // Show conflict status badge when in Conflicts mode
     if tab.mode == DiffMode::Conflicts {
-        let total = data.file_count();
+        let total = data.files.len();
         let unresolved = tab.unresolved_count;
         if unresolved > 0 {
             // Unresolved conflicts: show unresolved count highlighted in orange
@@ -362,7 +361,7 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, screen: &Screen) {
     }
 
     // Show filtered reviewed count (yellow) then total reviewed count (blue)
-    if let Some((f_reviewed, f_total)) = data.filtered_reviewed_count() {
+    if let Some((f_reviewed, f_total)) = data.filtered_reviewed_count {
         right.push(Span::styled(
             format!("{}/{}", f_reviewed, f_total),
             ratatui::style::Style::default().fg(styles::YELLOW()),
@@ -372,7 +371,7 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, screen: &Screen) {
             ratatui::style::Style::default().fg(styles::MUTED()),
         ));
     }
-    let (reviewed, total) = data.reviewed_count();
+    let (reviewed, total) = data.reviewed_count;
     if total > 0 {
         right.push(Span::styled(
             format!("{}/{} reviewed", reviewed, total),
@@ -388,29 +387,6 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, screen: &Screen) {
             ratatui::style::Style::default()
                 .fg(styles::GREEN())
                 .add_modifier(ratatui::style::Modifier::BOLD),
-        ));
-    }
-
-    // Memory budget indicator (debug mode)
-    if std::env::var("ER_DEBUG").is_ok() {
-        let budget = data.mem_budget();
-        if !right.is_empty() {
-            right.push(Span::raw("  "));
-        }
-        let mut mem_label = format!(
-            "MEM: {}K lines  {} files",
-            (budget.total_lines + 500) / 1000,
-            budget.parsed_files,
-        );
-        if budget.compacted_files > 0 {
-            mem_label.push_str(&format!("  {} compacted", budget.compacted_files));
-        }
-        if tab.lazy_mode {
-            mem_label.push_str("  [lazy]");
-        }
-        right.push(Span::styled(
-            mem_label,
-            ratatui::style::Style::default().fg(styles::DIM()),
         ));
     }
 
@@ -487,7 +463,7 @@ fn build_tour_hints(screen: &Screen) -> Vec<Hint> {
 
 fn build_history_hints(screen: &Screen) -> Vec<Hint> {
     let tab = &screen.tab;
-    let ai = screen.data.ai_or_empty();
+    let ai = screen.data.ai;
     let h = &screen.chrome.config.hints;
     let mut hints = Vec::new();
 
@@ -529,7 +505,7 @@ fn build_history_hints(screen: &Screen) -> Vec<Hint> {
     }
 
     // Show current file in commit if navigating
-    if let Some(history) = screen.data.history() {
+    if let Some(history) = screen.data.history.as_ref() {
         if !history.commit_files.is_empty() {
             let file_name = history
                 .commit_files
@@ -566,7 +542,7 @@ fn build_history_hints(screen: &Screen) -> Vec<Hint> {
 /// Build the normal-mode hint list
 fn build_hints(screen: &Screen) -> Vec<Hint> {
     let tab = &screen.tab;
-    let ai = screen.data.ai_or_empty();
+    let ai = screen.data.ai;
     let h = &screen.chrome.config.hints;
 
     // Delegate to AI panel hints when focus is on the AI Summary panel
@@ -1212,7 +1188,6 @@ mod tests {
 
     /// The counts render last on the branch row, so a narrow terminal cuts
     /// them before the merge warning.
-    #[cfg(feature = "v1-service")]
     #[test]
     fn top_bar_puts_line_counts_after_the_merge_warning() {
         use er_engine::git::{DiffFile, FileStatus};

@@ -10,11 +10,11 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use er_engine::ai::{ErChecklist, ErGithubComments, ErReview};
 use er_engine::test_support::{read_sidecar, write_sidecar_json};
 
+use super::parity::assert_frame;
 use super::parity::assert_json;
 use super::shell::Shell;
 use super::tests::{
-    assert_parity, fixture, key, loaded, path_of, settle, settle_within, shell, shell_frame,
-    SOURCES,
+    fixture, key, loaded, path_of, service_sources, settle, settle_within, shell, shell_frame,
 };
 use super::threads_tests::{
     active_key, args, both_on, draft_text, er_dir, settle_replies, state, step, type_text,
@@ -128,19 +128,6 @@ pub(super) fn seed_shell(shell: &mut Shell, seed: impl Fn(&str, &str)) {
     super::tests::let_the_reload_notice_go(shell);
 }
 
-/// Seeds both paths with `seed`; the App reads it at once.
-pub(super) fn seed_both(
-    app: &mut er_engine::app::App,
-    shell: &mut Shell,
-    seed: impl Fn(&str, &str),
-) {
-    let hash = app.tab().branch_diff_hash.clone();
-    seed(&app.tab().er_dir(), &hash);
-    app.tab_mut().reload_ai_state();
-    app.clear_notification();
-    seed_shell(shell, seed);
-}
-
 fn checked_flags(dir: &str) -> Vec<bool> {
     read_sidecar::<ErChecklist>(Path::new(dir))
         .items
@@ -155,11 +142,11 @@ fn checked_flags(dir: &str) -> Vec<bool> {
 #[test]
 fn the_ai_summary_panel_draws_and_acts_like_the_app() {
     let _golden = super::parity::guard();
-    let (app_repo, flag_repo) = (fixture(3), fixture(3));
+    let flag_repo = fixture(3);
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
-        let (mut app, mut shell) = both_on(&app_repo, &flag_repo, storage.path());
-        seed_both(&mut app, &mut shell, |dir, hash| {
+        let mut shell = both_on(&flag_repo, storage.path());
+        seed_shell(&mut shell, |dir, hash| {
             seed_summary(dir, hash, false);
         });
         let mut hl = Highlighter::new();
@@ -181,16 +168,11 @@ fn the_ai_summary_panel_draws_and_acts_like_the_app() {
             KeyCode::Esc,
         ];
         for code in codes {
-            step(&mut app, &mut shell, &mut hl, key(code));
+            step(&mut shell, &mut hl, key(code));
         }
         let flag_dir = er_dir(&shell);
         assert_eq!(checked_flags(&flag_dir), [false, true, true]);
-        assert_eq!(checked_flags(&app.tab().er_dir()), checked_flags(&flag_dir));
-        assert_json(
-            "checked",
-            &checked_flags(&flag_dir),
-            &checked_flags(&app.tab().er_dir()),
-        );
+        assert_json("checked", &checked_flags(&flag_dir));
     });
 }
 
@@ -199,17 +181,17 @@ fn the_ai_summary_panel_draws_and_acts_like_the_app() {
 #[test]
 fn the_finding_focus_draws_like_the_app() {
     let _golden = super::parity::guard();
-    let (app_repo, flag_repo) = (fixture(520), fixture(520));
+    let flag_repo = fixture(520);
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
-        let (mut app, mut shell) = both_on(&app_repo, &flag_repo, storage.path());
+        let mut shell = both_on(&flag_repo, storage.path());
         let stub = |shell: &Shell, idx: usize| {
             shell
                 .active_content()
                 .is_some_and(|content| super::tui_view::is_stub(&content.diff.files[idx]))
         };
         settle_within(&mut shell, Duration::from_secs(5), |shell| !stub(shell, 0));
-        seed_both(&mut app, &mut shell, seed_findings);
+        seed_shell(&mut shell, seed_findings);
         assert!(stub(&shell, 1), "the second file loaded parsed");
         let mut hl = Highlighter::new();
         let mut keys = vec![ctrl('k'); 3];
@@ -228,11 +210,11 @@ fn the_finding_focus_draws_like_the_app() {
             .map(key),
         );
         for event in keys {
-            step(&mut app, &mut shell, &mut hl, event);
+            step(&mut shell, &mut hl, event);
             if event == ctrl('k') {
                 settle_within(&mut shell, Duration::from_secs(5), |shell| !stub(shell, 1));
                 let frame = shell_frame(&mut shell, &mut hl);
-                assert_parity(&app, &frame, &mut hl, "parsed");
+                assert_frame("parsed", &frame);
             }
         }
     });
@@ -244,29 +226,23 @@ fn focused(shell: &Shell) -> Option<String> {
 }
 
 /// With the Gate raised past a finding, Ctrl+j/k and the File panel's j/k
-/// never land on it on the flag path, where the App's Ctrl+k does.
+/// never land on it, where the old TUI's Ctrl+k did.
 #[test]
 fn finding_steps_skip_what_the_gate_hides() {
     let _golden = super::parity::guard();
-    let (app_repo, flag_repo) = (fixture(1), fixture(1));
+    let flag_repo = fixture(1);
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
-        let (mut app, mut shell) = both_on(&app_repo, &flag_repo, storage.path());
-        seed_both(&mut app, &mut shell, seed_gated);
+        let mut shell = both_on(&flag_repo, storage.path());
+        seed_shell(&mut shell, seed_gated);
         let mut hl = Highlighter::new();
-        step(&mut app, &mut shell, &mut hl, key(KeyCode::Char('T')));
-        let (mut flag, mut app_seen) = (Vec::new(), Vec::new());
+        step(&mut shell, &mut hl, key(KeyCode::Char('T')));
+        let mut flag = Vec::new();
         for _ in 0..3 {
             shell.handle_key(ctrl('k'));
-            let (tx, _rx) = std::sync::mpsc::channel();
-            let mut cache = crate::screen::ViewCache::default();
-            crate::handle_key(&mut app, ctrl('k'), &tx, &mut None, &mut cache)
-                .unwrap_or_else(|e| panic!("{e}"));
             flag.extend(focused(&shell));
-            app_seen.extend(app.tab().focused_finding_id.clone());
         }
         assert_eq!(flag, ["sure", "kept", "sure"]);
-        assert!(app_seen.iter().any(|id| id == "low"), "{app_seen:?}");
 
         shell.handle_key(key(KeyCode::Char('p')));
         shell.handle_key(key(KeyCode::Tab));
@@ -399,7 +375,7 @@ fn findings_keep_the_checklist_write_and_the_gate_rule_out_of_the_tui() {
         "toggle_checklist_item_at",
         "trust_rank(",
     ];
-    for (name, text) in SOURCES {
+    for (name, text) in &service_sources() {
         let flat: String = text.split_whitespace().collect();
         for word in words {
             assert!(!flat.contains(word), "{name} names {word}");
@@ -492,17 +468,17 @@ fn a_refused_finding_reply_keeps_its_text_and_id() {
 #[test]
 fn the_summary_jump_onto_a_stub_draws_like_the_app() {
     let _golden = super::parity::guard();
-    let (app_repo, flag_repo) = (fixture(520), fixture(520));
+    let flag_repo = fixture(520);
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
-        let (mut app, mut shell) = both_on(&app_repo, &flag_repo, storage.path());
+        let mut shell = both_on(&flag_repo, storage.path());
         let stub = |shell: &Shell, idx: usize| {
             shell
                 .active_content()
                 .is_some_and(|content| super::tui_view::is_stub(&content.diff.files[idx]))
         };
         settle_within(&mut shell, Duration::from_secs(5), |shell| !stub(shell, 0));
-        seed_both(&mut app, &mut shell, seed_findings);
+        seed_shell(&mut shell, seed_findings);
         assert!(stub(&shell, 1), "the second file loaded parsed");
         let mut hl = Highlighter::new();
         let codes = [
@@ -513,24 +489,24 @@ fn the_summary_jump_onto_a_stub_draws_like_the_app() {
             KeyCode::Enter,
         ];
         for code in codes {
-            step(&mut app, &mut shell, &mut hl, key(code));
+            step(&mut shell, &mut hl, key(code));
         }
         settle_within(&mut shell, Duration::from_secs(5), |shell| !stub(shell, 1));
         let frame = shell_frame(&mut shell, &mut hl);
-        assert_parity(&app, &frame, &mut hl, "summary enter onto stub");
+        assert_frame("summary enter onto stub", &frame);
     });
 }
 
 /// Enter in the AI Summary panel focuses the first anchored finding the
-/// Gate shows, as Ctrl+j/k does; the App focuses the first one whatever the
-/// Gate.
+/// Gate shows, as Ctrl+j/k does; the old TUI focused the first one whatever
+/// the Gate.
 #[test]
 fn the_summary_jump_focuses_the_first_finding_the_gate_shows() {
-    let (app_repo, flag_repo) = (fixture(1), fixture(1));
+    let flag_repo = fixture(1);
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
-        let (mut app, mut shell) = both_on(&app_repo, &flag_repo, storage.path());
-        seed_both(&mut app, &mut shell, seed_gated);
+        let mut shell = both_on(&flag_repo, storage.path());
+        seed_shell(&mut shell, seed_gated);
         let codes = [
             KeyCode::Char('T'),
             KeyCode::Char('p'),
@@ -539,10 +515,8 @@ fn the_summary_jump_focuses_the_first_finding_the_gate_shows() {
             KeyCode::Enter,
         ];
         for code in codes {
-            super::tests::press_app(&mut app, code);
             shell.handle_key(key(code));
         }
         assert_eq!(focused(&shell).as_deref(), Some("kept"));
-        assert_eq!(app.tab().focused_finding_id.as_deref(), Some("low"));
     });
 }

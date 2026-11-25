@@ -1,7 +1,6 @@
-//! P63's golden suite on the flag path. Each fixture fills the flag path's
-//! own view state and a tab's published content, draws them through
-//! `tui_view::screen`, and must match the same file under `goldens/` that
-//! the App's fixture records, byte for byte.
+//! P63's golden suite. Each fixture fills the TUI's own view state and a
+//! tab's published content, draws them through `tui_view::screen`, and must
+//! match its file under `goldens/`, byte for byte.
 
 use std::sync::Arc;
 
@@ -438,10 +437,8 @@ fn the_history_rows_age_collapses_in_a_frozen_frame() {
 }
 
 /// The app chrome, the hubs, the other overlays and the status-bar input
-/// modes. `input_search` is the one fixture not rebuilt: it sets the App's
-/// query without the filter typing applies, a state the flag path never
-/// holds, so the search line is pinned by the frozen frames of
-/// `filter_tests::search_keys_match_the_app` instead.
+/// modes. The search line is pinned by the frozen frames of
+/// `filter_tests::search_keys_match_the_app`.
 const CHROME: &[Fixture] = &[
     fixture_of("chrome_tabs_update_notice", 100, 16, |scene| {
         scene.tab_names.push("docs".into());
@@ -551,7 +548,7 @@ const CHROME: &[Fixture] = &[
         drive(scene, "Web");
     }),
     fixture_of("overlay_config_hub", 90, 24, |scene| {
-        use crate::input::keys::{Edit, OverlayAction};
+        use crate::input::{Edit, OverlayAction};
         let view = scene.settings();
         let mut hub = super::config_hub::ConfigHub::open(&view);
         hub.selected = hub
@@ -662,7 +659,7 @@ fn open_ai_hub(scene: &mut Scene) {
 /// Moves the open picker down to the row holding `to` and runs it, as `j`
 /// and Enter do; the picker it opens replaces it.
 fn drive(scene: &mut Scene, to: &str) {
-    use crate::input::keys::OverlayAction;
+    use crate::input::OverlayAction;
     let view = scene.settings();
     let label = er_service::ai_labels(&scene.config).label;
     let Some(Overlay::Picker(picker)) = scene.view.overlay.as_mut() else {

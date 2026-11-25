@@ -1,11 +1,10 @@
-//! The flag-on TUI's own view state, and the frame drawn from it.
+//! The TUI's own view state, and the frame drawn from it.
 //!
 //! The service publishes each tab's content; what the user selected, scrolled
 //! or typed stays here, per tab key, as the desktop keeps its own in
 //! desktop-ui (ADR 0068). Each frame fills the `Screen` from the active tab's
 //! content and this state, and calls no builder itself: a builder's value
-//! comes in on the `Frame`, and an area no ported builder computes draws the
-//! unported message until the entry that ports it.
+//! comes in on the `Frame`.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -38,7 +37,7 @@ use super::worktree::GitHub;
 use crate::screen::view::{
     ConfigEditState, ConfirmAction, HubKind, InputMode, OverlayData, SplitSide,
 };
-use crate::screen::{Chrome, Screen, SectionData, TabData, TabView};
+use crate::screen::{Chrome, Screen, SectionData, TabView};
 
 /// What the flag-on loop shows: per tab its view state, and app wide the
 /// input mode, the overlay and the status line.
@@ -952,7 +951,6 @@ pub fn screen<'a>(view: &'a TuiView, state: &'a TabViewState, frame: Frame<'a>) 
             show_unreviewed_only: state.show_unreviewed_only,
             show_watched: watched_shown,
             watched_count: watched.files.len(),
-            lazy_mode: content.diff.meta.lazy,
             comment_type: state.draft.kind,
             comment_review: state.draft.review,
             comment_reply_to: state.draft.reply_to.as_deref(),
@@ -989,7 +987,7 @@ pub fn screen<'a>(view: &'a TuiView, state: &'a TabViewState, frame: Frame<'a>) 
                 .snapshot()
                 .filter(|_| frame.config.watched.diff_mode == "snapshot"),
         },
-        data: TabData::Sections(SectionData {
+        data: SectionData {
             files,
             reviewed,
             pr: content.pr.overview.as_ref(),
@@ -1000,7 +998,7 @@ pub fn screen<'a>(view: &'a TuiView, state: &'a TabViewState, frame: Frame<'a>) 
             tour: super::tour::view(&state.tour, content),
             agent_log: &frame.jobs.log,
             running_commands: frame.jobs.running.iter().map(String::as_str).collect(),
-        }),
+        },
     }
 }
 

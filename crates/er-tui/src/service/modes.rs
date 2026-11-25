@@ -6,7 +6,7 @@ use er_engine::TabKey;
 use er_service::{Command, TabContent};
 
 use super::tui_view::TabViewState;
-use crate::input::keys::Edit;
+use crate::input::Edit;
 
 /// Where the selection stood when a mode switch or a refresh went out.
 #[derive(Clone)]

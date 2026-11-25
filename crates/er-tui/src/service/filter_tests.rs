@@ -5,33 +5,31 @@
 use std::time::{Duration, Instant};
 
 use crossterm::event::KeyCode;
-use er_engine::app::App;
 
+use super::parity::assert_frame;
 use super::parity::assert_json;
 use super::shell::Shell;
 use super::startup::Args;
 use super::tests::{
-    app_on, assert_parity, fixture, key, loaded, path_of, press_app, rows, settle, shell,
-    shell_frame, SOURCES,
+    fixture, key, loaded, path_of, rows, save_session_of, service_sources, settle, shell,
+    shell_frame,
 };
 use super::tui_view::TabViewState;
 use crate::ui::highlight::Highlighter;
 
-/// Presses `code` on both paths, the last step's message gone first, and
-/// compares the frames once the flag path's replies have landed.
-fn step(app: &mut App, shell: &mut Shell, hl: &mut Highlighter, code: KeyCode) {
-    app.clear_notification();
+/// Presses `code`, the last step's message gone first, and checks the frame
+/// against its golden once the replies have landed.
+fn step(shell: &mut Shell, hl: &mut Highlighter, code: KeyCode) {
     shell.tick(Instant::now() + Duration::from_secs(60));
-    press_app(app, code);
     shell.handle_key(key(code));
     settle(shell, |shell| shell.in_flight() == 0);
     let frame = shell_frame(shell, hl);
-    assert_parity(app, &frame, hl, &format!("{code:?}"));
+    assert_frame(&format!("{code:?}"), &frame);
 }
 
-fn steps(app: &mut App, shell: &mut Shell, hl: &mut Highlighter, codes: &[KeyCode]) {
+fn steps(shell: &mut Shell, hl: &mut Highlighter, codes: &[KeyCode]) {
     for &code in codes {
-        step(app, shell, hl, code);
+        step(shell, hl, code);
     }
 }
 
@@ -56,13 +54,12 @@ fn start(path: &str, storage: &std::path::Path, filter: Option<&str>) -> Shell {
     shell
 }
 
-/// The App and the flag path on two clones of a three-file fixture.
-fn both(storage: &std::path::Path, run: impl FnOnce(&mut App, &mut Shell, &mut Highlighter)) {
-    let (app_repo, flag_repo) = (fixture(3), fixture(3));
+/// A shell on a three-file fixture.
+fn both(storage: &std::path::Path, run: impl FnOnce(&mut Shell, &mut Highlighter)) {
+    let flag_repo = fixture(3);
     er_engine::storage::with_process_test_storage_root(storage, || {
-        let mut app = app_on(&path_of(&app_repo));
         let mut shell = start(&path_of(&flag_repo), storage, None);
-        run(&mut app, &mut shell, &mut Highlighter::new());
+        run(&mut shell, &mut Highlighter::new());
     });
 }
 
@@ -73,27 +70,16 @@ fn both(storage: &std::path::Path, run: impl FnOnce(&mut App, &mut Shell, &mut H
 fn filter_keys_and_history_match_the_app() {
     let _golden = super::parity::guard();
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
-    both(storage.path(), |app, shell, hl| {
+    both(storage.path(), |shell, hl| {
         let mut codes = vec![KeyCode::Char('f')];
         codes.extend(typed("-f000"));
         codes.extend([KeyCode::Enter, KeyCode::Char('F'), KeyCode::Char('j')]);
         codes.extend([KeyCode::Enter, KeyCode::Char('F'), KeyCode::Char('j')]);
-        steps(app, shell, hl, &codes);
-        assert_eq!(state(shell).filter_history, app.tab().filter_history);
-        assert_json(
-            "history",
-            &state(shell).filter_history,
-            &app.tab().filter_history,
-        );
-        steps(app, shell, hl, &[KeyCode::Esc, KeyCode::Esc]);
-        assert_eq!(state(shell).filter_expr, app.tab().filter_expr);
-        assert_eq!(state(shell).filter_history, app.tab().filter_history);
-        assert_json("expr", &state(shell).filter_expr, &app.tab().filter_expr);
-        assert_json(
-            "history",
-            &state(shell).filter_history,
-            &app.tab().filter_history,
-        );
+        steps(shell, hl, &codes);
+        assert_json("history", &state(shell).filter_history);
+        steps(shell, hl, &[KeyCode::Esc, KeyCode::Esc]);
+        assert_json("expr", &state(shell).filter_expr);
+        assert_json("history", &state(shell).filter_history);
     });
 }
 
@@ -103,7 +89,7 @@ fn filter_keys_and_history_match_the_app() {
 fn search_keys_match_the_app() {
     let _golden = super::parity::guard();
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
-    both(storage.path(), |app, shell, hl| {
+    both(storage.path(), |shell, hl| {
         let codes = [
             KeyCode::Char('/'),
             KeyCode::Char('2'),
@@ -113,7 +99,7 @@ fn search_keys_match_the_app() {
             KeyCode::Char('1'),
             KeyCode::Esc,
         ];
-        steps(app, shell, hl, &codes);
+        steps(shell, hl, &codes);
     });
 }
 
@@ -123,11 +109,11 @@ fn search_keys_match_the_app() {
 fn the_filtered_count_draws_like_the_app() {
     let _golden = super::parity::guard();
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
-    both(storage.path(), |app, shell, hl| {
+    both(storage.path(), |shell, hl| {
         let mut codes = vec![KeyCode::Char(' '), KeyCode::Char('f')];
         codes.extend(typed("-f000"));
         codes.push(KeyCode::Enter);
-        steps(app, shell, hl, &codes);
+        steps(shell, hl, &codes);
         let top = rows(&shell_frame(shell, hl))[1].clone();
         assert!(top.contains("0/2 · 1/3 reviewed"), "{top}");
     });
@@ -137,26 +123,20 @@ fn the_filtered_count_draws_like_the_app() {
 #[test]
 fn a_kind_filter_reads_the_repo_tables() {
     let _golden = super::parity::guard();
-    let (app_repo, flag_repo) = (fixture(3), fixture(3));
+    let flag_repo = fixture(3);
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
-    let (app_path, flag_path) = (path_of(&app_repo), path_of(&flag_repo));
+    let flag_path = path_of(&flag_repo);
     let git = er_engine::ports::Ports::cli().git;
     let slug = er_engine::storage::rules_key(&*git, &flag_path, None);
     let config = format!("[file_kinds.\"{slug}\"]\n\"src/f001.rs\" = \"test\"\n");
     std::fs::write(storage.path().join("config.toml"), config).unwrap_or_else(|e| panic!("{e}"));
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
-        let mut app = app_on(&app_path);
-        let rules = [("src/f001.rs".to_string(), "test".to_string())];
-        let table = er_engine::config::FileKindRepoConfig::new(rules.into_iter().collect());
-        let app_slug = app.tab().rules_key();
-        app.config.file_kinds.items.insert(app_slug, table);
-        app.sync_repo_rules_to_tabs();
         let mut shell = start(&flag_path, storage.path(), None);
         let mut hl = Highlighter::new();
         let mut codes = vec![KeyCode::Char('f')];
         codes.extend(typed("-kind:test"));
         codes.push(KeyCode::Enter);
-        steps(&mut app, &mut shell, &mut hl, &codes);
+        steps(&mut shell, &mut hl, &codes);
         let listed = rows(&shell_frame(&mut shell, &mut hl)).join("\n");
         assert!(!listed.contains("f001.rs"), "{listed}");
     });
@@ -168,35 +148,25 @@ fn a_kind_filter_reads_the_repo_tables() {
 fn a_start_filter_yields_to_a_saved_one_like_the_app() {
     let _golden = super::parity::guard();
     for saved in [false, true] {
-        let (app_repo, flag_repo) = (fixture(3), fixture(3));
+        let flag_repo = fixture(3);
         let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
-        let (app_path, flag_path) = (path_of(&app_repo), path_of(&flag_repo));
+        let flag_path = path_of(&flag_repo);
         er_engine::storage::with_process_test_storage_root(storage.path(), || {
             if saved {
-                for path in [&app_path, &flag_path] {
-                    let mut before = app_on(path);
-                    before.tab_mut().apply_filter_expr("old");
-                    before.tab_mut().apply_filter_expr("f002");
-                    before.tab().save_session();
-                }
+                let first = start(&flag_path, storage.path(), None);
+                save_session_of(&first, |session| {
+                    session.filter_expr = "f002".into();
+                    session.filter_history = vec!["f002".into(), "old".into()];
+                });
+                drop(first);
             }
-            let mut app = app_on(&app_path);
-            app.tab_mut().apply_filter_expr("f001");
-            assert_eq!(app.tab_mut().restore_session(), saved);
             let mut shell = start(&flag_path, storage.path(), Some("f001"));
             let mut hl = Highlighter::new();
-            assert_parity(&app, &shell_frame(&mut shell, &mut hl), &mut hl, "start");
-            // The flag path's twin of the App's restore check above.
+            assert_frame("start", &shell_frame(&mut shell, &mut hl));
             let restored = if saved { "f002" } else { "f001" };
             assert_eq!(state(&shell).filter_expr, restored);
-            assert_eq!(state(&shell).filter_expr, app.tab().filter_expr);
-            assert_eq!(state(&shell).filter_history, app.tab().filter_history);
-            assert_json("expr", &state(&shell).filter_expr, &app.tab().filter_expr);
-            assert_json(
-                "history",
-                &state(&shell).filter_history,
-                &app.tab().filter_history,
-            );
+            assert_json("expr", &state(&shell).filter_expr);
+            assert_json("history", &state(&shell).filter_history);
         });
     }
 }
@@ -210,17 +180,15 @@ fn a_search_that_hides_a_watched_file_snaps_like_the_app() {
     let repo = super::watched_tests::watched_repo(storage.path());
     let path = path_of(&repo);
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
-        let mut app = app_on(&path);
         let mut shell = super::watched_tests::start(&path, storage.path());
         let mut codes = vec![KeyCode::Char('k'), KeyCode::Char('/')];
         codes.extend(typed("f000"));
         for code in codes {
-            press_app(&mut app, code);
             shell.handle_key(key(code));
         }
         assert!(state(&shell).watched.selected.is_some(), "k left the diff");
         let mut hl = Highlighter::new();
-        step(&mut app, &mut shell, &mut hl, KeyCode::Enter);
+        step(&mut shell, &mut hl, KeyCode::Enter);
         assert_eq!(state(&shell).watched.selected, None);
     });
 }
@@ -236,7 +204,7 @@ fn the_filter_runs_on_the_view_state() {
         ".tab().",
         "tab_mut().",
     ];
-    for (name, text) in SOURCES {
+    for (name, text) in &service_sources() {
         let flat: String = text.split_whitespace().collect();
         for needle in banned {
             assert!(!flat.contains(needle), "{name} names {needle}");

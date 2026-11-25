@@ -8,12 +8,12 @@ use std::time::{Duration, Instant};
 
 use crossterm::event::KeyCode;
 
+use super::parity::assert_frame;
 use super::parity::assert_json;
 use super::shell::Shell;
 use super::startup::Args;
 use super::tests::{
-    app_on, assert_parity, fixture, git, key, loaded, path_of, press_app, settle, shell,
-    shell_frame, SOURCES,
+    fixture, git, key, loaded, path_of, service_sources, settle, shell, shell_frame,
 };
 use crate::ui::highlight::Highlighter;
 
@@ -37,31 +37,23 @@ fn settle_replies(shell: &mut Shell) {
 
 /// Presses `code` on both paths, the last step's message gone first, and
 /// compares the frames once the flag path's replies have landed.
-fn step(app: &mut er_engine::app::App, shell: &mut Shell, hl: &mut Highlighter, code: KeyCode) {
-    app.clear_notification();
+fn step(shell: &mut Shell, hl: &mut Highlighter, code: KeyCode) {
     shell.tick(Instant::now() + Duration::from_secs(60));
-    press_app(app, code);
     shell.handle_key(key(code));
     settle_replies(shell);
     let frame = shell_frame(shell, hl);
-    assert_parity(app, &frame, hl, &format!("{code:?}"));
+    assert_frame(&format!("{code:?}"), &frame);
 }
 
-/// The App and the flag path, each on its own clone of one fixture, so
-/// each writes its own reviewed marks.
-fn both_on(
-    app_repo: &tempfile::TempDir,
-    flag_repo: &tempfile::TempDir,
-    config_dir: &std::path::Path,
-) -> (er_engine::app::App, Shell) {
-    let app = app_on(&path_of(app_repo));
+/// A shell on the fixture, its first tab loaded.
+fn both_on(flag_repo: &tempfile::TempDir, config_dir: &std::path::Path) -> Shell {
     let args = Args {
         paths: vec![path_of(flag_repo)],
         ..Args::default()
     };
     let mut shell = shell(&args, config_dir);
     settle(&mut shell, loaded);
-    (app, shell)
+    shell
 }
 
 /// A mark pressed after a tab switch lands on the tab it was pressed on.
@@ -101,7 +93,7 @@ fn a_mark_lands_on_the_tab_it_was_pressed_on() {
 /// counts reviewed files from the marks itself.
 #[test]
 fn the_reviewed_count_comes_from_the_builder() {
-    for (name, text) in SOURCES {
+    for (name, text) in &service_sources() {
         let flat: String = text.split_whitespace().collect();
         if name != "reviewed.rs" {
             assert!(
@@ -155,10 +147,10 @@ fn the_builder_runs_once_per_reviewed_version() {
 #[test]
 fn marks_and_the_jump_match_the_app() {
     let _golden = super::parity::guard();
-    let (app_repo, flag_repo) = (fixture(3), fixture(3));
+    let flag_repo = fixture(3);
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
-        let (mut app, mut shell) = both_on(&app_repo, &flag_repo, storage.path());
+        let mut shell = both_on(&flag_repo, storage.path());
         let mut hl = Highlighter::new();
         let space = KeyCode::Char(' ');
         let steps = [
@@ -171,10 +163,9 @@ fn marks_and_the_jump_match_the_app() {
             space,
         ];
         for code in steps {
-            step(&mut app, &mut shell, &mut hl, code);
+            step(&mut shell, &mut hl, code);
         }
-        assert_eq!(marks_in(&er_dir(&shell)), app.tab().reviewed);
-        assert_json("marks", &marks_in(&er_dir(&shell)), &app.tab().reviewed);
+        assert_json("marks", &marks_in(&er_dir(&shell)));
     });
 }
 
@@ -182,13 +173,13 @@ fn marks_and_the_jump_match_the_app() {
 #[test]
 fn a_mark_under_unreviewed_only_advances_like_the_app() {
     let _golden = super::parity::guard();
-    let (app_repo, flag_repo) = (fixture(3), fixture(3));
+    let flag_repo = fixture(3);
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
-        let (mut app, mut shell) = both_on(&app_repo, &flag_repo, storage.path());
+        let mut shell = both_on(&flag_repo, storage.path());
         let mut hl = Highlighter::new();
         for code in [KeyCode::Char('!'), KeyCode::Char('k'), KeyCode::Char(' ')] {
-            step(&mut app, &mut shell, &mut hl, code);
+            step(&mut shell, &mut hl, code);
         }
     });
 }
@@ -207,10 +198,10 @@ fn with_lock() -> tempfile::TempDir {
 #[test]
 fn enter_expands_a_compacted_file_like_the_app() {
     let _golden = super::parity::guard();
-    let (app_repo, flag_repo) = (with_lock(), with_lock());
+    let flag_repo = with_lock();
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
-        let (mut app, mut shell) = both_on(&app_repo, &flag_repo, storage.path());
+        let mut shell = both_on(&flag_repo, storage.path());
         let compacted = |shell: &Shell| {
             shell
                 .active_content()
@@ -218,7 +209,7 @@ fn enter_expands_a_compacted_file_like_the_app() {
         };
         assert!(compacted(&shell), "the lock file loaded expanded");
         let mut hl = Highlighter::new();
-        step(&mut app, &mut shell, &mut hl, KeyCode::Enter);
+        step(&mut shell, &mut hl, KeyCode::Enter);
         assert!(!compacted(&shell), "Enter left the file compacted");
     });
 }

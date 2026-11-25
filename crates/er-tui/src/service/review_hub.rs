@@ -7,7 +7,7 @@ use er_engine::github::PendingReview;
 use er_engine::TabKey;
 use er_service::{Command, ReviewEvent, TabContent, TabContext};
 
-use crate::input::keys::{Edit, OverlayAction};
+use crate::input::{Edit, OverlayAction};
 use crate::screen::view::HubItem;
 
 /// What a hub row does when chosen.

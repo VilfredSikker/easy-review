@@ -5,7 +5,7 @@
 use er_engine::dir_browse::read_directory;
 use er_engine::git::Worktree;
 
-use crate::input::keys::OverlayAction;
+use crate::input::OverlayAction;
 use crate::screen::view::DirEntry;
 
 /// What a picker or browser key asks of the loop.

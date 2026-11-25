@@ -74,7 +74,11 @@ fn next_gate(state: &mut TabViewState) -> &'static str {
         _ => Confidence::Informational,
     };
     layers.min_trust_pinned = true;
-    crate::input::min_trust_label(layers.min_trust)
+    match layers.min_trust {
+        Confidence::Informational => "all findings",
+        Confidence::Tentative => "informational hidden",
+        Confidence::Confirmed | Confidence::Dropped => "confirmed only",
+    }
 }
 
 /// T: the next Gate level; answers the status line's message, which says

@@ -7,7 +7,7 @@ use er_engine::TabKey;
 use er_service::{Command, TabContent};
 
 use super::tui_view::{Mode, PrKnown, TabViewState};
-use crate::input::keys::{Edit, OverlayAction};
+use crate::input::{Edit, OverlayAction};
 use crate::screen::view::HubItem;
 
 /// What a Git hub row does when chosen.
