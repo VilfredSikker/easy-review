@@ -38,6 +38,7 @@ pub mod git;
 pub mod github;
 pub mod github_post;
 pub mod github_post_session;
+pub mod help;
 #[cfg(feature = "highlight")]
 pub mod highlight;
 pub mod history;

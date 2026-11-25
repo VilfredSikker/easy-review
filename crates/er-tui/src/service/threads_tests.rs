@@ -548,7 +548,7 @@ fn layers_stay_in_the_view_and_threads_keep_the_engine_order() {
     let arms = shell_rs
         .split("A::TogglePanel |")
         .nth(1)
-        .and_then(|rest| rest.split("_ => return self.unported()").next())
+        .and_then(|rest| rest.split("// `filter::normal` took these above.").next())
         .unwrap_or_else(|| panic!("the layer arms moved"));
     assert!(arms.contains("layers::cycle_gate"), "the layer arms moved");
     for (name, text) in [

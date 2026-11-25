@@ -23,6 +23,7 @@ use tui_textarea::TextArea;
 
 use super::ai_picker::Picker;
 use super::ai_runs::Rerun;
+use super::chrome::HelpHub;
 use super::config_hub::ConfigHub;
 use super::copy::CopyHub;
 use super::flows::{Progress, Results};
@@ -91,6 +92,7 @@ pub enum Overlay {
         selected: usize,
     },
     Copy(CopyHub),
+    Help(HelpHub),
     ExportPicker {
         include_comments: bool,
         include_findings: bool,
@@ -108,6 +110,7 @@ impl Overlay {
             Self::Picker(picker) => picker.sync(view, ai_label),
             Self::ExportPicker { .. }
             | Self::Copy(_)
+            | Self::Help(_)
             | Self::GitHub(_)
             | Self::Review
             | Self::Open(_)
@@ -177,6 +180,12 @@ impl Overlay {
             },
             Self::Copy(ref hub) => OverlayData::ModalHub {
                 kind: HubKind::Copy,
+                title: None,
+                items: &hub.rows,
+                selected: hub.selected,
+            },
+            Self::Help(ref hub) => OverlayData::ModalHub {
+                kind: HubKind::Help,
                 title: None,
                 items: &hub.rows,
                 selected: hub.selected,
@@ -278,6 +287,12 @@ impl TuiView {
         self.tabs.get(&key)
     }
 
+    /// Drops a closed tab's view state.
+    pub fn forget(&mut self, key: TabKey) {
+        self.tabs.remove(&key);
+        self.pr_known.remove(&key);
+    }
+
     /// What is known of `content`'s PR: a tab opened on one has it.
     pub fn pr_known(&self, key: TabKey, content: &TabContent) -> PrKnown {
         if content.tab.pr_number.is_some() {
@@ -322,6 +337,8 @@ pub struct TabViewState {
     pub sort_by_mtime: bool,
     pub file_tree_width: u16,
     pub panel_width: u16,
+    /// The split diff's side the cursor is on.
+    pub split_focus: SplitSide,
     pub draft: Draft,
     /// The question, note or comment J and K last landed on.
     pub focused_comment_id: Option<String>,
@@ -386,6 +403,7 @@ impl Default for TabViewState {
             sort_by_mtime: false,
             file_tree_width: 32,
             panel_width: 40,
+            split_focus: SplitSide::New,
             draft: Draft::default(),
             focused_comment_id: None,
             focused_finding_id: None,
@@ -899,7 +917,7 @@ pub fn screen<'a>(view: &'a TuiView, state: &'a TabViewState, frame: Frame<'a>) 
             ai_selection_label: frame.ai_selection_label,
             has_comment_draft: !state.draft.textarea.is_empty() && view.input_mode != Mode::Comment,
             can_toggle_comment_type: state.draft.can_toggle_kind(),
-            split_diff: false,
+            split_diff: super::chrome::split_side(state, frame.config.display.split_diff).is_some(),
         },
         tab: TabView {
             mode: tab.mode,
@@ -956,7 +974,7 @@ pub fn screen<'a>(view: &'a TuiView, state: &'a TabViewState, frame: Frame<'a>) 
             h_scroll: state.h_scroll,
             h_scroll_old: state.h_scroll_old,
             h_scroll_new: state.h_scroll_new,
-            split_focus: SplitSide::New,
+            split_focus: state.split_focus,
             context_overrides: &content.diff.context,
             mtime_cache: &content.diff.meta.stamps.mtimes,
             panel_scroll: state.panel_scroll,

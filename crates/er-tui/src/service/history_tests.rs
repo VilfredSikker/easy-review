@@ -165,6 +165,34 @@ fn history_draws_like_the_app() {
     });
 }
 
+/// History's previous-file and scroll keys draw as the App's.
+#[test]
+fn history_scroll_keys_draw_like_the_app() {
+    let (app_repo, flag_repo) = twins(two_commits);
+    let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+    er_engine::storage::with_process_test_storage_root(storage.path(), || {
+        let mut app = app_on(&path_of(&app_repo));
+        let mut shell = start(&path_of(&flag_repo), storage.path());
+        let mut hl = Highlighter::new();
+        let codes = [
+            KeyCode::Char('4'),
+            KeyCode::Char('n'),
+            KeyCode::Char('N'),
+            KeyCode::Char('l'),
+            KeyCode::Right,
+            KeyCode::Char('h'),
+            KeyCode::Home,
+            KeyCode::Char('d'),
+            KeyCode::Char('u'),
+            KeyCode::PageDown,
+            KeyCode::PageUp,
+        ];
+        for code in codes {
+            step(&mut app, &mut shell, &mut hl, code);
+        }
+    });
+}
+
 /// Two quick `k`s move two commits, and two on the first page's last
 /// commit, the 50th of 56, list the next page and move into it, as the
 /// App's do.

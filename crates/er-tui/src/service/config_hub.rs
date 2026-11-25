@@ -26,8 +26,6 @@ pub enum Step {
     Open(Box<Overlay>, Option<SettingsCommand>),
     /// Closes the overlay and says why.
     Notify(String),
-    /// Closes the overlay: the row's action has no service route yet.
-    Unported,
     /// Closes the overlay and runs an AI hub layer row on the tab's view.
     Layer(super::layers::HubRow),
     /// Closes the overlay and asks before a Cleanup row's clear.

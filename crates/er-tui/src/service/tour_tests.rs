@@ -137,6 +137,30 @@ fn the_tour_draws_and_moves_like_the_app() {
     });
 }
 
+/// The tour's horizontal scroll keys and its page keys draw as the App's.
+#[test]
+fn the_tour_scroll_keys_draw_like_the_app() {
+    let (app_repo, flag_repo) = (fixture(4), fixture(4));
+    let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+    er_engine::storage::with_process_test_storage_root(storage.path(), || {
+        let mut hl = Highlighter::new();
+        let (mut app, mut shell) = in_tour(&app_repo, &flag_repo, storage.path(), &mut hl);
+        let codes = [
+            KeyCode::Char('l'),
+            KeyCode::Right,
+            KeyCode::Char('h'),
+            KeyCode::Left,
+            KeyCode::Char('l'),
+            KeyCode::Home,
+            KeyCode::PageDown,
+            KeyCode::PageUp,
+        ];
+        for code in codes {
+            step(&mut app, &mut shell, &mut hl, key(code));
+        }
+    });
+}
+
 /// Space toggles the tour's selected file and `n` moves on, as the App's:
 /// the marks saved match.
 #[test]

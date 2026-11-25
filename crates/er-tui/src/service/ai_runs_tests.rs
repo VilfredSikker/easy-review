@@ -140,13 +140,11 @@ fn each_run_row_runs_its_kind() {
             let found = settle_within(&mut shell, Duration::from_secs(20), listed);
             assert!(found, "{label} listed {:?}, not {kind}", kinds(&shell));
             if kind == "importance" {
-                settle(&mut shell, |shell| notice(shell).contains("custom CLI"));
+                settle(&mut shell, |shell| told(shell, "custom CLI"));
             }
         }
         choose(&mut shell, 'a', "Generate summary");
-        settle(&mut shell, |shell| {
-            notice(shell).contains("summary already running")
-        });
+        settle(&mut shell, |shell| told(shell, "summary already running"));
         choose(&mut shell, 'a', "Specialized review");
         let expert = er_engine::ai::EXPERTS[0];
         choose(&mut shell, ' ', expert.label);
@@ -373,6 +371,13 @@ pub(super) fn notice(shell: &Shell) -> String {
     shell.view().notification.clone().unwrap_or_default()
 }
 
+/// Whether the status line has shown a message holding `text`. A task's
+/// notice can replace it in the tick it lands in, so the current message
+/// alone can miss it.
+fn told(shell: &Shell, text: &str) -> bool {
+    shell.told.iter().any(|message| message.contains(text))
+}
+
 /// A clear the bucket's lease refuses starts no run: the status line says
 /// why and the host lists no task.
 #[test]
@@ -447,7 +452,7 @@ fn a_test_build_never_starts_a_real_provider_cli() {
         let refused = |_: &Shell| er_agent::agent_run::real_cli_refusals() > before;
         let seen = settle_within(&mut shell, Duration::from_secs(20), refused);
         assert!(seen, "the spawn was not refused");
-        settle(&mut shell, |shell| notice(shell).contains("summary failed"));
+        settle(&mut shell, |shell| told(shell, "summary failed"));
     });
 }
 

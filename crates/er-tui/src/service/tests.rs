@@ -26,10 +26,11 @@ const WIDTH: u16 = 120;
 const HEIGHT: u16 = 30;
 
 /// The flag-on modules, as text.
-pub(super) const SOURCES: [(&str, &str); 33] = [
+pub(super) const SOURCES: [(&str, &str); 34] = [
     ("agent_log.rs", include_str!("agent_log.rs")),
     ("ai_picker.rs", include_str!("ai_picker.rs")),
     ("ai_runs.rs", include_str!("ai_runs.rs")),
+    ("chrome.rs", include_str!("chrome.rs")),
     ("clears.rs", include_str!("clears.rs")),
     ("config_hub.rs", include_str!("config_hub.rs")),
     ("context.rs", include_str!("context.rs")),
@@ -757,8 +758,9 @@ fn tab_keys_load_later_tabs_and_leave_a_failed_one() {
 }
 
 /// The service tests, as text.
-const TEST_SOURCES: [(&str, &str); 24] = [
+const TEST_SOURCES: [(&str, &str); 25] = [
     ("ai_runs_tests.rs", include_str!("ai_runs_tests.rs")),
+    ("chrome_tests.rs", include_str!("chrome_tests.rs")),
     ("clears_tests.rs", include_str!("clears_tests.rs")),
     ("config_hub_tests.rs", include_str!("config_hub_tests.rs")),
     ("context_tests.rs", include_str!("context_tests.rs")),

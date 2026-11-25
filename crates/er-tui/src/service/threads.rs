@@ -11,6 +11,7 @@ use tui_textarea::TextArea;
 
 use super::tui_view::{is_stub, Mode, TabViewState};
 use crate::input::keys::CommentAction;
+use crate::screen::view::SplitSide;
 
 /// The diff file the composer and the hints act on: none while a watched
 /// file is selected.
@@ -26,7 +27,15 @@ fn selected<'c>(state: &TabViewState, content: &'c TabContent) -> Option<&'c Dif
 /// Opens the composer on the cursor's line of the selected file, as the
 /// App's `start_comment` does. A draft whose write is in flight stays.
 /// Answers whether it opened.
-pub fn start(state: &mut TabViewState, content: &TabContent, kind: CommentType) -> bool {
+/// `split` is the split diff's focused side when the split diff shows: the
+/// draft takes that side's line number, and the old side writes `LEFT`, as
+/// the App's `start_comment`.
+pub fn start(
+    state: &mut TabViewState,
+    content: &TabContent,
+    kind: CommentType,
+    split: Option<SplitSide>,
+) -> bool {
     let Some(file) = selected(state, content).filter(|_| state.sent.is_none()) else {
         return false;
     };
@@ -35,7 +44,10 @@ pub fn start(state: &mut TabViewState, content: &TabContent, kind: CommentType) 
     draft.textarea = TextArea::default();
     draft.file.clone_from(&file.path);
     draft.hunk = state.current_hunk;
-    draft.line = line.and_then(|line| line.new_num.or(line.old_num));
+    draft.line = line.and_then(|line| match split {
+        Some(SplitSide::Old) => line.old_num.or(line.new_num),
+        _ => line.new_num.or(line.old_num),
+    });
     draft.reply_to = None;
     draft.finding_ref = None;
     // A paused or emptied edit must not turn this new draft into its edit.
@@ -44,7 +56,8 @@ pub fn start(state: &mut TabViewState, content: &TabContent, kind: CommentType) 
     draft.review = false;
     draft.client_id = None;
     let deleted = line.is_some_and(|line| line.new_num.is_none());
-    draft.side = Some(if deleted { "LEFT" } else { "RIGHT" }.to_string());
+    let left = deleted || split == Some(SplitSide::Old);
+    draft.side = Some(if left { "LEFT" } else { "RIGHT" }.to_string());
     true
 }
 

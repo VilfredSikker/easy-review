@@ -30,6 +30,7 @@ use ratatui::Terminal;
 use super::agent_log::{self, Jobs};
 use super::ai_picker;
 use super::ai_runs::{self, Next, Rerun};
+use super::chrome::{self, HelpHub};
 use super::clears::{self, Clear};
 use super::config_hub::{self, ConfigHub, Step};
 use super::context;
@@ -61,7 +62,6 @@ use crate::input::keys::{
     key_action, AiSummaryAction, CommentAction, ConfirmKey, Edit, HistoryAction, NormalAction,
     OverlayAction, TourAction, TuiAction, Write,
 };
-use crate::screen::UNPORTED;
 use crate::ui::highlight::Highlighter;
 
 /// How long a frame waits for a key before the loop runs its duties.
@@ -180,6 +180,9 @@ pub struct Shell {
     /// The bucket each tab that ran something showed, so a closed tab's log
     /// goes.
     run_buckets: HashMap<TabKey, String>,
+    /// The terminal's width at the last draw, which the width keys hold
+    /// the diff's minimum against, as the App's `last_terminal_width`.
+    terminal_width: u16,
     /// The flow requests the host is building or the actor is running.
     flow_replies: Vec<(flows::Ask, ReplyReceiver)>,
     /// The flow results being read, which open the results overlay.
@@ -192,6 +195,10 @@ pub struct Shell {
     pub refuse_reloads: Option<String>,
     #[cfg(test)]
     pub reload_sends: usize,
+    /// Every status-line message, in order, so a test sees one that a
+    /// later message replaced within the same tick.
+    #[cfg(test)]
+    pub told: Vec<String>,
     /// The runs asked of the host in a test.
     #[cfg(test)]
     pub runs_started: usize,
@@ -259,6 +266,7 @@ impl Shell {
             recorder,
             runs: Vec::new(),
             run_buckets: HashMap::new(),
+            terminal_width: 0,
             flow_replies: Vec::new(),
             flow_reads: Vec::new(),
             reconciled: HashSet::new(),
@@ -267,6 +275,8 @@ impl Shell {
             refuse_reloads: None,
             #[cfg(test)]
             reload_sends: 0,
+            #[cfg(test)]
+            told: Vec::new(),
             #[cfg(test)]
             runs_started: 0,
             #[cfg(test)]
@@ -419,6 +429,8 @@ impl Shell {
     }
 
     fn notify(&mut self, message: String) {
+        #[cfg(test)]
+        self.told.push(message.clone());
         self.view.notification = Some(message);
         self.notified_at = Some(Instant::now());
         self.dwell = NOTIFICATION_DWELL;
@@ -446,10 +458,6 @@ impl Shell {
         }
         let view = self.host.settings().view();
         view.config.display.auto_context_threshold
-    }
-
-    fn unported(&mut self) {
-        self.notify(format!("That action is {UNPORTED}"));
     }
 
     /// The loop's duties, none of which waits: an event from an actor or the
@@ -1182,6 +1190,14 @@ impl Shell {
             {
                 return self.copy_overlay_key(action, key, content)
             }
+            TuiAction::Overlay(action) if matches!(self.view.overlay, Some(Overlay::Help(_))) => {
+                if let Some(Overlay::Help(hub)) = self.view.overlay.as_mut() {
+                    if !hub.act(action) {
+                        self.view.overlay = None;
+                    }
+                }
+                return;
+            }
             TuiAction::Overlay(action) => return self.overlay_key(action, key, content),
             TuiAction::BaseBranch(edit) => return self.base_key(edit, key, workspace, content),
             TuiAction::RemoteUrl(edit) => return self.remote_url_key(edit),
@@ -1285,9 +1301,13 @@ impl Shell {
         if let Some(done) = done {
             return self.filtered(key, workspace, content, done);
         }
-        let config = self.host.settings().view().config.watched.clone();
+        let settings = self.host.settings().view();
+        let config = settings.config.watched.clone();
+        let split_diff = settings.config.display.split_diff;
         let threshold = self.auto_context();
+        let width = self.terminal_width;
         let state = self.view.tab_mut(key, content);
+        let split = chrome::split_side(state, split_diff);
         let file = content
             .diff
             .files
@@ -1365,6 +1385,15 @@ impl Shell {
             }
             A::ScrollUp(rows) => {
                 state.scroll(file, -i32::from(rows));
+                None
+            }
+            A::ScrollRight | A::ScrollLeft | A::ScrollHome if split.is_some() => {
+                let by = match action {
+                    A::ScrollRight => Some(1),
+                    A::ScrollLeft => Some(-1),
+                    _ => None,
+                };
+                chrome::scroll_split(state, state.split_focus, by);
                 None
             }
             A::ScrollRight => {
@@ -1472,8 +1501,26 @@ impl Shell {
             }
             A::NextTab => return self.step_tab(true),
             A::PrevTab => return self.step_tab(false),
+            A::CloseTab => return self.close_tab(key, workspace),
+            A::ResizeFileTree(delta) => {
+                chrome::resize_tree(state, delta, width);
+                return;
+            }
+            A::ResizePanel(delta) => {
+                chrome::resize_panel(state, delta, width);
+                return;
+            }
+            A::ToggleSplitFocus => {
+                chrome::toggle_split_focus(state);
+                return;
+            }
+            A::OpenHelpHub => {
+                self.view.overlay = Some(Overlay::Help(HelpHub::open()));
+                return;
+            }
             A::StartQuestion => {
-                if threads::start(state, content, er_engine::ai::CommentType::Question) {
+                let question = er_engine::ai::CommentType::Question;
+                if threads::start(state, content, question, split) {
                     self.view.input_mode = Mode::Comment;
                 }
                 return;
@@ -1481,7 +1528,7 @@ impl Shell {
             A::StartGithubComment => {
                 let known = self.view.pr_known(key, content);
                 let state = self.view.tab_mut(key, content);
-                let started = github::start_line(state, content, known);
+                let started = github::start_line(state, content, known, split);
                 return self.compose(started);
             }
             A::SyncGithubComments => return self.pull_comments(key, workspace, content),
@@ -1597,7 +1644,12 @@ impl Shell {
                 let message = layers::cycle_gate(state, content);
                 return self.notify(message);
             }
-            _ => return self.unported(),
+            // `filter::normal` took these above.
+            A::StartSearch
+            | A::StartFilter
+            | A::OpenFilterHistory
+            | A::ClearSearch
+            | A::ClearFilter => return,
         };
         if let Some(index) = selected {
             self.parse_if_stub(key, workspace, content, index);
@@ -2560,7 +2612,19 @@ impl Shell {
                 let then = flows::results_key(results, action);
                 return self.flow_then(key, then);
             }
-            _ => Step::Unported,
+            // `execute` routes each of these to its own handler.
+            Some(
+                Overlay::GitHub(_)
+                | Overlay::Review
+                | Overlay::Open(_)
+                | Overlay::FilterHistory { .. }
+                | Overlay::Copy(_)
+                | Overlay::Help(_)
+                | Overlay::Worktrees(_)
+                | Overlay::Directory(_)
+                | Overlay::ExportPicker { .. },
+            )
+            | None => return,
         };
         if let Step::Flow(act) = step {
             self.view.overlay = None;
@@ -2631,10 +2695,6 @@ impl Shell {
             Step::Notify(message) => {
                 self.view.overlay = None;
                 return self.notify(message);
-            }
-            Step::Unported => {
-                self.view.overlay = None;
-                return self.unported();
             }
         };
         if close {
@@ -2790,6 +2850,43 @@ impl Shell {
         self.load_if_new(key);
     }
 
+    /// `x`: closes the active tab, as the App's `close_tab`. The last tab
+    /// stays; the tab that moves into the closed one's place takes focus;
+    /// the closed tab's content is dropped on its actor.
+    fn close_tab(&mut self, key: TabKey, workspace: &str) {
+        let tabs = self.host.registry().tabs_view();
+        if tabs.tabs.len() <= 1 {
+            return self.notify("Cannot close last tab".into());
+        }
+        let Some(at) = tabs.tabs.iter().position(|tab| tab.key == key) else {
+            return;
+        };
+        let name = self.label_of(key);
+        let registry = self.host.registry();
+        if let Err(error) = registry.send(er_service::AppCommand::CloseTab { key }) {
+            return self.notify(error.to_string());
+        }
+        let left = registry.tabs_view();
+        let next = left.tabs.get(at.min(left.tabs.len().saturating_sub(1)));
+        if let Some(next) = next.map(|entry| entry.key) {
+            if let Err(error) = registry.send(er_service::AppCommand::SelectTab { key: next }) {
+                self.notify(error.to_string());
+            }
+            self.load_if_new(next);
+        }
+        let started = self.host.content(workspace, key).is_some()
+            || self.pending.iter().any(|pending| pending.key == key);
+        if started {
+            drop(self.host.post(workspace, Command::DropTab { key }));
+        }
+        self.pending.retain(|pending| pending.key != key);
+        self.starts.remove(&key);
+        self.load_errors.remove(&key);
+        self.unsaved.remove(&key);
+        self.view.forget(key);
+        self.notify(format!("Closed: {name}"));
+    }
+
     /// Loads `key`'s tab the first time it is shown.
     fn load_if_new(&mut self, key: TabKey) {
         let Some(workspace) = self.workspace_of(key) else {
@@ -2812,10 +2909,22 @@ impl Shell {
     }
 
     /// The tab strip's names, the active tab's place in it, and the keys.
+    /// A loaded tab is named as the App names it; one not loaded yet keeps
+    /// the registry's label until it is first shown.
     fn tab_names(&self) -> (Vec<String>, usize, Vec<TabKey>) {
         let tabs = self.host.registry().tabs_view();
         let rows = er_service::tabs_resource(&tabs);
-        let names = rows.tabs.into_iter().map(|row| row.label).collect();
+        let names = tabs
+            .tabs
+            .iter()
+            .zip(rows.tabs)
+            .map(|(entry, row)| {
+                let content = self
+                    .host
+                    .content(&entry.descriptor.workspace_key(), entry.key);
+                content.map_or(row.label, |content| tui_view::tab_name(&content))
+            })
+            .collect();
         let active = tabs
             .active
             .and_then(|key| tabs.tabs.iter().position(|tab| tab.key == key))
@@ -2828,6 +2937,7 @@ impl Shell {
     /// Until the content lands, the frame says why it is missing, then the
     /// start's notice and the status line, each once.
     pub fn draw(&mut self, f: &mut ratatui::Frame, highlighter: &mut Highlighter) {
+        self.terminal_width = f.area().width;
         let Some((key, _, content)) = self.active() else {
             return f.render_widget(Paragraph::new("No tab is open"), f.area());
         };
