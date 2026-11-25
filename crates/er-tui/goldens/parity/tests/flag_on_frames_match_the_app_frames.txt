@@ -30,7 +30,7 @@
 |                               │  27   27 │ let line_26 = 26;
 | j/k nav n/N hunks +/- context ␣ review / search g git a ai o open v verify ? help ^q quit
 |styles 7cdd03895be30daa
-@@@ 02 frame Char('k') < 01
+@@@ 02 frame k < 01
 02| FILES (3)                     │ src/f001.rs                                                                Hunk 1/2
 03| ~ src/f000.rs          +2 -2  │  ~ src/f001.rs  +2 -2
 04| ~ src/f001.rs          +2 -2  │
@@ -59,7 +59,7 @@
 27|                               │  25   25 │ let line_24 = 24;
 28|                               │  26   26 │ let line_25 = 25;
 30|styles f2d39453b17188df
-@@@ 03 frame Char('n') < 01
+@@@ 03 frame n < 01
 02| FILES (3)                     │  ~ src/f001.rs  +2 -2                                                      Hunk 2/2
 03| ~ src/f000.rs          +2 -2  │  ··· 6 lines hidden (+/- to expand) ···
 04| ~ src/f001.rs          +2 -2  │ ▶ @@ -21,20 +21,20 @@ let line_19 = 19;
@@ -115,7 +115,7 @@
 24|                               │  40   40 │ let line_39 = 39;
 25|                               │
 30|styles 5865ce4377c2fd20
-@@@ 06 frame Char('N') < 01
+@@@ 06 frame N < 01
 02| FILES (3)                     │  ~ src/f001.rs  +2 -2                                                      Hunk 1/2
 30|styles a6b01203a74ac3a7
 @@@ 07 frame PageDown < 05
@@ -142,11 +142,11 @@
 23|                               │
 24|                               │
 30|styles d9107b1117758cfb
-@@@ 08 frame Char('U') < 02
+@@@ 08 frame U < 02
 02| FILES (3)                     │ src/f002.rs                                                 ● Jumped to: src/f002.rs
 03| ~ src/f000.rs          +2 -2  │  ~ src/f002.rs  +2 -2
 30|styles b34be8c58bfe72db
-@@@ 09 frame Char('j') < 02
+@@@ 09 frame j < 02
 @@@ 10 frame overlay < 02
 10|                               │  ┌ EXPORT (Space=toggle, Enter=copy) ───────────────┐
 11|                               │  │▶ [x] GitHub comments                             │

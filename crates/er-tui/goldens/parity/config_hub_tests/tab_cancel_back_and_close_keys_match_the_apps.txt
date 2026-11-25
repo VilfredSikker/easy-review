@@ -1,4 +1,4 @@
-@@@ 01 frame Char(',')
+@@@ 01 frame ,
 | feature · feature (vs main)  +2 -2
 |  1  BRANCH   2  UNSTAGED   3  STAGED   4  HISTORY                                   Claude / Sonnet 5.5   0/1 reviewed
 | FILES (1)                     │  ~ src/f000.rs  +2 -2                                                      Hunk 1/2
@@ -30,7 +30,7 @@
 |                               │  27   27 │ let line_26 = 26;
 | j/k nav n/N hunks +/- context ␣ review / search g git a ai o open v verify ? help ^q quit
 |styles 87f23449fa89c5d9
-@@@ 02 frame Char('2') < 01
+@@@ 02 frame 2 < 01
 02| FILES (1)               ┌ Config — Terminal ─────────────────────────────────────────────────┐             Hunk 1/2
 03| ~ src/f000.rs          +│ Views                                                              │
 04|                         │▸ [x] Branch diff (1)  Show branch diff mode                        │
@@ -58,50 +58,50 @@
 26|                         │ j/k nav  Enter edit  1/2 tab  d delete  Esc close (auto-saves)     │
 27|                         └────────────────────────────────────────────────────────────────────┘
 30|styles 08366e8d5b729d99
-@@@ 03 frame Char(']') < 01
-@@@ 04 frame Char('[') < 02
-@@@ 05 frame Char('1') < 01
-@@@ 06 frame Char('j') < 01
+@@@ 03 frame ] < 01
+@@@ 04 frame [ < 02
+@@@ 05 frame 1 < 01
+@@@ 06 frame j < 01
 06|                         │  Test: e.g. cargo test                                             │
 07|                         │▸ Lint: e.g. cargo clippy  Run linter                               │
 30|styles 07170cf45bc01e69
-@@@ 07 frame Char('k') < 01
+@@@ 07 frame k < 01
 @@@ 08 frame Enter < 01
 06|                         │▸ Test: █                                                           │
 23|                         │ Enter confirm  Esc cancel edit                                     │
 30|styles c853167089de10da
-@@@ 09 frame Char('x') < 08
+@@@ 09 frame x < 08
 06|                         │▸ Test: x█                                                          │
 30|styles b57d495af90a696e
-@@@ 10 frame Char('y') < 08
+@@@ 10 frame y < 08
 06|                         │▸ Test: xy█                                                         │
 30|styles 6b14e69eec7f2930
 @@@ 11 frame Backspace < 09
 @@@ 12 frame Left < 09
 @@@ 13 frame Right < 09
 @@@ 14 frame Esc < 01
-@@@ 15 frame Char('j') < 06
-@@@ 16 frame Char('j') < 01
+@@@ 15 frame j < 06
+@@@ 16 frame j < 01
 06|                         │  Test: e.g. cargo test                                             │
 08|                         │▸ Typecheck: e.g. tsc --noEmit  Run type checker                    │
 30|styles 146be68a695b4ba5
-@@@ 17 frame Char('j') < 01
+@@@ 17 frame j < 01
 06|                         │  Test: e.g. cargo test                                             │
 09|                         │▸ Security: e.g. cargo audit  Run security scan                     │
 30|styles 4ea33354448a00b5
-@@@ 18 frame Char('j') < 01
+@@@ 18 frame j < 01
 06|                         │  Test: e.g. cargo test                                             │
 10|                         │▸ [ ] Push summary to PR body  Auto-push summary to GitHub PR       │
 30|styles d899be19988b8be9
-@@@ 19 frame Char('j') < 01
+@@@ 19 frame j < 01
 06|                         │  Test: e.g. cargo test                                             │
 12|                         │▸ Command: claude  Agent executable                                 │
 30|styles 7532c4898d54252f
-@@@ 20 frame Char('j') < 01
+@@@ 20 frame j < 01
 06|                         │  Test: e.g. cargo test                                             │
 13|                         │▸ Args: --print --output-format stream-json -p {prompt}  Agent argum│
 30|styles 8a1d67c54dad857f
-@@@ 21 frame Char('j') < 01
+@@@ 21 frame j < 01
 06|                         │  Test: e.g. cargo test                                             │
 15|                         │▸ Provider: claude  ◀▶  Global AI Hub provider                      │
 30|styles a08ed47664b02bf9
