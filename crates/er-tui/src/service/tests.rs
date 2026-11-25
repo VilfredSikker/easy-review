@@ -56,10 +56,7 @@ pub(super) fn sources() -> Vec<(String, String)> {
                 None => format!("../{relative}"),
             };
             let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{e}"));
-            (
-                name,
-                text.get(..test_module(&text)).unwrap_or(&text).to_string(),
-            )
+            (name, without_test_modules(&text))
         })
         .collect()
 }
@@ -71,16 +68,78 @@ pub(super) fn service_sources() -> Vec<(String, String)> {
     sources
 }
 
-/// Where a file's inline test module starts, or its end.
-fn test_module(text: &str) -> usize {
-    text.match_indices("#[cfg(test)]")
-        .map(|(at, _)| at)
-        .find(|&at| {
-            let rest = text.get(at..).unwrap_or_default();
-            let item = rest.lines().nth(1).unwrap_or_default().trim();
-            item.starts_with("mod ") && item.ends_with('{')
-        })
-        .unwrap_or(text.len())
+/// The text with each inline test module (`#[cfg(test)] mod name { … }`) cut
+/// out; the code after one is kept.
+fn without_test_modules(text: &str) -> String {
+    const ATTR: &str = "#[cfg(test)]";
+    let mut out = String::new();
+    let mut rest = text;
+    while let Some(at) = rest.find(ATTR) {
+        let item = rest.get(at + ATTR.len()..).unwrap_or_default().trim_start();
+        let open = item.find('{').map(|open| rest.len() - item.len() + open);
+        let header = item.split('{').next().unwrap_or_default();
+        let cut = match open {
+            Some(open) if header.starts_with("mod ") && !header.contains(';') => {
+                out.push_str(rest.get(..at).unwrap_or_default());
+                block_end(rest, open)
+            }
+            _ => {
+                out.push_str(rest.get(..at + ATTR.len()).unwrap_or_default());
+                at + ATTR.len()
+            }
+        };
+        rest = rest.get(cut..).unwrap_or_default();
+    }
+    out.push_str(rest);
+    out
+}
+
+/// The index just past the `}` that closes the `{` at `open`, skipping
+/// comments and string, raw string and char literals.
+fn block_end(text: &str, open: usize) -> usize {
+    let bytes = text.as_bytes();
+    let find = |from: usize, what: &str| text.get(from..).and_then(|rest| rest.find(what));
+    let (mut at, mut depth) = (open, 0usize);
+    while let Some(&byte) = bytes.get(at) {
+        let next = bytes.get(at + 1).copied();
+        match byte {
+            b'/' if next == Some(b'/') => at = find(at, "\n").map_or(text.len(), |n| at + n),
+            b'/' if next == Some(b'*') => at = find(at, "*/").map_or(text.len(), |n| at + n + 1),
+            b'r' if matches!(next, Some(b'"' | b'#')) => {
+                let hashes = bytes.get(at + 1..).unwrap_or_default();
+                let hashes = hashes.iter().take_while(|&&c| c == b'#').count();
+                if bytes.get(at + 1 + hashes) == Some(&b'"') {
+                    let close = format!("\"{}", "#".repeat(hashes));
+                    let from = at + 2 + hashes;
+                    at = find(from, &close).map_or(text.len(), |n| from + n + close.len() - 1);
+                }
+            }
+            b'"' => {
+                at += 1;
+                while let Some(&c) = bytes.get(at) {
+                    match c {
+                        b'\\' => at += 2,
+                        b'"' => break,
+                        _ => at += 1,
+                    }
+                }
+            }
+            b'\'' if bytes.get(at + 2) == Some(&b'\'') => at += 2,
+            b'\'' if next == Some(b'\\') => {
+                at = find(at + 3, "'").map_or(text.len(), |n| at + 3 + n)
+            }
+            b'{' => depth += 1,
+            b'}' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return at + 1;
+                }
+            }
+            _ => {}
+        }
+        at += 1;
+    }
+    text.len()
 }
 
 /// No module reaches the App, fetches a PR's refs itself, writes or
