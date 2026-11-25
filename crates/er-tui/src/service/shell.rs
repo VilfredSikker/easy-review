@@ -195,6 +195,10 @@ pub struct Shell {
     pub refuse_reloads: Option<String>,
     #[cfg(test)]
     pub reload_sends: usize,
+    /// Every status-line message, in order, so a test sees one that a
+    /// later message replaced within the same tick.
+    #[cfg(test)]
+    pub told: Vec<String>,
     /// The runs asked of the host in a test.
     #[cfg(test)]
     pub runs_started: usize,
@@ -271,6 +275,8 @@ impl Shell {
             refuse_reloads: None,
             #[cfg(test)]
             reload_sends: 0,
+            #[cfg(test)]
+            told: Vec::new(),
             #[cfg(test)]
             runs_started: 0,
             #[cfg(test)]
@@ -423,6 +429,8 @@ impl Shell {
     }
 
     fn notify(&mut self, message: String) {
+        #[cfg(test)]
+        self.told.push(message.clone());
         self.view.notification = Some(message);
         self.notified_at = Some(Instant::now());
         self.dwell = NOTIFICATION_DWELL;
