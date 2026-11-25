@@ -34,7 +34,6 @@ pub enum PanelContent {
     PrOverview,
     AiSummary,
     FileDetail,
-    SymbolRefs,
     AgentLog,
 }
 

@@ -303,7 +303,6 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, screen: &Screen) {
             PanelContent::FileDetail => " File Detail ",
             PanelContent::AiSummary => " AI Summary ",
             PanelContent::PrOverview => " PR Overview ",
-            PanelContent::SymbolRefs => " Symbol Refs ",
             PanelContent::AgentLog => " Agent Log ",
         };
         let panel_style = if tab.panel_focus {

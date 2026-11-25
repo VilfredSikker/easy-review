@@ -122,22 +122,20 @@ pub fn follow(state: &mut TabViewState, content: &TabContent) {
     }
 }
 
-const PANELS: [PanelContent; 5] = [
+const PANELS: [PanelContent; 4] = [
     PanelContent::FileDetail,
     PanelContent::AiSummary,
     PanelContent::PrOverview,
-    PanelContent::SymbolRefs,
     PanelContent::AgentLog,
 ];
 
 /// Moves the side panel to the next one with something to show, closing it
-/// after the last, as the App's cycle does. This path has no symbol refs.
+/// after the last, as the App's cycle did.
 pub fn cycle_panel(state: &mut TabViewState, content: &TabContent, forward: bool) {
     let available = |panel: &PanelContent| match panel {
         PanelContent::FileDetail | PanelContent::AgentLog => true,
         PanelContent::AiSummary => state.layers.show_ai_findings && content.ai.state.has_data(),
         PanelContent::PrOverview => content.pr.overview.is_some(),
-        PanelContent::SymbolRefs => false,
     };
     let at = state
         .panel
