@@ -631,7 +631,7 @@ fn a_review_with_every_file_ignored_starts_nothing() {
             !Path::new(&dir).join("diff-tmp").exists(),
             "a diff was prepared"
         );
-        assert_eq!(shell.runs_started, 0, "a run started");
+        assert_eq!(kinds(&shell), Vec::<String>::new(), "a task started");
         release(&mut shell, &agent);
     });
 }
