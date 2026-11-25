@@ -138,7 +138,7 @@ The `Model` column sets how deep the coordinator's review goes, not who implemen
 | P85 | ADRs, docs, npm and the close-out | Docs/M | sonnet | ⬜ | | ADDENDUM-08; not opened |
 | P86 | The `*Snapshot` renames | U/D/P/S | sonnet | ⬜ | | ADDENDUM-08; not opened |
 | P87 | The PR card's branch actions through the service | S/D | opus | ⬜ | | ADDENDUM-08; not opened |
-| P88 | The card asks on the task host | S/D | opus | ⬜ | | ADDENDUM-08; not opened |
+| P88 | The card asks in er-service | S/D | opus | ⬜ | | ADDENDUM-08; not opened |
 | P89 | The desktop-only runs planned in er-service | S/D | opus | ⬜ | | ADDENDUM-08; not opened |
 | P90 | Browser annotations through the workspace actor | S/D | opus | ⬜ | | ADDENDUM-08; not opened |
 | P91 | One `pr_status` version per PR | S/D | sonnet | ⬜ | | ADDENDUM-08; not opened |
@@ -168,7 +168,7 @@ The `Model` column sets how deep the coordinator's review goes, not who implemen
 | Phase 4: core and service | [#397](https://github.com/VilfredSikker/easy-review/issues/397) | ✅ passed 2026-11-14; [ADDENDUM-05](./ADDENDUM-05-phase-4.md), issues #526–#538 |
 | Phase 5: desktop protocol | [#398](https://github.com/VilfredSikker/easy-review/issues/398) | ✅ done 2026-11-23 (ADDENDUM-06, #602–#622) |
 | Phase 5b: TUI | [#399](https://github.com/VilfredSikker/easy-review/issues/399) | ✅ done 2026-11-25 (ADDENDUM-07, #647–#661); the TUI runs on the service alone and the engine has one half |
-| Phase 6: consolidate | [#400](https://github.com/VilfredSikker/easy-review/issues/400) | 🟡 addendum in review ([ADDENDUM-08](./ADDENDUM-08-phase-6.md)) |
+| Phase 6: consolidate | [#400](https://github.com/VilfredSikker/easy-review/issues/400) | 🟡 approved 2026-11-25, revision in review ([ADDENDUM-08](./ADDENDUM-08-phase-6.md)) |
 
 ## Waiting on the owner
 

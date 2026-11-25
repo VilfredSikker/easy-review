@@ -216,9 +216,10 @@ Owner decisions, as given; each names its source.
     structure, as the sidebar is** (revision), with the phase-5 exit list's
     structural items. The page audit below lists what it found, and P87 to
     P93 carry it. Where an earlier choice kept something in er-desktop
-    because only the desktop has it (ADR 0074's three runs, P58.2's browser
-    annotation writes), this decision supersedes it, and the entry adds the
-    consequence to the ADR.
+    because only the desktop has it (ADR 0074's three runs and card asks,
+    P58.2's browser annotation writes), this decision supersedes it: P88 and
+    P89 add consequences to ADR 0074, and P90 adds one to ADR 0067, since
+    P58.2's choice has no ADR of its own.
 
 Taken from the planner into this plan:
 
@@ -303,10 +304,27 @@ sidebar and inbox are P79's and are left out.
   sidebar refreshes, arena views, the browser annotation writes and sidebar
   commands bump. After P79 and P90 the arena view relay and the sidebar
   command are left. Owner: P84.
-- **App-era prose.** About 300 comment lines in 90 files across er-desktop,
-  er-service, er-engine and er-tui still describe the flag path, the App and
-  its lock, `poll` and the snapshot build as live code, and desktop-ui's page
-  types cite a `mergeChromeSnapshot` that no longer exists. Owner: P93.
+- **App-era prose.** 556 comment lines in 181 files across the crates and
+  desktop-ui still describe the flag path or the App as live code, and
+  desktop-ui's page types cite a `mergeChromeSnapshot` that no longer
+  exists. Owner: P93.
+- **Other command modules.** `github_image.rs` (PR images fetched with the
+  `gh` token), `browser_webview.rs`, `direct/window.rs` and
+  `direct/dev_log.rs` are window and OS code: on the structure, with their
+  engine reads through er-service in P83.2. `comment_tick.rs` is the
+  desktop's 45 s comment-sync timer; it sends `SyncGithubComments` to the
+  actor, and the TUI has no timer of its own (it syncs on a key), so it is a
+  desktop-only schedule on the structure.
+- **`DesktopState`, field by field.** Moving to a service owner: the
+  sidebar and status fields (P79.2), `service` and `tasks` (P84),
+  `pending_ai_replies` (P88), `ui_annotations` and `ui_annotations_io`
+  (P90). Deleted: `branch_base_remote_oid` (P93). Kept, as the desktop's
+  own: `view` and `session` (desktop view state, ADR 0068), `terminals` and
+  `tauri_app_handle` (window and PTY handles), `watch_status` (what the
+  desktop's watcher shows), `live_jobs` and `live_tabs` (the relay's change
+  counts), `line_commits_cache` (a cache of the desktop's own reads), and
+  `ports` until P83.2 reaches them through er-service. `desktop_revision`
+  stays as the tick's wake, its bumps coming from service events after P84.
 - **App-era names.** `AppSnapshot` and the six Rust `*Snapshot` types:
   P86. desktop-ui's other `*Snapshot` interfaces: the open question.
 - **Already done.** `TabState::adopt_key` has no hit in `crates/`. The two
@@ -324,8 +342,8 @@ structure only, with these points where a user could notice something:
 - P85 republishes the npm packages at 1.0.0 with the v1 storage path in the
   skills' text (decision 9), and the release notes state MCP's stability
   policy. Packaging and docs, no new behaviour.
-- P88 moves the card asks onto the task host. Each done-when keeps the
-  `jobs` row and the slot rule as today, so a user sees the same ask.
+- P88 moves the card asks into er-service. They stay off the slot pool and
+  keep their `jobs` row, so a user sees the same ask.
 - P91 sends fewer `pr_status` pushes; the page shows the same values.
 
 ## Lanes
@@ -593,11 +611,12 @@ notification display, window code and `app_owner/startup.rs`.
   Depends on: P83.1, P84 and P92 (all hold D; P84 deletes `ServiceState` and
   P92 moves the files whose imports this entry rewrites).
 - **Done when:** er-desktop's `[dependencies]` and its macOS target table
-  lose er-engine and er-store (dev-dependencies keep them); the reads the
-  audit left in er-desktop reach the engine through er-service: the git
+  lose er-engine and er-store (dev-dependencies keep them); every engine
+  item er-desktop still names reaches it through er-service, which the
+  manifest change proves; the reads the audit found include the git
   reads of `direct/line_commits.rs`, `watcher.rs` and `tabs/follow.rs`,
   the preview reads of `resources/preview.rs`, the export render, the
-  uninstall, and `direct/os.rs`'s `gh_pr_head_branch_name`, which calls
+  uninstall, `github_image.rs`'s token read, `comment_tick.rs` and `tabs.rs`, and `direct/os.rs`'s `gh_pr_head_branch_name`, which calls
   `gh` outside `Ports` today and goes through the GitHub port.
 - **Tests that change:** tests that name an engine type import it through
   er-service; no assertion changes.
@@ -640,7 +659,9 @@ notification display, window code and `app_owner/startup.rs`.
   their setup to build a `ServiceHost`; assertions kept.
 - **Planted breaks:** a host built for the TUI that persists `tabs.json`
   fails the existing in-memory test; a desktop host that drops the revision
-  relay fails the relay test; the `load_requests` dedupe gains a test in the
+  relay fails the relay test; an arena view publish that no longer bumps the
+  counter fails the existing
+  `a_published_arena_view_bumps_the_desktop_revision`; the `load_requests` dedupe gains a test in the
   move, and with the dedupe removed a second request inside its window starts
   a second load and fails it.
 - **Size:** about 700. **Fallback split:** P84a the host builder options;
@@ -703,37 +724,44 @@ notification display, window code and `app_owner/startup.rs`.
   `crates/er-desktop/src/gh_pr_actions.rs` keeps no `gh` call and is
   deleted if nothing else is left in it; refusal and error texts are
   unchanged.
-- **Tests that change:** the desktop's PR-action tests send the command
-  through er-service; assertions kept.
+- **Tests that change:** the eleven tests in `gh_pr_actions.rs` move with
+  the code, and `github_sender_tests.rs` sends the command through
+  er-service; assertions kept.
 - **Planted breaks:** an er-desktop module that names `gh_pr_actions` fails
   a source scan; an action whose refresh skips the owner leaves
   `pr_status` unmoved and fails the refresh test; an action run on the
-  actor thread fails the existing no-wait scan; a changed refusal text fails
-  the existing message tests.
+  actor thread fails the existing no-wait scan; a fork PR's action that
+  reaches `gh` fails the existing
+  `branch_actions_on_a_fork_pr_are_refused_before_any_gh_call`.
 - **Size:** about 500. **Fallback split:** none at the estimate.
 
-### P88 The card asks on the task host
+### P88 The card asks in er-service
 
 - Branch: `epic/p88-card-asks`. Lanes: S, D. Model: `opus`. Depends on:
-  #764 (`tasks.rs`, `runs.rs`).
+  #764 (`runs.rs`, `tasks.rs`, which the ask's planning sits beside).
 - **Goal:** Ask AI, Validate, Elaborate and the AI-assisted finding reply
-  run in er-service; the desktop sends a command and reads `jobs`.
+  are planned and run in er-service; the desktop sends a command and reads
+  `jobs`.
 - **Done when:** `ai_ask.rs` and `ask_context.rs` and the card helpers
   in `route_helpers.rs` (`card_action_prompt`, `card_model`,
-  `card_progress`) move into er-service, which plans and runs the ask on
-  its task host and lands the answer as `SubmitAiReply` or
-  `AppendFindingResponse` with the context it captured; an ask takes no
-  agent slot, as today (ADR 0021); the pending-reply set leaves
-  `DesktopState` (`pending_ai_replies` and the `PendingAiReply` types in
-  `page_view.rs`) and the `jobs` row an ask shows is unchanged; ADR 0074
-  gains a consequence (card asks run on the host).
+  `card_progress`) move into er-service; the ask runs on its own thread off
+  the actor, as today, and not on the task host, whose tasks wait for an
+  agent slot: an ask takes no slot (ADR 0021); the answer lands as
+  `SubmitAiReply` or `AppendFindingResponse` with the context the ask
+  captured; the pending-reply set (`DesktopState.pending_ai_replies` and the
+  `PendingAiReply` types in `page_view.rs`) moves to an er-service set that
+  `resources/jobs.rs` and `resources/annotation_writes.rs` read, so the
+  `jobs` row and the in-flight reply an ask shows are unchanged; ADR 0074
+  gains a consequence (card asks are planned in er-service and stay off the
+  slot pool).
 - **Tests that change:** `route_helpers/tests/ai_ask_tests.rs` and
   `ask_context_tests.rs` move with the code; assertions kept.
 - **Planted breaks:** an er-desktop module that names `card_job` fails a
   source scan; an answer that lands on the active tab after a tab switch
   fails the captured-bucket test; a pending reply missing from `jobs` while
-  the ask runs fails the jobs test; with the slot cap at one and a review
-  running, an ask that waits for the slot fails the slot test.
+  the ask runs fails the jobs test; an ask moved onto the task host waits
+  for the slot when the cap is one and a review runs, and fails a new slot
+  test.
 - **Size:** about 700, counted in full (cut out of `route_helpers.rs` and
   moved across crates). **Fallback split:** P88a the asks on a thread and a
   finding; P88b the AI-assisted reply.
@@ -758,10 +786,11 @@ notification display, window code and `app_owner/startup.rs`.
   with their code; assertions kept.
 - **Planted breaks:** an er-desktop module that names
   `ensure_diff_artifacts` or calls `std::fs` in a run fails a source scan;
-  a diagram with an unknown kind still refuses, and a plan that skips the
-  check fails the existing refusal test; a scoped run that loses its stamp
-  fails the existing stamp test; a send-note on a branch not checked out
-  still refuses, and its existing test fails when the check is dropped.
+  a diagram plan that skips the kind check fails a new refusal test; a
+  scoped run that sends its notice twice fails the existing
+  `a_scoped_run_sends_one_notice`; a send-note that drops the checkout check
+  fails the existing
+  `send_note_needs_the_viewed_branch_checked_out_here`.
 - **Size:** about 800, counted in full. **Fallback split:** P89a the
   diagram and the send-note; P89b the scoped review.
 
@@ -805,8 +834,8 @@ notification display, window code and `app_owner/startup.rs`.
 - **Tests that change:** none.
 - **Planted breaks:** a fetch of one PR that moves another PR's version
   fails the precision test; a fetch end that leaves its own version unmoved
-  keeps `fetching: true` on the page and fails the existing end-of-fetch
-  test.
+  keeps `fetching: true` on the page and fails the existing
+  `the_end_of_a_first_fetch_that_stored_nothing_is_pushed`.
 - **Size:** about 250. **Fallback split:** none, well under the line.
 
 ### P92 Split `route_helpers.rs` and `page_view.rs` by caller
@@ -841,8 +870,9 @@ notification display, window code and `app_owner/startup.rs`.
 
 ### P93 App-era leftovers
 
-- Branch: `epic/p93-app-era-leftovers`. Lanes: D, S, E, T, U (comments
-  only, plus the one dead field). Model: `sonnet`. Depends on: P86, P83.3,
+- Branch: `epic/p93-app-era-leftovers`. Lanes: D, S, E, T, U, P
+  (comments only, plus the one dead field; er-protocol's doc comments are
+  regenerated into the TypeScript with `just protocol-gen`). Model: `sonnet`. Depends on: P86, P83.3,
   #762 and #765 (er-tui's `service/shell.rs` carries such comments).
 - **Goal:** no code or comment describes the App, the flag or the snapshot
   path that phases 5 and 5b deleted.
@@ -850,13 +880,16 @@ notification display, window code and `app_owner/startup.rs`.
   in `align_branch_base_probe` (the function goes too if the write is all
   it does) and its construction in `main.rs`; the comment in
   `crates/er-engine/src/pr_open_cache.rs` that cites `evict_lru` "in
-  commands.rs" is corrected; comments that name the flag path, the App, its
-  lock or mutex, `poll`, `poll_impl` or `build_snapshot` as live code are
-  rewritten or removed in er-desktop, er-service, er-engine and er-tui
-  (about 300 comment lines in 90 files), and so are desktop-ui's comments
-  on the chrome-only snapshot and `mergeChromeSnapshot`, which no longer
-  exists; `line_commits_cache.rs`'s header names the module that fills the
-  cache; `comments-check` gains these phrases, so they cannot come back.
+  commands.rs" is corrected; comments that name the flag path ("flag path",
+  "flag-on"), the App ("the App", "App lock", "App mutex") or
+  `build_snapshot` are rewritten or removed: 556 comment lines in 181 files
+  today (er-tui 64 files, er-desktop 45, er-service 30, er-engine 19,
+  desktop-ui 16, er-protocol 5, er-git and er-agent one each), including
+  desktop-ui's comment on `mergeChromeSnapshot`, which no longer exists; `line_commits_cache.rs`'s header names the module that fills the
+  cache; `comments-check`, which scans the comment lines of `crates/` and
+  `desktop-ui/src`, gains those phrases, so they cannot come back; run
+  against today's tree the patterns match only the 556 lines this entry
+  rewrites.
   `TabState::adopt_key` is already gone (no hit in `crates/`), so nothing
   is left to do for it. The plans and release notes under `docs/` that
   cite `commands.rs` are records of their time and stay.
@@ -865,8 +898,9 @@ notification display, window code and `app_owner/startup.rs`.
   `branch_base_remote_oid`, which goes with the field; the probe test keeps
   its other assertions.
 - **Planted breaks:** a comment that says "the flag path" in er-desktop
-  fails `comments-check`; so does one that names `poll_impl`.
-- **Size:** about 400. **Fallback split:** P93a Rust; P93b desktop-ui.
+  fails `comments-check`; so does one that says "the App" in desktop-ui.
+- **Size:** about 650. **Fallback split:** P93a er-desktop, er-service,
+  er-engine and the small crates; P93b er-tui and desktop-ui.
 
 ## The chain
 
@@ -890,7 +924,7 @@ Two tracks at a time, as in phase 5, then a closing sequence.
 - **The Depends-on lines** become each issue's Blocked-by line and carry
   every code dependency.
 
-Totals: 15 entries, 20 PRs (more if a fallback split is taken), about 13,800
+Totals: 15 entries, 20 PRs (more if a fallback split is taken), about 14,050
 counted lines. P78, P79.2, P79.3 and P92 sit nearest the stop line and name
 their splits.
 
@@ -918,11 +952,11 @@ their splits.
 3. **A large sidebar move and a large split.** P79.2, P79.3 and P92 cut
    functions out of `route_helpers.rs` and `page_view.rs` and count in full;
    each names its split.
-4. **Superseded placements.** P89 and P90 move what ADR 0074 and P58.2 kept
+4. **Superseded placements.** P88, P89 and P90 move what ADR 0074 and P58.2 kept
    in er-desktop because only the desktop has it. Each adds a consequence to
    the ADR, so the earlier reason is not read as current.
 5. **A visible change slipping into a structural move** (decision 2). The
-   card asks' `jobs` row and slot rule (P88), the PR actions' messages (P87)
+   card asks' `jobs` row and their place off the slot pool (P88), the PR actions' messages (P87)
    and the browser annotations' answers (P90) each have a test that holds
    today's behaviour; the feature check above lists what a user could notice.
 6. **er-service grows a front-end surface.** Decision 6's re-exports widen
@@ -941,8 +975,8 @@ their splits.
   home).
 - P80.1: a new ADR for the `headless` module (MCP calls er-service and
   starts no actor); it records ADDENDUM-07 decision 9 as done.
-- P88 and P89: consequences on ADR 0074 (card asks on the host; the three
-  desktop-only runs planned in er-service).
+- P88 and P89: consequences on ADR 0074 (card asks planned in er-service,
+  off the slot pool; the three desktop-only runs planned in er-service).
 - P90: a consequence on ADR 0067 (the browser annotations joined the actor).
 - P85: ADR 0067's crate-graph section (or a new ADR it cites) states the
   front-end rule; ADR 0002 gains the threaded-host line;
