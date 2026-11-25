@@ -4,10 +4,9 @@
 
 use toml::Value;
 
-fn manifest() -> Value {
+fn manifest() -> anyhow::Result<Value> {
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml");
-    let text = std::fs::read_to_string(path).expect("read er-engine's Cargo.toml");
-    toml::from_str(&text).expect("parse er-engine's Cargo.toml")
+    Ok(toml::from_str(&std::fs::read_to_string(path)?)?)
 }
 
 /// Every dependency table, the `[target.*]` ones included.
@@ -24,8 +23,8 @@ fn dependency_tables(manifest: &Value) -> Vec<&toml::Table> {
 }
 
 #[test]
-fn the_engine_has_no_ui_feature() {
-    let manifest = manifest();
+fn the_engine_has_no_ui_feature() -> anyhow::Result<()> {
+    let manifest = manifest()?;
     let features = manifest
         .get("features")
         .and_then(Value::as_table)
@@ -41,11 +40,12 @@ fn the_engine_has_no_ui_feature() {
             "feature `{name}` turns on `ui`"
         );
     }
+    Ok(())
 }
 
 #[test]
-fn no_dependency_carries_the_apps_text_area() {
-    let manifest = manifest();
+fn no_dependency_carries_the_apps_text_area() -> anyhow::Result<()> {
+    let manifest = manifest()?;
     for table in dependency_tables(&manifest) {
         assert!(
             !table.contains_key("tui-textarea-2"),
@@ -61,4 +61,5 @@ fn no_dependency_carries_the_apps_text_area() {
             "er-engine's dependency on itself turns on `ui`"
         );
     }
+    Ok(())
 }
