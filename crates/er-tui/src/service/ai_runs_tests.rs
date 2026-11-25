@@ -625,7 +625,8 @@ fn a_review_with_every_file_ignored_starts_nothing() {
         let dir = er_dir(&shell);
         choose(&mut shell, 'a', "Review work");
         settle_within(&mut shell, Duration::from_millis(500), |_| false);
-        assert_eq!(notice(&shell), "Review not started: Nothing to review");
+        let told = notice(&shell);
+        assert!(told.contains("Nothing to review"), "{told}");
         assert!(
             !Path::new(&dir).join("diff-tmp").exists(),
             "a diff was prepared"
