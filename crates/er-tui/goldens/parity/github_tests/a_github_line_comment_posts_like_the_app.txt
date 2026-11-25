@@ -1,4 +1,4 @@
-@@@ 01 frame KeyEvent { code: Down, modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) }
+@@@ 01 frame Down
 | feature · feature (vs main)  +2 -2
 |  1  BRANCH   2  UNSTAGED   3  STAGED   4  HISTORY                                   Claude / Sonnet 5.5   0/1 reviewed
 | FILES (1)                     │  ~ src/f000.rs  +2 -2                                                      Hunk 1/2
@@ -30,7 +30,7 @@
 |                               │  27   27 │ let line_26 = 26;
 | j/k nav n/N hunks +/- context ␣ review / search g git a ai o open v verify ? help ^q quit
 |styles 5fcce30bc0daf844
-@@@ 02 frame KeyEvent { code: Down, modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 01
+@@@ 02 frame Down < 01
 03| ~ src/f000.rs          +2 -2  │ ▶ @@ -1,14 +1,14 @@
 04|                               │   1    1 │ let line_0 = 0;
 05|                               │   2    2 │ let line_1 = 1;
@@ -58,7 +58,7 @@
 27|                               │  27   27 │ let line_26 = 26;
 28|                               │  28   28 │ let line_27 = 27;
 30|styles d78ae725a6477e59
-@@@ 03 frame KeyEvent { code: Down, modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 01
+@@@ 03 frame Down < 01
 03| ~ src/f000.rs          +2 -2  │   1    1 │ let line_0 = 0;
 04|                               │   2    2 │ let line_1 = 1;
 05|                               │   3    3 │ let line_2 = 2;
@@ -86,7 +86,7 @@
 27|                               │  28   28 │ let line_27 = 27;
 28|                               │  29   29 │ let line_28 = 28;
 30|styles 9e5ebb8178543402
-@@@ 04 frame KeyEvent { code: Down, modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 01
+@@@ 04 frame Down < 01
 03| ~ src/f000.rs          +2 -2  │   2    2 │ let line_1 = 1;
 04|                               │   3    3 │ let line_2 = 2;
 05|                               │   4      │-let line_3 = 3;
@@ -114,40 +114,40 @@
 27|                               │  29   29 │ let line_28 = 28;
 28|                               │  30   30 │ let line_29 = 29;
 30|styles ec06b8bf61c76b7c
-@@@ 05 frame KeyEvent { code: Char('c'), modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 04
+@@@ 05 frame c < 04
 25| comment  f000.rs:L4   Enter send  S+Enter newline  Tab pause  Ctrl+t type  Esc cancel
 26|
 27|
 28|
 29|
 30|styles 6793321d5003915a
-@@@ 06 frame KeyEvent { code: Char('W'), modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 05
+@@@ 06 frame W < 05
 26|W
 30|styles fe845e9b7165550b
-@@@ 07 frame KeyEvent { code: Char('h'), modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 05
+@@@ 07 frame h < 05
 26|Wh
 30|styles 5f613be8500e8532
-@@@ 08 frame KeyEvent { code: Char('y'), modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 05
+@@@ 08 frame y < 05
 26|Why
 30|styles c93906e5f5c337d3
-@@@ 09 frame KeyEvent { code: Char(' '), modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 08
+@@@ 09 frame Space < 08
 30|styles 49095b04679f340a
-@@@ 10 frame KeyEvent { code: Char('g'), modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 05
+@@@ 10 frame g < 05
 26|Why g
 30|styles 564f296f020ffdbb
-@@@ 11 frame KeyEvent { code: Char('o'), modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 05
+@@@ 11 frame o < 05
 26|Why go
 30|styles 12f990741ead21e2
-@@@ 12 frame KeyEvent { code: Char('n'), modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 05
+@@@ 12 frame n < 05
 26|Why gon
 30|styles 422f94c6c2327243
-@@@ 13 frame KeyEvent { code: Char('e'), modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 05
+@@@ 13 frame e < 05
 26|Why gone
 30|styles 45c3a113fd34d9ba
-@@@ 14 frame KeyEvent { code: Char('?'), modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 05
+@@@ 14 frame ? < 05
 26|Why gone?
 30|styles 09f6970742bd592b
-@@@ 15 frame KeyEvent { code: Enter, modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 04
+@@@ 15 frame Enter < 04
 02| FILES (1)                     │  ~ src/f000.rs  +2 -2                                     ● Comment posted to GitHub
 03| ~ src/f000.rs    ◆1    +2 -2  │   2    2 │ let line_1 = 1;
 07|                               │  ╭─ 💬  R4  ───────────────────────────────────────────────────────────────────────────

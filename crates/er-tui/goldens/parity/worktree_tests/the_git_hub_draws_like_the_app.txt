@@ -1,4 +1,4 @@
-@@@ 01 frame Char('g')
+@@@ 01 frame g
 | feature · feature (vs main)  +2 -2
 |  1  BRANCH   2  UNSTAGED   3  STAGED   4  HISTORY                                   Claude / Sonnet 5.5   0/1 reviewed
 | FILES (1)                     │  ~ src/f000.rs  +2 -2                                                      Hunk 1/2
@@ -30,7 +30,7 @@
 |                               │  27   27 │ let line_26 = 26;
 | j/k nav n/N hunks +/- context ␣ review / search g git a ai o open v verify ? help ^q quit
 |styles 62c958bb643438ca
-@@@ 02 frame Char('j') < 01
+@@@ 02 frame j < 01
 11|                               ││  Push to remote  Push current branch to origin      │
 12|                               ││▶ Stage current file  [s]  Stage or unstage the selec│
 30|styles 6f010420120603c8
