@@ -1,0 +1,109 @@
+@@@ 01 frame qmark
+| feature · feature (vs main)  +2 -2
+|  1  BRANCH   2  UNSTAGED   3  STAGED   4  HISTORY                                   Claude / Sonnet 5.5   0/1 reviewed
+| FILES (1)               ┌ HELP (Esc=close) ──────────────────────────────────────────────────┐             Hunk 1/2
+| ~ src/f000.rs          +│── Navigation ──                                                    │
+|                         │  j / k       Previous / next file                                  │
+|                         │  n / N       Next / previous hunk                                  │
+|                         │  ↑ / ↓   Line navigation                                           │
+|                         │  Shift+↑/↓Extend line selection                                    │
+|                         │  h / l       Scroll left / right                                   │
+|                         │  d / u       Scroll half page ↓ / ↑                                │
+|                         │  PgDn / PgUp Scroll full page ↓ / ↑                                │
+|                         │  Home        Reset horizontal scroll                               │
+|                         │  1-6         Switch diff mode                                      │
+|                         │── Review ──                                                        │
+|                         │  Space       Toggle file reviewed                                  │
+|                         │  Shift+Space Show unreviewed only                                  │
+|                         │  U           Jump to next unreviewed file                          │
+|                         │  q           Add review question (Ctrl+t → note)                   │
+|                         │  c           Add GitHub comment                                    │
+|                         │  s           Stage / unstage file                                  │
+|                         │  y           Copy hub — file, path, hunk, or line                  │
+|                         │  Shift+E     Export review — copy annotations to clipboard         │
+|                         │── Comments ──                                                      │
+|                         │  J / K       Jump to prev / next comment                           │
+|                         │  Ctrl+J / K  Jump to prev / next AI finding                        │
+|                         │  r           Reply to focused comment                              │
+|                         │  x           Delete focused comment                                │
+|                         └────────────────────────────────────────────────────────────────────┘
+|                               │  27   27 │ let line_26 = 26;
+| j/k nav n/N hunks +/- context ␣ review / search g git a ai o open v verify ? help ^q quit
+|styles fb649e9299fadf1e
+@@@ 02 frame j < 01
+04|                         │▶ j / k       Previous / next file                                  │
+30|styles 516d4f363c71cc32
+@@@ 03 frame j < 01
+05|                         │▶ n / N       Next / previous hunk                                  │
+30|styles ae84ac9d3fd18152
+@@@ 04 frame k < 02
+@@@ 05 frame k < 02
+@@@ 06 frame k < 02
+@@@ 07 frame j < 03
+@@@ 08 frame j < 01
+06|                         │▶ ↑ / ↓   Line navigation                                           │
+30|styles e9f32ff44b3faf7a
+@@@ 09 frame j < 01
+07|                         │▶ Shift+↑/↓Extend line selection                                    │
+30|styles ce84c3f0810da4fe
+@@@ 10 frame j < 01
+08|                         │▶ h / l       Scroll left / right                                   │
+30|styles 9f026c32e19d52a6
+@@@ 11 frame j < 01
+09|                         │▶ d / u       Scroll half page ↓ / ↑                                │
+30|styles e24979ef74b3a7c0
+@@@ 12 frame j < 01
+10|                         │▶ PgDn / PgUp Scroll full page ↓ / ↑                                │
+30|styles 0ccb0d64226e722e
+@@@ 13 frame j < 01
+11|                         │▶ Home        Reset horizontal scroll                               │
+30|styles 3d4470db55a4e6e0
+@@@ 14 frame j < 01
+12|                         │▶ 1-6         Switch diff mode                                      │
+30|styles 8feda5805a306a2c
+@@@ 15 frame j < 01
+14|                         │▶ Space       Toggle file reviewed                                  │
+30|styles ac35f3605992bffa
+@@@ 16 frame j < 01
+15|                         │▶ Shift+Space Show unreviewed only                                  │
+30|styles 49a7e1b12117fd88
+@@@ 17 frame j < 01
+16|                         │▶ U           Jump to next unreviewed file                          │
+30|styles c964324b0849b5da
+@@@ 18 frame j < 01
+17|                         │▶ q           Add review question (Ctrl+t → note)                   │
+30|styles af56c318179eed62
+@@@ 19 frame k < 17
+@@@ 20 frame k < 16
+@@@ 21 frame k < 15
+@@@ 22 frame k < 14
+@@@ 23 frame Enter < 01
+02| FILES (1)                     │  ~ src/f000.rs  +2 -2                                                      Hunk 1/2
+03| ~ src/f000.rs          +2 -2  │
+04|                               │ ▶ @@ -1,14 +1,14 @@
+05|                               │   1    1 │ let line_0 = 0;
+06|                               │   2    2 │ let line_1 = 1;
+07|                               │   3    3 │ let line_2 = 2;
+08|                               │   4      │-let line_3 = 3;
+09|                               │        4 │+let changed_3 = 3; // edited
+10|                               │   5    5 │ let line_4 = 4;
+11|                               │   6    6 │ let line_5 = 5;
+12|                               │   7    7 │ let line_6 = 6;
+13|                               │   8    8 │ let line_7 = 7;
+14|                               │   9    9 │ let line_8 = 8;
+15|                               │  10   10 │ let line_9 = 9;
+16|                               │  11   11 │ let line_10 = 10;
+17|                               │  12   12 │ let line_11 = 11;
+18|                               │  13   13 │ let line_12 = 12;
+19|                               │  14   14 │ let line_13 = 13;
+20|                               │  ··· 6 lines hidden (+/- to expand) ···
+21|                               │   @@ -21,20 +21,20 @@ let line_19 = 19;
+22|                               │  21   21 │ let line_20 = 20;
+23|                               │  22   22 │ let line_21 = 21;
+24|                               │  23   23 │ let line_22 = 22;
+25|                               │  24   24 │ let line_23 = 23;
+26|                               │  25   25 │ let line_24 = 24;
+27|                               │  26   26 │ let line_25 = 25;
+30|styles a2c14185335478ca
+@@@ 24 frame qmark < 01
+@@@ 25 frame Esc < 23
