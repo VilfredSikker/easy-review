@@ -1,6 +1,6 @@
 # Epic 1.0.0 phase 5b: handover (2026-11-25)
 
-The goal is to finish phase 5b (the TUI on the service, ADDENDUM-07) on `release/v1.0.0` of VilfredSikker/easy-review, then close the epic's bookkeeping. Phase 5 is done; its handover is in git history and its outcome in BUILD_LOG.md. The timeline of every merge and ruling is `coordinator/LEDGER.md`; read its last entries first.
+The goal is to finish phase 5b (the TUI on the service, ADDENDUM-07) on `release/v1.0.0` of VilfredSikker/easy-review, then close the epic's bookkeeping. Phase 5 is done; its handover is in git history and its outcome in BUILD_LOG.md. The timeline of every merge and ruling is `coordinator/LEDGER.md`; read its last entries first. The builder rules and the locked-check script used in the cloud container are copied in `coordinator/cloud/`.
 
 ## Where it stands
 Merged into `release/v1.0.0`:
@@ -12,15 +12,30 @@ Open:
 
 | Item | PR | State |
 |---|---|---|
-| P76.2 (#660) | #759 `epic/p76-2-tui-switch`, head `900995ce`, 1,317 counted lines | CI green; an independent review is running. Its verdict will be posted on #759 as "Review (P76.2)". |
+| P76.2 (#660) | #759 `epic/p76-2-tui-switch`, head `900995ce`, 1,317 counted lines | CI green. The review is **fix-then-merge** (#759 issuecomment-7158452312). The must-fixes are listed below and nothing is being built on them yet. |
 | P77.2 (#661) | not built | Deletes `app/` and the `ui` feature. Starts after #759 merges. |
 
 ## What to do next
-1. **Land #759.**
-   - Read "Review (P76.2)" on #759.
-   - Send must-fixes to a builder. Delta-review logic changes; a test-only delta the coordinator may check itself.
-   - Merge on a merge verdict plus green CI at the head.
-   - Then close #660.
+1. **Land #759.** Fix the review's must-fixes on the branch, get a delta review, and merge on a merge verdict plus green CI at the head. Then close #660.
+   1. **Write guard (`crates/er-tui/tests/writes.rs`).** The guard matches narrow names, and a reviewer's plant got past it. Widen it to every write er-tui can reach:
+      - `er_git::delete_watched_file` and any `.commit(`, not only `git.commit(`;
+      - `std::fs` under an alias, and `File::options()`;
+      - every `ArtifactStore` write: `write_text`, `write_durable*`, `update`, `delete`, `delete_text`;
+      - every er-github write reachable through `er_engine::github`: the `gh_pr_*comment*`, `gh_pr_update_review_comment`, `gh_pr_edit_body` and `gh_pr_actions` functions, branch delete and restore, `github_post::execute_comment_post`, and the port's `.approve(` and `run_pr_action`.
+
+      Add a plant for each family.
+   2. **Refusal dwell.** `handle_key` sets `deferred = None`, so a notice that arrives while a refusal is held is lost when the user presses a key. Show the deferred notice instead. Add a test for that, and for a key press replacing the refusal at once.
+   3. **Release notes (`docs/release-notes/tui-on-the-service.md`):**
+      - remove the `agents.toml` banner line, which is already fixed in er-service;
+      - correct the push line: the old TUI showed "Push failed", it did not quit;
+      - correct the resume-hint line, so it matches `startup::resume_hint`;
+      - add #742's difference 7: `y` on a diff of only review-ignored files clears the review, then finds nothing to review.
+
+   The review's non-blocking notes can go into P77.2 or be named in the release notes:
+   - the long-dwell case;
+   - two refusals arriving in one tick;
+   - the scans stopping at a file's first inline test module;
+   - the manifest test missing the `[dependencies.er-engine]` table form.
 2. **Build P77.2 (#661).** Read the P77 ruling, issuecomment-7127443634, and the planner on #661. Carry-overs from earlier rulings:
    - remove `assert_desktop_saves_gated` (#660 ruling item 12);
    - bound the unbounded gate loop in `er-service/src/flow_tests.rs` (`deep_config`);
