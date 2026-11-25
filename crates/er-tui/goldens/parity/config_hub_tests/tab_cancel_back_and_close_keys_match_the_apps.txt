@@ -1,4 +1,4 @@
-@@@ 01 frame ,
+@@@ 01 frame comma
 | feature · feature (vs main)  +2 -2
 |  1  BRANCH   2  UNSTAGED   3  STAGED   4  HISTORY                                   Claude / Sonnet 5.5   0/1 reviewed
 | FILES (1)                     │  ~ src/f000.rs  +2 -2                                                      Hunk 1/2
@@ -58,8 +58,8 @@
 26|                         │ j/k nav  Enter edit  1/2 tab  d delete  Esc close (auto-saves)     │
 27|                         └────────────────────────────────────────────────────────────────────┘
 30|styles 08366e8d5b729d99
-@@@ 03 frame ] < 01
-@@@ 04 frame [ < 02
+@@@ 03 frame rbracket < 01
+@@@ 04 frame lbracket < 02
 @@@ 05 frame 1 < 01
 @@@ 06 frame j < 01
 06|                         │  Test: e.g. cargo test                                             │

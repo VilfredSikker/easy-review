@@ -132,8 +132,9 @@ fn age(chars: &[char], at: usize) -> usize {
     }
 }
 
-/// The row with each relative age replaced by `<age>` and the cells after
-/// it moved up, padded at the end to the row's width.
+/// The row with each commit age replaced by `<age>`, in the age's own
+/// style, and the cells after it moved up, padded at the end to the row's
+/// width.
 fn collapse_ages(row: &[BufferCell]) -> Vec<BufferCell> {
     const TOKEN: [&str; 5] = ["<", "a", "g", "e", ">"];
     let chars: Vec<char> = row
@@ -149,7 +150,11 @@ fn collapse_ages(row: &[BufferCell]) -> Vec<BufferCell> {
     let mut out = Vec::with_capacity(row.len());
     let mut at = 0;
     while at < row.len() {
-        let len = age(&chars, at);
+        let len = if after_short_hash(&chars, at) {
+            age(&chars, at)
+        } else {
+            0
+        };
         if len == 0 {
             out.push(row[at].clone());
             at += 1;
@@ -171,6 +176,28 @@ fn collapse_ages(row: &[BufferCell]) -> Vec<BufferCell> {
     }
     out.truncate(row.len());
     out
+}
+
+/// Whether `at` follows ` · <short hash> · `, where the status bar's
+/// History row puts a commit's age. An age anywhere else is the row's own
+/// text and is kept.
+fn after_short_hash(chars: &[char], at: usize) -> bool {
+    let sep: Vec<char> = " · ".chars().collect();
+    let Some(hash_end) = at.checked_sub(sep.len()) else {
+        return false;
+    };
+    if chars[hash_end..at] != sep[..] {
+        return false;
+    }
+    let hash = chars[..hash_end]
+        .iter()
+        .rev()
+        .take_while(|c| c.is_ascii_hexdigit())
+        .count();
+    hash >= 7
+        && hash_end
+            .checked_sub(hash + sep.len())
+            .is_some_and(|from| chars[from..hash_end - hash] == sep[..])
 }
 
 fn starts(chars: &[char], at: usize, text: &str) -> bool {
@@ -200,22 +227,8 @@ pub(super) fn mask(row: &str) -> String {
 /// the rest masked. A frame with neither keeps `golden.rs`'s digest.
 pub(super) fn stable_text(frame: &Buffer) -> String {
     let width = usize::from(frame.area.width).max(1);
-    let mut out = String::new();
-    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-    for row in frame.content.chunks(width) {
-        let row = collapse_ages(row);
-        let text: String = row.iter().map(BufferCell::symbol).collect();
-        out.push_str(&mask(text.trim_end()));
-        out.push('\n');
-        for cell in &row {
-            for byte in format!("{:?}", cell.style()).bytes() {
-                hash ^= u64::from(byte);
-                hash = hash.wrapping_mul(0x0100_0000_01b3);
-            }
-        }
-    }
-    let _ = writeln!(out, "styles {hash:016x}");
-    out
+    let rows: Vec<Vec<BufferCell>> = frame.content.chunks(width).map(collapse_ages).collect();
+    crate::golden::rows_text(rows.iter().map(Vec::as_slice), mask)
 }
 
 /// The test modules whose checks are frozen. Each later P76.1 PR adds its
@@ -517,8 +530,7 @@ pub(super) fn short_step(step: &str) -> String {
         .strip_prefix("Char('")
         .and_then(|c| c.strip_suffix("')"))
     {
-        Some(" ") => "Space".to_string(),
-        Some(c) => c.to_string(),
+        Some(c) => key_name(c.trim_start_matches('\\')),
         None => match code.strip_prefix("F(").and_then(|n| n.strip_suffix(')')) {
             Some(n) => format!("F{n}"),
             None => code.to_string(),
@@ -537,6 +549,51 @@ pub(super) fn short_step(step: &str) -> String {
         }
     }
     short + &code
+}
+
+/// A printable key's name, spelled out where it is punctuation, so it
+/// reads in a golden's header and survives a file name.
+fn key_name(key: &str) -> String {
+    const NAMES: [(&str, &str); 33] = [
+        (" ", "Space"),
+        ("<", "lt"),
+        (">", "gt"),
+        ("{", "lbrace"),
+        ("}", "rbrace"),
+        ("[", "lbracket"),
+        ("]", "rbracket"),
+        ("(", "lparen"),
+        (")", "rparen"),
+        ("/", "slash"),
+        ("\\", "backslash"),
+        ("?", "qmark"),
+        ("!", "bang"),
+        (",", "comma"),
+        (".", "dot"),
+        (";", "semicolon"),
+        (":", "colon"),
+        ("'", "quote"),
+        ("\"", "dquote"),
+        ("`", "backtick"),
+        ("~", "tilde"),
+        ("|", "pipe"),
+        ("-", "minus"),
+        ("+", "plus"),
+        ("=", "eq"),
+        ("_", "underscore"),
+        ("@", "at"),
+        ("#", "hash"),
+        ("$", "dollar"),
+        ("%", "percent"),
+        ("^", "caret"),
+        ("&", "amp"),
+        ("*", "star"),
+    ];
+    let key = if key.is_empty() { "\\" } else { key };
+    NAMES
+        .iter()
+        .find(|(punct, _)| *punct == key)
+        .map_or_else(|| key.to_string(), |(_, name)| (*name).to_string())
 }
 
 #[test]
@@ -572,6 +629,15 @@ fn key_steps_read_short() {
         (event(KeyCode::Char('k'), KeyModifiers::CONTROL), "C-k"),
         (event(KeyCode::Char('q'), KeyModifiers::NONE), "q"),
         (event(KeyCode::Char(' '), KeyModifiers::NONE), "Space"),
+        (event(KeyCode::Char('<'), KeyModifiers::NONE), "lt"),
+        (event(KeyCode::Char('>'), KeyModifiers::NONE), "gt"),
+        (event(KeyCode::Char('{'), KeyModifiers::NONE), "lbrace"),
+        (event(KeyCode::Char('}'), KeyModifiers::NONE), "rbrace"),
+        (event(KeyCode::Char('/'), KeyModifiers::NONE), "slash"),
+        (event(KeyCode::Char('?'), KeyModifiers::SHIFT), "S-qmark"),
+        (event(KeyCode::Char('\''), KeyModifiers::NONE), "quote"),
+        (event(KeyCode::Char('\\'), KeyModifiers::NONE), "backslash"),
+        (format!("{:?}", KeyCode::Char('*')), "star"),
         (event(KeyCode::F(5), KeyModifiers::ALT), "A-F5"),
         (format!("{:?}", KeyCode::Char('U')), "U"),
         (format!("{:?}", KeyCode::PageDown), "PageDown"),
@@ -606,24 +672,48 @@ fn masks_keep_the_width_and_cover_only_the_runs_own_text() {
 /// matches one drawn now, and a count that is no age stays.
 #[test]
 fn an_age_collapses_to_one_token_and_the_row_moves_up() {
-    use ratatui::style::{Color, Style};
-    // The diff stat after the age is red, so the digest sees it move.
-    let draw = |text: &str| {
-        let mut buffer = Buffer::empty(ratatui::layout::Rect::new(0, 0, 40, 1));
-        let (end, _) = buffer.set_stringn(0, 0, text, 40, Style::default());
+    use ratatui::style::{Color, Modifier, Style};
+    let dim = Style::default().add_modifier(Modifier::DIM);
+    // The History row: the age is dim, as drawn, and the diff stat after
+    // it is red, so the digest sees it move.
+    let history = |age: &str| {
+        let mut buffer = Buffer::empty(ratatui::layout::Rect::new(0, 0, 50, 1));
+        let (end, _) = buffer.set_stringn(0, 0, " feature · 3b3fb05 · ", 50, Style::default());
+        let (end, _) = buffer.set_stringn(end, 0, age, 50, dim);
         buffer.set_string(end, 0, "  +2 -40", Style::default().fg(Color::Red));
-        stable_text(&buffer)
+        buffer
     };
-    let now = draw("· abc · 9 years ago");
-    assert!(now.starts_with("· abc · <age>  +2 -40"), "{now}");
-    for later in [
-        "· abc · 10 years ago",
-        "· abc · 1 year, 2 months ago",
-        "· abc · 3 days ago",
-    ] {
-        assert_eq!(draw(later), now, "{later}");
+    let now = stable_text(&history("9 years ago"));
+    assert!(
+        now.starts_with(" feature · 3b3fb05 · <age>  +2 -40"),
+        "{now}"
+    );
+    for later in ["10 years ago", "1 year, 2 months ago", "3 days ago"] {
+        assert_eq!(stable_text(&history(later)), now, "{later}");
     }
+    let token = collapse_ages(&history("9 years ago").content);
+    let symbols: String = token[21..26].iter().map(BufferCell::symbol).collect();
+    assert_eq!(symbols, "<age>");
+    for cell in &token[21..26] {
+        assert!(
+            cell.style().add_modifier.contains(Modifier::DIM),
+            "{cell:?}"
+        );
+    }
+    // A diff row's own text, with a border after it, is kept as drawn.
+    let mut row = Buffer::empty(ratatui::layout::Rect::new(0, 0, 40, 1));
+    row.set_string(0, 0, "+ // fixed 3 days ago", Style::default());
+    row.set_string(30, 0, "│", Style::default().fg(Color::Blue));
+    let kept = collapse_ages(&row.content);
+    assert_eq!(kept, row.content);
+    let text = stable_text(&row);
+    assert!(
+        text.starts_with("+ // fixed 3 days ago         │"),
+        "{text}"
+    );
     for kept in ["1h ago", "12 files", "line 3 ago"] {
-        assert!(draw(kept).starts_with(kept), "{kept}");
+        let mut row = Buffer::empty(ratatui::layout::Rect::new(0, 0, 40, 1));
+        row.set_string(0, 0, kept, Style::default());
+        assert!(stable_text(&row).starts_with(kept), "{kept}");
     }
 }
