@@ -1,0 +1,34 @@
+@@@ 01 frame start
+| feature · feature (vs main)  +2 -2
+|  1  BRANCH   2  UNSTAGED   3  STAGED   4  HISTORY                                   Claude / Sonnet 5.5   0/1 reviewed
+| FILES (1)                     │  ~ src/f000.rs  +2 -2                                                      Hunk 1/2
+| ~ src/f000.rs          +2 -2  │
+|                               │ ▶ @@ -1,14 +1,14 @@
+|                               │   1    1 │ let line_0 = 0;
+|                               │   2    2 │ let line_1 = 1;
+|                               │   3    3 │ let line_2 = 2;
+|                               │   4      │-let line_3 = 3;
+|                               │        4 │+let changed_3 = 3; // edited
+|                               │   5    5 │ let line_4 = 4;
+|                               │   6    6 │ let line_5 = 5;
+|                               │   7    7 │ let line_6 = 6;
+|                               │   8    8 │ let line_7 = 7;
+|                               │   9    9 │ let line_8 = 8;
+|                               │  10   10 │ let line_9 = 9;
+|                               │  11   11 │ let line_10 = 10;
+|                               │  12   12 │ let line_11 = 11;
+|                               │  13   13 │ let line_12 = 12;
+|                               │  14   14 │ let line_13 = 13;
+|                               │  ··· 6 lines hidden (+/- to expand) ···
+|                               │   @@ -21,20 +21,20 @@ let line_19 = 19;
+|                               │  21   21 │ let line_20 = 20;
+|                               │  22   22 │ let line_21 = 21;
+|                               │  23   23 │ let line_22 = 22;
+|                               │  24   24 │ let line_23 = 23;
+|                               │  25   25 │ let line_24 = 24;
+|                               │  26   26 │ let line_25 = 25;
+|                               │  27   27 │ let line_26 = 26;
+| j/k nav n/N hunks +/- context ␣ review / search g git a ai o open v verify ? help ^q quit
+|styles a2c14185335478ca
+@@@ 02 frame theme < 01
+30|styles bbac00ede9a9a178

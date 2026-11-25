@@ -201,6 +201,7 @@ fn a_kept_load_reply_pairs_with_its_own_event() {
 /// keeps the file's banner up, as the App does.
 #[test]
 fn a_failed_load_draws_the_apps_notice_and_banner() {
+    let _golden = super::parity::guard();
     let repo = fixture(1);
     let storage = temp();
     let path = path_of(&repo);
@@ -230,6 +231,7 @@ fn a_failed_load_draws_the_apps_notice_and_banner() {
 /// App draws its own config's theme.
 #[test]
 fn the_theme_follows_the_settings_view() {
+    let _golden = super::parity::guard();
     let repo = fixture(1);
     let storage = temp();
     let path = path_of(&repo);
@@ -258,6 +260,7 @@ fn the_theme_follows_the_settings_view() {
 /// A saved AI pick shows on the mode row as the App labels the same pick.
 #[test]
 fn the_saved_selection_follows_the_view() {
+    let _golden = super::parity::guard();
     let repo = fixture(1);
     let storage = temp();
     let path = path_of(&repo);

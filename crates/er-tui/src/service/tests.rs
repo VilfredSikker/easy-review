@@ -401,6 +401,7 @@ pub(super) fn assert_parity(
     step: &str,
 ) {
     let app = &app_frame(app, hl);
+    super::parity::assert_frame(step, flag_on, app);
     let (app_rows, flag_rows) = (rows(app), rows(flag_on));
     for row in 0..usize::from(HEIGHT) {
         assert_eq!(
@@ -420,7 +421,6 @@ pub(super) fn assert_parity(
             );
         }
     }
-    super::parity::dump(step, app);
 }
 
 /// The App path, on the same repo, with the automatic context pick off, as
@@ -462,6 +462,7 @@ pub(super) fn loaded(shell: &Shell) -> bool {
 /// file, hunk, line and scroll moves land where the App's do.
 #[test]
 fn flag_on_frames_match_the_app_frames() {
+    let _golden = super::parity::guard();
     let repo = fixture(3);
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     let path = path_of(&repo);
@@ -515,6 +516,7 @@ fn flag_on_frames_match_the_app_frames() {
 /// as the App, which parses it in place, draws them.
 #[test]
 fn a_selected_stub_parses_and_draws_like_the_app() {
+    let _golden = super::parity::guard();
     let repo = fixture(520);
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     let path = path_of(&repo);

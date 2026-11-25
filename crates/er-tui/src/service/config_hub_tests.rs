@@ -9,6 +9,7 @@ use crossterm::event::KeyCode;
 use er_engine::config::{ConfigFieldValue, ErConfig};
 use er_service::SettingsCommand;
 
+use super::parity::assert_json;
 use super::shell::Shell;
 use super::startup::Args;
 use super::tests::{
@@ -36,6 +37,12 @@ fn start(path: &str, config_dir: &Path) -> Shell {
 
 fn revision(shell: &Shell) -> u64 {
     shell.host().settings().view().revision
+}
+
+/// A saved file, one TOML line per golden line, so a changed setting or
+/// catalog entry shows as the lines it changes.
+fn toml_lines(text: &str) -> Vec<String> {
+    text.lines().map(str::to_string).collect()
 }
 
 fn read(path: &Path) -> String {
@@ -193,6 +200,8 @@ fn hub_keys_match_the_apps() {
             files(storage.path()) == files(config_dir.path())
         });
         assert_eq!(files(config_dir.path()), files(storage.path()));
+        let lines = |dir: &Path| files(dir).map(|file| toml_lines(&file));
+        assert_json("files", &lines(config_dir.path()), &lines(storage.path()));
         let app_file = &files(storage.path())[0];
         assert!(
             app_file.contains("snapshot"),
@@ -243,6 +252,11 @@ fn a_cycled_provider_saves_and_labels_like_the_app() {
             }
             settle_quietly(&mut shell, || read(&agents) == read(&app_agents));
             assert_eq!(read(&agents), read(&app_agents), "{step}");
+            assert_json(
+                step,
+                &toml_lines(&read(&agents)),
+                &toml_lines(&read(&app_agents)),
+            );
             assert_parity(&app, &shell_frame(&mut shell, &mut hl), &mut hl, step);
         }
         assert!(
@@ -388,6 +402,11 @@ fn tab_cancel_back_and_close_keys_match_the_apps() {
             shell.handle_key(key(code));
             settle_quietly(&mut shell, || read(&agents) == read(&app_agents));
             assert_eq!(read(&agents), read(&app_agents), "Left");
+            assert_json(
+                "Left",
+                &toml_lines(&read(&agents)),
+                &toml_lines(&read(&app_agents)),
+            );
         }
         press_app(&mut app, KeyCode::Char('s'));
         shell.handle_key(key(KeyCode::Char('s')));

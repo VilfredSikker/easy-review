@@ -5,10 +5,15 @@
 //! `7 years ago` grows a digit with time, so it becomes the fixed `<age>`
 //! and the rest of its row moves up to meet it, styles included.
 //!
-//! `ER_PARITY_DUMP=<dir>` writes each frame the parity tests compare to
-//! `<dir>/<module>/<test>.<order>.<step>.txt`, so two runs can be diffed.
+//! Each frozen test's checks are held in `goldens/parity/<module>/<test>.txt`,
+//! and both the App's result and the flag path's must equal them;
+//! `ER_UPDATE_GOLDENS=1` records them from the App. `ER_PARITY_DUMP=<dir>`
+//! writes each frame to `<dir>/<module>/<test>.<order>.<step>.txt`, so two
+//! runs can be diffed.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
+use std::fmt::Write as _;
+use std::path::PathBuf;
 
 use ratatui::buffer::{Buffer, Cell as BufferCell};
 
@@ -226,21 +231,293 @@ pub(super) fn stable_text(frame: &Buffer) -> String {
     crate::golden::rows_text(rows.iter().map(Vec::as_slice), mask)
 }
 
-/// Writes the frame under `ER_PARITY_DUMP`, named by the test thread, the
-/// check's order within the test and its step.
-pub(super) fn dump(step: &str, frame: &Buffer) {
-    let order = ORDER.with(|order| {
+/// The test modules whose checks are frozen. Each later P76.1 PR adds its
+/// areas; the others still only compare the two legs live.
+const FROZEN: [&str; 5] = [
+    "tests",
+    "settings_tests",
+    "github_tests",
+    "worktree_tests",
+    "watched_tests",
+];
+
+/// The running test's golden: what the file holds, and in update mode what
+/// this run has recorded so far.
+struct Golden {
+    path: PathBuf,
+    module: String,
+    held: Vec<Entry>,
+    recorded: Vec<Entry>,
+}
+
+#[derive(Clone)]
+struct Entry {
+    head: String,
+    lines: Vec<String>,
+}
+
+thread_local! {
+    static GOLDEN: RefCell<Option<Golden>> = const { RefCell::new(None) };
+    static GUARDED: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Held for the whole of a frozen test. When it drops it fails the test if
+/// the golden holds a check the test never reached, so a test whose last
+/// steps stop running cannot pass on the checks before them.
+pub(super) struct Guard(());
+
+/// Starts a frozen test's checks; a frozen check without one fails.
+#[must_use = "the guard checks the golden when it drops"]
+pub(super) fn guard() -> Guard {
+    let (module, name) = test_name();
+    assert!(
+        FROZEN.contains(&module.as_str()),
+        "{module}::{name} holds a guard, but {module} is not in FROZEN"
+    );
+    GUARDED.with(|guarded| guarded.set(true));
+    Guard(())
+}
+
+impl Drop for Guard {
+    fn drop(&mut self) {
+        GUARDED.with(|guarded| guarded.set(false));
+        if std::thread::panicking() || std::env::var_os("ER_UPDATE_GOLDENS").is_some() {
+            return;
+        }
+        let (module, name) = test_name();
+        let ran = ORDER.with(Cell::get);
+        let golden = GOLDEN
+            .with(|cell| cell.borrow_mut().take())
+            .unwrap_or_else(|| Golden::open(&module, &name));
+        assert!(
+            golden.held.len() <= ran,
+            "{}: the golden holds {} checks, and the test ran {ran}; the next is {}",
+            golden.path.display(),
+            golden.held.len(),
+            golden.held[ran].head
+        );
+    }
+}
+
+/// Both frames, masked, equal the golden's frame for this check.
+pub(super) fn assert_frame(step: &str, flag_on: &Buffer, app: &Buffer) {
+    let order = next_order();
+    let app = stable_text(app);
+    dump(order, step, &app);
+    check(order, "frame", step, &app, &stable_text(flag_on));
+}
+
+/// Both results, as masked pretty JSON, equal the golden's JSON for this
+/// check. The caller passes them as its live comparison takes them.
+pub(super) fn assert_json<T: serde::Serialize>(step: &str, flag_on: &T, app: &T) {
+    let json = |value: &T| {
+        let text = serde_json::to_string_pretty(value).unwrap_or_else(|e| panic!("{e}"));
+        text.lines()
+            .map(|line| mask(line) + "\n")
+            .collect::<String>()
+    };
+    check(next_order(), "json", step, &json(app), &json(flag_on));
+}
+
+fn next_order() -> usize {
+    ORDER.with(|order| {
         order.set(order.get() + 1);
         order.get()
-    });
-    let Some(dir) = std::env::var_os("ER_PARITY_DUMP") else {
-        return;
-    };
+    })
+}
+
+/// The test's module and name, from the thread libtest names after it.
+fn test_name() -> (String, String) {
     let thread = std::thread::current();
     let test = thread.name().unwrap_or("unnamed");
     let mut parts = test.rsplit("::");
-    let name = parts.next().unwrap_or(test);
-    let module = parts.next().unwrap_or("tests");
+    let name = parts.next().unwrap_or(test).to_string();
+    let module = parts.next().unwrap_or("tests").to_string();
+    (module, name)
+}
+
+fn check(order: usize, kind: &str, step: &str, app: &str, flag_on: &str) {
+    let (module, name) = test_name();
+    if !FROZEN.contains(&module.as_str()) {
+        return;
+    }
+    assert!(
+        GUARDED.with(Cell::get),
+        "{module}::{name} is frozen: hold `parity::guard()` for the whole test"
+    );
+    let step: String = short_step(step)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(
+        !step.contains(" < "),
+        "{module}::{name}: step `{step}` holds ` < `, which a golden reads as a base"
+    );
+    let head = format!("{order:02} {kind} {step}");
+    let update = std::env::var_os("ER_UPDATE_GOLDENS").is_some();
+    assert!(
+        !(update && std::env::var_os("CI").is_some()),
+        "ER_UPDATE_GOLDENS is refused under CI: record goldens locally"
+    );
+    GOLDEN.with(|cell| {
+        let mut cell = cell.borrow_mut();
+        let golden = cell.get_or_insert_with(|| Golden::open(&module, &name));
+        assert_eq!(golden.module, module, "one thread ran two tests");
+        if update {
+            assert_eq!(
+                app, flag_on,
+                "{head}: the legs differ, so no golden is recorded"
+            );
+            golden.record(head, app);
+            return;
+        }
+        let path = golden.path.display().to_string();
+        let held = golden.held.get(order - 1).unwrap_or_else(|| {
+            panic!("{path} has no check {head}; record it with ER_UPDATE_GOLDENS=1")
+        });
+        assert_eq!(held.head, head, "{path}: check {order} is another step");
+        let want = held.lines.iter().fold(String::new(), |mut want, line| {
+            let _ = writeln!(want, "{line}");
+            want
+        });
+        let differ: Vec<&str> = [("the App's", app), ("the flag path's", flag_on)]
+            .into_iter()
+            .filter(|(_, got)| *got != want)
+            .map(|(leg, _)| leg)
+            .collect();
+        assert!(
+            differ.is_empty(),
+            "{path}: {head}: {} not the golden\n--- golden\n{want}--- App\n{app}--- flag path\n{flag_on}",
+            match differ.as_slice() {
+                [leg] => format!("{leg} result is"),
+                _ => "both legs' results are".to_string(),
+            }
+        );
+    });
+}
+
+impl Golden {
+    fn open(module: &str, name: &str) -> Self {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("goldens/parity")
+            .join(module)
+            .join(format!("{name}.txt"));
+        let text = std::fs::read_to_string(&path).unwrap_or_default();
+        let held = decode(&path.display().to_string(), &text);
+        Self {
+            path,
+            module: module.to_string(),
+            held,
+            recorded: Vec::new(),
+        }
+    }
+
+    /// Adds the check and rewrites the file with every check so far, so the
+    /// file ends at the test's last check.
+    fn record(&mut self, head: String, text: &str) {
+        let lines = text.lines().map(str::to_string).collect();
+        self.recorded.push(Entry { head, lines });
+        if let Some(dir) = self.path.parent() {
+            std::fs::create_dir_all(dir).unwrap_or_else(|e| panic!("{e}"));
+        }
+        std::fs::write(&self.path, encode(&self.recorded)).unwrap_or_else(|e| panic!("{e}"));
+    }
+}
+
+/// A check is `@@@ <head>`, then its lines as `|line`. A frame after the
+/// first can instead name the earlier frame it differs least from,
+/// `@@@ <head> < <order>`, and list only the lines that differ, as
+/// `<index>|line`.
+fn encode(entries: &[Entry]) -> String {
+    let mut out = String::new();
+    for (at, entry) in entries.iter().enumerate() {
+        let changed = |base: &Entry| -> Option<Vec<usize>> {
+            let same_shape = base.lines.len() == entry.lines.len()
+                && base.head.split(' ').nth(1) == entry.head.split(' ').nth(1);
+            same_shape.then(|| {
+                (0..entry.lines.len())
+                    .filter(|&line| base.lines[line] != entry.lines[line])
+                    .collect()
+            })
+        };
+        let base = entries[..at]
+            .iter()
+            .enumerate()
+            .filter_map(|(order, base)| changed(base).map(|lines| (order + 1, lines)))
+            .min_by_key(|(_, lines)| lines.len());
+        match base {
+            Some((order, lines)) if lines.len() < entry.lines.len() => {
+                let _ = writeln!(out, "@@@ {} < {order:02}", entry.head);
+                for line in lines {
+                    let _ = writeln!(out, "{line:02}|{}", entry.lines[line]);
+                }
+            }
+            _ => {
+                let _ = writeln!(out, "@@@ {}", entry.head);
+                for line in &entry.lines {
+                    let _ = writeln!(out, "|{line}");
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Reads a golden back. A base that is not an earlier check, or a row past
+/// its base's length, fails with the file and line, so a hand edit that
+/// breaks the format cannot read as some other frame.
+fn decode(path: &str, text: &str) -> Vec<Entry> {
+    let mut entries: Vec<Entry> = Vec::new();
+    for (at, line) in text.lines().enumerate() {
+        let at = at + 1;
+        if let Some(head) = line.strip_prefix("@@@ ") {
+            let (head, lines) = match head.rsplit_once(" < ") {
+                Some((head, base)) => {
+                    let earlier = base
+                        .parse::<usize>()
+                        .ok()
+                        .filter(|base| (1..=entries.len()).contains(base));
+                    let Some(base) = earlier else {
+                        panic!(
+                            "{path}:{at}: base `< {base}` is not an earlier check (1 to {})",
+                            entries.len()
+                        );
+                    };
+                    (head, entries[base - 1].lines.clone())
+                }
+                None => (head, Vec::new()),
+            };
+            entries.push(Entry {
+                head: head.to_string(),
+                lines,
+            });
+            continue;
+        }
+        let Some(entry) = entries.last_mut() else {
+            panic!("{path}:{at}: a line before the first `@@@` check");
+        };
+        match line.split_once('|') {
+            Some(("", rest)) => entry.lines.push(rest.to_string()),
+            Some((index, rest)) => match index.parse::<usize>() {
+                Ok(index) if index < entry.lines.len() => entry.lines[index] = rest.to_string(),
+                _ => panic!(
+                    "{path}:{at}: row `{index}` is past its base's {} rows",
+                    entry.lines.len()
+                ),
+            },
+            None => panic!("{path}:{at}: a line with no `|`"),
+        }
+    }
+    entries
+}
+
+/// Writes the frame under `ER_PARITY_DUMP`, named by the test, the check's
+/// order within the test and its step, so two runs can be diffed.
+fn dump(order: usize, step: &str, text: &str) {
+    let Some(dir) = std::env::var_os("ER_PARITY_DUMP") else {
+        return;
+    };
+    let (module, name) = test_name();
     let step: String = short_step(step)
         .chars()
         .map(|c| {
@@ -254,7 +531,7 @@ pub(super) fn dump(step: &str, frame: &Buffer) {
     let dir = std::path::Path::new(&dir).join(module);
     std::fs::create_dir_all(&dir).unwrap_or_else(|e| panic!("{e}"));
     let file = dir.join(format!("{name}.{order:02}.{step}.txt"));
-    std::fs::write(&file, stable_text(frame)).unwrap_or_else(|e| panic!("{e}"));
+    std::fs::write(&file, text).unwrap_or_else(|e| panic!("{e}"));
 }
 
 /// A step named by a key's `Debug` text, shortened: `KeyEvent { code:
@@ -276,7 +553,7 @@ pub(super) fn short_step(step: &str) -> String {
         .strip_prefix("Char('")
         .and_then(|c| c.strip_suffix("')"))
     {
-        Some(c) => key_name(c.trim_start_matches('\\')),
+        Some(c) => key_name(c),
         None => match code.strip_prefix("F(").and_then(|n| n.strip_suffix(')')) {
             Some(n) => format!("F{n}"),
             None => code.to_string(),
@@ -300,6 +577,16 @@ pub(super) fn short_step(step: &str) -> String {
 /// A printable key's name, spelled out where it is punctuation, so it
 /// reads in a golden's header and survives a file name.
 fn key_name(key: &str) -> String {
+    // `Debug` escapes some chars; each is named before the escape goes, so
+    // `\n` reads `nl`, not `n`.
+    const ESCAPED: [(&str, &str); 6] = [
+        ("\\n", "nl"),
+        ("\\t", "tab"),
+        ("\\r", "cr"),
+        ("\\0", "nul"),
+        ("\\\\", "backslash"),
+        ("\\'", "quote"),
+    ];
     const NAMES: [(&str, &str); 33] = [
         (" ", "Space"),
         ("<", "lt"),
@@ -335,11 +622,73 @@ fn key_name(key: &str) -> String {
         ("&", "amp"),
         ("*", "star"),
     ];
-    let key = if key.is_empty() { "\\" } else { key };
+    if let Some((_, name)) = ESCAPED.iter().find(|(escaped, _)| *escaped == key) {
+        return (*name).to_string();
+    }
+    let key = key.strip_prefix('\\').unwrap_or(key);
     NAMES
         .iter()
         .find(|(punct, _)| *punct == key)
         .map_or_else(|| key.to_string(), |(_, name)| (*name).to_string())
+}
+
+/// Every module with goldens is frozen, so a golden cannot sit unchecked.
+#[test]
+fn every_golden_directory_is_a_frozen_module() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("goldens/parity");
+    let dirs = std::fs::read_dir(&root).unwrap_or_else(|e| panic!("{e}"));
+    for dir in dirs {
+        let name = dir.unwrap_or_else(|e| panic!("{e}")).file_name();
+        let name = name.to_string_lossy();
+        assert!(
+            FROZEN.contains(&name.as_ref()),
+            "goldens/parity/{name} is not in FROZEN"
+        );
+    }
+}
+
+/// A base that is not an earlier check, or a row past the base, names
+/// itself and its line.
+#[test]
+fn a_broken_reference_names_the_file_and_line() {
+    let frame = "@@@ 01 frame a\n|x\n|y\n";
+    for (bad, said) in [
+        ("@@@ 02 frame b < 0x\n00|z\n", "f:4: base `< 0x`"),
+        ("@@@ 02 frame b < 00\n00|z\n", "f:4: base `< 00`"),
+        ("@@@ 02 frame b < 02\n00|z\n", "f:4: base `< 02`"),
+        ("@@@ 02 frame b < 01\n02|z\n", "f:5: row `02`"),
+    ] {
+        let text = format!("{frame}{bad}");
+        let panic = std::panic::catch_unwind(|| decode("f", &text));
+        let message = panic
+            .err()
+            .and_then(|e| e.downcast_ref::<String>().cloned())
+            .unwrap_or_default();
+        assert!(message.starts_with(said), "{bad}: {message}");
+    }
+}
+
+#[test]
+fn a_delta_golden_decodes_to_the_frames_it_encodes() {
+    let entry = |head: &str, lines: &[&str]| Entry {
+        head: head.to_string(),
+        lines: lines.iter().map(|line| (*line).to_string()).collect(),
+    };
+    let entries = [
+        entry("01 frame start", &["a", "b", "", "styles 1"]),
+        entry("02 frame k", &["a", "B", "", "styles 2"]),
+        entry("03 json saved", &["{", "  \"x\": 1", "}"]),
+        entry("04 frame Esc", &["a", "b", "", "styles 1"]),
+        entry("05 frame j", &["x", "y", "z", "w"]),
+    ];
+    let text = encode(&entries);
+    assert!(text.contains("@@@ 04 frame Esc < 01\n"), "{text}");
+    let decoded = decode("unit", &text);
+    assert_eq!(decoded.len(), entries.len());
+    for (decoded, entry) in decoded.iter().zip(&entries) {
+        assert_eq!(decoded.head, entry.head);
+        assert_eq!(decoded.lines, entry.lines, "{text}");
+    }
 }
 
 #[test]
@@ -360,6 +709,10 @@ fn key_steps_read_short() {
         (event(KeyCode::Char('?'), KeyModifiers::SHIFT), "S-qmark"),
         (event(KeyCode::Char('\''), KeyModifiers::NONE), "quote"),
         (event(KeyCode::Char('\\'), KeyModifiers::NONE), "backslash"),
+        (event(KeyCode::Char('\n'), KeyModifiers::NONE), "nl"),
+        (event(KeyCode::Char('\t'), KeyModifiers::NONE), "tab"),
+        (event(KeyCode::Char('n'), KeyModifiers::NONE), "n"),
+        (event(KeyCode::Char('t'), KeyModifiers::NONE), "t"),
         (format!("{:?}", KeyCode::Char('*')), "star"),
         (event(KeyCode::F(5), KeyModifiers::ALT), "A-F5"),
         (format!("{:?}", KeyCode::Char('U')), "U"),

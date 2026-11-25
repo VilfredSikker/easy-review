@@ -97,6 +97,7 @@ fn snapshot_of(shell: &Shell, name: &str) -> std::path::PathBuf {
 /// hiding and showing the list, each as the App draws it.
 #[test]
 fn the_watched_files_draw_like_the_app() {
+    let _golden = super::parity::guard();
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     let repo = watched_repo(storage.path());
     let path = path_of(&repo);
@@ -191,6 +192,7 @@ fn a_snapshot_update_goes_through_the_service() {
 /// and the frames match after.
 #[test]
 fn a_watched_delete_writes_and_draws_like_the_app() {
+    let _golden = super::parity::guard();
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     let repo = watched_repo(storage.path());
     let path = path_of(&repo);

@@ -1,0 +1,32 @@
+@@@ 01 frame deleted
+| feature · feature
+|  1  BRANCH   2  UNSTAGED   3  STAGED   4  HISTORY   5  HIDDEN                                   Claude / Sonnet 5.5
+| FILES (0) · 1 watched         │ b.env                                                               ● Deleted: a.env
+| ────────── watched ───────────│  ◉ b.env  (watched · not tracked by git)
+| ◉ b.env               1h ago  │  Size: 4 B
+|                               │
+|                               │  Snapshot saved (first view)
+|                               │    1 │A=1
+|                               │
+|                               │
+|                               │
+|                               │
+|                               │
+|                               │
+|                               │
+|                               │
+|                               │
+|                               │
+|                               │
+|                               │
+|                               │
+|                               │
+|                               │
+|                               │
+|                               │
+|                               │
+|                               │
+|                               │
+|                               │
+| j/k nav n/N hunks +/- context ␣ review / search g git a ai o open v verify ? help ^q quit  [watched: 1]
+|styles 5369ce950dc4865d
