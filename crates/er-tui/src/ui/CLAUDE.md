@@ -1,8 +1,8 @@
 # ui/ — rendering surface
 
 Read-only over the `Screen` read model (`../screen/`): renderers take
-`&Screen` and produce frames, so the App path and the service path can both
-fill it. Nothing here mutates state, calls a port, runs an event loop, or is
+`&Screen` and produce frames. The service's published tab content and the
+TUI's own view state fill it (ADR 0073). Nothing here mutates state, calls a port, runs an event loop, or is
 async, and nothing here names `App` or `TabState`; a source scan in
 `mod.rs` fails the build's tests otherwise. State a renderer needs must already
 be on the `Screen` — add it to the read model and its builder rather than

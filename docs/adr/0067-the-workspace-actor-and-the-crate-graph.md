@@ -50,8 +50,8 @@ own `recv_timeout`. An unbounded `recv()` would hold a worker for as long as the
 actor lives and turn a dead actor into a frozen command.
 
 **The crate graph stays headless.** `er-service` depends on `er-engine` with
-`default-features = false` and has no front end in its graph. The desktop
-always runs on it; `v1-service` stays an optional feature on `er-tui` only.
+`default-features = false` and has no front end in its graph. Both front ends
+run on it.
 An open goes through `er_send` like every other command: its `Ack` names the
 resources it moved, and the page refetches `tabs` and the new tab's content
 from the published view (ADR 0072).
