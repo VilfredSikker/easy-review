@@ -37,7 +37,7 @@ const STORE: [&str; 28] = [
     "remove_backup_dir",
 ];
 
-const GIT: [&str; 11] = [
+const GIT: [&str; 14] = [
     "stage_file",
     "unstage_file",
     "stage_all",
@@ -46,6 +46,9 @@ const GIT: [&str; 11] = [
     "fetch_base_branch_ref",
     "fetch_pr_base_ref",
     "ensure_base_ref_available",
+    "fetch(",
+    "update_ref",
+    "shallow_clone",
     "git.push(",
     "::commit(",
     "::push(",
