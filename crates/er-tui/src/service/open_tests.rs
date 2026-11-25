@@ -14,7 +14,7 @@ use er_git::{FakeGit, Worktree};
 use er_github::FakeGitHub;
 
 use super::github_tests::{calls, notice, on_pr_7, overview, pr_tab, settle_replies, working};
-use super::pr_stack_tests::{app_on, app_reads_stack, press_app, select_row, stack_json, step};
+use super::pr_stack_tests::{app_on, app_reads_stack, press_app, select_row, stack_json};
 use super::shell::Shell;
 use super::startup::Args;
 use super::tests::{
@@ -273,7 +273,7 @@ fn browse_folders_draws_like_the_app_and_opens_a_repo() {
             KeyCode::Enter,
             KeyCode::Backspace,
         ] {
-            step(&mut app, &mut shell, &mut hl, code);
+            browse_step(&mut app, &mut shell, &mut hl, code);
         }
         let text = frame_text(&mut shell);
         assert!(text.contains("beta"), "{text}");
@@ -289,6 +289,54 @@ fn browse_folders_draws_like_the_app_and_opens_a_repo() {
         assert!(opened_root.ends_with("beta/inner"), "{opened_root:?}");
         assert_eq!(notice(&shell), "Opened: inner");
     });
+}
+
+/// `step`, with both legs' browsed directory written under `/tmp` for its
+/// frame only, as `tmp_rooted` says, and put back before the next key.
+fn browse_step(
+    app: &mut er_engine::app::App,
+    shell: &mut Shell,
+    hl: &mut Highlighter,
+    code: KeyCode,
+) {
+    app.clear_notification();
+    shell.tick(Instant::now() + Duration::from_secs(60));
+    press_app(app, key(code));
+    shell.handle_key(key(code));
+    settle_replies(shell);
+    let own = rooted_paths(app, shell, None);
+    let frame = super::tests::shell_frame(shell, hl);
+    super::tests::assert_parity(app, &frame, hl, &format!("{code:?}"));
+    rooted_paths(app, shell, Some(own));
+}
+
+/// Writes both legs' browsed directory under `/tmp`, and answers the paths
+/// it replaced; given those, puts them back.
+fn rooted_paths(
+    app: &mut er_engine::app::App,
+    shell: &mut Shell,
+    restore: Option<(Option<String>, Option<String>)>,
+) -> (Option<String>, Option<String>) {
+    let app_path = match app.overlay.as_mut() {
+        Some(er_engine::app::OverlayData::DirectoryBrowser { current_path, .. }) => {
+            Some(current_path)
+        }
+        _ => None,
+    };
+    let flag_path = match shell.view_mut().overlay.as_mut() {
+        Some(Overlay::Directory(browser)) => Some(&mut browser.current_path),
+        _ => None,
+    };
+    let swap = |path: Option<&mut String>, to: Option<String>| {
+        path.map(|path| {
+            let to = to.unwrap_or_else(|| super::parity::tmp_rooted(path));
+            std::mem::replace(path, to)
+        })
+    };
+    match restore {
+        Some((app_old, flag_old)) => (swap(app_path, app_old), swap(flag_path, flag_old)),
+        None => (swap(app_path, None), swap(flag_path, None)),
+    }
 }
 
 /// "Open PR in browser" names the tab's PR and repo; `b` on a stack row

@@ -217,6 +217,16 @@ fn a_failed_load_draws_the_apps_notice_and_banner() {
         settle(&mut shell, loaded);
         let shown_at = Instant::now();
         let mut hl = Highlighter::new();
+        // The notice names the config file under the temp root.
+        if let Some(notice) = app.notification.as_mut() {
+            notice.message = super::parity::tmp_rooted(&notice.message);
+        }
+        let shown = shell
+            .view()
+            .notification
+            .as_deref()
+            .map(super::parity::tmp_rooted);
+        shell.view_mut().notification = shown;
         assert_parity(&app, &shell_frame(&mut shell, &mut hl), &mut hl, "notice");
         // The App's long notice stays up 5 s; a short one would be gone.
         shell.tick(shown_at + Duration::from_millis(4000));

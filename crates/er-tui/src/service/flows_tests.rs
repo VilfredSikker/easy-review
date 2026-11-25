@@ -328,7 +328,13 @@ fn an_interrupted_flow_shows_and_reruns_like_the_app() {
             panic!("the progress is not open");
         };
         assert_eq!(progress.er_dir, bucket);
-        let own = std::mem::replace(&mut progress.er_dir, app.tab().er_dir());
+        let shown = super::parity::tmp_rooted(&app.tab().er_dir());
+        let own = std::mem::replace(&mut progress.er_dir, shown.clone());
+        if let Some(er_engine::app::OverlayData::ReviewFlowProgress { er_dir, .. }) =
+            app.overlay.as_mut()
+        {
+            *er_dir = shown;
+        }
         assert_parity(&app, &shell_frame(&mut shell, &mut hl), &mut hl, "progress");
         if let Some(Overlay::FlowProgress(progress)) = shell.view_mut().overlay.as_mut() {
             progress.er_dir = own;
