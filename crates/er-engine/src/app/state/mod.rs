@@ -263,13 +263,7 @@ pub struct ConfigEditState {
     pub cursor_pos: usize,
 }
 
-/// A directory entry for the filesystem browser
-#[derive(Debug, Clone)]
-pub struct DirEntry {
-    pub name: String,
-    pub is_dir: bool,
-    pub is_git_repo: bool,
-}
+pub use crate::dir_browse::DirEntry;
 
 /// Active overlay popup state
 #[derive(Debug, Clone)]
@@ -7558,37 +7552,8 @@ impl App {
         }
     }
 
-    /// Read directory entries, sorted: directories first (with git repo marker), then files
     fn read_directory(path: &str) -> Vec<DirEntry> {
-        let mut entries = Vec::new();
-        if let Ok(read_dir) = std::fs::read_dir(path) {
-            for entry in read_dir.flatten() {
-                let name = entry.file_name().to_string_lossy().to_string();
-                // Skip hidden files/dirs (except .git check is internal)
-                if name.starts_with('.') {
-                    continue;
-                }
-                if let Ok(metadata) = entry.metadata() {
-                    let is_dir = metadata.is_dir();
-                    let is_git_repo = if is_dir {
-                        entry.path().join(".git").exists()
-                    } else {
-                        false
-                    };
-                    entries.push(DirEntry {
-                        name,
-                        is_dir,
-                        is_git_repo,
-                    });
-                }
-            }
-        }
-        entries.sort_by(|a, b| match (a.is_dir, b.is_dir) {
-            (true, false) => std::cmp::Ordering::Less,
-            (false, true) => std::cmp::Ordering::Greater,
-            _ => a.name.cmp(&b.name),
-        });
-        entries
+        crate::dir_browse::read_directory(path)
     }
 
     // ── Staging ──

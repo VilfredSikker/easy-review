@@ -1,7 +1,6 @@
-//! The flag-on Open hub (`o`): the App's rows, with "Change compare base",
-//! "Open remote PR" and the Stack section live. One function per section,
-//! for P75 (Navigate's folder rows, Current PR) to replace; until then those
-//! rows answer unported.
+//! The flag-on Open hub (`o`): the App's rows, one function per section.
+//! "Switch worktree" reads the worktree list the hub's opening asked the
+//! service for, so it stays disabled until that list lands.
 
 use er_engine::TabKey;
 use er_service::TabContent;
@@ -24,27 +23,34 @@ pub enum OpenPick {
     RemoteUrl,
     StackPr(StackPr),
     RefreshStack,
-    Unported,
+    Browse,
+    Worktrees,
+    Browser,
 }
 
 pub enum OpenStep {
     Stay,
     Close,
     Notify(String),
-    Unported,
     ChangeBase,
     RemoteUrl,
     OpenPr(StackPr),
     RefreshStack,
+    Browse,
+    Worktrees,
+    /// "Open PR in browser": the tab's own PR.
+    Browser,
+    /// `b` on a stack row: that layer's PR.
+    StackBrowser(StackPr),
 }
 
 pub struct OpenHub {
     pub rows: Vec<HubItem>,
     picks: Vec<OpenPick>,
     pub selected: usize,
-    /// The tab, its PR section's revision and whether its stack was being
-    /// read again, when the rows were built.
-    built: (TabKey, u64, bool),
+    /// The tab, its PR section's revision, whether its stack was being read
+    /// again, and how many worktrees were known, when the rows were built.
+    built: (TabKey, u64, bool, Option<usize>),
 }
 
 type Row = (HubItem, OpenPick);
@@ -67,8 +73,9 @@ fn header(label: &str) -> Row {
     (item, pick)
 }
 
-/// The Navigate section; no worktree count, since that read waits on git.
-fn navigate_rows(content: &TabContent) -> Vec<Row> {
+/// The Navigate section. `worktrees`: how many the repo has, once the
+/// service's list landed.
+fn navigate_rows(content: &TabContent, worktrees: Option<usize>) -> Vec<Row> {
     let tab = &content.tab;
     let remote = tab.identity().is_remote();
     let base = if remote {
@@ -79,20 +86,21 @@ fn navigate_rows(content: &TabContent) -> Vec<Row> {
             tab.base_branch
         )
     };
+    let others = worktrees.is_some_and(|count| count > 1);
+    let switch = if others {
+        "Jump to another worktree"
+    } else {
+        "No other worktrees"
+    };
     vec![
         header("── Navigate ──"),
         row(
             "Browse folders",
             "Open a local git repo",
             true,
-            OpenPick::Unported,
+            OpenPick::Browse,
         ),
-        row(
-            "Switch worktree",
-            "Jump to another worktree",
-            true,
-            OpenPick::Unported,
-        ),
+        row("Switch worktree", switch, others, OpenPick::Worktrees),
         row(
             "Open remote PR",
             "Review a GitHub PR by URL",
@@ -149,7 +157,7 @@ fn stack_rows(content: &TabContent, reading: bool) -> Vec<Row> {
     rows
 }
 
-/// The Current PR section (P75).
+/// The Current PR section.
 fn current_pr_rows(content: &TabContent) -> Vec<Row> {
     if content.tab.pr_number.is_none() {
         return Vec::new();
@@ -160,7 +168,7 @@ fn current_pr_rows(content: &TabContent) -> Vec<Row> {
             "Open PR in browser",
             "View on GitHub",
             true,
-            OpenPick::Unported,
+            OpenPick::Browser,
         ),
     ]
 }
@@ -168,8 +176,8 @@ fn current_pr_rows(content: &TabContent) -> Vec<Row> {
 impl OpenHub {
     /// The hub as the App opens it on this tab, on its first enabled row.
     /// `reading`: a stack lookup for the tab is on the way.
-    pub fn open(content: &TabContent, reading: bool) -> Self {
-        let mut rows = navigate_rows(content);
+    pub fn open(content: &TabContent, reading: bool, worktrees: Option<usize>) -> Self {
+        let mut rows = navigate_rows(content, worktrees);
         rows.push(header("── Stack ──"));
         rows.extend(stack_rows(content, reading));
         rows.extend(current_pr_rows(content));
@@ -182,19 +190,19 @@ impl OpenHub {
             rows,
             picks,
             selected,
-            built: (content.key, content.pr.revision, reading),
+            built: (content.key, content.pr.revision, reading, worktrees),
         }
     }
 
-    /// Builds the rows again once the tab's PR section moved or its lookup
+    /// Builds the rows again once the tab's PR section moved or a lookup
     /// landed, keeping the cursor, as the App does when its lookup lands.
-    pub fn follow(&mut self, content: &TabContent, reading: bool) {
-        let now = (content.key, content.pr.revision, reading);
+    pub fn follow(&mut self, content: &TabContent, reading: bool, worktrees: Option<usize>) {
+        let now = (content.key, content.pr.revision, reading, worktrees);
         if self.built == now || self.built.0 != content.key {
             return;
         }
         let selected = self.selected;
-        *self = Self::open(content, reading);
+        *self = Self::open(content, reading, worktrees);
         if selected < self.rows.len() {
             self.selected = selected;
         }
@@ -214,10 +222,13 @@ impl OpenHub {
                 }
             }
             OverlayAction::Close => return OpenStep::Close,
-            // `b` opens a layer in the browser, which is P75's.
+            // `b` opens an enabled layer in the browser.
             OverlayAction::SecondaryRow => {
-                if let Some(OpenPick::StackPr(_)) = self.picks.get(self.selected) {
-                    return OpenStep::Unported;
+                let enabled = self.rows.get(self.selected).is_some_and(|row| row.enabled);
+                if let Some(OpenPick::StackPr(pr)) = self.picks.get(self.selected) {
+                    if enabled {
+                        return OpenStep::StackBrowser(pr.clone());
+                    }
                 }
             }
             OverlayAction::SelectRow => {
@@ -229,7 +240,9 @@ impl OpenHub {
                 return match pick.clone() {
                     OpenPick::Nothing => OpenStep::Close,
                     _ if !row.enabled => OpenStep::Notify(row.description.clone()),
-                    OpenPick::Unported => OpenStep::Unported,
+                    OpenPick::Browse => OpenStep::Browse,
+                    OpenPick::Worktrees => OpenStep::Worktrees,
+                    OpenPick::Browser => OpenStep::Browser,
                     OpenPick::ChangeBase => OpenStep::ChangeBase,
                     OpenPick::RemoteUrl => OpenStep::RemoteUrl,
                     OpenPick::StackPr(pr) => OpenStep::OpenPr(pr),

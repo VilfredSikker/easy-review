@@ -23,6 +23,7 @@ mod handoff;
 mod history;
 mod layers;
 mod modes;
+mod open;
 mod open_hub;
 mod open_pr;
 mod pr_probe;
@@ -74,6 +75,8 @@ mod history_tests;
 mod loop_tests;
 #[cfg(test)]
 mod modes_tests;
+#[cfg(test)]
+mod open_tests;
 #[cfg(test)]
 mod pr_stack_tests;
 #[cfg(test)]

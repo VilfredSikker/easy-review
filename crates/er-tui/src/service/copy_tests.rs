@@ -616,3 +616,58 @@ fn a_jump_away_and_back_leaves_no_selection() {
         assert_copied(&shell, want, "after the jumps");
     });
 }
+
+/// A refresh that takes the anchored file out of the diff leaves the
+/// selection on another file; Shift+Down there starts a new selection, as
+/// the App's does, where a kept anchor from the gone file would select
+/// nothing.
+#[test]
+fn a_refresh_that_removes_the_anchored_file_starts_a_new_selection() {
+    let (app_repo, flag_repo) = (fixture(2), fixture(2));
+    let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+    er_engine::storage::with_process_test_storage_root(storage.path(), || {
+        let (mut app, mut shell) = both_on(&app_repo, &flag_repo, storage.path());
+        let mut hl = Highlighter::new();
+        let keys = [
+            key(KeyCode::Char('k')),
+            key(KeyCode::Down),
+            shift(KeyCode::Down),
+        ];
+        for event in keys {
+            step(&mut app, &mut shell, &mut hl, event);
+        }
+        // src/f001.rs back to main's text: it leaves the diff.
+        for repo in [&app_repo, &flag_repo] {
+            git(
+                repo.path(),
+                &["checkout", "-q", "main", "--", "src/f001.rs"],
+            );
+            git(repo.path(), &["commit", "-q", "-m", "drop"]);
+        }
+        press_app(&mut app, KeyCode::Char('R'));
+        shell.handle_key(key(KeyCode::Char('R')));
+        settle(&mut shell, |shell| {
+            shell.in_flight() == 0
+                && shell
+                    .active_content()
+                    .is_some_and(|c| c.diff.files.len() == 1)
+        });
+        for _ in 0..2 {
+            step(&mut app, &mut shell, &mut hl, shift(KeyCode::Down));
+        }
+        let app_notice = app_copy(&app, 4).map(|c| c.notice);
+        assert!(
+            app_notice
+                .as_ref()
+                .is_ok_and(|n| n.starts_with("Copied selection")),
+            "{app_notice:?}"
+        );
+        copy_context(&mut shell);
+        let flag = copied(&shell);
+        assert!(
+            notice(&shell).starts_with("Copied selection"),
+            "{}: {flag}",
+            notice(&shell)
+        );
+    });
+}

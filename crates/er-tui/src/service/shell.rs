@@ -44,6 +44,7 @@ use super::handoff::{self, Launch};
 use super::history;
 use super::layers::{self, Layer};
 use super::modes::{self, BaseStep, Follow};
+use super::open;
 use super::open_hub::{OpenHub, OpenStep};
 use super::open_pr::{self, Opened};
 use super::pr_probe::Probe;
@@ -61,7 +62,6 @@ use crate::input::keys::{
     key_action, AiSummaryAction, CommentAction, ConfirmKey, Edit, HistoryAction, NormalAction,
     OverlayAction, TourAction, TuiAction, Write,
 };
-use crate::screen::UNPORTED;
 use crate::ui::highlight::Highlighter;
 
 /// How long a frame waits for a key before the loop runs its duties.
@@ -165,6 +165,9 @@ pub struct Shell {
     branch_prs: HashMap<TabKey, (u64, String)>,
     /// The tabs with a stack lookup on the way.
     stacks_reading: HashSet<TabKey>,
+    /// Each tab's worktrees, from the list its Open hub's last opening asked
+    /// for; none until that list lands.
+    worktrees: HashMap<TabKey, Vec<er_engine::git::Worktree>>,
     /// The update check, until it answers.
     updates: Option<Receiver<String>>,
     /// The clipboard and the editor.
@@ -252,6 +255,7 @@ impl Shell {
             probed: None,
             branch_prs: HashMap::new(),
             stacks_reading: HashSet::new(),
+            worktrees: HashMap::new(),
             updates: None,
             launch,
             #[cfg(test)]
@@ -446,10 +450,6 @@ impl Shell {
         }
         let view = self.host.settings().view();
         view.config.display.auto_context_threshold
-    }
-
-    fn unported(&mut self) {
-        self.notify(format!("That action is {UNPORTED}"));
     }
 
     /// The loop's duties, none of which waits: an event from an actor or the
@@ -839,6 +839,13 @@ impl Shell {
                         self.failure(Side::Reply, error.to_string());
                     }
                 }
+                reply if after == After::Worktrees => {
+                    let listed = match reply {
+                        Ok(Reply::Worktrees { worktrees, .. }) => worktrees,
+                        _ => Vec::new(),
+                    };
+                    self.worktrees.insert(key, listed);
+                }
                 reply if after == After::StackRead => {
                     self.stacks_reading.remove(&key);
                     if let Err(error) = reply {
@@ -1090,8 +1097,9 @@ impl Shell {
         findings::follow(state, content);
         findings::place_if_parsed(state, content);
         let reading = self.stacks_reading.contains(&key);
+        let known = self.worktrees.get(&key).map(Vec::len);
         if let Some(Overlay::Open(hub)) = self.view.overlay.as_mut() {
-            hub.follow(content, reading);
+            hub.follow(content, reading, known);
         }
         let state = self.view.tab(key)?;
         let shows_log = state.panel == Some(er_engine::ai::PanelContent::AgentLog);
@@ -1157,6 +1165,14 @@ impl Shell {
             }
             TuiAction::Overlay(action) if matches!(self.view.overlay, Some(Overlay::Open(_))) => {
                 return self.open_hub_key(action, key, workspace, content)
+            }
+            TuiAction::Overlay(action)
+                if matches!(
+                    self.view.overlay,
+                    Some(Overlay::Worktrees(_) | Overlay::Directory(_))
+                ) =>
+            {
+                return self.folder_key(action)
             }
             TuiAction::Overlay(action)
                 if matches!(
@@ -1575,7 +1591,11 @@ impl Shell {
             }
             A::OpenOpenHub => {
                 let reading = self.read_stack(key, workspace, content, false);
-                self.view.overlay = Some(Overlay::Open(OpenHub::open(content, reading)));
+                // Asked again on each opening, as the App reads it on each.
+                self.worktrees.remove(&key);
+                let list = Command::ListWorktrees { key };
+                self.post(key, workspace, list, After::Worktrees);
+                self.view.overlay = Some(Overlay::Open(OpenHub::open(content, reading, None)));
                 return;
             }
             A::TogglePanel | A::TogglePanelReverse => {
@@ -2186,7 +2206,37 @@ impl Shell {
         match step {
             OpenStep::Stay | OpenStep::Close => {}
             OpenStep::Notify(message) => self.notify(message),
-            OpenStep::Unported => self.unported(),
+            OpenStep::Browse => {
+                let browser = open::Directory::open(&content.tab.repo_root);
+                self.view.overlay = Some(Overlay::Directory(browser));
+            }
+            OpenStep::Worktrees => {
+                let worktrees = self.worktrees.get(&key).cloned().unwrap_or_default();
+                let picker = open::Worktrees {
+                    worktrees,
+                    selected: 0,
+                };
+                self.view.overlay = Some(Overlay::Worktrees(picker));
+            }
+            OpenStep::Browser => {
+                if let Some(number) = content.tab.pr_number {
+                    let (root, slug) = (&content.tab.repo_root, content.tab.remote_repo.as_deref());
+                    self.host
+                        .ports()
+                        .github
+                        .open_pr_in_browser(root, number, slug);
+                    self.notify("Opening PR in browser...".into());
+                }
+            }
+            OpenStep::StackBrowser(pr) => {
+                let slug = github_pr_slug(&pr.url);
+                let root = &content.tab.repo_root;
+                let github = &self.host.ports().github;
+                if github.open_pr_in_browser(root, pr.number, slug.as_deref()) {
+                    let (branch, number) = (pr.branch, pr.number);
+                    self.notify(format!("Opening {branch} (#{number}) in browser..."));
+                }
+            }
             OpenStep::ChangeBase => {
                 self.view.base_input.clear();
                 self.view.input_mode = Mode::BaseBranch;
@@ -2202,8 +2252,40 @@ impl Shell {
             // As the App's, the hub opens again on its loading row.
             OpenStep::RefreshStack => {
                 let reading = self.read_stack(key, workspace, content, true);
-                self.view.overlay = Some(Overlay::Open(OpenHub::open(content, reading)));
+                let known = self.worktrees.get(&key).map(Vec::len);
+                let hub = OpenHub::open(content, reading, known);
+                self.view.overlay = Some(Overlay::Open(hub));
             }
+        }
+    }
+
+    /// Runs a key on the worktree picker or the folder browser; a pick opens
+    /// the folder as a tab, or selects the tab already on its root.
+    fn folder_key(&mut self, action: OverlayAction) {
+        let pick = match self.view.overlay.as_mut() {
+            Some(Overlay::Worktrees(picker)) => picker.act(action),
+            Some(Overlay::Directory(browser)) => browser.act(action),
+            _ => return,
+        };
+        let path = match pick {
+            open::Pick::Stay => return,
+            open::Pick::Close => return self.view.overlay = None,
+            open::Pick::Open(path) => path,
+        };
+        self.view.overlay = None;
+        match open_pr::open_folder(&self.host, &path) {
+            Ok(Opened::Selected(key)) => {
+                self.load_if_new(key);
+                let name = self.label_of(key);
+                self.notify(format!("Switched to tab: {name}"));
+            }
+            Ok(Opened::Listed(key, start)) => {
+                self.pending.push(startup::load(&self.host, key, &start));
+                self.starts.insert(key, start);
+                let name = self.label_of(key);
+                self.notify(format!("Opened: {name}"));
+            }
+            Err(error) => self.notify(format!("Failed to open {path}: {error}")),
         }
     }
 
@@ -2530,6 +2612,8 @@ impl Shell {
                 | Overlay::FilterHistory { .. }
                 | Overlay::Copy(_)
                 | Overlay::Help(_)
+                | Overlay::Worktrees(_)
+                | Overlay::Directory(_)
                 | Overlay::ExportPicker { .. },
             )
             | None => return,
@@ -2870,4 +2954,11 @@ impl Shell {
             crate::ui::draw(f, screen, highlighter);
         });
     }
+}
+
+/// A PR URL's `owner/repo`: a stack layer can live in another repo than
+/// the tab, so its browser open names the URL's.
+fn github_pr_slug(url: &str) -> Option<String> {
+    let pr = er_engine::github::parse_github_pr_url(url)?;
+    Some(format!("{}/{}", pr.owner, pr.repo))
 }

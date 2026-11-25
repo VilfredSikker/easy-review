@@ -406,6 +406,9 @@ pub enum Command {
     /// Delete a watched file. A path that leaves the repo root, through `..`
     /// or a symlinked directory, is refused.
     DeleteWatchedFile { key: TabKey, path: String },
+    /// List the worktrees of a loaded tab's repo. The read runs off the
+    /// actor; it changes nothing.
+    ListWorktrees { key: TabKey },
 }
 
 /// What started a comment sync, which decides how fresh the read must be.
@@ -848,6 +851,11 @@ pub enum Reply {
     /// A working tab's branch PR was read into its PR section.
     BranchPrLoaded {
         key: TabKey,
+    },
+    /// The worktrees of a tab's repo, as git lists them.
+    Worktrees {
+        key: TabKey,
+        worktrees: Vec<er_git::Worktree>,
     },
     /// History listed `added` more commits; none means the list is whole.
     HistoryExtended {

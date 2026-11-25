@@ -26,7 +26,7 @@ const WIDTH: u16 = 120;
 const HEIGHT: u16 = 30;
 
 /// The flag-on modules, as text.
-pub(super) const SOURCES: [(&str, &str); 33] = [
+pub(super) const SOURCES: [(&str, &str); 34] = [
     ("agent_log.rs", include_str!("agent_log.rs")),
     ("ai_picker.rs", include_str!("ai_picker.rs")),
     ("ai_runs.rs", include_str!("ai_runs.rs")),
@@ -45,6 +45,7 @@ pub(super) const SOURCES: [(&str, &str); 33] = [
     ("layers.rs", include_str!("layers.rs")),
     ("mod.rs", include_str!("mod.rs")),
     ("modes.rs", include_str!("modes.rs")),
+    ("open.rs", include_str!("open.rs")),
     ("open_hub.rs", include_str!("open_hub.rs")),
     ("open_pr.rs", include_str!("open_pr.rs")),
     ("pr_probe.rs", include_str!("pr_probe.rs")),
@@ -757,7 +758,7 @@ fn tab_keys_load_later_tabs_and_leave_a_failed_one() {
 }
 
 /// The service tests, as text.
-const TEST_SOURCES: [(&str, &str); 24] = [
+const TEST_SOURCES: [(&str, &str); 25] = [
     ("ai_runs_tests.rs", include_str!("ai_runs_tests.rs")),
     ("chrome_tests.rs", include_str!("chrome_tests.rs")),
     ("clears_tests.rs", include_str!("clears_tests.rs")),
@@ -772,6 +773,7 @@ const TEST_SOURCES: [(&str, &str); 24] = [
     ("history_tests.rs", include_str!("history_tests.rs")),
     ("loop_tests.rs", include_str!("loop_tests.rs")),
     ("modes_tests.rs", include_str!("modes_tests.rs")),
+    ("open_tests.rs", include_str!("open_tests.rs")),
     ("pr_stack_tests.rs", include_str!("pr_stack_tests.rs")),
     ("review_hub_tests.rs", include_str!("review_hub_tests.rs")),
     ("reviewed_tests.rs", include_str!("reviewed_tests.rs")),

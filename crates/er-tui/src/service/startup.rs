@@ -135,7 +135,7 @@ fn descriptor(kind: TabKind, repo_root: String) -> TabDescriptor {
     }
 }
 
-fn working(repo_root: String) -> StartTab {
+pub fn working(repo_root: String) -> StartTab {
     StartTab {
         tab: descriptor(TabKind::Working, repo_root),
         fetch_pr_refs: false,
@@ -228,6 +228,8 @@ pub enum After {
     Cleared(super::clears::Clear),
     /// A stack lookup the Open hub asked for: once it lands, its rows follow.
     StackRead,
+    /// The worktree list the Open hub's opening asked for.
+    Worktrees,
     /// The PR section's forced refresh after a pull: once it lands, the
     /// pull's notice says the PR status was refreshed, as the App's does.
     PrRefreshed {
