@@ -536,7 +536,7 @@ pub(super) fn short_step(step: &str) -> String {
         .strip_prefix("Char('")
         .and_then(|c| c.strip_suffix("')"))
     {
-        Some(c) => key_name(c.trim_start_matches('\\')),
+        Some(c) => key_name(c),
         None => match code.strip_prefix("F(").and_then(|n| n.strip_suffix(')')) {
             Some(n) => format!("F{n}"),
             None => code.to_string(),
@@ -560,6 +560,16 @@ pub(super) fn short_step(step: &str) -> String {
 /// A printable key's name, spelled out where it is punctuation, so it
 /// reads in a golden's header and survives a file name.
 fn key_name(key: &str) -> String {
+    // `Debug` escapes some chars; each is named before the escape goes, so
+    // `\n` reads `nl`, not `n`.
+    const ESCAPED: [(&str, &str); 6] = [
+        ("\\n", "nl"),
+        ("\\t", "tab"),
+        ("\\r", "cr"),
+        ("\\0", "nul"),
+        ("\\\\", "backslash"),
+        ("\\'", "quote"),
+    ];
     const NAMES: [(&str, &str); 33] = [
         (" ", "Space"),
         ("<", "lt"),
@@ -595,7 +605,10 @@ fn key_name(key: &str) -> String {
         ("&", "amp"),
         ("*", "star"),
     ];
-    let key = if key.is_empty() { "\\" } else { key };
+    if let Some((_, name)) = ESCAPED.iter().find(|(escaped, _)| *escaped == key) {
+        return (*name).to_string();
+    }
+    let key = key.strip_prefix('\\').unwrap_or(key);
     NAMES
         .iter()
         .find(|(punct, _)| *punct == key)
@@ -643,6 +656,10 @@ fn key_steps_read_short() {
         (event(KeyCode::Char('?'), KeyModifiers::SHIFT), "S-qmark"),
         (event(KeyCode::Char('\''), KeyModifiers::NONE), "quote"),
         (event(KeyCode::Char('\\'), KeyModifiers::NONE), "backslash"),
+        (event(KeyCode::Char('\n'), KeyModifiers::NONE), "nl"),
+        (event(KeyCode::Char('\t'), KeyModifiers::NONE), "tab"),
+        (event(KeyCode::Char('n'), KeyModifiers::NONE), "n"),
+        (event(KeyCode::Char('t'), KeyModifiers::NONE), "t"),
         (format!("{:?}", KeyCode::Char('*')), "star"),
         (event(KeyCode::F(5), KeyModifiers::ALT), "A-F5"),
         (format!("{:?}", KeyCode::Char('U')), "U"),
