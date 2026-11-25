@@ -32,7 +32,7 @@ mod views;
 /// A flow runner on its own host, whose actor messages nobody reads.
 pub(super) struct Harness {
     runner: FlowRunner,
-    _actor: Receiver<ActorMsg>,
+    actor: Receiver<ActorMsg>,
 }
 
 impl Harness {
@@ -50,10 +50,12 @@ impl Harness {
         let sink: Arc<dyn JobSink> = Arc::new(LocalJobSink);
         let arena = ArenaRunControls::with_jobs(Arc::clone(&sink));
         let runner = FlowRunner::new(&deps, sink, arena, &tx);
-        Self {
-            runner,
-            _actor: actor,
-        }
+        Self { runner, actor }
+    }
+
+    /// The next message the runner sent its actor, if one is waiting.
+    pub(super) fn actor_message(&self) -> Option<ActorMsg> {
+        self.actor.try_recv().ok()
     }
 
     /// The flows and their host, as an effect holds them.

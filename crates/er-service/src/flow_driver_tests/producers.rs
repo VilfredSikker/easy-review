@@ -47,15 +47,18 @@ fn hooks() -> TaskHooks {
 /// A launcher task named `kind` on `bucket` that runs until the answer is
 /// sent on the sender this returns.
 fn held(tasks: &TaskHost, bucket: &str, kind: &str) -> Sender<anyhow::Result<()>> {
+    hold(tasks, bucket, kind).unwrap()
+}
+
+fn hold(tasks: &TaskHost, bucket: &str, kind: &str) -> Result<Sender<anyhow::Result<()>>, String> {
     let (done, result) = mpsc::channel();
     tasks::hold_agent(tasks, &hooks(), target(bucket), kind, |_| {
         Ok(AgentPromptRun {
             run: AgentRunHandle::new(),
             result,
         })
-    })
-    .unwrap();
-    done
+    })?;
+    Ok(done)
 }
 
 /// Queues a run of `kind` on `bucket`. The caller holds a task elsewhere,
@@ -91,6 +94,11 @@ fn finished(tasks: &TaskHost, kind: &str) -> bool {
         .any(|row| row.kind == kind && row.status == "done")
 }
 
+/// Another bucket beside `bucket`, for the task that fills the cap.
+fn elsewhere(bucket: &str) -> String {
+    format!("{bucket}-elsewhere")
+}
+
 /// A test storage root with one bucket in it.
 fn in_bucket(test: impl FnOnce(&str)) {
     let root = tempfile::tempdir().unwrap();
@@ -123,7 +131,7 @@ fn a_host_task_queued_in_the_bucket_refuses_the_flows_lease() {
     in_bucket(|bucket| {
         let tasks = TaskHost::default();
         let harness = Harness::with_tasks(Ports::cli(), tasks.clone());
-        let _elsewhere = held(&tasks, "/elsewhere", "summary");
+        let _elsewhere = held(&tasks, &elsewhere(bucket), "summary");
         queue(&tasks, bucket, "review").unwrap();
 
         let refused = harness.flows().host.acquire_review_flow_lease(bucket);
@@ -167,7 +175,7 @@ fn a_run_cannot_queue_into_a_bucket_a_flow_holds() {
     in_bucket(|bucket| {
         let tasks = TaskHost::default();
         let harness = Harness::with_tasks(Ports::cli(), tasks.clone());
-        let _elsewhere = held(&tasks, "/elsewhere", "summary");
+        let _elsewhere = held(&tasks, &elsewhere(bucket), "summary");
         let _lease = harness
             .flows()
             .host
@@ -199,7 +207,7 @@ fn a_tour_queues_beside_a_flow_and_does_not_keep_its_lease() {
     in_bucket(|bucket| {
         let tasks = TaskHost::default();
         let harness = Harness::with_tasks(Ports::cli(), tasks.clone());
-        let _elsewhere = held(&tasks, "/elsewhere", "summary");
+        let _elsewhere = held(&tasks, &elsewhere(bucket), "summary");
         let mut flows = harness.flows();
         let host = &mut flows.host;
         let lease = host.acquire_review_flow_lease(bucket).unwrap();
@@ -207,5 +215,55 @@ fn a_tour_queues_beside_a_flow_and_does_not_keep_its_lease() {
         let queued = queue(&tasks, bucket, tasks::TOUR_TASK_KIND);
         assert!(queued.is_ok(), "{queued:?}");
         assert!(host.release_review_flow_lease(&lease).is_ok());
+    });
+}
+
+/// Summary, Questions, Notes, the named commands and the desktop's send-note
+/// all start through `hold_agent`.
+#[test]
+fn a_tab_command_cannot_start_in_a_bucket_a_flow_holds() {
+    in_bucket(|bucket| {
+        let tasks = TaskHost::default();
+        let harness = Harness::with_tasks(Ports::cli(), tasks.clone());
+        let lease = harness
+            .flows()
+            .host
+            .acquire_review_flow_lease(bucket)
+            .unwrap();
+
+        let refused = hold(&tasks, bucket, "summary").map(drop);
+        assert_eq!(
+            refused,
+            Err("A review flow is already using this review bucket".to_string())
+        );
+
+        harness
+            .flows()
+            .host
+            .release_review_flow_lease(&lease)
+            .unwrap();
+        let done = hold(&tasks, bucket, "summary").unwrap();
+        done.send(Ok(())).unwrap();
+    });
+}
+
+/// A flow that could not release while a host task wrote is advanced when
+/// that task ends, with no stage of its own left to tick it.
+#[test]
+fn a_host_task_that_ends_wakes_the_flows() {
+    in_bucket(|bucket| {
+        let tasks = TaskHost::default();
+        let harness = Harness::with_tasks(Ports::cli(), tasks.clone());
+        let done = held(&tasks, bucket, "summary");
+        while harness.actor_message().is_some() {}
+
+        done.send(Ok(())).unwrap();
+        wait_until("the host task to finish", || finished(&tasks, "summary"));
+        let mut woken = false;
+        wait_until("the flows to be woken", || {
+            woken |= std::iter::from_fn(|| harness.actor_message())
+                .any(|message| matches!(message, crate::handle::ActorMsg::TasksChanged));
+            woken
+        });
     });
 }

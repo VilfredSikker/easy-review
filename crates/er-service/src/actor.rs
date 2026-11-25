@@ -184,6 +184,11 @@ fn run(
                 }
             }
             ActorMsg::FlowTick => flows.request_advance(),
+            ActorMsg::TasksChanged => {
+                if !state.view().review_flows.is_empty() {
+                    flows.request_advance();
+                }
+            }
             ActorMsg::Worktree(step) => {
                 crate::worktree::step(&deps, &mut state, &tx, *step, &subscribers, &view);
             }
