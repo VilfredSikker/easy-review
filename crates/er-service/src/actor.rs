@@ -1036,6 +1036,16 @@ fn handle_command(
                 ))
             });
         }
+        Command::ListWorktrees { key } => {
+            let Some(content) = state.view().tabs.get(&key).cloned() else {
+                return refuse_unknown_tab(reply);
+            };
+            let deps = deps.clone();
+            spawn_effect(tx, reply, move || {
+                let worktrees = crate::worktree::list(&deps, &content.tab.repo_root)?;
+                Ok(Effected::from(Reply::Worktrees { key, worktrees }))
+            });
+        }
         Command::LoadBranchPr { key, number } => {
             let Some(content) = state.view().tabs.get(&key).cloned() else {
                 return refuse_unknown_tab(reply);

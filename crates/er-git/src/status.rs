@@ -26,7 +26,7 @@ pub struct CommitInfo {
 }
 
 /// A git worktree entry
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Worktree {
     pub path: String,
     pub branch: String,

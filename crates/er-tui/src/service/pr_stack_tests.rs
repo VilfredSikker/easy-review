@@ -34,14 +34,14 @@ fn no_comments() -> PrCommentBundle {
     }
 }
 
-fn app_on(path: &str, github: &Arc<FakeGitHub>) -> App {
+pub(super) fn app_on(path: &str, github: &Arc<FakeGitHub>) -> App {
     let mut app =
         App::new_with_args(&[path.to_string()], ports(github)).unwrap_or_else(|e| panic!("{e:#}"));
     app.config.display.auto_context_threshold = 0;
     app
 }
 
-fn press_app(app: &mut App, event: KeyEvent) {
+pub(super) fn press_app(app: &mut App, event: KeyEvent) {
     let (tx, _rx) = std::sync::mpsc::channel();
     let mut cache = crate::screen::ViewCache::default();
     crate::handle_key(app, event, &tx, &mut None, &mut cache).unwrap_or_else(|e| panic!("{e}"));
@@ -49,7 +49,7 @@ fn press_app(app: &mut App, event: KeyEvent) {
 
 /// Presses `code` on both paths and compares the frames once the flag
 /// path's replies have landed.
-fn step(app: &mut App, shell: &mut Shell, hl: &mut Highlighter, code: KeyCode) {
+pub(super) fn step(app: &mut App, shell: &mut Shell, hl: &mut Highlighter, code: KeyCode) {
     app.clear_notification();
     shell.tick(Instant::now() + Duration::from_secs(60));
     press_app(app, key(code));
@@ -107,7 +107,7 @@ fn the_pr_panel_reads_the_pr_section_and_a_pull_refreshes_it() {
 }
 
 /// `gh stack view` with two layers above `main`, or three once `top` is set.
-fn stack_json(top: bool) -> String {
+pub(super) fn stack_json(top: bool) -> String {
     let layer = |name: &str, number: u64| {
         let url = format!("https://github.com/acme/widgets/pull/{number}");
         serde_json::json!({ "name": name, "pr": { "number": number, "url": url, "state": "OPEN" } })
@@ -122,7 +122,7 @@ fn stack_json(top: bool) -> String {
 
 /// The App's stack lookup, which its loop runs on a thread with the CLI
 /// handle, made here through the scripted one.
-fn app_reads_stack(app: &mut App, github: &FakeGitHub) {
+pub(super) fn app_reads_stack(app: &mut App, github: &FakeGitHub) {
     if let Some((tab, source, seq)) = app.take_stack_load_request() {
         let info = er_engine::gh_stack::load_from_with(github, &source);
         app.apply_stack_result(tab, seq, info);
@@ -157,7 +157,7 @@ fn assert_stack_parity(app: &App, shell: &mut Shell, hl: &mut Highlighter, step:
     }
 }
 
-fn select_row(app: Option<&mut App>, shell: &mut Shell, label: &str) {
+pub(super) fn select_row(app: Option<&mut App>, shell: &mut Shell, label: &str) {
     let Some(Overlay::Open(hub)) = shell.view_mut().overlay.as_mut() else {
         panic!("the Open hub is not up");
     };
