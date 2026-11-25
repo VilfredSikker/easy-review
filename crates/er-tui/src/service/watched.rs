@@ -5,6 +5,7 @@
 //! draw, as the App's does (left from P63). A snapshot save or a delete is a
 //! service command; this module writes nothing.
 
+use std::collections::HashSet;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -189,7 +190,7 @@ pub struct TabWatched {
     /// Paths whose delete was sent and that a listing still shows. A read
     /// sent before the delete can land after it, and a first snapshot saved
     /// then would fail on the missing file.
-    deleted: Vec<String>,
+    deleted: HashSet<String>,
     reading: bool,
     stale: bool,
 }
@@ -282,7 +283,7 @@ impl TabWatched {
 
     /// A delete of `path` was sent: no first snapshot is saved for it.
     pub fn delete_sent(&mut self, path: String) {
-        self.deleted.push(path);
+        self.deleted.insert(path);
     }
 
     /// A watched write was refused, so a delete may have left its file in
