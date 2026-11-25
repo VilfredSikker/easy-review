@@ -1,4 +1,4 @@
-@@@ 01 frame KeyEvent { code: Down, modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) }
+@@@ 01 frame Down
 | feature · feature (vs main)  +4 -4
 |  1  BRANCH   2  UNSTAGED   3  STAGED   4  HISTORY                                   Claude / Sonnet 5.5   0/2 reviewed
 | FILES (2)                     │  ~ src/f000.rs  +2 -2                                                      Hunk 1/2
@@ -30,7 +30,7 @@
 |                               │  27   27 │ let line_26 = 26;
 | j/k nav n/N hunks +/- context ␣ review / search g git a ai o open v verify ? help ^q quit
 |styles adffad43fc1015e3
-@@@ 02 frame KeyEvent { code: Down, modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 01
+@@@ 02 frame Down < 01
 03| ~ src/f000.rs          +2 -2  │ ▶ @@ -1,14 +1,14 @@
 04| ~ src/f001.rs          +2 -2  │   1    1 │ let line_0 = 0;
 05|                               │   2    2 │ let line_1 = 1;
@@ -58,7 +58,7 @@
 27|                               │  27   27 │ let line_26 = 26;
 28|                               │  28   28 │ let line_27 = 27;
 30|styles 016d412a4f4c9232
-@@@ 03 frame KeyEvent { code: Down, modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 01
+@@@ 03 frame Down < 01
 03| ~ src/f000.rs          +2 -2  │   1    1 │ let line_0 = 0;
 04| ~ src/f001.rs          +2 -2  │   2    2 │ let line_1 = 1;
 05|                               │   3    3 │ let line_2 = 2;
@@ -86,40 +86,40 @@
 27|                               │  28   28 │ let line_27 = 27;
 28|                               │  29   29 │ let line_28 = 28;
 30|styles 3478ed45923bd84b
-@@@ 04 frame KeyEvent { code: Char('q'), modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 03
+@@@ 04 frame q < 03
 25| question  f000.rs:L3   Enter send  S+Enter newline  Tab pause  Ctrl+t type  Esc cancel
 26|
 27|
 28|
 29|
 30|styles 03040ddc802cf714
-@@@ 05 frame KeyEvent { code: Char('W'), modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 04
+@@@ 05 frame W < 04
 26|W
 30|styles bf7085ed6fd3e3c9
-@@@ 06 frame KeyEvent { code: Char('h'), modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 04
+@@@ 06 frame h < 04
 26|Wh
 30|styles 9335c16822346adc
-@@@ 07 frame KeyEvent { code: Char('y'), modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 04
+@@@ 07 frame y < 04
 26|Why
 30|styles 8922d0a28262cf81
-@@@ 08 frame KeyEvent { code: Char(' '), modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 07
+@@@ 08 frame Space < 07
 30|styles 4f6413229ce3d1e4
-@@@ 09 frame KeyEvent { code: Char('t'), modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 04
+@@@ 09 frame t < 04
 26|Why t
 30|styles b4d9666612a82ed9
-@@@ 10 frame KeyEvent { code: Char('h'), modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 04
+@@@ 10 frame h < 04
 26|Why th
 30|styles b731b14bc1e61fac
-@@@ 11 frame KeyEvent { code: Char('i'), modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 04
+@@@ 11 frame i < 04
 26|Why thi
 30|styles af7ca1f77e64b2d1
-@@@ 12 frame KeyEvent { code: Char('s'), modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 04
+@@@ 12 frame s < 04
 26|Why this
 30|styles bb61a445f9a522f4
-@@@ 13 frame KeyEvent { code: Char('?'), modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 04
+@@@ 13 frame ? < 04
 26|Why this?
 30|styles d62dc305245225a9
-@@@ 14 frame KeyEvent { code: Enter, modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 03
+@@@ 14 frame Enter < 03
 02| FILES (2)                     │  ~ src/f000.rs  +2 -2                                    ● Question added: Why this?
 03| ~ src/f000.rs    ◆1    +2 -2  │   1    1 │ let line_0 = 0;
 06|                               │  ╭─ ❓  R3  ───────────────────────────────────────────────────────────────────────────
@@ -146,7 +146,7 @@
 27|                               │  24   24 │ let line_23 = 23;
 28|                               │  25   25 │ let line_24 = 24;
 30|styles edc489d5a77372eb
-@@@ 15 frame KeyEvent { code: Char('J'), modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 01
+@@@ 15 frame J < 01
 03| ~ src/f000.rs    ◆1    +2 -2  │
 08|                               │  ╭─ ❓  R3  ───────────────────────────────────────────────────────────────────────────
 09|                               │  ▸│  You  ########  ◆
@@ -171,35 +171,35 @@
 28|                               │  23   23 │ let line_22 = 22;
 29| j/k nav n/N hunks +/- context ␣ review / search r reply x delete g git a ai o open v verify ? help ^q quit
 30|styles acabbe9284bb296d
-@@@ 16 frame KeyEvent { code: Char('r'), modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 15
+@@@ 16 frame r < 15
 25| reply  f000.rs:L3   Enter send  S+Enter newline  Tab pause  Esc cancel
 26|
 27|
 28|
 29|
 30|styles 9d72fa8d6b247816
-@@@ 17 frame KeyEvent { code: Char('B'), modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 16
+@@@ 17 frame B < 16
 26|B
 30|styles d40610489c3dec57
-@@@ 18 frame KeyEvent { code: Char('e'), modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 16
+@@@ 18 frame e < 16
 26|Be
 30|styles 1ab99a63bb4ccece
-@@@ 19 frame KeyEvent { code: Char('c'), modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 16
+@@@ 19 frame c < 16
 26|Bec
 30|styles ffa56a5e5a36e7df
-@@@ 20 frame KeyEvent { code: Char('a'), modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 16
+@@@ 20 frame a < 16
 26|Beca
 30|styles b106b60585638d46
-@@@ 21 frame KeyEvent { code: Char('u'), modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 16
+@@@ 21 frame u < 16
 26|Becau
 30|styles e188cbf77f68ed47
-@@@ 22 frame KeyEvent { code: Char('s'), modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 16
+@@@ 22 frame s < 16
 26|Becaus
 30|styles c5d96fb9205e6dfe
-@@@ 23 frame KeyEvent { code: Char('e'), modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 16
+@@@ 23 frame e < 16
 26|Because
 30|styles 116d0e1b62ac574f
-@@@ 24 frame KeyEvent { code: Enter, modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 15
+@@@ 24 frame Enter < 15
 02| FILES (2)                     │  ~ src/f000.rs  +2 -2                                         ● Reply added: Because
 12|                               │       ↳ ❓  You  ########
 13|                               │            Because
@@ -270,16 +270,16 @@
 |    "text": "Because"
 |  }
 |]
-@@@ 26 frame KeyEvent { code: Char('J'), modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 24
+@@@ 26 frame J < 24
 02| FILES (2)                     │  ~ src/f000.rs  +2 -2                                                      Hunk 1/2
 09|                               │  │  You  ########
 12|                               │       ↳ ❓  You  ########  ◆
 29| j/k nav n/N hunks +/- context ␣ review / search x delete g git a ai o open v verify ? help ^q quit
 30|styles 8daa6661611d324b
-@@@ 27 frame KeyEvent { code: Char('x'), modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 26
+@@@ 27 frame x < 26
 29| ⚠  Delete comment? (y/n)
 30|styles ebf1956f6a341351
-@@@ 28 frame KeyEvent { code: Char('y'), modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 15
+@@@ 28 frame y < 15
 02| FILES (2)                     │  ~ src/f000.rs  +2 -2                                              ● Comment deleted
 09|                               │  │  You  ########
 29| j/k nav n/N hunks +/- context ␣ review / search g git a ai o open v verify ? help ^q quit
@@ -311,11 +311,11 @@
 |    "text": "Why this?"
 |  }
 |]
-@@@ 30 frame KeyEvent { code: Char('J'), modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 15
-@@@ 31 frame KeyEvent { code: Char('x'), modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 15
+@@@ 30 frame J < 15
+@@@ 31 frame x < 15
 29| ⚠  Delete comment? (y/n)
 30|styles e31c68f6a7267242
-@@@ 32 frame KeyEvent { code: Char('y'), modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 01
+@@@ 32 frame y < 01
 02| FILES (2)                     │  ~ src/f000.rs  +2 -2                                              ● Comment deleted
 30|styles a79c1cdf4c600258
 @@@ 33 json deleted

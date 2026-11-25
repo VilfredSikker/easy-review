@@ -48,7 +48,7 @@
 27|                               │  21   21 │ let line_20 = 20;
 28|                               │  22   22 │ let line_21 = 21;
 30|styles a253ebd179d61607
-@@@ 03 frame KeyEvent { code: Char('T'), modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 02
+@@@ 03 frame T < 02
 02| FILES (1) · 2 findings        │  ~ src/f000.rs  +2 -2                  ● Confidence: confirmed only — arbiter-graded
 03| ~ f000.rs     ◆1 ▪1    +2 -2  │
 15|                               │   6    6 │ let line_5 = 5;
@@ -66,7 +66,7 @@
 27|                               │  22   22 │ let line_21 = 21;
 28|                               │  23   23 │ let line_22 = 22;
 30|styles 057a43fb62ed6bd6
-@@@ 04 frame KeyEvent { code: Char('T'), modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 01
+@@@ 04 frame T < 01
 02| FILES (1) · 2 findings        │  ~ src/f000.rs  +2 -2                    ● Confidence: all findings — arbiter-graded
 30|styles 205d4600c786c7d6
 @@@ 05 frame pinned < 01

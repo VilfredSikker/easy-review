@@ -30,7 +30,7 @@
 |                               │  21   21 │ let line_20 = 20;
 | j/k nav n/N hunks +/- context ␣ review / search g git a ai o open v verify ? help ^q quit
 |styles 13fea590a614214d
-@@@ 02 frame KeyEvent { code: Char('p'), modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 01
+@@@ 02 frame p < 01
 01|  1  BRANCH   2  UNSTAGED   3  STAGED   4  HISTORY           AI ON    Claude / Sonnet 5.5    File Detail   0/3 reviewed
 02| FILES (3) · 2 findings        │  ~ src/f000.rs  +2 -2              Hunk 1/2    │ [File] [AI] [Log]
 03| ~ f000.rs  ●● ◆1 ▪1    +2 -2  │                                                │──────────────────────────────────────
@@ -61,14 +61,14 @@
 28|                               │  21   21 │ let line_20 = 20;                   │
 29| j/k nav n/N hunks Tab focus panel p close panel g git a ai o open v verify ? help ^q quit
 30|styles d7a98cfdce91edbb
-@@@ 03 frame KeyEvent { code: Tab, modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 02
+@@@ 03 frame Tab < 02
 29| j/k nav n/N hunks Esc unfocus p close panel g git a ai o open v verify ? help ^q quit
 30|styles 27bce76be82a5880
-@@@ 04 frame KeyEvent { code: Esc, modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 02
-@@@ 05 frame KeyEvent { code: Char('C'), modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 02
+@@@ 04 frame Esc < 02
+@@@ 05 frame C < 02
 02| FILES (3) · 2 findings        │  ~ src/f000.rs  +2 -2              Hunk 1/2    │ [File] [AI] [Log ● Comments: hidden
 30|styles c88cb0258f541abb
-@@@ 06 frame KeyEvent { code: Char('Q'), modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 02
+@@@ 06 frame Q < 02
 02| FILES (3) · 2 findings        │  ~ src/f000.rs  +2 -2              Hunk 1/2    │ [File] [AI] [Lo ● Questions: hidden
 10|                               │  ●  Finding f1                                 │ ● ? Finding f2
 11|                               │   5    5 │ let line_4 = 4;                     │   hunk 1, line 5
@@ -90,12 +90,12 @@
 27|                               │  24   24 │ let line_23 = 23;                   │
 28|                               │  25   25 │ let line_24 = 24;                   │
 30|styles 8a3e1cc79545359a
-@@@ 07 frame KeyEvent { code: Char('Q'), modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 02
+@@@ 07 frame Q < 02
 02| FILES (3) · 2 findings        │  ~ src/f000.rs  +2 -2              Hunk 1/2    │ [File] [AI] [L ● Questions: visible
 30|styles cc055f2997126c23
-@@@ 08 frame KeyEvent { code: Char('X'), modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 05
+@@@ 08 frame X < 05
 02| FILES (3) · 2 findings        │  ~ src/f000.rs  +2 -2              Hunk 1/2    │ [File] [AI] [Log ● Resolved: hidden
-@@@ 09 frame KeyEvent { code: Char('A'), modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 02
+@@@ 09 frame A < 02
 01|  1  BRANCH   2  UNSTAGED   3  STAGED   4  HISTORY          AI OFF    Claude / Sonnet 5.5    File Detail   0/3 reviewed
 02| FILES (3)                     │  ~ src/f000.rs  +2 -2              Hunk 1/2    │ [File] [AI] [Log ● AI findings: OFF
 03| ~ f000.rs     ◆1 ▪1    +2 -2  │                                                │──────────────────────────────────────
@@ -122,10 +122,10 @@
 27|                               │  22   22 │ let line_21 = 21;                   │
 28|                               │  23   23 │ let line_22 = 22;                   │
 30|styles d99a4b401c1a51b9
-@@@ 10 frame KeyEvent { code: Char('A'), modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 02
+@@@ 10 frame A < 02
 02| FILES (3) · 2 findings        │  ~ src/f000.rs  +2 -2              Hunk 1/2    │ [File] [AI] [Log] ● AI findings: ON
 30|styles 3db771c112e45227
-@@@ 11 frame KeyEvent { code: Char('K'), modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 02
+@@@ 11 frame K < 02
 02| FILES (3) · 2 findings        │  ~ src/f000.rs  +2 -2              Hunk 2/2    │ [File] [AI] [Log]
 03| ~ f000.rs  ●● ◆1 ▪1    +2 -2  │   9    9 │ let line_8 = 8;                     │──────────────────────────────────────
 04| ~ src/f001.rs          +2 -2  │  10   10 │ let line_9 = 9;                     │ src/f000.rs
@@ -155,7 +155,7 @@
 28|                               │  33   33 │ let line_32 = 32;                   │
 29| j/k nav n/N hunks Tab focus panel p close panel r reply x delete g git a ai o open v verify ? help ^q quit
 30|styles 6cf0f42eed90e92d
-@@@ 12 frame KeyEvent { code: Char('K'), modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 11
+@@@ 12 frame K < 11
 02| FILES (3) · 2 findings        │  ~ src/f001.rs  +2 -2              Hunk 2/2    │ [File] [AI] [Log]
 03| ~ f000.rs  ●● ◆1 ▪1    +2 -2  │  ··· 6 lines hidden (+/- to expand) ···        │──────────────────────────────────────
 04| ~ src/f001.rs          +2 -2  │ ▶ @@ -21,20 +21,20 @@ let line_19 = 19;        │ src/f001.rs
@@ -184,15 +184,15 @@
 27|                               │                                                │
 28|                               │                                                │
 30|styles 8cb2a7105b491ede
-@@@ 13 frame KeyEvent { code: Char('K'), modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 12
+@@@ 13 frame K < 12
 29| j/k nav n/N hunks Tab focus panel p close panel x delete g git a ai o open v verify ? help ^q quit
 30|styles 4291389da7e93e37
-@@@ 14 frame KeyEvent { code: Char('K'), modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 02
+@@@ 14 frame K < 02
 11|                               │  ▸│  You  ◆                                    │   hunk 1, line 5
 29| j/k nav n/N hunks Tab focus panel p close panel r reply x delete g git a ai o open v verify ? help ^q quit
 30|styles 8c35223d55d80f9c
-@@@ 15 frame KeyEvent { code: Char('J'), modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 13
-@@@ 16 frame KeyEvent { code: Char('P'), modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 01
+@@@ 15 frame J < 13
+@@@ 16 frame P < 01
 02| FILES (3) · 2 findings        │  ~ src/f001.rs  +2 -2                                                      Hunk 2/2
 03| ~ f000.rs  ●● ◆1 ▪1    +2 -2  │  ··· 6 lines hidden (+/- to expand) ···
 04| ~ src/f001.rs          +2 -2  │ ▶ @@ -21,20 +21,20 @@ let line_19 = 19;

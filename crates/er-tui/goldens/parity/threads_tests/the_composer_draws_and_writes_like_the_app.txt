@@ -1,4 +1,4 @@
-@@@ 01 frame KeyEvent { code: Down, modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) }
+@@@ 01 frame Down
 | feature · feature (vs main)  +4 -4
 |  1  BRANCH   2  UNSTAGED   3  STAGED   4  HISTORY                                   Claude / Sonnet 5.5   0/2 reviewed
 | FILES (2)                     │  ~ src/f000.rs  +2 -2                                                      Hunk 1/2
@@ -30,7 +30,7 @@
 |                               │  27   27 │ let line_26 = 26;
 | j/k nav n/N hunks +/- context ␣ review / search g git a ai o open v verify ? help ^q quit
 |styles adffad43fc1015e3
-@@@ 02 frame KeyEvent { code: Down, modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 01
+@@@ 02 frame Down < 01
 03| ~ src/f000.rs          +2 -2  │ ▶ @@ -1,14 +1,14 @@
 04| ~ src/f001.rs          +2 -2  │   1    1 │ let line_0 = 0;
 05|                               │   2    2 │ let line_1 = 1;
@@ -58,7 +58,7 @@
 27|                               │  27   27 │ let line_26 = 26;
 28|                               │  28   28 │ let line_27 = 27;
 30|styles 016d412a4f4c9232
-@@@ 03 frame KeyEvent { code: Down, modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 01
+@@@ 03 frame Down < 01
 03| ~ src/f000.rs          +2 -2  │   1    1 │ let line_0 = 0;
 04| ~ src/f001.rs          +2 -2  │   2    2 │ let line_1 = 1;
 05|                               │   3    3 │ let line_2 = 2;
@@ -86,61 +86,61 @@
 27|                               │  28   28 │ let line_27 = 27;
 28|                               │  29   29 │ let line_28 = 28;
 30|styles 3478ed45923bd84b
-@@@ 04 frame KeyEvent { code: Char('q'), modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 03
+@@@ 04 frame q < 03
 25| question  f000.rs:L3   Enter send  S+Enter newline  Tab pause  Ctrl+t type  Esc cancel
 26|
 27|
 28|
 29|
 30|styles 03040ddc802cf714
-@@@ 05 frame KeyEvent { code: Char('I'), modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 04
+@@@ 05 frame I < 04
 26|I
 30|styles bf7085ed6fd3e3c9
-@@@ 06 frame KeyEvent { code: Char('s'), modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 04
+@@@ 06 frame s < 04
 26|Is
 30|styles 9335c16822346adc
-@@@ 07 frame KeyEvent { code: Char(' '), modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 06
+@@@ 07 frame Space < 06
 30|styles 8922d0a28262cf81
-@@@ 08 frame KeyEvent { code: Char('t'), modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 04
+@@@ 08 frame t < 04
 26|Is t
 30|styles 4f6413229ce3d1e4
-@@@ 09 frame KeyEvent { code: Char('h'), modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 04
+@@@ 09 frame h < 04
 26|Is th
 30|styles b4d9666612a82ed9
-@@@ 10 frame KeyEvent { code: Char('i'), modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 04
+@@@ 10 frame i < 04
 26|Is thi
 30|styles b731b14bc1e61fac
-@@@ 11 frame KeyEvent { code: Char('s'), modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 04
+@@@ 11 frame s < 04
 26|Is this
 30|styles af7ca1f77e64b2d1
-@@@ 12 frame KeyEvent { code: Char(' '), modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 11
+@@@ 12 frame Space < 11
 30|styles bb61a445f9a522f4
-@@@ 13 frame KeyEvent { code: Char('r'), modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 04
+@@@ 13 frame r < 04
 26|Is this r
 30|styles d62dc305245225a9
-@@@ 14 frame KeyEvent { code: Char('i'), modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 04
+@@@ 14 frame i < 04
 26|Is this ri
 30|styles 6b91dc6b66a55ebc
-@@@ 15 frame KeyEvent { code: Char('g'), modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 04
+@@@ 15 frame g < 04
 26|Is this rig
 30|styles 32345dfbf3b9b261
-@@@ 16 frame KeyEvent { code: Char('h'), modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 04
+@@@ 16 frame h < 04
 26|Is this righ
 30|styles 8835ed9f92b66dc4
-@@@ 17 frame KeyEvent { code: Char('t'), modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 04
+@@@ 17 frame t < 04
 26|Is this right
 30|styles 3b6c06a6bdca21b9
-@@@ 18 frame KeyEvent { code: Char('?'), modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 04
+@@@ 18 frame ? < 04
 26|Is this right?
 30|styles 765ef56c4f9a398c
-@@@ 19 frame KeyEvent { code: Char('t'), modifiers: KeyModifiers(CONTROL), kind: Press, state: KeyEventState(0x0) } < 18
+@@@ 19 frame C-t < 18
 25| note  f000.rs:L3   Enter send  S+Enter newline  Tab pause  Ctrl+t type  Esc cancel
 30|styles 3eff56621e9988bc
-@@@ 20 frame KeyEvent { code: Tab, modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 03
+@@@ 20 frame Tab < 03
 29| Tab resume draft j/k nav n/N hunks +/- context ␣ review / search g git a ai o open v verify ? help ^q quit
 30|styles 77b14fc7568b07f0
-@@@ 21 frame KeyEvent { code: Tab, modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 19
-@@@ 22 frame KeyEvent { code: Enter, modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 03
+@@@ 21 frame Tab < 19
+@@@ 22 frame Enter < 03
 02| FILES (2)                     │  ~ src/f000.rs  +2 -2                                   ● Note added: Is this right?
 03| ~ src/f000.rs    ▪1    +2 -2  │   1    1 │ let line_0 = 0;
 06|                               │  ╭─ 📝  R3  ───────────────────────────────────────────────────────────────────────────
@@ -167,7 +167,7 @@
 27|                               │  24   24 │ let line_23 = 23;
 28|                               │  25   25 │ let line_24 = 24;
 30|styles 313fab482f72d154
-@@@ 23 frame KeyEvent { code: Char('q'), modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 22
+@@@ 23 frame q < 22
 02| FILES (2)                     │  ~ src/f000.rs  +2 -2                                                      Hunk 1/2
 25| question  f000.rs:L3   Enter send  S+Enter newline  Tab pause  Ctrl+t type  Esc cancel
 26|
@@ -175,10 +175,10 @@
 28|
 29|
 30|styles c4d1da0e2ebf5587
-@@@ 24 frame KeyEvent { code: Char('a'), modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 23
+@@@ 24 frame a < 23
 26|a
 30|styles db6d9f23eb8c0988
-@@@ 25 frame KeyEvent { code: Enter, modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 22
+@@@ 25 frame Enter < 22
 02| FILES (2)                     │  ~ src/f000.rs  +2 -2                                            ● Question added: a
 03| ~ f000.rs     ◆1 ▪1    +2 -2  │   1    1 │ let line_0 = 0;
 06|                               │  ╭─ ❓  R3  ───────────────────────────────────────────────────────────────────────────

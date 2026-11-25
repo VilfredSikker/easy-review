@@ -1,4 +1,4 @@
-@@@ 01 frame KeyEvent { code: Enter, modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) }
+@@@ 01 frame Enter
 | feature · feature (vs main)  +6 -6
 |  1  BRANCH   2  UNSTAGED   3  STAGED   4  HISTORY                         AI OFF    Claude / Sonnet 5.5   0/3 reviewed
 | FILES (3)                     │  ~ src/f000.rs  +2 -2                                             ● AI findings: OFF
@@ -30,9 +30,9 @@
 |                               │  23   23 │ let line_22 = 22;
 | j/k nav n/N hunks +/- context ␣ review / search g git a ai o open v verify ? help ^q quit
 |styles bc9045f253753437
-@@@ 02 frame KeyEvent { code: Enter, modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 01
+@@@ 02 frame Enter < 01
 02| FILES (3)                     │  ~ src/f000.rs  +2 -2                                             ● Comments: hidden
-@@@ 03 frame KeyEvent { code: Enter, modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 01
+@@@ 03 frame Enter < 01
 02| FILES (3)                     │  ~ src/f000.rs  +2 -2                                            ● Questions: hidden
 10|                               │   5    5 │ let line_4 = 4;
 11|                               │   6    6 │ let line_5 = 5;
@@ -54,19 +54,19 @@
 27|                               │  26   26 │ let line_25 = 25;
 28|                               │  27   27 │ let line_26 = 26;
 30|styles 4eed849631541a13
-@@@ 04 frame KeyEvent { code: Enter, modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 03
+@@@ 04 frame Enter < 03
 02| FILES (3)                     │  ~ src/f000.rs  +2 -2                                             ● Resolved: hidden
 30|styles f8b8196b37c76dfc
-@@@ 05 frame KeyEvent { code: Enter, modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 03
+@@@ 05 frame Enter < 03
 02| FILES (3)                     │  ~ src/f000.rs  +2 -2                             ● Confidence: informational hidden
 30|styles 6448580146ae3a5c
-@@@ 06 frame KeyEvent { code: Enter, modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 03
+@@@ 06 frame Enter < 03
 02| FILES (3)                     │  ~ src/f000.rs  +2 -2                                   ● Confidence: confirmed only
 30|styles 5fac2f85854c3320
-@@@ 07 frame KeyEvent { code: Enter, modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 01
+@@@ 07 frame Enter < 01
 02| FILES (3)                     │  ~ src/f000.rs  +2 -2                                           ● Questions: visible
 30|styles 48a8562a08a97cbb
-@@@ 08 frame KeyEvent { code: Enter, modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 01
+@@@ 08 frame Enter < 01
 01|  1  BRANCH   2  UNSTAGED   3  STAGED   4  HISTORY                          AI ON    Claude / Sonnet 5.5   0/3 reviewed
 02| FILES (3) · 2 findings        │  ~ src/f000.rs  +2 -2                                              ● AI findings: ON
 30|styles eb07fe637794adca
