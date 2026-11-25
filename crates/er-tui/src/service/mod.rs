@@ -78,6 +78,8 @@ mod modes_tests;
 #[cfg(test)]
 mod open_tests;
 #[cfg(test)]
+mod parity;
+#[cfg(test)]
 mod pr_stack_tests;
 #[cfg(test)]
 mod review_hub_tests;

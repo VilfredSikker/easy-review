@@ -246,6 +246,10 @@ pub(super) fn git(dir: &Path, args: &[&str]) {
             "user.email=t@t",
         ])
         .args(args)
+        // Fixed dates, so a fixture's commits hash the same on every run.
+        .env("TZ", "UTC")
+        .env("GIT_AUTHOR_DATE", "2020-01-01T00:00:00")
+        .env("GIT_COMMITTER_DATE", "2020-01-01T00:00:00")
         .current_dir(dir)
         .output()
         .unwrap_or_else(|error| panic!("git {args:?}: {error}"));
@@ -416,6 +420,7 @@ pub(super) fn assert_parity(
             );
         }
     }
+    super::parity::dump(step, app);
 }
 
 /// The App path, on the same repo, with the automatic context pick off, as

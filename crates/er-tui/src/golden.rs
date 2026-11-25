@@ -30,7 +30,7 @@ pub fn draw(app: &App, width: u16, height: u16, hl: &mut ui::highlight::Highligh
     terminal.backend().buffer().clone()
 }
 
-fn golden_text(buf: &Buffer) -> String {
+pub(crate) fn golden_text(buf: &Buffer) -> String {
     let mut out = String::new();
     for row in buf.content.chunks(usize::from(buf.area.width)) {
         let line: String = row.iter().map(|cell| cell.symbol()).collect();
