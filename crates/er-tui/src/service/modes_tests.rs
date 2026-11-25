@@ -82,6 +82,7 @@ fn worktree_fixture(stage: &[&str]) -> tempfile::TempDir {
 /// Mode keys and the mtime sort draw as the App's.
 #[test]
 fn mode_keys_and_the_mtime_sort_draw_like_the_app() {
+    let _golden = super::parity::guard();
     let (app_repo, flag_repo) = (
         worktree_fixture(&["src/f002.rs"]),
         worktree_fixture(&["src/f002.rs"]),
@@ -146,6 +147,7 @@ fn the_watcher_refreshes_its_tab_and_counts_cleared_marks() {
 /// The base row and input rediff the tab and keep its base.
 #[test]
 fn the_base_input_rediffs_the_tab_and_keeps_its_base() {
+    let _golden = super::parity::guard();
     let (app_repo, flag_repo) = (worktree_fixture(&[]), worktree_fixture(&[]));
     let storage = storage();
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
@@ -207,6 +209,7 @@ fn target_is_every_tabs_base() {
 /// A session saved in another view restores there, as the App's.
 #[test]
 fn a_session_saved_in_another_view_restores_there_like_the_app() {
+    let _golden = super::parity::guard();
     let staged = ["src/f001.rs", "src/f002.rs"];
     let (app_repo, flag_repo) = (worktree_fixture(&staged), worktree_fixture(&staged));
     let storage = storage();

@@ -1,0 +1,62 @@
+@@@ 01 frame 5
+| feature · feature [merge in progress]  +4 -0
+|  1  BRANCH   2  UNSTAGED   3  STAGED   4  HISTORY   5  CONFLICTS    Claude / Sonnet 5.5    1 unresolved   0/1 reviewed
+| FILES (1)                     │ src/f000.rs                                                                Hunk 1/2
+| ✗ src/f000.rs          +4 -0  │  ! src/f000.rs  +4 -0
+|                               │
+|                               │ ▶ @@ -1,10 +1,11 @@
+|                               │        1 │+<<<<<<< HEAD
+|                               │   1    2 │ let line_0 = 0;
+|                               │   2    3 │ let line_1 = 1;
+|                               │   3    4 │ let line_2 = 2;
+|                               │   4    5 │ let changed_3 = 3; // edited
+|                               │   5    6 │ let line_4 = 4;
+|                               │   6    7 │ let line_5 = 5;
+|                               │   7    8 │ let line_6 = 6;
+|                               │   8    9 │ let line_7 = 7;
+|                               │   9   10 │ let line_8 = 8;
+|                               │  10   11 │ let line_9 = 9;
+|                               │  ··· 20 lines hidden (+/- to expand) ···
+|                               │   @@ -31,10 +32,13 @@ let line_29 = 29;
+|                               │  31   32 │ let changed_30 = 30; // edited
+|                               │  32   33 │ let line_31 = 31;
+|                               │  33   34 │ let line_32 = 32;
+|                               │  34   35 │ let line_33 = 33;
+|                               │  35   36 │ let line_34 = 34;
+|                               │  36   37 │ let line_35 = 35;
+|                               │  37   38 │ let line_36 = 36;
+|                               │  38   39 │ let line_37 = 37;
+|                               │  39   40 │ let line_38 = 38;
+|                               │  40   41 │ let line_39 = 39;
+| j/k nav n/N hunks +/- context ␣ review / search g git a ai o open v verify ? help ^q quit
+|styles 502945c33fc537c7
+@@@ 02 frame s < 01
+00| feature · feature [merge in progress]  +1 -40
+01|  1  BRANCH   2  UNSTAGED   3  STAGED   4  HISTORY   5  CONFLICTS   Claude / Sonnet 5.5    MERGE  1 files   0/1 reviewed
+02| FILES (1)                     │ src/f000.rs                                                  ● Resolved: src/f000.rs
+03| ✓ src/f000.rs         +1 -40  │  ~ src/f000.rs  +1 -40
+05|                               │ ▶ @@ -1,40 +1,1 @@
+06|                               │   1      │-let line_0 = 0;
+07|                               │   2      │-let line_1 = 1;
+08|                               │   3      │-let line_2 = 2;
+09|                               │   4      │-let changed_3 = 3; // edited
+10|                               │   5      │-let line_4 = 4;
+11|                               │   6      │-let line_5 = 5;
+12|                               │   7      │-let line_6 = 6;
+13|                               │   8      │-let line_7 = 7;
+14|                               │   9      │-let line_8 = 8;
+15|                               │  10      │-let line_9 = 9;
+16|                               │  11      │-let line_10 = 10;
+17|                               │  12      │-let line_11 = 11;
+18|                               │  13      │-let line_12 = 12;
+19|                               │  14      │-let line_13 = 13;
+20|                               │  15      │-let line_14 = 14;
+21|                               │  16      │-let line_15 = 15;
+22|                               │  17      │-let line_16 = 16;
+23|                               │  18      │-let line_17 = 17;
+24|                               │  19      │-let line_18 = 18;
+25|                               │  20      │-let line_19 = 19;
+26|                               │  21      │-let line_20 = 20;
+27|                               │  22      │-let line_21 = 21;
+28|                               │  23      │-let line_22 = 22;
+30|styles 2e089fb5c54cd051

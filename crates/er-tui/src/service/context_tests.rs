@@ -48,12 +48,14 @@ fn parity(threshold: usize, keys: &str) {
 /// `+` and `-` step the App's counts, per file, to full context and back.
 #[test]
 fn context_keys_draw_like_the_app() {
+    let _golden = super::parity::guard();
     parity(0, "-++j+k+++-=---");
 }
 
 /// A file a move selects takes the App's automatic count.
 #[test]
 fn the_automatic_pick_draws_like_the_app() {
+    let _golden = super::parity::guard();
     parity(100, "jjk-j");
 }
 
