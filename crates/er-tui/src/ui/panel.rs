@@ -1610,7 +1610,6 @@ mod tests {
     #[test]
     fn the_drawn_finding_rows_are_the_step_list() {
         use ratatui::{backend::TestBackend, Terminal};
-        let mut app = crate::golden::base_app();
         let row = |id: &str, lens: &str, title: &str, line: usize, confidence: &str| {
             let raised_by = if lens == "security" || title == "Shared claim" {
                 vec!["general", "security"]
@@ -1633,47 +1632,53 @@ mod tests {
             row("done-row", "general", "Closed claim", 4, "confirmed"),
             row("dropped-row", "security", "Dropped claim", 5, "dropped"),
         ];
-        let tab = app.tab_mut();
-        tab.ai.review = Some(
-            serde_json::from_value(serde_json::json!({
-                "version": 1, "diff_hash": "hash",
-                "files": {"src/auth.rs": {"risk": "high", "findings": findings}}
-            }))
-            .unwrap(),
+        crate::service::golden_tests::with_section_screen(
+            |scene| {
+                scene.ai(|ai| {
+                    ai.review = Some(
+                        serde_json::from_value(serde_json::json!({
+                            "version": 1, "diff_hash": "hash",
+                            "files": {"src/auth.rs": {"risk": "high", "findings": findings}}
+                        }))
+                        .unwrap(),
+                    );
+                    ai.arbiter_graded_keys = HashSet::from([er_engine::ai::identity::finding_key(
+                        "src/auth.rs",
+                        Some(2),
+                        "Shared claim",
+                    )]);
+                });
+                scene.state.layers.min_trust = Confidence::Tentative;
+                scene.state.panel = Some(PanelContent::FileDetail);
+            },
+            |scene| {
+                let screen = crate::service::golden_tests::screen_of(scene);
+                let mut terminal = Terminal::new(TestBackend::new(80, 40)).unwrap();
+                terminal.draw(|f| render(f, f.area(), &screen)).unwrap();
+                let titles = [
+                    "Shared claim",
+                    "Other claim",
+                    "Plain claim",
+                    "Closed claim",
+                    "Dropped claim",
+                ];
+                let drawn: Vec<&str> = terminal
+                    .backend()
+                    .buffer()
+                    .content
+                    .chunks(80)
+                    .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
+                    .filter_map(|row| titles.into_iter().find(|title| row.contains(title)))
+                    .collect();
+                let ai = &scene.content.ai.state;
+                let steps: Vec<&str> = drawn_file_findings(ai, &scene.state.layers, "src/auth.rs")
+                    .iter()
+                    .map(|finding| finding.title.as_str())
+                    .collect();
+                assert_eq!(drawn, steps);
+                assert_eq!(steps, ["Shared claim", "Other claim"]);
+            },
         );
-        tab.ai.arbiter_graded_keys = HashSet::from([er_engine::ai::identity::finding_key(
-            "src/auth.rs",
-            Some(2),
-            "Shared claim",
-        )]);
-        tab.layers.min_trust = Confidence::Tentative;
-        tab.panel = Some(PanelContent::FileDetail);
-        let mut cache = crate::screen::ViewCache::default();
-        let screen = crate::screen::from_app(&app, &mut cache);
-        let mut terminal = Terminal::new(TestBackend::new(80, 40)).unwrap();
-        terminal.draw(|f| render(f, f.area(), &screen)).unwrap();
-        let titles = [
-            "Shared claim",
-            "Other claim",
-            "Plain claim",
-            "Closed claim",
-            "Dropped claim",
-        ];
-        let drawn: Vec<&str> = terminal
-            .backend()
-            .buffer()
-            .content
-            .chunks(80)
-            .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
-            .filter_map(|row| titles.into_iter().find(|title| row.contains(title)))
-            .collect();
-        let tab = app.tab();
-        let steps: Vec<&str> = drawn_file_findings(&tab.ai, &tab.layers, "src/auth.rs")
-            .iter()
-            .map(|finding| finding.title.as_str())
-            .collect();
-        assert_eq!(drawn, steps);
-        assert_eq!(steps, ["Shared claim", "Other claim"]);
     }
 
     fn reach_text(reach: &er_engine::ai::TriageReach) -> Option<String> {

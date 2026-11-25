@@ -97,6 +97,16 @@ pub fn check(fixtures: &[Fixture]) {
     );
 }
 
+/// How a frame drawn elsewhere differs from the golden file `name`, or
+/// `None` when it matches. The flag path's suite reads the same files and
+/// never rewrites them: the App's fixtures record them.
+pub(crate) fn differs(name: &str, buffer: &Buffer) -> Option<String> {
+    let path = format!("{}/goldens/{name}.txt", env!("CARGO_MANIFEST_DIR"));
+    let expected = std::fs::read_to_string(&path).unwrap_or_default();
+    let actual = golden_text(buffer);
+    (expected != actual).then(|| format!("{name}:\n--- golden\n{expected}--- drawn\n{actual}"))
+}
+
 /// Mean draw time per fixture, printed for the PR's before and after.
 pub fn print_frame_times(fixtures: &[Fixture]) {
     const FRAMES: u32 = 200;
@@ -115,7 +125,7 @@ pub fn print_frame_times(fixtures: &[Fixture]) {
     println!("frame-time {:<24} {total:>6} us", "SUM");
 }
 
-const RAW_DIFF: &str = "\
+pub(crate) const RAW_DIFF: &str = "\
 diff --git a/src/auth.rs b/src/auth.rs
 index 1111111..2222222 100644
 --- a/src/auth.rs
@@ -563,7 +573,11 @@ pub const PANES: &[Fixture] = &[
 
 /// A review of `src/auth.rs` with two findings and a question on line 3.
 fn with_review(app: &mut App) {
-    let ai = &mut app.tab_mut().ai;
+    seed_review(&mut app.tab_mut().ai);
+}
+
+/// [`with_review`]'s review and question, on either path's AI state.
+pub(crate) fn seed_review(ai: &mut er_engine::ai::AiState) {
     ai.review = Some(
         serde_json::from_value(serde_json::json!({
             "version": 1, "diff_hash": "hash",
@@ -587,6 +601,11 @@ fn with_review(app: &mut App) {
 
 /// Configures one provider with two models, the first with effort levels.
 fn model_with_efforts(app: &mut App) -> (String, String) {
+    providers_with_efforts(&mut app.config)
+}
+
+/// [`model_with_efforts`]'s provider, on either path's config.
+pub(crate) fn providers_with_efforts(config: &mut er_engine::config::ErConfig) -> (String, String) {
     use er_engine::config::{AiModelConfig, AiProviderConfig};
     let model = |id: &str, efforts: &[&str]| AiModelConfig {
         id: id.into(),
@@ -594,7 +613,7 @@ fn model_with_efforts(app: &mut App) -> (String, String) {
         effort_levels: efforts.iter().map(|e| (*e).to_string()).collect(),
         ..AiModelConfig::default()
     };
-    app.config.ai_hub.providers.insert(
+    config.ai_hub.providers.insert(
         "claude".into(),
         AiProviderConfig {
             label: Some("Claude".into()),
@@ -610,7 +629,12 @@ fn model_with_efforts(app: &mut App) -> (String, String) {
 }
 
 fn add_package(app: &mut App) {
-    app.config.packages.items.insert(
+    package_web(&mut app.config);
+}
+
+/// [`add_package`]'s package, on either path's config.
+pub(crate) fn package_web(config: &mut er_engine::config::ErConfig) {
+    config.packages.items.insert(
         "web".into(),
         PackageConfig {
             label: Some("Web".into()),

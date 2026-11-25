@@ -70,6 +70,8 @@ mod flows_tests;
 #[cfg(test)]
 mod github_tests;
 #[cfg(test)]
+pub(crate) mod golden_tests;
+#[cfg(test)]
 mod history_tests;
 #[cfg(test)]
 mod loop_tests;
