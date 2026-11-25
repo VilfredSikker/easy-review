@@ -75,6 +75,17 @@ mod tests {
     }
 
     #[test]
+    fn an_arena_file_counts_toward_the_reload_poll() {
+        // The poll sees an arena run's progress in every build, the desktop's
+        // included; the gate that limited it to the App's build is gone.
+        let dir = tempfile::tempdir().unwrap();
+        let run = dir.path().join("arena").join("run-1");
+        std::fs::create_dir_all(&run).unwrap();
+        std::fs::write(run.join("state.json"), "{}").unwrap();
+        assert!(latest_er_mtime(dir.path().to_str().unwrap()).is_some());
+    }
+
+    #[test]
     fn latest_er_mtime_ignores_feedback_json() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
