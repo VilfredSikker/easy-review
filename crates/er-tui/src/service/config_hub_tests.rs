@@ -483,3 +483,43 @@ fn the_effort_list_goes_back_to_the_models() {
         assert_eq!(picker_kind(&shell), None);
     });
 }
+
+/// A setting's inline edit inserts, deletes and moves over a multibyte
+/// char whole: the flag path's twin of the App's
+/// `char_boundaries_step_over_multibyte_chars`.
+#[test]
+fn a_setting_edit_steps_over_multibyte_chars() {
+    use crate::input::keys::{Edit, OverlayAction};
+    let repo = fixture(1);
+    let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+    let path = path_of(&repo);
+    er_engine::storage::with_process_test_storage_root(storage.path(), || {
+        let args = Args {
+            paths: vec![path],
+            ..Args::default()
+        };
+        let mut shell = super::tests::shell(&args, storage.path());
+        settle(&mut shell, loaded);
+        let view = shell.host().settings().view();
+        let mut hub = super::config_hub::ConfigHub::open(&view);
+        hub.selected = hub
+            .items
+            .iter()
+            .position(|item| matches!(item, er_engine::config::ConfigItem::StringEdit { .. }))
+            .unwrap_or_else(|| panic!("no text setting"));
+        let mut act = |action| super::config_hub::act(&mut hub, action, &view);
+        act(OverlayAction::ActivateSetting);
+        for _ in 0..64 {
+            act(OverlayAction::EditSetting(Edit::Backspace));
+        }
+        for c in ['a', 'é', '日', 'b'] {
+            act(OverlayAction::EditSetting(Edit::Insert(c)));
+        }
+        for edit in [Edit::Left, Edit::Left, Edit::Backspace, Edit::Right] {
+            act(OverlayAction::EditSetting(edit));
+        }
+        act(OverlayAction::EditSetting(Edit::Insert('ü')));
+        let buffer = hub.editing.as_ref().map(|edit| edit.buffer.clone());
+        assert_eq!(buffer.as_deref(), Some("a日üb"));
+    });
+}

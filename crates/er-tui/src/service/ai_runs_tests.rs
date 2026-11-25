@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use crossterm::event::KeyCode;
 use er_engine::ai::PanelContent;
+use er_engine::config::ErConfig;
 use er_service::test_support::{open_gate, Agent};
 
 use super::ai_runs::Rerun;
@@ -540,6 +541,96 @@ fn validate_questions_and_notes_run_their_kinds() {
             .filter(|n| n.in_reply_to.is_some())
             .collect();
         assert!(replies.is_empty(), "Claude's reply stayed: {replies:?}");
+        release(&mut shell, &agent);
+    });
+}
+
+/// One project at `root` whose review ignores `globs`.
+fn ignore_in(root: &str, globs: &[&str]) {
+    er_engine::projects_pins::update(|file| {
+        file.projects.push(er_engine::projects_pins::ProjectRecord {
+            id: "local".into(),
+            name: "repo".into(),
+            root_path: root.into(),
+            review_ignore_globs: globs.iter().map(|glob| (*glob).to_string()).collect(),
+            ..Default::default()
+        });
+        Ok(true)
+    })
+    .unwrap_or_else(|e| panic!("{e}"));
+}
+
+const IGNORE_DIFF: &str = "diff --git a/keep.rs b/keep.rs\n--- a/keep.rs\n+++ b/keep.rs\n@@ -0,0 +1 @@\n+keep\n\ndiff --git a/ignored.rs b/ignored.rs\n--- a/ignored.rs\n+++ b/ignored.rs\n@@ -0,0 +1 @@\n+ignore\n";
+
+/// A run's diff leaves out the files the project's review-ignore globs
+/// name before it is prepared and hashed, and is left byte for byte when
+/// the project names none: the flag path's twin of the App's
+/// `review_ignore_preparation_filters_before_hashing` and
+/// `review_ignore_empty_globs_preserve_raw_bytes…`.
+#[test]
+fn review_ignore_globs_filter_the_diff_before_it_is_hashed() {
+    let repo = fixture(1);
+    let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+    er_engine::storage::with_process_test_storage_root(storage.path(), || {
+        let mut shell = shell(&args(vec![path_of(&repo)]), storage.path());
+        settle(&mut shell, loaded);
+        let content = shell
+            .active_content()
+            .unwrap_or_else(|| panic!("no content"));
+        let kept = er_service::runs::filtered(IGNORE_DIFF.into(), &content);
+        assert_eq!(kept, IGNORE_DIFF, "no globs changed the bytes");
+
+        ignore_in(&content.tab.repo_root, &["ignored.rs"]);
+        let raw = er_service::runs::filtered(IGNORE_DIFF.into(), &content);
+        assert!(
+            raw.contains("keep.rs") && !raw.contains("ignored.rs"),
+            "{raw}"
+        );
+        let bucket = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let er_dir = bucket.path().to_string_lossy().into_owned();
+        let config = ErConfig::default();
+        let hash = er_service::runs::review_inputs(
+            &super::tests::test_ports(),
+            &content,
+            &config,
+            &er_dir,
+            &raw,
+        )
+        .unwrap_or_else(|e| panic!("{e:?}"));
+        let prepared = std::fs::read_to_string(Path::new(&er_dir).join("diff-tmp"))
+            .unwrap_or_else(|e| panic!("{e}"));
+        assert!(prepared.contains("keep.rs") && !prepared.contains("ignored.rs"));
+        assert_eq!(
+            er_engine::ai::prepared_diff::diff_tmp_hash(&er_dir).as_deref(),
+            Some(hash.as_str())
+        );
+    });
+}
+
+/// With every file ignored a review is refused before anything is
+/// prepared or started: the flag path's twin of the App's
+/// `review_ignore_all_files_returns_before_preparation_or_spawn`.
+#[test]
+fn a_review_with_every_file_ignored_starts_nothing() {
+    let repo = fixture(1);
+    let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+    er_engine::storage::with_process_test_storage_root(storage.path(), || {
+        let agent = agent_with(storage.path(), "true", "");
+        let mut shell = shell_on(&[&repo], &agent);
+        let root = shell
+            .active_content()
+            .map(|content| content.tab.repo_root.clone())
+            .unwrap_or_else(|| panic!("no content"));
+        ignore_in(&root, &["*.rs"]);
+        let dir = er_dir(&shell);
+        choose(&mut shell, 'a', "Review work");
+        settle_within(&mut shell, Duration::from_millis(500), |_| false);
+        assert_eq!(notice(&shell), "Review not started: Nothing to review");
+        assert!(
+            !Path::new(&dir).join("diff-tmp").exists(),
+            "a diff was prepared"
+        );
+        assert_eq!(shell.runs_started, 0, "a run started");
         release(&mut shell, &agent);
     });
 }
