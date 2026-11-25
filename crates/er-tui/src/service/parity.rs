@@ -233,10 +233,11 @@ pub(super) fn stable_text(frame: &Buffer) -> String {
 
 /// The test modules whose checks are frozen. Each later P76.1 PR adds its
 /// areas; the others still only compare the two legs live.
-const FROZEN: [&str; 21] = [
+const FROZEN: [&str; 22] = [
     "copy_tests",
     "open_tests",
     "duties_tests",
+    "config_hub_tests",
     "pr_stack_tests",
     "flows_tests",
     "ai_runs_tests",

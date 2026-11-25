@@ -1,0 +1,250 @@
+@@@ 01 frame comma
+| feature · feature (vs main)  +2 -2
+|  1  BRANCH   2  UNSTAGED   3  STAGED   4  HISTORY                                   Claude / Sonnet 5.5   0/1 reviewed
+| FILES (1)                     │  ~ src/f000.rs  +2 -2                                                      Hunk 1/2
+| ~ src/f000.rs          +2 -2  │
+|                         ┌ Config — General ──────────────────────────────────────────────────┐
+|                         │ Commands                                                           │
+|                         │▸ Test: e.g. cargo test  Run tests                                  │
+|                         │  Lint: e.g. cargo clippy                                           │
+|                         │  Typecheck: e.g. tsc --noEmit                                      │
+|                         │  Security: e.g. cargo audit                                        │
+|                         │  [ ] Push summary to PR body                                       │
+|                         │ Agent                                                              │
+|                         │  Command: claude                                                   │
+|                         │  Args: --print --output-format stream-json -p {prompt}             │
+|                         │ AI Hub                                                             │
+|                         │  Provider: claude  ◀▶                                              │
+|                         │  Model: sonnet-5.5  ◀▶                                             │
+|                         │  Effort / reasoning: Auto  ◀▶                                      │
+|                         │  [x] Model discovery                                               │
+|                         │ Watched Paths                                                      │
+|                         │  Diff mode:   ◀▶                                                   │
+|                         │  + Add pattern...                                                  │
+|                         │                                                                    │
+|                         │ j/k nav  Enter edit  1/2 tab  d delete  Esc close (auto-saves)     │
+|                         └────────────────────────────────────────────────────────────────────┘
+|                               │  24   24 │ let line_23 = 23;
+|                               │  25   25 │ let line_24 = 24;
+|                               │  26   26 │ let line_25 = 25;
+|                               │  27   27 │ let line_26 = 26;
+| j/k nav n/N hunks +/- context ␣ review / search g git a ai o open v verify ? help ^q quit
+|styles 87f23449fa89c5d9
+@@@ 02 frame 2 < 01
+02| FILES (1)               ┌ Config — Terminal ─────────────────────────────────────────────────┐             Hunk 1/2
+03| ~ src/f000.rs          +│ Views                                                              │
+04|                         │▸ [x] Branch diff (1)  Show branch diff mode                        │
+05|                         │  [x] Unstaged changes (2)                                          │
+06|                         │  [x] Staged changes (3)                                            │
+07|                         │  [x] History (4)                                                   │
+08|                         │  [x] Conflicts (5)                                                 │
+09|                         │  [x] Hidden files (6)                                              │
+10|                         │  [x] Tour                                                          │
+11|                         │ Display                                                            │
+12|                         │  Theme: graphite  ◀▶                                               │
+13|                         │  [x] Line numbers                                                  │
+14|                         │  [ ] Wrap lines                                                    │
+15|                         │  [ ] Split diff                                                    │
+16|                         │  [ ] Auto-expand context                                           │
+17|                         │  Tab width: 4  ◀▶                                                  │
+18|                         │ Key Hints                                                          │
+19|                         │  [x] Navigation hints                                              │
+20|                         │  [x] Staging hints                                                 │
+21|                         │  [x] Comment hints                                                 │
+22|                         │  [ ] Verbose hints                                                 │
+23|                         │ AI                                                                 │
+24|                         │  [run] Copy review.json                                            │
+25|                         │                                                                    │
+26|                         │ j/k nav  Enter edit  1/2 tab  d delete  Esc close (auto-saves)     │
+27|                         └────────────────────────────────────────────────────────────────────┘
+30|styles 08366e8d5b729d99
+@@@ 03 frame rbracket < 01
+@@@ 04 frame lbracket < 02
+@@@ 05 frame 1 < 01
+@@@ 06 frame j < 01
+06|                         │  Test: e.g. cargo test                                             │
+07|                         │▸ Lint: e.g. cargo clippy  Run linter                               │
+30|styles 07170cf45bc01e69
+@@@ 07 frame k < 01
+@@@ 08 frame Enter < 01
+06|                         │▸ Test: █                                                           │
+23|                         │ Enter confirm  Esc cancel edit                                     │
+30|styles c853167089de10da
+@@@ 09 frame x < 08
+06|                         │▸ Test: x█                                                          │
+30|styles b57d495af90a696e
+@@@ 10 frame y < 08
+06|                         │▸ Test: xy█                                                         │
+30|styles 6b14e69eec7f2930
+@@@ 11 frame Backspace < 09
+@@@ 12 frame Left < 09
+@@@ 13 frame Right < 09
+@@@ 14 frame Esc < 01
+@@@ 15 frame j < 06
+@@@ 16 frame j < 01
+06|                         │  Test: e.g. cargo test                                             │
+08|                         │▸ Typecheck: e.g. tsc --noEmit  Run type checker                    │
+30|styles 146be68a695b4ba5
+@@@ 17 frame j < 01
+06|                         │  Test: e.g. cargo test                                             │
+09|                         │▸ Security: e.g. cargo audit  Run security scan                     │
+30|styles 4ea33354448a00b5
+@@@ 18 frame j < 01
+06|                         │  Test: e.g. cargo test                                             │
+10|                         │▸ [ ] Push summary to PR body  Auto-push summary to GitHub PR       │
+30|styles d899be19988b8be9
+@@@ 19 frame j < 01
+06|                         │  Test: e.g. cargo test                                             │
+12|                         │▸ Command: claude  Agent executable                                 │
+30|styles 7532c4898d54252f
+@@@ 20 frame j < 01
+06|                         │  Test: e.g. cargo test                                             │
+13|                         │▸ Args: --print --output-format stream-json -p {prompt}  Agent argum│
+30|styles 8a1d67c54dad857f
+@@@ 21 frame j < 01
+06|                         │  Test: e.g. cargo test                                             │
+15|                         │▸ Provider: claude  ◀▶  Global AI Hub provider                      │
+30|styles a08ed47664b02bf9
+@@@ 22 json Left
+|[
+|  "[agent]",
+|  "command = \"claude\"",
+|  "args = [",
+|  "    \"--print\",",
+|  "    \"--output-format\",",
+|  "    \"stream-json\",",
+|  "    \"-p\",",
+|  "    \"{prompt}\",",
+|  "]",
+|  "model = \"\"",
+|  "",
+|  "[ai_hub]",
+|  "flow_providers = []",
+|  "default_provider = \"opencode\"",
+|  "default_model = \"default\"",
+|  "removed_catalog_providers = []",
+|  "max_concurrent_reviews = 0",
+|  "agent_timeout_secs = 0",
+|  "max_concurrent_arena_reviews = 0",
+|  "max_concurrent_agents = 0",
+|  "",
+|  "[[ai_hub.review_models.fast]]",
+|  "provider_id = \"claude\"",
+|  "model_id = \"haiku-5.5\"",
+|  "",
+|  "[[ai_hub.review_models.fast]]",
+|  "provider_id = \"codex\"",
+|  "model_id = \"gpt-6-luna\"",
+|  "",
+|  "[[ai_hub.review_models.standard]]",
+|  "provider_id = \"claude\"",
+|  "model_id = \"sonnet-5.5\"",
+|  "",
+|  "[[ai_hub.review_models.standard]]",
+|  "provider_id = \"codex\"",
+|  "model_id = \"gpt-6-sol\"",
+|  "",
+|  "[[ai_hub.review_models.advanced]]",
+|  "provider_id = \"claude\"",
+|  "model_id = \"opus-5.5\"",
+|  "",
+|  "[[ai_hub.review_models.advanced]]",
+|  "provider_id = \"codex\"",
+|  "model_id = \"gpt-6-astra\"",
+|  "",
+|  "[ai_hub.providers.claude]",
+|  "label = \"Claude\"",
+|  "command = \"claude\"",
+|  "args = [",
+|  "    \"--print\",",
+|  "    \"-p\",",
+|  "    \"{prompt}\",",
+|  "]",
+|  "family = \"claude\"",
+|  "models_command = []",
+|  "models = []",
+|  "removed_catalog_models = []",
+|  "",
+|  "[ai_hub.providers.codex]",
+|  "label = \"Codex\"",
+|  "command = \"codex\"",
+|  "args = [",
+|  "    \"exec\",",
+|  "    \"--ignore-user-config\",",
+|  "    \"--skip-git-repo-check\",",
+|  "    \"--sandbox\",",
+|  "    \"workspace-write\",",
+|  "    \"{prompt}\",",
+|  "]",
+|  "family = \"codex\"",
+|  "models_command = [",
+|  "    \"codex\",",
+|  "    \"debug\",",
+|  "    \"models\",",
+|  "]",
+|  "models = []",
+|  "removed_catalog_models = []",
+|  "",
+|  "[ai_hub.providers.cursor]",
+|  "label = \"Cursor\"",
+|  "command = \"agent\"",
+|  "args = [",
+|  "    \"--print\",",
+|  "    \"--trust\",",
+|  "    \"--force\",",
+|  "    \"--output-format\",",
+|  "    \"stream-json\",",
+|  "    \"-p\",",
+|  "    \"{prompt}\",",
+|  "]",
+|  "family = \"cursor\"",
+|  "models_command = [",
+|  "    \"agent\",",
+|  "    \"--list-models\",",
+|  "]",
+|  "models = []",
+|  "removed_catalog_models = []",
+|  "",
+|  "[ai_hub.providers.opencode]",
+|  "label = \"OpenCode\"",
+|  "command = \"opencode\"",
+|  "args = [",
+|  "    \"run\",",
+|  "    \"--auto\",",
+|  "    \"{prompt}\",",
+|  "]",
+|  "family = \"opencode\"",
+|  "models_command = [",
+|  "    \"opencode\",",
+|  "    \"models\",",
+|  "]",
+|  "models = []",
+|  "removed_catalog_models = []"
+|]
+@@@ 23 json Left < 22
+14|  "default_provider = \"cursor\"",
+15|  "default_model = \"grok-4.5\"",
+@@@ 24 frame closed < 01
+01|  1  BRANCH   2  UNSTAGED   3  STAGED   4  HISTORY                                     Cursor / Grok 4.5   0/1 reviewed
+04|                               │ ▶ @@ -1,14 +1,14 @@
+05|                               │   1    1 │ let line_0 = 0;
+06|                               │   2    2 │ let line_1 = 1;
+07|                               │   3    3 │ let line_2 = 2;
+08|                               │   4      │-let line_3 = 3;
+09|                               │        4 │+let changed_3 = 3; // edited
+10|                               │   5    5 │ let line_4 = 4;
+11|                               │   6    6 │ let line_5 = 5;
+12|                               │   7    7 │ let line_6 = 6;
+13|                               │   8    8 │ let line_7 = 7;
+14|                               │   9    9 │ let line_8 = 8;
+15|                               │  10   10 │ let line_9 = 9;
+16|                               │  11   11 │ let line_10 = 10;
+17|                               │  12   12 │ let line_11 = 11;
+18|                               │  13   13 │ let line_12 = 12;
+19|                               │  14   14 │ let line_13 = 13;
+20|                               │  ··· 6 lines hidden (+/- to expand) ···
+21|                               │   @@ -21,20 +21,20 @@ let line_19 = 19;
+22|                               │  21   21 │ let line_20 = 20;
+23|                               │  22   22 │ let line_21 = 21;
+24|                               │  23   23 │ let line_22 = 22;
+30|styles f9408fa8733f88a6
