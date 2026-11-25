@@ -57,6 +57,4 @@ pub use schema::{
 // `seeded` is reached by `orchestrator` through `super::seeded::`, and nothing
 // outside the arena uses it, so it stays unexported rather than widening the
 // public surface with no caller.
-pub use storage::{
-    delete_run_dir, latest_arena_mtime, list_run_ids, load_run, save_run, ArenaPaths,
-};
+pub use storage::{delete_run_dir, list_run_ids, load_run, save_run, ArenaPaths};
