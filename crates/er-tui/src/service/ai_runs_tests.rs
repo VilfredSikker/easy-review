@@ -682,3 +682,46 @@ fn a_run_prepares_its_bucket_and_points_the_agent_there() {
         release(&mut shell, &agent);
     });
 }
+
+/// A review run's agent writes into its job's staging dir, and the store
+/// commits the checked set into the tab's bucket and drops the staging:
+/// the flag path's twin of the App's
+/// `the_review_tab_job_stages_and_commits_its_sidecars`.
+#[test]
+fn a_review_run_commits_its_staged_sidecars_into_the_bucket() {
+    let repo = fixture(1);
+    let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+    er_engine::storage::with_process_test_storage_root(storage.path(), || {
+        let record = storage.path().join("staging-path.txt");
+        let body = format!(
+            r#"printf '%s' "$ER_JOB_STAGING" > "{}"; {}; {}"#,
+            record.display(),
+            er_engine::test_support::STAGING_PREAMBLE,
+            er_engine::test_support::WRITE_REVIEW_SIDECARS
+        );
+        let agent = agent_with(storage.path(), &body, "");
+        let mut shell = shell_on(&[&repo], &agent);
+        let dir = er_dir(&shell);
+        choose(&mut shell, 'a', "Review work");
+        open_gate(&agent.first);
+        let review = Path::new(&dir).join("review.json");
+        let committed = settle_within(&mut shell, Duration::from_secs(20), |_| review.exists());
+        assert!(committed, "no review landed: {}", notice(&shell));
+        let stored: er_engine::ai::ErReview =
+            serde_json::from_str(&std::fs::read_to_string(&review).unwrap_or_default())
+                .unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(stored.version, 1);
+        assert!(Path::new(&dir).join("order.json").is_file());
+        let staging = std::fs::read_to_string(&record).unwrap_or_else(|e| panic!("{e}"));
+        let root = er_engine::storage::storage_root();
+        assert!(
+            staging.starts_with(&format!("{}/staging/", root.display())),
+            "{staging}"
+        );
+        let gone = settle_within(&mut shell, Duration::from_secs(5), |_| {
+            !Path::new(&staging).exists()
+        });
+        assert!(gone, "the finished run left its staging behind: {staging}");
+        release(&mut shell, &agent);
+    });
+}

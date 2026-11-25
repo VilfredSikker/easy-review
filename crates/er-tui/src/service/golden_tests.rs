@@ -345,28 +345,7 @@ const PANES: &[Fixture] = &[
         scene.merge(true, 1);
     }),
     fixture_of("diff_history", 110, 16, |scene| {
-        let commit = er_engine::git::CommitInfo {
-            hash: "a".repeat(40),
-            short_hash: "aaaaaaa".into(),
-            subject: "Validate the token audience".into(),
-            author: "octo".into(),
-            date: "2026-11-20".into(),
-            relative_date: "2 days ago".into(),
-            file_count: 2,
-            adds: 3,
-            dels: 1,
-            is_merge: false,
-            diffstat_known: true,
-        };
-        scene.content.tab.mode = DiffMode::History;
-        scene.content.history = Some(Arc::new(er_service::HistorySection {
-            commits: vec![commit],
-            all_loaded: true,
-            selected: Some("a".repeat(40)),
-            return_mode: DiffMode::Branch,
-            revision: scene.content.diff.revision,
-        }));
-        scene.state.history.follow(&scene.content);
+        history(scene, "2 days ago")
     }),
     fixture_of("diff_split", 120, 14, |scene| {
         scene.config.display.split_diff = true;
@@ -409,6 +388,53 @@ fn snapshot_changed() -> crate::screen::watched::SnapshotDiff {
     let snapshot = "diff --git a/.env.local b/.env.local\n--- a/.env.local\n+++ b/.env.local\n@@ -1,1 +1,2 @@\n KEY=1\n+TOKEN=abc\n";
     let file = er_engine::git::parse_diff(snapshot).into_iter().next();
     crate::screen::watched::SnapshotDiff::Changed(file)
+}
+
+/// History on `golden.rs`'s one commit, aged `age`.
+fn history(scene: &mut Scene, age: &str) {
+    let commit = er_engine::git::CommitInfo {
+        hash: "a".repeat(40),
+        short_hash: "aaaaaaa".into(),
+        subject: "Validate the token audience".into(),
+        author: "octo".into(),
+        date: "2026-11-20".into(),
+        relative_date: age.into(),
+        file_count: 2,
+        adds: 3,
+        dels: 1,
+        is_merge: false,
+        diffstat_known: true,
+    };
+    scene.content.tab.mode = DiffMode::History;
+    scene.content.history = Some(Arc::new(er_service::HistorySection {
+        commits: vec![commit],
+        all_loaded: true,
+        selected: Some("a".repeat(40)),
+        return_mode: DiffMode::Branch,
+        revision: scene.content.diff.revision,
+    }));
+    scene.state.history.follow(&scene.content);
+}
+
+/// The History row draws a commit's age after ` · <hash> · `, where the
+/// frozen frames collapse it to `<age>`; a row that moved it elsewhere
+/// would freeze a raw age into the goldens, so this draws the real row.
+#[test]
+fn the_history_rows_age_collapses_in_a_frozen_frame() {
+    with_loaded(|loaded, settings| {
+        let mut hl = Highlighter::new();
+        let drawn: Vec<String> = ["9 years ago", "10 years ago", "1 year, 2 months ago"]
+            .into_iter()
+            .map(|age| {
+                let mut scene = scene(loaded, settings);
+                history(&mut scene, age);
+                super::parity::stable_text(&draw(&scene, 110, 16, &mut hl))
+            })
+            .collect();
+        assert!(drawn[0].contains("aaaaaaa · <age>"), "{}", drawn[0]);
+        assert_eq!(drawn[0], drawn[1]);
+        assert_eq!(drawn[0], drawn[2]);
+    });
 }
 
 /// The app chrome, the hubs, the other overlays and the status-bar input

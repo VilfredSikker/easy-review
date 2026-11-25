@@ -697,3 +697,32 @@ fn github_writes_reach_github_only_through_the_service() {
         }
     }
 }
+
+/// A GitHub comment on a branch whose PR lookup fails keeps the composer
+/// and its text, and says it was not posted: the flag path's twin of the
+/// App's `a_post_whose_pr_lookup_fails_keeps_the_text`.
+#[test]
+fn a_comment_whose_pr_lookup_fails_keeps_its_text() {
+    let repo = fixture(1);
+    let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+    let github =
+        Arc::new(FakeGitHub::default().with_lookup_pr_for_current_branch(Err(unknown_outcome())));
+    er_engine::storage::with_process_test_storage_root(storage.path(), || {
+        let mut shell = working(&repo, &github, storage.path());
+        for _ in 0..4 {
+            shell.handle_key(key(KeyCode::Down));
+        }
+        shell.handle_key(key(KeyCode::Char('c')));
+        type_text(&mut shell, "keep me too");
+        shell.handle_key(key(KeyCode::Enter));
+        settle_replies(&mut shell);
+        assert_eq!(shell.view().input_mode, Mode::Comment);
+        assert_eq!(
+            state(&shell).draft.textarea.lines().join("\n"),
+            "keep me too"
+        );
+        let shown = notice(&shell);
+        assert!(shown.contains("not posted"), "{shown:?}");
+        assert!(calls(&github, "post_line_comment").is_empty());
+    });
+}
