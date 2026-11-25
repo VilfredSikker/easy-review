@@ -133,11 +133,13 @@ pub(super) fn mask(row: &str) -> String {
 
 /// The test modules whose checks are frozen. Each later P76.1 PR adds its
 /// areas; the others still only compare the two legs live.
-const FROZEN: [&str; 6] = [
+const FROZEN: [&str; 8] = [
     "tests",
     "settings_tests",
     "config_hub_tests",
     "github_tests",
+    "threads_tests",
+    "thread_writes_tests",
     "worktree_tests",
     "watched_tests",
 ];

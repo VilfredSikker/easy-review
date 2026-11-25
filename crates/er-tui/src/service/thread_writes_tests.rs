@@ -13,6 +13,7 @@ use std::sync::Arc;
 use er_engine::ports::Ports;
 
 use super::loop_tests::{Gate, GatedGit};
+use super::parity::assert_json;
 use super::shell::Shell;
 use super::startup::After;
 use super::tests::{
@@ -57,6 +58,7 @@ fn rows(dir: &str) -> Vec<serde_json::Value> {
 /// paths, store the same rows and draw the same frames.
 #[test]
 fn reply_and_delete_write_and_draw_like_the_app() {
+    let _golden = super::parity::guard();
     let (app_repo, flag_repo) = (fixture(2), fixture(2));
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
@@ -82,6 +84,7 @@ fn reply_and_delete_write_and_draw_like_the_app() {
         }
         let replied = rows(&er_dir(&shell));
         assert_eq!(replied, rows(&app.tab().er_dir()));
+        assert_json("replied", &replied, &rows(&app.tab().er_dir()));
         let replies = replied.iter().filter(|row| row["is_reply"] == true);
         assert_eq!(replies.count(), 1, "{replied:?}");
 
@@ -93,6 +96,7 @@ fn reply_and_delete_write_and_draw_like_the_app() {
             }
             let deleted = rows(&er_dir(&shell));
             assert_eq!(deleted, rows(&app.tab().er_dir()));
+            assert_json("deleted", &deleted, &rows(&app.tab().er_dir()));
             assert_eq!(deleted.len(), left, "{deleted:?}");
             assert!(deleted.iter().all(|row| row["is_reply"] == false));
         }
@@ -322,6 +326,7 @@ pub(super) fn hub_to(app: &mut er_engine::app::App, shell: &mut Shell, label: &s
 /// frame and says the same thing, the Gate's row included.
 #[test]
 fn the_hub_layer_rows_act_like_the_app() {
+    let _golden = super::parity::guard();
     let (app_repo, flag_repo) = (fixture(3), fixture(3));
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     er_engine::storage::with_process_test_storage_root(storage.path(), || {

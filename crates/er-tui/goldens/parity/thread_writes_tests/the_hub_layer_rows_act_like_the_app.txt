@@ -1,0 +1,72 @@
+@@@ 01 frame KeyEvent { code: Enter, modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) }
+| feature · feature (vs main)  +6 -6
+|  1  BRANCH   2  UNSTAGED   3  STAGED   4  HISTORY                         AI OFF    Claude / Sonnet 5.5   0/3 reviewed
+| FILES (3)                     │  ~ src/f000.rs  +2 -2                                             ● AI findings: OFF
+| ~ f000.rs     ◆1 ▪1    +2 -2  │
+| ~ src/f001.rs          +2 -2  │ ▶ @@ -1,14 +1,14 @@
+| ~ src/f002.rs          +2 -2  │   1    1 │ let line_0 = 0;
+|                               │   2    2 │ let line_1 = 1;
+|                               │   3    3 │ let line_2 = 2;
+|                               │   4      │-let line_3 = 3;
+|                               │        4 │+let changed_3 = 3; // edited
+|                               │  ╭─ ❓  R4  ───────────────────────────────────────────────────────────────────────────
+|                               │  │  You
+|                               │  │    Open question
+|                               │  ╰────────────────────────────────────────────────────────────────────────────────────
+|                               │   5    5 │ let line_4 = 4;
+|                               │   6    6 │ let line_5 = 5;
+|                               │   7    7 │ let line_6 = 6;
+|                               │   8    8 │ let line_7 = 7;
+|                               │   9    9 │ let line_8 = 8;
+|                               │  10   10 │ let line_9 = 9;
+|                               │  11   11 │ let line_10 = 10;
+|                               │  12   12 │ let line_11 = 11;
+|                               │  13   13 │ let line_12 = 12;
+|                               │  14   14 │ let line_13 = 13;
+|                               │  ··· 6 lines hidden (+/- to expand) ···
+|                               │   @@ -21,20 +21,20 @@ let line_19 = 19;
+|                               │  21   21 │ let line_20 = 20;
+|                               │  22   22 │ let line_21 = 21;
+|                               │  23   23 │ let line_22 = 22;
+| j/k nav n/N hunks +/- context ␣ review / search g git a ai o open v verify ? help ^q quit
+|styles bc9045f253753437
+@@@ 02 frame KeyEvent { code: Enter, modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 01
+02| FILES (3)                     │  ~ src/f000.rs  +2 -2                                             ● Comments: hidden
+@@@ 03 frame KeyEvent { code: Enter, modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 01
+02| FILES (3)                     │  ~ src/f000.rs  +2 -2                                            ● Questions: hidden
+10|                               │   5    5 │ let line_4 = 4;
+11|                               │   6    6 │ let line_5 = 5;
+12|                               │   7    7 │ let line_6 = 6;
+13|                               │   8    8 │ let line_7 = 7;
+14|                               │   9    9 │ let line_8 = 8;
+15|                               │  10   10 │ let line_9 = 9;
+16|                               │  11   11 │ let line_10 = 10;
+17|                               │  12   12 │ let line_11 = 11;
+18|                               │  13   13 │ let line_12 = 12;
+19|                               │  14   14 │ let line_13 = 13;
+20|                               │  ··· 6 lines hidden (+/- to expand) ···
+21|                               │   @@ -21,20 +21,20 @@ let line_19 = 19;
+22|                               │  21   21 │ let line_20 = 20;
+23|                               │  22   22 │ let line_21 = 21;
+24|                               │  23   23 │ let line_22 = 22;
+25|                               │  24   24 │ let line_23 = 23;
+26|                               │  25   25 │ let line_24 = 24;
+27|                               │  26   26 │ let line_25 = 25;
+28|                               │  27   27 │ let line_26 = 26;
+30|styles 4eed849631541a13
+@@@ 04 frame KeyEvent { code: Enter, modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 03
+02| FILES (3)                     │  ~ src/f000.rs  +2 -2                                             ● Resolved: hidden
+30|styles f8b8196b37c76dfc
+@@@ 05 frame KeyEvent { code: Enter, modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 03
+02| FILES (3)                     │  ~ src/f000.rs  +2 -2                             ● Confidence: informational hidden
+30|styles 6448580146ae3a5c
+@@@ 06 frame KeyEvent { code: Enter, modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 03
+02| FILES (3)                     │  ~ src/f000.rs  +2 -2                                   ● Confidence: confirmed only
+30|styles 5fac2f85854c3320
+@@@ 07 frame KeyEvent { code: Enter, modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 01
+02| FILES (3)                     │  ~ src/f000.rs  +2 -2                                           ● Questions: visible
+30|styles 48a8562a08a97cbb
+@@@ 08 frame KeyEvent { code: Enter, modifiers: KeyModifiers(0x0), kind: Press, state: KeyEventState(0x0) } < 01
+01|  1  BRANCH   2  UNSTAGED   3  STAGED   4  HISTORY                          AI ON    Claude / Sonnet 5.5   0/3 reviewed
+02| FILES (3) · 2 findings        │  ~ src/f000.rs  +2 -2                                              ● AI findings: ON
+30|styles eb07fe637794adca
