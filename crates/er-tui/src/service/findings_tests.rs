@@ -10,6 +10,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use er_engine::ai::{ErChecklist, ErGithubComments, ErReview};
 use er_engine::test_support::{read_sidecar, write_sidecar_json};
 
+use super::parity::assert_json;
 use super::shell::Shell;
 use super::tests::{
     assert_parity, fixture, key, loaded, path_of, settle, settle_within, shell, shell_frame,
@@ -153,6 +154,7 @@ fn checked_flags(dir: &str) -> Vec<bool> {
 /// act as the App's do, and the checklist on disk matches.
 #[test]
 fn the_ai_summary_panel_draws_and_acts_like_the_app() {
+    let _golden = super::parity::guard();
     let (app_repo, flag_repo) = (fixture(3), fixture(3));
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
@@ -184,6 +186,11 @@ fn the_ai_summary_panel_draws_and_acts_like_the_app() {
         let flag_dir = er_dir(&shell);
         assert_eq!(checked_flags(&flag_dir), [false, true, true]);
         assert_eq!(checked_flags(&app.tab().er_dir()), checked_flags(&flag_dir));
+        assert_json(
+            "checked",
+            &checked_flags(&flag_dir),
+            &checked_flags(&app.tab().er_dir()),
+        );
     });
 }
 
@@ -191,6 +198,7 @@ fn the_ai_summary_panel_draws_and_acts_like_the_app() {
 /// panel's j/k, Enter and Esc focus and draw as the App's do.
 #[test]
 fn the_finding_focus_draws_like_the_app() {
+    let _golden = super::parity::guard();
     let (app_repo, flag_repo) = (fixture(520), fixture(520));
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
@@ -239,6 +247,7 @@ fn focused(shell: &Shell) -> Option<String> {
 /// never land on it on the flag path, where the App's Ctrl+k does.
 #[test]
 fn finding_steps_skip_what_the_gate_hides() {
+    let _golden = super::parity::guard();
     let (app_repo, flag_repo) = (fixture(1), fixture(1));
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
@@ -482,6 +491,7 @@ fn a_refused_finding_reply_keeps_its_text_and_id() {
 /// once it parses the diff draws where the App's in-place parse draws it.
 #[test]
 fn the_summary_jump_onto_a_stub_draws_like_the_app() {
+    let _golden = super::parity::guard();
     let (app_repo, flag_repo) = (fixture(520), fixture(520));
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     er_engine::storage::with_process_test_storage_root(storage.path(), || {

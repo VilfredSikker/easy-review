@@ -89,6 +89,7 @@ fn notice(shell: &Shell) -> Option<&str> {
 /// review.
 #[test]
 fn z_and_shift_z_ask_and_clear_like_the_app() {
+    let _golden = super::parity::guard();
     let (app_repo, flag_repo) = (fixture(1), fixture(1));
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     er_engine::storage::with_process_test_storage_root(storage.path(), || {

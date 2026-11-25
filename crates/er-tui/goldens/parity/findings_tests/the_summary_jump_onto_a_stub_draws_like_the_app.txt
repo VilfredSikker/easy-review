@@ -1,0 +1,82 @@
+@@@ 01 frame p
+| feature · feature (vs main)  +1040 -1040
+|  1  BRANCH   2  UNSTAGED   3  STAGED   4  HISTORY         AI ON    Claude / Sonnet 5.5    File Detail   0/520 reviewed
+| FILES (520) · 3 findings      │ src/f000.rs                        Hunk 1/2    │ [File] [AI] [Log]
+| ~ src/f000.rs    ●●    +2 -2  │  ~ src/f000.rs  +2 -2  Risk HIGH               │──────────────────────────────────────
+| ~ src/f001.rs     ●    +2 -2  │                                                │ src/f000.rs
+| ~ src/f002.rs          +2 -2  │ ▶ @@ -1,14 +1,14 @@                            │
+| ~ src/f003.rs          +2 -2  │   1    1 │ let line_0 = 0;                     │ ─── File risk: HIGH ───
+| ~ src/f004.rs          +2 -2  │   2    2 │ let line_1 = 1;                     │
+| ~ src/f005.rs          +2 -2  │   3    3 │ let line_2 = 2;                     │ Findings (2)
+| ~ src/f006.rs          +2 -2  │   4      │-let line_3 = 3;                     │
+| ~ src/f007.rs          +2 -2  │        4 │+let changed_3 = 3; // edited        │ ● i Finding f1
+| ~ src/f008.rs          +2 -2  │  ●  Finding f1                                 │   hunk 1, line 4
+| ~ src/f009.rs          +2 -2  │   5    5 │ let line_4 = 4;                     │
+| ~ src/f010.rs          +2 -2  │   6    6 │ let line_5 = 5;                     │ ● i Finding f2
+| ~ src/f011.rs          +2 -2  │   7    7 │ let line_6 = 6;                     │   hunk 2, line 31
+| ~ src/f012.rs          +2 -2  │   8    8 │ let line_7 = 7;                     │
+| ~ src/f013.rs          +2 -2  │   9    9 │ let line_8 = 8;                     │ No comments for this file
+| ~ src/f014.rs          +2 -2  │  10   10 │ let line_9 = 9;                     │
+| ~ src/f015.rs          +2 -2  │  11   11 │ let line_10 = 10;                   │
+| ~ src/f016.rs          +2 -2  │  12   12 │ let line_11 = 11;                   │
+| ~ src/f017.rs          +2 -2  │  13   13 │ let line_12 = 12;                   │
+| ~ src/f018.rs          +2 -2  │  14   14 │ let line_13 = 13;                   │
+| ~ src/f019.rs          +2 -2  │  ··· 6 lines hidden (+/- to expand) ···        │
+| ~ src/f020.rs          +2 -2  │   @@ -21,20 +21,20 @@ let line_19 = 19;        │
+| ~ src/f021.rs          +2 -2  │  21   21 │ let line_20 = 20;                   │
+| ~ src/f022.rs          +2 -2  │  22   22 │ let line_21 = 21;                   │
+| ~ src/f023.rs          +2 -2  │  23   23 │ let line_22 = 22;                   │
+| ~ src/f024.rs          +2 -2  │  24   24 │ let line_23 = 23;                   │
+| ~ src/f025.rs          +2 -2  │  25   25 │ let line_24 = 24;                   │
+| j/k nav n/N hunks Tab focus panel p close panel g git a ai o open v verify ? help ^q quit
+|styles d6cd3f3c89887064
+@@@ 02 frame p < 01
+01|  1  BRANCH   2  UNSTAGED   3  STAGED   4  HISTORY          AI ON    Claude / Sonnet 5.5    AI Summary   0/520 reviewed
+04| ~ src/f001.rs     ●    +2 -2  │                                                │ AI Review Summary
+06| ~ src/f003.rs          +2 -2  │   1    1 │ let line_0 = 0;                     │ No .er/summary.md found
+08| ~ src/f005.rs          +2 -2  │   3    3 │ let line_2 = 2;                     │ ─── File Risk Overview ───
+10| ~ src/f007.rs          +2 -2  │        4 │+let changed_3 = 3; // edited        │▸ HIGH src/f000.rs
+11| ~ src/f008.rs          +2 -2  │  ●  Finding f1                                 │  MED src/f001.rs
+13| ~ src/f010.rs          +2 -2  │   6    6 │ let line_5 = 5;                     │ 3 total findings across all files
+14| ~ src/f011.rs          +2 -2  │   7    7 │ let line_6 = 6;                     │
+15| ~ src/f012.rs          +2 -2  │   8    8 │ let line_7 = 7;                     │ ─── Review Checklist ───
+16| ~ src/f013.rs          +2 -2  │   9    9 │ let line_8 = 8;                     │
+17| ~ src/f014.rs          +2 -2  │  10   10 │ let line_9 = 9;                     │ No .er/checklist.json found
+30|styles 825f5089a95eb248
+@@@ 03 frame Tab < 02
+29| j/k navigate Tab focus ␣ toggle Enter jump  [Files]
+30|styles 83468fde9e51d64b
+@@@ 04 frame k < 03
+10| ~ src/f007.rs          +2 -2  │        4 │+let changed_3 = 3; // edited        │  HIGH src/f000.rs
+11| ~ src/f008.rs          +2 -2  │  ●  Finding f1                                 │▸ MED src/f001.rs
+30|styles 97436adf3ee6e17c
+@@@ 05 frame Enter < 03
+02| FILES (520) · 3 findings      │  ~ src/f001.rs  +2 -2              Hunk 1/2    │ [File] [AI ● Jumped to: src/f001.rs
+03| ~ src/f000.rs    ●●    +2 -2  │                                                │──────────────────────────────────────
+04| ~ src/f001.rs     ●    +2 -2  │ ▶ @@ -1,14 +1,14 @@                            │ AI Review Summary
+05| ~ src/f002.rs          +2 -2  │   1    1 │ let line_0 = 0;                     │
+06| ~ src/f003.rs          +2 -2  │   2    2 │ let line_1 = 1;                     │ No .er/summary.md found
+07| ~ src/f004.rs          +2 -2  │   3    3 │ let line_2 = 2;                     │
+08| ~ src/f005.rs          +2 -2  │   4      │-let line_3 = 3;                     │ ─── File Risk Overview ───
+09| ~ src/f006.rs          +2 -2  │        4 │+let changed_3 = 3; // edited        │
+10| ~ src/f007.rs          +2 -2  │  ●  Finding f3  ◆ focused                      │  HIGH src/f000.rs
+11| ~ src/f008.rs          +2 -2  │   5    5 │ let line_4 = 4;                     │▸ MED src/f001.rs
+12| ~ src/f009.rs          +2 -2  │   6    6 │ let line_5 = 5;                     │
+13| ~ src/f010.rs          +2 -2  │   7    7 │ let line_6 = 6;                     │ 3 total findings across all files
+14| ~ src/f011.rs          +2 -2  │   8    8 │ let line_7 = 7;                     │
+15| ~ src/f012.rs          +2 -2  │   9    9 │ let line_8 = 8;                     │ ─── Review Checklist ───
+16| ~ src/f013.rs          +2 -2  │  10   10 │ let line_9 = 9;                     │
+17| ~ src/f014.rs          +2 -2  │  11   11 │ let line_10 = 10;                   │ No .er/checklist.json found
+18| ~ src/f015.rs          +2 -2  │  12   12 │ let line_11 = 11;                   │
+19| ~ src/f016.rs          +2 -2  │  13   13 │ let line_12 = 12;                   │
+20| ~ src/f017.rs          +2 -2  │  14   14 │ let line_13 = 13;                   │
+21| ~ src/f018.rs          +2 -2  │  ··· 6 lines hidden (+/- to expand) ···        │
+22| ~ src/f019.rs          +2 -2  │   @@ -21,20 +21,20 @@ let line_19 = 19;        │
+23| ~ src/f020.rs          +2 -2  │  21   21 │ let line_20 = 20;                   │
+24| ~ src/f021.rs          +2 -2  │  22   22 │ let line_21 = 21;                   │
+25| ~ src/f022.rs          +2 -2  │  23   23 │ let line_22 = 22;                   │
+26| ~ src/f023.rs          +2 -2  │  24   24 │ let line_23 = 23;                   │
+27| ~ src/f024.rs          +2 -2  │  25   25 │ let line_24 = 24;                   │
+28| ~ src/f025.rs          +2 -2  │  26   26 │ let line_25 = 25;                   │
+30|styles 4b88fbc9178db193
+@@@ 06 frame summary enter onto stub < 05

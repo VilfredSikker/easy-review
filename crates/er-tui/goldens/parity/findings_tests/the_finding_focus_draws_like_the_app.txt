@@ -1,0 +1,113 @@
+@@@ 01 frame C-k
+| feature · feature (vs main)  +1040 -1040
+|  1  BRANCH   2  UNSTAGED   3  STAGED   4  HISTORY                        AI ON    Claude / Sonnet 5.5   0/520 reviewed
+| FILES (520) · 3 findings      │  ~ src/f000.rs  +2 -2                                                      Hunk 2/2
+| ~ src/f000.rs    ●●    +2 -2  │  29   29 │ let line_28 = 28;
+| ~ src/f001.rs     ●    +2 -2  │  30   30 │ let line_29 = 29;
+| ~ src/f002.rs          +2 -2  │  31      │-let line_30 = 30;
+| ~ src/f003.rs          +2 -2  │       31 │+let changed_30 = 30; // edited
+| ~ src/f004.rs          +2 -2  │  ●  Finding f2  ◆ focused
+| ~ src/f005.rs          +2 -2  │  32   32 │ let line_31 = 31;
+| ~ src/f006.rs          +2 -2  │  33   33 │ let line_32 = 32;
+| ~ src/f007.rs          +2 -2  │  34   34 │ let line_33 = 33;
+| ~ src/f008.rs          +2 -2  │  35   35 │ let line_34 = 34;
+| ~ src/f009.rs          +2 -2  │  36   36 │ let line_35 = 35;
+| ~ src/f010.rs          +2 -2  │  37   37 │ let line_36 = 36;
+| ~ src/f011.rs          +2 -2  │  38   38 │ let line_37 = 37;
+| ~ src/f012.rs          +2 -2  │  39   39 │ let line_38 = 38;
+| ~ src/f013.rs          +2 -2  │  40   40 │ let line_39 = 39;
+| ~ src/f014.rs          +2 -2  │
+| ~ src/f015.rs          +2 -2  │
+| ~ src/f016.rs          +2 -2  │
+| ~ src/f017.rs          +2 -2  │
+| ~ src/f018.rs          +2 -2  │
+| ~ src/f019.rs          +2 -2  │
+| ~ src/f020.rs          +2 -2  │
+| ~ src/f021.rs          +2 -2  │
+| ~ src/f022.rs          +2 -2  │
+| ~ src/f023.rs          +2 -2  │
+| ~ src/f024.rs          +2 -2  │
+| ~ src/f025.rs          +2 -2  │
+| j/k nav n/N hunks +/- context ␣ review / search r reply g git a ai o open v verify ? help ^q quit
+|styles 2cf009c8d16f7cfa
+@@@ 02 frame parsed < 01
+@@@ 03 frame C-k < 01
+02| FILES (520) · 3 findings      │  ~ src/f001.rs  +2 -2                                                      Hunk 1/2
+03| ~ src/f000.rs    ●●    +2 -2  │   3    3 │ let line_2 = 2;
+04| ~ src/f001.rs     ●    +2 -2  │   4      │-let line_3 = 3;
+05| ~ src/f002.rs          +2 -2  │        4 │+let changed_3 = 3; // edited
+06| ~ src/f003.rs          +2 -2  │  ●  Finding f3  ◆ focused
+07| ~ src/f004.rs          +2 -2  │   5    5 │ let line_4 = 4;
+08| ~ src/f005.rs          +2 -2  │   6    6 │ let line_5 = 5;
+09| ~ src/f006.rs          +2 -2  │   7    7 │ let line_6 = 6;
+10| ~ src/f007.rs          +2 -2  │   8    8 │ let line_7 = 7;
+11| ~ src/f008.rs          +2 -2  │   9    9 │ let line_8 = 8;
+12| ~ src/f009.rs          +2 -2  │  10   10 │ let line_9 = 9;
+13| ~ src/f010.rs          +2 -2  │  11   11 │ let line_10 = 10;
+14| ~ src/f011.rs          +2 -2  │  12   12 │ let line_11 = 11;
+15| ~ src/f012.rs          +2 -2  │  13   13 │ let line_12 = 12;
+16| ~ src/f013.rs          +2 -2  │  14   14 │ let line_13 = 13;
+17| ~ src/f014.rs          +2 -2  │  ··· 6 lines hidden (+/- to expand) ···
+18| ~ src/f015.rs          +2 -2  │   @@ -21,20 +21,20 @@ let line_19 = 19;
+19| ~ src/f016.rs          +2 -2  │  21   21 │ let line_20 = 20;
+20| ~ src/f017.rs          +2 -2  │  22   22 │ let line_21 = 21;
+21| ~ src/f018.rs          +2 -2  │  23   23 │ let line_22 = 22;
+22| ~ src/f019.rs          +2 -2  │  24   24 │ let line_23 = 23;
+23| ~ src/f020.rs          +2 -2  │  25   25 │ let line_24 = 24;
+24| ~ src/f021.rs          +2 -2  │  26   26 │ let line_25 = 25;
+25| ~ src/f022.rs          +2 -2  │  27   27 │ let line_26 = 26;
+26| ~ src/f023.rs          +2 -2  │  28   28 │ let line_27 = 27;
+27| ~ src/f024.rs          +2 -2  │  29   29 │ let line_28 = 28;
+28| ~ src/f025.rs          +2 -2  │  30   30 │ let line_29 = 29;
+30|styles b38198be3622ce83
+@@@ 04 frame parsed < 03
+@@@ 05 frame C-k < 03
+02| FILES (520) · 3 findings      │  ~ src/f000.rs  +2 -2                                                      Hunk 1/2
+06| ~ src/f003.rs          +2 -2  │  ●  Finding f1  ◆ focused
+30|styles 549d125daf4fbb86
+@@@ 06 frame parsed < 05
+@@@ 07 frame C-j < 03
+@@@ 08 frame p < 01
+01|  1  BRANCH   2  UNSTAGED   3  STAGED   4  HISTORY         AI ON    Claude / Sonnet 5.5    File Detail   0/520 reviewed
+02| FILES (520) · 3 findings      │  ~ src/f001.rs  +2 -2              Hunk 1/2    │ [File] [AI] [Log]
+03| ~ src/f000.rs    ●●    +2 -2  │   3    3 │ let line_2 = 2;                     │──────────────────────────────────────
+04| ~ src/f001.rs     ●    +2 -2  │   4      │-let line_3 = 3;                     │ src/f001.rs
+05| ~ src/f002.rs          +2 -2  │        4 │+let changed_3 = 3; // edited        │
+06| ~ src/f003.rs          +2 -2  │  ●  Finding f3  ◆ focused                      │ ─── File risk: MED ───
+07| ~ src/f004.rs          +2 -2  │   5    5 │ let line_4 = 4;                     │
+08| ~ src/f005.rs          +2 -2  │   6    6 │ let line_5 = 5;                     │ Findings (1)
+09| ~ src/f006.rs          +2 -2  │   7    7 │ let line_6 = 6;                     │
+10| ~ src/f007.rs          +2 -2  │   8    8 │ let line_7 = 7;                     │▸● i Finding f3
+11| ~ src/f008.rs          +2 -2  │   9    9 │ let line_8 = 8;                     │   hunk 1, line 4
+12| ~ src/f009.rs          +2 -2  │  10   10 │ let line_9 = 9;                     │
+13| ~ src/f010.rs          +2 -2  │  11   11 │ let line_10 = 10;                   │ No comments for this file
+14| ~ src/f011.rs          +2 -2  │  12   12 │ let line_11 = 11;                   │
+15| ~ src/f012.rs          +2 -2  │  13   13 │ let line_12 = 12;                   │
+16| ~ src/f013.rs          +2 -2  │  14   14 │ let line_13 = 13;                   │
+17| ~ src/f014.rs          +2 -2  │  ··· 6 lines hidden (+/- to expand) ···        │
+18| ~ src/f015.rs          +2 -2  │   @@ -21,20 +21,20 @@ let line_19 = 19;        │
+19| ~ src/f016.rs          +2 -2  │  21   21 │ let line_20 = 20;                   │
+20| ~ src/f017.rs          +2 -2  │  22   22 │ let line_21 = 21;                   │
+21| ~ src/f018.rs          +2 -2  │  23   23 │ let line_22 = 22;                   │
+22| ~ src/f019.rs          +2 -2  │  24   24 │ let line_23 = 23;                   │
+23| ~ src/f020.rs          +2 -2  │  25   25 │ let line_24 = 24;                   │
+24| ~ src/f021.rs          +2 -2  │  26   26 │ let line_25 = 25;                   │
+25| ~ src/f022.rs          +2 -2  │  27   27 │ let line_26 = 26;                   │
+26| ~ src/f023.rs          +2 -2  │  28   28 │ let line_27 = 27;                   │
+27| ~ src/f024.rs          +2 -2  │  29   29 │ let line_28 = 28;                   │
+28| ~ src/f025.rs          +2 -2  │  30   30 │ let line_29 = 29;                   │
+29| j/k nav n/N hunks Tab focus panel p close panel r reply g git a ai o open v verify ? help ^q quit
+30|styles 2585ae1f6cc2d7a1
+@@@ 09 frame Tab < 08
+29| j/k nav n/N hunks Esc unfocus p close panel r reply g git a ai o open v verify ? help ^q quit
+30|styles 7a2c65381bd0222c
+@@@ 10 frame j < 09
+@@@ 11 frame k < 09
+@@@ 12 frame k < 09
+@@@ 13 frame Enter < 08
+@@@ 14 frame Tab < 09
+@@@ 15 frame Esc < 08
+06| ~ src/f003.rs          +2 -2  │  ●  Finding f3                                 │ ─── File risk: MED ───
+10| ~ src/f007.rs          +2 -2  │   8    8 │ let line_7 = 7;                     │ ● i Finding f3
+29| j/k nav n/N hunks Tab focus panel p close panel g git a ai o open v verify ? help ^q quit
+30|styles d7c8b03b02e5d9c1
