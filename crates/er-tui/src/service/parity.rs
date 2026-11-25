@@ -231,11 +231,10 @@ fn check(order: usize, kind: &str, step: &str, app: &str, flag_on: &str) {
             panic!("{path} has no check {head}; record it with ER_UPDATE_GOLDENS=1")
         });
         assert_eq!(held.head, head, "{path}: check {order} is another step");
-        let want = held
-            .lines
-            .iter()
-            .map(|line| format!("{line}\n"))
-            .collect::<String>();
+        let want = held.lines.iter().fold(String::new(), |mut want, line| {
+            let _ = writeln!(want, "{line}");
+            want
+        });
         let differ: Vec<&str> = [("the App's", app), ("the flag path's", flag_on)]
             .into_iter()
             .filter(|(_, got)| *got != want)
