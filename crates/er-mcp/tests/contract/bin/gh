@@ -1,0 +1,21 @@
+#!/bin/sh
+# Fake gh for the er-mcp contract tests. It answers only the calls listed in
+# $ER_FAKE_GH_FIXTURES/index.tsv, with fixtures captured from real gh. Any
+# other call is appended to $ER_FAKE_GH_LOG, which fails the scenario.
+args="$*"
+tab=$(printf '\t')
+index="$ER_FAKE_GH_FIXTURES/index.tsv"
+if [ -f "$index" ]; then
+  while IFS="$tab" read -r want body code; do
+    case "$want" in
+      '#'* | '') continue ;;
+    esac
+    if [ "$want" = "$args" ]; then
+      cat "$ER_FAKE_GH_FIXTURES/$body"
+      exit "${code:-0}"
+    fi
+  done <"$index"
+fi
+printf '%s\n' "$args" >>"$ER_FAKE_GH_LOG"
+echo "fake gh: no fixture for: gh $args" >&2
+exit 97
