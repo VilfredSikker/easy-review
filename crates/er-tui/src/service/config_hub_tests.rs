@@ -39,6 +39,12 @@ fn revision(shell: &Shell) -> u64 {
     shell.host().settings().view().revision
 }
 
+/// A saved file, one TOML line per golden line, so a changed setting or
+/// catalog entry shows as the lines it changes.
+fn toml_lines(text: &str) -> Vec<String> {
+    text.lines().map(str::to_string).collect()
+}
+
 fn read(path: &Path) -> String {
     std::fs::read_to_string(path).unwrap_or_default()
 }
@@ -149,7 +155,6 @@ fn a_hub_edit_goes_through_the_settings_actor() {
 /// hub draws the same.
 #[test]
 fn hub_keys_match_the_apps() {
-    let _golden = super::parity::guard();
     let repo = fixture(1);
     let (storage, config_dir) = (temp(), temp());
     let path = path_of(&repo);
@@ -195,7 +200,8 @@ fn hub_keys_match_the_apps() {
             files(storage.path()) == files(config_dir.path())
         });
         assert_eq!(files(config_dir.path()), files(storage.path()));
-        assert_json("files", &files(config_dir.path()), &files(storage.path()));
+        let lines = |dir: &Path| files(dir).map(|file| toml_lines(&file));
+        assert_json("files", &lines(config_dir.path()), &lines(storage.path()));
         let app_file = &files(storage.path())[0];
         assert!(
             app_file.contains("snapshot"),
@@ -210,7 +216,6 @@ fn hub_keys_match_the_apps() {
 /// row's label and the hub follow the settings view as the App's do.
 #[test]
 fn a_cycled_provider_saves_and_labels_like_the_app() {
-    let _golden = super::parity::guard();
     let repo = fixture(1);
     let (storage, config_dir) = (temp(), temp());
     let path = path_of(&repo);
@@ -247,7 +252,11 @@ fn a_cycled_provider_saves_and_labels_like_the_app() {
             }
             settle_quietly(&mut shell, || read(&agents) == read(&app_agents));
             assert_eq!(read(&agents), read(&app_agents), "{step}");
-            assert_json(step, &read(&agents), &read(&app_agents));
+            assert_json(
+                step,
+                &toml_lines(&read(&agents)),
+                &toml_lines(&read(&app_agents)),
+            );
             assert_parity(&app, &shell_frame(&mut shell, &mut hl), &mut hl, step);
         }
         assert!(
@@ -349,7 +358,6 @@ fn a_model_refresh_shows_in_the_open_picker() {
 /// keys leave.
 #[test]
 fn tab_cancel_back_and_close_keys_match_the_apps() {
-    let _golden = super::parity::guard();
     let repo = fixture(1);
     let (storage, config_dir) = (temp(), temp());
     let path = path_of(&repo);
@@ -394,7 +402,11 @@ fn tab_cancel_back_and_close_keys_match_the_apps() {
             shell.handle_key(key(code));
             settle_quietly(&mut shell, || read(&agents) == read(&app_agents));
             assert_eq!(read(&agents), read(&app_agents), "Left");
-            assert_json("Left", &read(&agents), &read(&app_agents));
+            assert_json(
+                "Left",
+                &toml_lines(&read(&agents)),
+                &toml_lines(&read(&app_agents)),
+            );
         }
         press_app(&mut app, KeyCode::Char('s'));
         shell.handle_key(key(KeyCode::Char('s')));
