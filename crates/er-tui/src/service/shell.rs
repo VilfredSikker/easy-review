@@ -1137,9 +1137,12 @@ impl Shell {
     /// never traps the user.
     pub fn handle_key(&mut self, key: KeyEvent) {
         self.redraw = true;
-        // A key's own notice replaces a held refusal: the person moved on.
+        // The person moved on: a held refusal gives way to the notice that
+        // waited behind it, and a key's own notice replaces both.
         self.holding = None;
-        self.deferred = None;
+        if let Some(message) = self.deferred.take() {
+            self.show(message);
+        }
         let Some((tab, workspace, Some(content))) = self.active() else {
             match key.code {
                 KeyCode::Char('q') if key.modifiers.contains(KeyModifiers::CONTROL) => {

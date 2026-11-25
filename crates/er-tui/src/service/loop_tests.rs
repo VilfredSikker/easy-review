@@ -449,3 +449,55 @@ fn a_refusal_holds_until_it_has_been_drawn() {
         assert_eq!(shown(&shell), "tour completed (feature)");
     });
 }
+
+/// A key press ends a refusal's hold: the notice that waited behind it shows
+/// at once, where it used to be dropped.
+#[test]
+fn a_key_press_shows_the_notice_a_refusal_held_back() {
+    let repo = fixture(2);
+    let storage = storage();
+    er_engine::storage::with_process_test_storage_root(storage.path(), || {
+        let mut shell = shell(&args(vec![path_of(&repo)]), storage.path());
+        settle(&mut shell, loaded);
+        shell.land_failed_reply("summary failed (feature): no agent".into());
+        (shell.host().task_hooks().notify)("tour completed (feature)".into(), false);
+        shell.tick(Instant::now());
+        let mut highlighter = Highlighter::new();
+        shell_frame(&mut shell, &mut highlighter);
+        shell.handle_key(key(KeyCode::Char('j')));
+        let shown = |shell: &Shell| shell.view().notification.clone().unwrap_or_default();
+        assert_eq!(shown(&shell), "tour completed (feature)");
+        let start = Instant::now();
+        let mut seen = vec![shown(&shell)];
+        for secs in [1, 5, 30, 60, 120] {
+            shell_frame(&mut shell, &mut highlighter);
+            shell.tick(start + Duration::from_secs(secs));
+            seen.push(shown(&shell));
+        }
+        assert!(
+            seen.contains(&"tour completed (feature)".to_string()),
+            "never shown: {seen:?}"
+        );
+    });
+}
+
+/// A key's own notice replaces a held refusal at once, and the notice that
+/// waited behind the refusal with it.
+#[test]
+fn a_key_notice_replaces_a_held_refusal_at_once() {
+    let repo = fixture(2);
+    let storage = storage();
+    er_engine::storage::with_process_test_storage_root(storage.path(), || {
+        let mut shell = shell(&args(vec![path_of(&repo)]), storage.path());
+        settle(&mut shell, loaded);
+        shell.land_failed_reply("summary failed (feature): no agent".into());
+        (shell.host().task_hooks().notify)("tour completed (feature)".into(), false);
+        shell.tick(Instant::now());
+        shell.handle_key(key(KeyCode::Char('!')));
+        let shown = |shell: &Shell| shell.view().notification.clone().unwrap_or_default();
+        assert_eq!(shown(&shell), "Showing unreviewed only");
+        shell_frame(&mut shell, &mut Highlighter::new());
+        shell.tick(Instant::now() + Duration::from_secs(60));
+        assert_ne!(shown(&shell), "tour completed (feature)");
+    });
+}
