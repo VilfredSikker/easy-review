@@ -46,6 +46,15 @@ use crate::ai::Finding;
 /// let _ = NewGitHubComment::from(&question);
 /// ```
 ///
+/// The two blocks above import their types with these lines, which compile,
+/// so a moved type fails here and those blocks still fail on the `From` rule:
+///
+/// ```
+/// use er_engine::ai::PrivateAnnotation;
+/// use er_engine::github_post_session::NewGitHubComment;
+/// fn _types(_: PrivateAnnotation, _: NewGitHubComment) {}
+/// ```
+///
 /// ```compile_fail
 /// use er_engine::ai::PrivateAnnotation;
 /// use er_github::NewLineComment;

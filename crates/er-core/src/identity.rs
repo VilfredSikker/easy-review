@@ -1,8 +1,8 @@
 //! How a finding is identified across runs.
 //!
-//! Lives in `ai` rather than `arena` because it keys a `Finding`, and `ai` is an
-//! always-on module while `arena` is gated behind the `ui` feature — a headless
-//! consumer still reads `arbiter.json`, so it still needs to compute these.
+//! Lives in `ai` rather than `arena` because it keys a `Finding`, and any
+//! consumer that reads `arbiter.json` needs to compute these without running an
+//! arena.
 
 use sha1::{Digest, Sha1};
 

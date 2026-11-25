@@ -1,5 +1,5 @@
-//! MCP builds the engine headless, so these assertions prove the session kinds
-//! sit outside the `ui` feature.
+//! MCP builds the engine with no default features, so these assertions prove
+//! the session kinds need neither `watch` nor `highlight`.
 
 use std::path::Path;
 
