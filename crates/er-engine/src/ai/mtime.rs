@@ -58,9 +58,7 @@ pub fn latest_er_mtime_skipping(
         .max();
 
     // `None` sorts below every `Some`, so the newer of the two wins.
-    #[cfg(feature = "ui")]
-    let latest = latest.max(crate::arena::latest_arena_mtime(Path::new(er_dir)));
-    latest
+    latest.max(crate::arena::latest_arena_mtime(Path::new(er_dir)))
 }
 
 #[cfg(test)]

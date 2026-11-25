@@ -1209,12 +1209,6 @@ impl ReviewFlows {
         self.flows.get(er_dir)
     }
 
-    /// Tests set a flow's state in place.
-    #[cfg(test)]
-    pub(crate) fn get_mut(&mut self, er_dir: &str) -> Option<&mut ReviewFlow> {
-        self.flows.get_mut(er_dir)
-    }
-
     /// Show a flow that no driver call started, such as the projection of a
     /// recovered workflow record. It owns no context, so nothing advances it.
     pub fn insert(&mut self, er_dir: String, flow: ReviewFlow) {

@@ -249,7 +249,7 @@ fn error(file: &str, line: usize, code: &str, message: &str) -> Diagnostic {
 mod tests {
     use super::*;
 
-    const LISTED: &str = "crates/er-engine/src/app/state/github_post.rs";
+    const LISTED: &str = "crates/er-engine/src/github_post_session.rs";
 
     fn by_file(file: &str, source: &str) -> BTreeMap<String, Vec<Finding>> {
         let mut map = BTreeMap::new();
@@ -266,7 +266,7 @@ mod tests {
             "fn f() { let _ = NewGitHubComment::Line { body: String::new() }; }",
             "fn f() { let _ = NewGitHubComment::Reply { body: String::new() }; }",
             "fn f() { let _ = NewGitHubComment::General { body: String::new() }; }",
-            "fn f() { let _ = er_engine::app::NewGitHubComment::Line { body: String::new() }; }",
+            "fn f() { let _ = er_engine::github_post_session::NewGitHubComment::Line { body: String::new() }; }",
         ] {
             assert_eq!(findings(source).len(), 1, "{source}");
         }
