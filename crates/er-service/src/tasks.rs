@@ -201,7 +201,7 @@ impl TaskHost {
 /// Has the settings view read the repo's rules again after an importance run
 /// committed them, so `risk(key)` moves, and refreshes every loaded tab on
 /// the repo through `refresh`, so its diff reads the new table at once, as
-/// the App's `sync_repo_rules_to_tabs` hands them on. A load replaces the
+/// the App's `sync_repo_rules_to_tabs` handed them on. A load replaces the
 /// paths the view resolves, so it sends a loaded tab's paths on that repo,
 /// the active tab's first. It waits on the settings actor, so it runs on the
 /// task's worker, never on a front end's loop. A failed load is answered

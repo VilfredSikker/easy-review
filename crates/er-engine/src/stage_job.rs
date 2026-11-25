@@ -124,7 +124,7 @@ impl StageJob {
             selection,
         } = request;
         // Ranking is refused on remote-only tabs, so the key names the repo
-        // here as it does in the prompt (`TabState::rules_key`).
+        // here as it does in the prompt.
         let rules_key = crate::storage::rules_key(&*ports.git, &target.repo_root, None);
         let (
             agent_cmd,

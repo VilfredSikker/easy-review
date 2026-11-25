@@ -453,7 +453,7 @@ fn an_estimate_answers_with_its_preview() {
 }
 
 /// The default tab `er` opens has no branch view and no remote. Its diff comes
-/// from `diff_raw`, as `TabState::fetch_tab_raw_diff` fetches it.
+/// from `diff_raw`, as the App's `TabState::fetch_tab_raw_diff` fetched it.
 #[test]
 fn an_estimate_on_a_plain_tab_reads_the_working_diff() {
     let dir = tempfile::tempdir().unwrap();

@@ -4,7 +4,7 @@
 //! Each diagram lives in its own file under `{er_dir}/diagrams/<id>.json`, so
 //! regenerating one preset only overwrites that preset's file and custom
 //! diagrams accumulate. Diagrams are per-view-bucket like triage/review: the
-//! active view's `TabState::er_dir()` is both the write target
+//! active view's bucket (`er_dir`) is both the write target
 //! (`generate_diagram`) and the read source (`load_ai_state`).
 //!
 //! **Write confinement:** the agent runs with read-only tools and emits the

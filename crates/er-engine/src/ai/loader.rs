@@ -171,7 +171,7 @@ pub fn load_ai_state_with_arbiter(
     }
 
     // The guided tour (`tour.json`, one per view bucket) is context-scoped (branch
-    // vs PR) and is loaded by `TabState::reload_ai_state` → `resolve_view_tour`,
+    // vs PR) and is loaded by `tab_ai::resolve_view_tour`,
     // which knows the active view's bucket. It is intentionally not loaded here.
 
     // Load .er/summary.md through the store's plain-text path.

@@ -329,7 +329,7 @@ impl CliGitHub {
     }
 }
 
-// Compatibility wrappers, kept for the front ends and `app/state`.
+// Free-function wrappers over the default handle.
 
 pub fn gh_pending_review(owner: &str, repo: &str, pr: u64) -> anyhow::Result<PendingReview> {
     default_handle()
