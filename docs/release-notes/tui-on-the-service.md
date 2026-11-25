@@ -27,12 +27,10 @@
   Settings → AI". The "Unknown AI provider", "Provider has no models_command"
   and "Model refresh already in progress" notices are gone.
 - Adding a watched path that is already listed is skipped.
-- With only `agents.toml` broken, a refused save's banner still names
-  `config.toml`. A later fix corrects the banner.
 
 ### Working tree
 
-- A refused commit, stage or push shows a message, where the old TUI quit.
+- A refused commit or stage shows a message, where the old TUI quit.
 - Deleting a watched file is refused outside the repo, symlinked directories
   included.
 
@@ -91,6 +89,8 @@
   "<kind> failed (tab): …".
 - A review rerun on `y` clears before it plans. A diff with no file is refused
   before the clear and keeps its review. A refused clear starts no run.
+- A diff of only review-ignored files still clears on `y`, and the planner
+  then finds nothing to review, so the review is lost. The old TUI kept it.
 - The running badge and the Log header count every run on the bucket, tour
   and importance included. Experts show as `expert-<id>`.
 - A tour's log lines go to the tour bucket's log, which on a PR view can be
@@ -122,8 +122,10 @@
 
 - A refusal or an error stays on the status line until it has been drawn for
   its dwell. Another task's ordinary notice in the same moment waits for it,
-  so a refusal such as "already running" or "summary failed" is always seen.
-  A key press replaces it at once.
+  so it cannot hide a refusal such as "already running" or "summary failed".
+  A second refusal in the same moment still replaces the first. A key press
+  ends the hold: the waiting notice shows, and a notice the key gives
+  replaces both.
 - "✓ AI data refreshed" stays up for 3 s, and it is said for any reload the
   service applies, the GitHub comments, the tour buckets and the arena records
   included. A write to a background tab is applied without a notice.
@@ -137,8 +139,9 @@
 - Arena state is reconciled once per bucket, when its tab is first shown.
 - Closing a tab with a write in flight still lands the write, without its
   notice. A clear-then-run whose tab closes first clears and starts no run.
-- On exit, a local PR tab opened from a URL is named by its repo root in the
-  resume hint, so `er <args>` reopens the tab you had.
+- On exit, the resume hint no longer prints an `er --remote <url>` line for a
+  local PR tab opened from a URL. Alone, such a tab prints no hint; with
+  other tabs open, it is listed by its repo root.
 
 ## Fixes that also reach the desktop
 
