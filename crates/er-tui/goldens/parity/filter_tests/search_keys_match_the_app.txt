@@ -1,4 +1,4 @@
-@@@ 01 frame /
+@@@ 01 frame slash
 | feature · feature (vs main)  +6 -6
 |  1  BRANCH   2  UNSTAGED   3  STAGED   4  HISTORY                                   Claude / Sonnet 5.5   0/3 reviewed
 | FILES (3)                     │  ~ src/f000.rs  +2 -2                                                      Hunk 1/2
@@ -74,7 +74,7 @@
 05| ~ src/f002.rs          +2 -2  │ ▶ @@ -1,14 +1,14 @@
 29| j/k nav n/N hunks +/- context ␣ review / search g git a ai o open v verify ? help ^q quit
 30|styles 7c9ec60822884df4
-@@@ 05 frame / < 04
+@@@ 05 frame slash < 04
 29| / █  Enter confirm  Esc cancel
 30|styles a96b0b9e1fb603df
 @@@ 06 frame 1 < 03

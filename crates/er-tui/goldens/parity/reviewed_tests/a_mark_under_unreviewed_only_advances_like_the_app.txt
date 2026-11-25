@@ -1,4 +1,4 @@
-@@@ 01 frame !
+@@@ 01 frame bang
 | feature · feature (vs main)  +6 -6
 |  1  BRANCH   2  UNSTAGED   3  STAGED   4  HISTORY                                   Claude / Sonnet 5.5   0/3 reviewed
 | FILES (3/3)                   │  ~ src/f000.rs  +2 -2                                      ● Showing unreviewed only

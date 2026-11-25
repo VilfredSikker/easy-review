@@ -34,7 +34,7 @@
 02| FILES (3)                     │  ~ src/f000.rs  +2 -2                                                      Hunk 1/2
 29| filter  █  Enter apply  Esc cancel
 30|styles a77d24221f83354d
-@@@ 03 frame - < 02
+@@@ 03 frame minus < 02
 29| filter  -█  Enter apply  Esc cancel
 30|styles 90ea54663790c90a
 @@@ 04 frame f < 02

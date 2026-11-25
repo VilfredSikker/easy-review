@@ -30,7 +30,7 @@
 |                               │  27   27 │ let line_26 = 26;
 | filter  █  Enter apply  Esc cancel
 |styles 5fde5303049ef03d
-@@@ 02 frame - < 01
+@@@ 02 frame minus < 01
 29| filter  -█  Enter apply  Esc cancel
 30|styles 45a083494f3d3b7a
 @@@ 03 frame k < 01
@@ -45,7 +45,7 @@
 @@@ 06 frame d < 01
 29| filter  -kind█  Enter apply  Esc cancel
 30|styles 764788fa96d55de2
-@@@ 07 frame : < 01
+@@@ 07 frame colon < 01
 29| filter  -kind:█  Enter apply  Esc cancel
 30|styles c77fc1e0453b9989
 @@@ 08 frame t < 01
