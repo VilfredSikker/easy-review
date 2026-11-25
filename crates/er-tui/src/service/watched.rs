@@ -23,6 +23,7 @@ const RESCAN_INTERVAL: Duration = Duration::from_secs(5);
 enum Request {
     Scan {
         key: TabKey,
+        generation: u64,
         root: String,
         patterns: Vec<String>,
     },
@@ -38,6 +39,7 @@ enum Request {
 pub enum Landed {
     Scanned {
         key: TabKey,
+        generation: u64,
         files: Vec<WatchedFile>,
         not_ignored: Vec<String>,
     },
@@ -54,6 +56,9 @@ pub struct Reader {
     landed: Receiver<Landed>,
     /// The tab, settings revision and time of the last scan.
     scanned: Option<(TabKey, u64, Instant)>,
+    /// Raised each time a scan is due, whether it is sent or the list is
+    /// cleared instead, so a scan sent before lands as stale.
+    generation: u64,
     /// A write landed, so the list is read again on the next tick.
     pub rescan: bool,
 }
@@ -74,12 +79,21 @@ impl Reader {
             requests,
             landed,
             scanned: None,
+            generation: 0,
             rescan: false,
         }
     }
 
+    /// The next landed read. A scan sent before a newer one was due is
+    /// dropped: its patterns or its tab are no longer the ones shown, and
+    /// applied after a clear it would put back a list the config emptied.
     pub fn try_landed(&self) -> Option<Landed> {
-        self.landed.try_recv().ok()
+        loop {
+            match self.landed.try_recv().ok()? {
+                Landed::Scanned { generation, .. } if generation != self.generation => {}
+                landed => return Some(landed),
+            }
+        }
     }
 
     /// Whether `key`'s list is due: on its first frame, after a write, every
@@ -94,6 +108,7 @@ impl Reader {
             });
         if due {
             self.scanned = Some((key, settings_revision, now));
+            self.generation += 1;
         }
         due
     }
@@ -101,6 +116,7 @@ impl Reader {
     pub fn scan(&self, key: TabKey, root: &str, config: &WatchedConfig) {
         let _ = self.requests.send(Request::Scan {
             key,
+            generation: self.generation,
             root: root.to_string(),
             patterns: config.paths.clone(),
         });
@@ -120,6 +136,7 @@ fn read(git: &dyn Git, request: Request) -> Landed {
     match request {
         Request::Scan {
             key,
+            generation,
             root,
             patterns,
         } => {
@@ -132,6 +149,7 @@ fn read(git: &dyn Git, request: Request) -> Landed {
                 .collect();
             Landed::Scanned {
                 key,
+                generation,
                 files,
                 not_ignored,
             }
@@ -168,6 +186,10 @@ pub struct TabWatched {
     pub deleting: Option<String>,
     /// The last snapshot diff read, and its path.
     snapshot: Option<(String, SnapshotDiff)>,
+    /// Paths whose delete was sent and that a listing still shows. A read
+    /// sent before the delete can land after it, and a first snapshot saved
+    /// then would fail on the missing file.
+    deleted: Vec<String>,
     reading: bool,
     stale: bool,
 }
@@ -237,6 +259,8 @@ impl TabWatched {
         if self.shown == Some(false) {
             return;
         }
+        self.deleted
+            .retain(|path| files.iter().any(|file| file.path == *path));
         self.files = files;
         self.not_ignored = not_ignored;
         if let Some(idx) = self.selected {
@@ -250,9 +274,21 @@ impl TabWatched {
     /// lands and the diff is read again.
     pub fn read(&mut self, path: String, diff: SnapshotDiff) -> Option<String> {
         self.reading = false;
-        let created = matches!(diff, SnapshotDiff::Created).then(|| path.clone());
+        let created = matches!(diff, SnapshotDiff::Created) && !self.deleted.contains(&path);
+        let created = created.then(|| path.clone());
         self.snapshot = Some((path, diff));
         created
+    }
+
+    /// A delete of `path` was sent: no first snapshot is saved for it.
+    pub fn delete_sent(&mut self, path: String) {
+        self.deleted.push(path);
+    }
+
+    /// A watched write was refused, so a delete may have left its file in
+    /// place, and that file's first snapshot saves again.
+    pub fn write_refused(&mut self) {
+        self.deleted.clear();
     }
 
     /// The selected file's diff is read again on the next tick.

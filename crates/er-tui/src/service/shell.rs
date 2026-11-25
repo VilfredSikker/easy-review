@@ -1117,7 +1117,14 @@ impl Shell {
                     self.settings.absorb_reply(&error.to_string());
                     self.load_errors.insert(key, error.to_string());
                 }
-                Err(error) => self.failure(Side::Reply, error.to_string()),
+                Err(error) => {
+                    if after == After::Watched {
+                        if let Some(state) = self.view.tab_mut_if_open(key) {
+                            state.watched.write_refused();
+                        }
+                    }
+                    self.failure(Side::Reply, error.to_string());
+                }
             }
         }
     }
@@ -1313,6 +1320,7 @@ impl Shell {
                 self.view.input_mode = Mode::Normal;
                 let state = self.view.tab_mut(key, content);
                 if let Some(path) = state.watched.deleting.take() {
+                    state.watched.delete_sent(path.clone());
                     let command = Command::DeleteWatchedFile { key, path };
                     self.post(key, workspace, command, After::Watched);
                 }
