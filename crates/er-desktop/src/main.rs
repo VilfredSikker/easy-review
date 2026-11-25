@@ -801,8 +801,15 @@ fn main() {
     let (resource_wake, resource_wakes) = std::sync::mpsc::channel();
     let session = er_desktop::state::SessionClock::default();
     session.wake_with(resource_wake.clone());
+    // One task host for the desktop's runs and the actors' flows, so a flow
+    // sees the tasks writing into its bucket.
+    let tasks = {
+        let clock = session.clock();
+        er_service::TaskHost::new(move |_| clock.bump())
+    };
+    let deps = er_service::WorkspaceDeps::new(ports.clone()).with_tasks(tasks.clone());
     let service = Arc::new(
-        er_desktop::service::ServiceState::with_revision_relay(ports.clone(), {
+        er_desktop::service::ServiceState::with_deps(deps, {
             // The revision watcher wakes the tick for this bump.
             let desktop_revision = Arc::clone(&desktop_revision);
             move |_| {
@@ -858,10 +865,7 @@ fn main() {
         session: session.clone(),
         live_jobs: Default::default(),
         live_tabs: Default::default(),
-        tasks: {
-            let clock = session.clock();
-            er_service::TaskHost::new(move |_| clock.bump())
-        },
+        tasks,
     };
     let state = desktop.clone();
     er_desktop::app_owner::startup::read_inbox_prefs_from_settings(&desktop);

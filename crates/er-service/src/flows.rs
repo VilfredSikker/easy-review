@@ -89,6 +89,7 @@ impl FlowRunner {
             tasks: HashMap::new(),
             finished: Arc::new(Mutex::new(HashMap::new())),
             panel_runs_seen: HashSet::new(),
+            task_host: deps.tasks().clone(),
         };
         Self {
             shared: Arc::new(Mutex::new(Flows {
@@ -289,6 +290,8 @@ struct ServiceFlowHost {
     /// Filled by each stage's worker when its job and commit are done.
     finished: Arc<Mutex<HashMap<String, StageCompletion>>>,
     panel_runs_seen: HashSet<(String, String)>,
+    /// The app's task host, whose tasks write into the same buckets.
+    task_host: crate::tasks::TaskHost,
 }
 
 impl ServiceFlowHost {

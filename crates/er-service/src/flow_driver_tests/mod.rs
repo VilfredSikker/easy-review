@@ -24,6 +24,7 @@ use crate::handle::ActorMsg;
 use crate::protocol::FlowContext;
 
 mod driver;
+mod producers;
 mod record;
 mod results;
 mod views;
@@ -36,10 +37,19 @@ pub(super) struct Harness {
 
 impl Harness {
     pub(super) fn new(ports: Ports) -> Self {
+        Self::with_deps(WorkspaceDeps::new(ports))
+    }
+
+    /// A runner whose flows see `tasks`, the app's task host.
+    pub(super) fn with_tasks(ports: Ports, tasks: crate::tasks::TaskHost) -> Self {
+        Self::with_deps(WorkspaceDeps::new(ports).with_tasks(tasks))
+    }
+
+    fn with_deps(deps: WorkspaceDeps) -> Self {
         let (tx, actor) = mpsc::channel();
         let sink: Arc<dyn JobSink> = Arc::new(LocalJobSink);
         let arena = ArenaRunControls::with_jobs(Arc::clone(&sink));
-        let runner = FlowRunner::new(&WorkspaceDeps::new(ports), sink, arena, &tx);
+        let runner = FlowRunner::new(&deps, sink, arena, &tx);
         Self {
             runner,
             _actor: actor,

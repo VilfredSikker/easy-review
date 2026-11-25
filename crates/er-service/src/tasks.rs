@@ -35,6 +35,10 @@ const LOG_LINES: usize = 500;
 pub const BUCKET_LOG_LINES: usize = 5_000;
 /// Lines a job may get ahead of its log drain before the runner drops some.
 const PROGRESS_CAPACITY: usize = 256;
+/// A tour's task kind. A tour reads its own prepared diff and writes only
+/// `tour.json`, which no review-flow stage reads or writes, so it is the one
+/// task that runs beside a flow.
+pub const TOUR_TASK_KIND: &str = "tour";
 
 /// The app's background tasks. A clone shares them.
 #[derive(Clone, Default)]
