@@ -411,7 +411,11 @@ fn snapshot_changed() -> crate::screen::watched::SnapshotDiff {
     crate::screen::watched::SnapshotDiff::Changed(file)
 }
 
-/// The app chrome, the hubs, the other overlays and the status-bar input modes.
+/// The app chrome, the hubs, the other overlays and the status-bar input
+/// modes. `input_search` is the one fixture not rebuilt: it sets the App's
+/// query without the filter typing applies, a state the flag path never
+/// holds, so the search line is pinned by the frozen frames of
+/// `filter_tests::search_keys_match_the_app` instead.
 const CHROME: &[Fixture] = &[
     fixture_of("chrome_tabs_update_notice", 100, 16, |scene| {
         scene.tab_names.push("docs".into());
