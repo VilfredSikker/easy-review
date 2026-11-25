@@ -1,0 +1,142 @@
+@@@ 01 frame f
+| feature · feature (vs main)  +6 -6
+|  1  BRANCH   2  UNSTAGED   3  STAGED   4  HISTORY                                   Claude / Sonnet 5.5   0/3 reviewed
+| FILES (3)                     │  ~ src/f000.rs  +2 -2                                                      Hunk 1/2
+| ~ src/f000.rs          +2 -2  │
+| ~ src/f001.rs          +2 -2  │ ▶ @@ -1,14 +1,14 @@
+| ~ src/f002.rs          +2 -2  │   1    1 │ let line_0 = 0;
+|                               │   2    2 │ let line_1 = 1;
+|                               │   3    3 │ let line_2 = 2;
+|                               │   4      │-let line_3 = 3;
+|                               │        4 │+let changed_3 = 3; // edited
+|                               │   5    5 │ let line_4 = 4;
+|                               │   6    6 │ let line_5 = 5;
+|                               │   7    7 │ let line_6 = 6;
+|                               │   8    8 │ let line_7 = 7;
+|                               │   9    9 │ let line_8 = 8;
+|                               │  10   10 │ let line_9 = 9;
+|                               │  11   11 │ let line_10 = 10;
+|                               │  12   12 │ let line_11 = 11;
+|                               │  13   13 │ let line_12 = 12;
+|                               │  14   14 │ let line_13 = 13;
+|                               │  ··· 6 lines hidden (+/- to expand) ···
+|                               │   @@ -21,20 +21,20 @@ let line_19 = 19;
+|                               │  21   21 │ let line_20 = 20;
+|                               │  22   22 │ let line_21 = 21;
+|                               │  23   23 │ let line_22 = 22;
+|                               │  24   24 │ let line_23 = 23;
+|                               │  25   25 │ let line_24 = 24;
+|                               │  26   26 │ let line_25 = 25;
+|                               │  27   27 │ let line_26 = 26;
+| filter  █  Enter apply  Esc cancel
+|styles a77d24221f83354d
+@@@ 02 frame - < 01
+29| filter  -█  Enter apply  Esc cancel
+30|styles 90ea54663790c90a
+@@@ 03 frame f < 01
+29| filter  -f█  Enter apply  Esc cancel
+30|styles 9b607a065b1c9221
+@@@ 04 frame 0 < 01
+29| filter  -f0█  Enter apply  Esc cancel
+30|styles bbe00b0e01e50c4e
+@@@ 05 frame 0 < 01
+29| filter  -f00█  Enter apply  Esc cancel
+30|styles 616b5041452de345
+@@@ 06 frame 0 < 01
+29| filter  -f000█  Enter apply  Esc cancel
+30|styles 60069b8293d25032
+@@@ 07 frame Enter < 01
+01|  1  BRANCH   2  UNSTAGED   3  STAGED   4  HISTORY                             Claude / Sonnet 5.5   0/2 · 0/3 reviewed
+02| FILES (2/3)                   │ src/f001.rs                                                    ● Filter: -f000 (2/3)
+03| ~ src/f001.rs          +2 -2  │  ~ src/f001.rs  +2 -2
+04| ~ src/f002.rs          +2 -2  │
+05|                               │ ▶ @@ -1,14 +1,14 @@
+06|                               │   1    1 │ let line_0 = 0;
+07|                               │   2    2 │ let line_1 = 1;
+08|                               │   3    3 │ let line_2 = 2;
+09|                               │   4      │-let line_3 = 3;
+10|                               │        4 │+let changed_3 = 3; // edited
+11|                               │   5    5 │ let line_4 = 4;
+12|                               │   6    6 │ let line_5 = 5;
+13|                               │   7    7 │ let line_6 = 6;
+14|                               │   8    8 │ let line_7 = 7;
+15|                               │   9    9 │ let line_8 = 8;
+16|                               │  10   10 │ let line_9 = 9;
+17|                               │  11   11 │ let line_10 = 10;
+18|                               │  12   12 │ let line_11 = 11;
+19|                               │  13   13 │ let line_12 = 12;
+20|                               │  14   14 │ let line_13 = 13;
+21|                               │  ··· 6 lines hidden (+/- to expand) ···
+22|                               │   @@ -21,20 +21,20 @@ let line_19 = 19;
+23|                               │  21   21 │ let line_20 = 20;
+24|                               │  22   22 │ let line_21 = 21;
+25|                               │  23   23 │ let line_22 = 22;
+26|                               │  24   24 │ let line_23 = 23;
+27|                               │  25   25 │ let line_24 = 24;
+28|                               │  26   26 │ let line_25 = 25;
+29| j/k nav n/N hunks +/- context ␣ review / search g git a ai o open v verify ? help ^q quit F: -f000
+30|styles 10966ad380a869cd
+@@@ 08 frame F < 07
+02| FILES (2/3)                   │ src/f001.rs                                                                Hunk 1/2
+09|                              ┌ FILTERS (Enter=apply, Esc=close) ────────────────────────┐
+10|                              │▶ frontend  *.ts,*.tsx,*.js,*.jsx,*.html,*.css,*.scss,*.sv│
+11|                              │  backend   *.rs,*.py,*.go,*.java,*.sql,*.ts              │
+12|                              │  config    *.toml,*.yaml,*.yml,*.json,*.env              │
+13|                              │  docs      *.md,*.txt,*.rst                              │
+14|                              │  review    -risk:info                                    │
+15|                              │  schema    *.sql,*.prisma,*.graphql,migration            │
+16|                              │  api       *.proto,openapi,api/,routes/,handlers/,control│
+17|                              │── history ──                                             │
+18|                              │  -f000                                                   │
+19|                              └──────────────────────────────────────────────────────────┘
+30|styles cd397c5311bce69f
+@@@ 09 frame j < 08
+10|                              │  frontend  *.ts,*.tsx,*.js,*.jsx,*.html,*.css,*.scss,*.sv│
+11|                              │▶ backend   *.rs,*.py,*.go,*.java,*.sql,*.ts              │
+30|styles 7a76298d15d334e9
+@@@ 10 frame Enter < 07
+01|  1  BRANCH   2  UNSTAGED   3  STAGED   4  HISTORY                             Claude / Sonnet 5.5   0/3 · 0/3 reviewed
+02| FILES (3/3)                   │ src/f001.rs                               ● Filter: *.rs,*.py,*.go,*.java,*.sql,*.ts
+03| ~ src/f000.rs          +2 -2  │  ~ src/f001.rs  +2 -2
+04| ~ src/f001.rs          +2 -2  │
+05| ~ src/f002.rs          +2 -2  │ ▶ @@ -1,14 +1,14 @@
+28| j/k nav n/N hunks +/- context ␣ review / search g git a ai o open v verify ? help ^q quit
+29| F: *.rs,*.py,*.go,*.java,*.sql,*.ts
+30|styles c41e099c5f63b84d
+@@@ 11 frame F < 08
+01|  1  BRANCH   2  UNSTAGED   3  STAGED   4  HISTORY                             Claude / Sonnet 5.5   0/3 · 0/3 reviewed
+02| FILES (3/3)                   │ src/f001.rs                                                                Hunk 1/2
+03| ~ src/f000.rs          +2 -2  │  ~ src/f001.rs  +2 -2
+04| ~ src/f001.rs          +2 -2  │
+05| ~ src/f002.rs          +2 -2  │ ▶ @@ -1,14 +1,14 @@
+18|                              │  *.rs,*.py,*.go,*.java,*.sql,*.ts                        │
+19|                              │  -f000                                                   │
+20|                              └──────────────────────────────────────────────────────────┘
+28| j/k nav n/N hunks +/- context ␣ review / search g git a ai o open v verify ? help ^q quit
+29| F: *.rs,*.py,*.go,*.java,*.sql,*.ts
+30|styles 0b6a74c31dd651cd
+@@@ 12 frame j < 11
+10|                              │  frontend  *.ts,*.tsx,*.js,*.jsx,*.html,*.css,*.scss,*.sv│
+11|                              │▶ backend   *.rs,*.py,*.go,*.java,*.sql,*.ts              │
+30|styles 409a8a77585a716f
+@@@ 13 json history
+|[
+|  "*.rs,*.py,*.go,*.java,*.sql,*.ts",
+|  "-f000"
+|]
+@@@ 14 frame Esc < 10
+02| FILES (3/3)                   │ src/f001.rs                                                                Hunk 1/2
+30|styles 418719d24ce3336d
+@@@ 15 frame Esc < 10
+01|  1  BRANCH   2  UNSTAGED   3  STAGED   4  HISTORY                                   Claude / Sonnet 5.5   0/3 reviewed
+02| FILES (3)                     │ src/f001.rs                                                         ● Filter cleared
+28|                               │  26   26 │ let line_25 = 25;
+29| j/k nav n/N hunks +/- context ␣ review / search g git a ai o open v verify ? help ^q quit
+30|styles 901977808d555cbc
+@@@ 16 json expr
+|""
+@@@ 17 json history
+|[
+|  "*.rs,*.py,*.go,*.java,*.sql,*.ts",
+|  "-f000"
+|]
