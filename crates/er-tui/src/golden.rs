@@ -31,18 +31,28 @@ pub fn draw(app: &App, width: u16, height: u16, hl: &mut ui::highlight::Highligh
 }
 
 fn golden_text(buf: &Buffer) -> String {
+    let rows = buf.content.chunks(usize::from(buf.area.width));
+    rows_text(rows, |line| line.to_string())
+}
+
+/// The rows as text, each passed through `line` with its trailing blanks
+/// trimmed, then an FNV-1a digest of every cell's style in cell order. The
+/// parity goldens share it, so the two formats cannot drift.
+pub(crate) fn rows_text<'a>(
+    rows: impl IntoIterator<Item = &'a [ratatui::buffer::Cell]>,
+    line: impl Fn(&str) -> String,
+) -> String {
     let mut out = String::new();
-    for row in buf.content.chunks(usize::from(buf.area.width)) {
-        let line: String = row.iter().map(|cell| cell.symbol()).collect();
-        out.push_str(line.trim_end());
-        out.push('\n');
-    }
-    // FNV-1a over each cell's style, in cell order.
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-    for cell in &buf.content {
-        for byte in format!("{:?}", cell.style()).bytes() {
-            hash ^= u64::from(byte);
-            hash = hash.wrapping_mul(0x0100_0000_01b3);
+    for row in rows {
+        let text: String = row.iter().map(ratatui::buffer::Cell::symbol).collect();
+        out.push_str(&line(text.trim_end()));
+        out.push('\n');
+        for cell in row {
+            for byte in format!("{:?}", cell.style()).bytes() {
+                hash ^= u64::from(byte);
+                hash = hash.wrapping_mul(0x0100_0000_01b3);
+            }
         }
     }
     out.push_str(&format!("styles {hash:016x}\n"));
