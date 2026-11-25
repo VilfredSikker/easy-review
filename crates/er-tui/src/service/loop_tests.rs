@@ -466,10 +466,18 @@ fn a_long_notice_behind_a_refusal_keeps_its_own_dwell() {
         shell_frame(&mut shell, &mut Highlighter::new());
         // Past the short dwell, within the long one.
         shell.tick(Instant::now() + Duration::from_secs(4));
-        assert_eq!(shown(&shell), "Risk rules committed", "the refusal took the long dwell");
+        assert_eq!(
+            shown(&shell),
+            "Risk rules committed",
+            "the refusal took the long dwell"
+        );
         let at = Instant::now();
         shell.tick(at + Duration::from_secs(4));
-        assert_eq!(shown(&shell), "Risk rules committed", "the notice lost its long dwell");
+        assert_eq!(
+            shown(&shell),
+            "Risk rules committed",
+            "the notice lost its long dwell"
+        );
         shell.tick(at + Duration::from_secs(6));
         assert_eq!(shown(&shell), "");
     });
