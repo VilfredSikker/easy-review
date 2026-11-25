@@ -246,6 +246,7 @@ fn the_flow_rows_cancel_and_decline() {
 /// results overlay draws as the App's.
 #[test]
 fn the_ai_hub_draws_like_the_app_in_each_flow_state() {
+    let _golden = super::parity::guard();
     let (app_repo, flag_repo) = (fixture(1), fixture(1));
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
@@ -303,6 +304,7 @@ fn the_ai_hub_draws_like_the_app_in_each_flow_state() {
 /// it on the holder actor.
 #[test]
 fn an_interrupted_flow_shows_and_reruns_like_the_app() {
+    let _golden = super::parity::guard();
     let (app_repo, flag_repo) = (fixture(1), fixture(1));
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
@@ -358,6 +360,7 @@ fn interrupted_record(bucket: &Path) {
 /// summary, and hides it again, as the App's row does.
 #[test]
 fn the_drops_row_lists_like_the_app() {
+    let _golden = super::parity::guard();
     let (app_repo, flag_repo) = (fixture(1), fixture(1));
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     er_engine::storage::with_process_test_storage_root(storage.path(), || {

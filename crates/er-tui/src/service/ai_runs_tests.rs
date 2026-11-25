@@ -298,6 +298,7 @@ fn a_pick_moves_the_model_the_next_run_uses() {
 /// closes, its bucket's log goes.
 #[test]
 fn the_log_panel_and_running_badge_draw_like_the_app() {
+    let _golden = super::parity::guard();
     let (app_repo, flag_repo, other) = (fixture(1), fixture(1), fixture(1));
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
@@ -331,6 +332,8 @@ fn the_log_panel_and_running_badge_draw_like_the_app() {
                 .collect()
         };
         let flag_panel = panel(&flag);
+        let app_panel = panel(&app_rows)[..flag_panel.len()].to_vec();
+        super::parity::assert_json("log", &flag_panel, &app_panel);
         assert_eq!(
             flag_panel,
             panel(&app_rows)[..flag_panel.len()],
