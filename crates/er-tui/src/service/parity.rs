@@ -65,7 +65,6 @@ fn arena_id(chars: &[char], at: usize) -> usize {
     }
 }
 
-/// `01:27` or `01:27:07`, standing alone: a digit or `:` on either side
 /// An agent-log offset, `[   +0s]` or `[+1m05s]`: how long after the run
 /// began a line came, which a slow spawn moves.
 fn elapsed(chars: &[char], at: usize) -> usize {
@@ -103,6 +102,7 @@ fn elapsed(chars: &[char], at: usize) -> usize {
     }
 }
 
+/// `01:27` or `01:27:07`, standing alone: a digit or `:` on either side
 /// makes it part of something else, such as `f000.rs:12:34`.
 fn clock(chars: &[char], at: usize) -> usize {
     let pair = |from: usize| {
@@ -270,7 +270,10 @@ pub(super) fn stable_text(frame: &Buffer) -> String {
 
 /// The test modules whose checks are frozen. Each later P76.1 PR adds its
 /// areas; the others still only compare the two legs live.
-const FROZEN: [&str; 19] = [
+const FROZEN: [&str; 22] = [
+    "copy_tests",
+    "open_tests",
+    "duties_tests",
     "config_hub_tests",
     "pr_stack_tests",
     "flows_tests",

@@ -1,0 +1,5 @@
+@@@ 01 json history context
+|[
+|  "File: src/f001.rs\nBranch: feature (vs main)\nHunk #1:\n\n @@ -1,14 +1,14 @@\n let line_0 = 0;\n let line_1 = 1;\n let line_2 = 2;\n-let line_3 = 3;\n+let changed_3 = 3; // edited\n let line_4 = 4;\n let line_5 = 5;\n let line_6 = 6;\n let line_7 = 7;\n let line_8 = 8;\n let line_9 = 9;\n let line_10 = 10;\n let line_11 = 11;\n let line_12 = 12;\n let line_13 = 13;\n",
+|  "Copied hunk (15 lines)"
+|]

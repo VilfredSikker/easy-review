@@ -16,6 +16,7 @@ use er_engine::test_support::write_sidecar_json;
 
 use super::findings_tests::seed_both;
 use super::handoff::Launched;
+use super::parity::assert_json;
 use super::shell::Shell;
 use super::tests::{
     app_on, fixture, git, key, loaded, path_of, plan, press_app, settle, shell, shell_on, SOURCES,
@@ -42,8 +43,10 @@ fn copied(shell: &Shell) -> String {
 
 fn assert_copied(shell: &Shell, built: Built, step: &str) {
     let want = built.unwrap_or_else(|message| panic!("{step}: the App copies nothing: {message}"));
-    assert_eq!(copied(shell), want.text, "{step}: text");
+    let text = copied(shell);
+    assert_eq!(text, want.text, "{step}: text");
     assert_eq!(notice(shell), want.notice, "{step}: notice");
+    assert_json(step, &(text, notice(shell)), &(want.text, want.notice));
 }
 
 /// A finding on the first file's second hunk, with a suggestion.
@@ -149,6 +152,7 @@ fn an_export_holds_a_question_added_on_the_flag_path() {
 /// opens afresh.
 #[test]
 fn the_export_picker_toggles_and_renders_like_the_app() {
+    let _golden = super::parity::guard();
     let (app_repo, flag_repo) = (fixture(2), fixture(2));
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
@@ -182,7 +186,9 @@ fn the_export_picker_toggles_and_renders_like_the_app() {
         let want = render_markdown(app.tab(), &opts);
         assert!(want.contains("Edited twice") == include_findings, "{want}");
         shell.handle_key(key(KeyCode::Enter));
-        assert_eq!(copied(&shell), want);
+        let got = copied(&shell);
+        assert_eq!(got, want);
+        assert_json("export", &got, &want);
         let count = want.len();
         assert_eq!(
             notice(&shell),
@@ -207,6 +213,7 @@ fn the_export_picker_toggles_and_renders_like_the_app() {
 /// A copy right after a file move reads the newly selected file.
 #[test]
 fn a_copy_after_a_move_reads_the_new_file() {
+    let _golden = super::parity::guard();
     let repo = fixture(2);
     // The second file's first hunk reads apart from the first file's.
     let second = repo.path().join("src/f001.rs");
@@ -265,6 +272,7 @@ fn copy_context(shell: &mut Shell) {
 /// builders make of the App's tab after the same keys.
 #[test]
 fn copies_match_the_app_after_the_same_keys() {
+    let _golden = super::parity::guard();
     let (app_repo, flag_repo) = (fixture(2), fixture(2));
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
@@ -448,6 +456,7 @@ fn seed_second(dir: &str, hash: &str) {
 /// so Shift+Down there starts a new one.
 #[test]
 fn a_jump_to_another_file_drops_the_selection() {
+    let _golden = super::parity::guard();
     let (app_repo, flag_repo) = (fixture(2), fixture(2));
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
@@ -478,6 +487,7 @@ fn a_jump_to_another_file_drops_the_selection() {
 /// the App's do.
 #[test]
 fn history_copies_and_edits_the_commit_file() {
+    let _golden = super::parity::guard();
     let repo = fixture(2);
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
@@ -524,6 +534,7 @@ fn history_copies_and_edits_the_commit_file() {
 /// the App's does: the anchor belongs to the file, not to its place.
 #[test]
 fn a_refresh_that_moves_the_file_keeps_its_selection() {
+    let _golden = super::parity::guard();
     let (app_repo, flag_repo) = (fixture(2), fixture(2));
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
@@ -586,6 +597,7 @@ fn seed_both_files(dir: &str, hash: &str) {
 /// App clears it on each jump that changes file.
 #[test]
 fn a_jump_away_and_back_leaves_no_selection() {
+    let _golden = super::parity::guard();
     let (app_repo, flag_repo) = (fixture(2), fixture(2));
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
@@ -623,6 +635,7 @@ fn a_jump_away_and_back_leaves_no_selection() {
 /// nothing.
 #[test]
 fn a_refresh_that_removes_the_anchored_file_starts_a_new_selection() {
+    let _golden = super::parity::guard();
     let (app_repo, flag_repo) = (fixture(2), fixture(2));
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     er_engine::storage::with_process_test_storage_root(storage.path(), || {

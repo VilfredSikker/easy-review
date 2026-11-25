@@ -1,0 +1,62 @@
+@@@ 01 frame S-E
+| feature · feature (vs main)  +4 -4
+|  1  BRANCH   2  UNSTAGED   3  STAGED   4  HISTORY                          AI ON    Claude / Sonnet 5.5   0/2 reviewed
+| FILES (2) · 1 findings        │  ~ src/f000.rs  +2 -2                                                      Hunk 1/2
+| ~ src/f000.rs     ●    +2 -2  │
+| ~ src/f001.rs          +2 -2  │ ▶ @@ -1,14 +1,14 @@
+|                               │   1    1 │ let line_0 = 0;
+|                               │   2    2 │ let line_1 = 1;
+|                               │   3    3 │ let line_2 = 2;
+|                               │   4      │-let line_3 = 3;
+|                               │        4 │+let changed_3 = 3; // edited
+|                               │  ┌ EXPORT (Space=toggle, Enter=copy) ───────────────┐
+|                               │  │▶ [x] GitHub comments                             │
+|                               │  │  [x] AI findings                                 │
+|                               │  │  [x] Questions                                   │
+|                               │  │  [x] Notes                                       │
+|                               │  │                                                  │
+|                               │  │                                                  │
+|                               │  │                                                  │
+|                               │  └──────────────────────────────────────────────────┘
+|                               │  14   14 │ let line_13 = 13;
+|                               │  ··· 6 lines hidden (+/- to expand) ···
+|                               │   @@ -21,20 +21,20 @@ let line_19 = 19;
+|                               │  21   21 │ let line_20 = 20;
+|                               │  22   22 │ let line_21 = 21;
+|                               │  23   23 │ let line_22 = 22;
+|                               │  24   24 │ let line_23 = 23;
+|                               │  25   25 │ let line_24 = 24;
+|                               │  26   26 │ let line_25 = 25;
+|                               │  27   27 │ let line_26 = 26;
+| j/k nav n/N hunks +/- context ␣ review / search g git a ai o open v verify ? help ^q quit
+|styles 260bb21669544e48
+@@@ 02 frame j < 01
+11|                               │  │  [x] GitHub comments                             │
+12|                               │  │▶ [x] AI findings                                 │
+30|styles d76bb4b5ab06a408
+@@@ 03 frame Space < 02
+12|                               │  │▶ [ ] AI findings                                 │
+@@@ 04 json export
+|"# Review export — feature\nNo annotations.\n"
+@@@ 05 frame S-E < 01
+@@@ 06 frame Space < 01
+11|                               │  │▶ [ ] GitHub comments                             │
+@@@ 07 frame j < 02
+11|                               │  │  [ ] GitHub comments                             │
+@@@ 08 frame Space < 03
+11|                               │  │  [ ] GitHub comments                             │
+@@@ 09 frame j < 07
+12|                               │  │  [ ] AI findings                                 │
+13|                               │  │▶ [x] Questions                                   │
+30|styles 347d4a1302617d16
+@@@ 10 frame Space < 09
+13|                               │  │▶ [ ] Questions                                   │
+@@@ 11 frame j < 09
+13|                               │  │  [ ] Questions                                   │
+14|                               │  │▶ [x] Notes                                       │
+30|styles 248fda8c9dd283fa
+@@@ 12 frame Space < 11
+14|                               │  │▶ [ ] Notes                                       │
+@@@ 13 frame Enter < 01
+02| FILES (2) · 1 findings        │  ~ src/f000.rs  +2 -2                        ● Select at least one section to export
+30|styles 819a3ddd9a6d4777

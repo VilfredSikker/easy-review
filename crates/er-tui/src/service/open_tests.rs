@@ -67,6 +67,7 @@ fn open_modules_list_no_worktrees_and_read_no_directory() {
 /// none; the Stack rows as P73 drew them.
 #[test]
 fn the_open_hub_draws_like_the_app() {
+    let _golden = super::parity::guard();
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     let github = Arc::new(FakeGitHub::default().with_stack_view_json(Ok(stack_json(false))));
     for second in [true, false] {
@@ -239,6 +240,7 @@ fn browse_fixture() -> (tempfile::TempDir, tempfile::TempDir) {
 /// and after Backspace; Enter on a repo opens it as a tab.
 #[test]
 fn browse_folders_draws_like_the_app_and_opens_a_repo() {
+    let _golden = super::parity::guard();
     let (parent, _moved) = browse_fixture();
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     let github = Arc::new(FakeGitHub::default().with_stack_view_json(Ok(stack_json(false))));
@@ -385,6 +387,25 @@ fn assert_box_from(app: &er_engine::app::App, shell: &mut Shell, from: &str) {
     let right = cols.iter().rposition(|c| *c == '│').unwrap_or(119);
     let bottom = (start..flag_rows.len()).find(|&row| flag_rows[row].contains('└'));
     let bottom = bottom.unwrap_or_else(|| panic!("no box bottom:\n{shown}"));
+    // The box alone, cut out of each frame, is what the golden holds.
+    let cut = |buffer: &ratatui::buffer::Buffer, top: usize| {
+        let (width, height) = (right + 1 - left, bottom + 1 - start);
+        let size = |n: usize| u16::try_from(n).unwrap_or_else(|e| panic!("{e}"));
+        let mut cut = ratatui::buffer::Buffer::empty(ratatui::layout::Rect::new(
+            0,
+            0,
+            size(width),
+            size(height),
+        ));
+        cut.content = (0..height)
+            .flat_map(|offset| {
+                let row = (top + offset) * 120;
+                buffer.content[row + left..=row + right].to_vec()
+            })
+            .collect();
+        cut
+    };
+    super::parity::assert_frame(from, &cut(&flag, start), &cut(&theirs, app_start));
     for offset in 0..=bottom - start {
         for col in left..=right {
             let cell = |buffer: &ratatui::buffer::Buffer, row: usize| {
@@ -406,6 +427,7 @@ fn assert_box_from(app: &er_engine::app::App, shell: &mut Shell, from: &str) {
 /// that tab's PR number unset.
 #[test]
 fn the_current_pr_rows_draw_like_the_app() {
+    let _golden = super::parity::guard();
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     let probe = er_github::BranchPrProbe::Present {
         number: 7,
