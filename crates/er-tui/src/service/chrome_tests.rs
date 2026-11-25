@@ -81,7 +81,9 @@ fn closing_a_tab_focuses_the_next_and_drops_its_content() {
             .map(|entry| entry.descriptor.workspace_key())
             .unwrap_or_else(|| panic!("no closed tab"));
 
+        shell.hold_tab_records(closed);
         shell.handle_key(key(KeyCode::Char('x')));
+        assert_eq!(shell.tab_records_of(closed), Vec::<&str>::new());
         assert_json("notice", &shell.view().notification);
         settle(&mut shell, loaded);
         let tabs = shell.host().registry().tabs_view();

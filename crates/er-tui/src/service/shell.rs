@@ -471,6 +471,37 @@ impl Shell {
         self.redraw = true;
     }
 
+    /// Gives `key` an entry in each record kept per tab, as a probe, a PR
+    /// lookup, a stack read and a parse would.
+    #[cfg(test)]
+    pub fn hold_tab_records(&mut self, key: TabKey) {
+        self.branch_prs.insert(key, (7, "feature".into()));
+        self.stacks_reading.insert(key);
+        self.parses_sent.insert((key, 1, "src/f000.rs".into()));
+        self.probed = Some((key, BranchPrProbe::Absent));
+    }
+
+    /// The records per tab that still hold `key`.
+    #[cfg(test)]
+    pub fn tab_records_of(&self, key: TabKey) -> Vec<&'static str> {
+        let held = [
+            ("branch_prs", self.branch_prs.contains_key(&key)),
+            ("stacks_reading", self.stacks_reading.contains(&key)),
+            (
+                "parses_sent",
+                self.parses_sent.iter().any(|(k, ..)| *k == key),
+            ),
+            (
+                "probed",
+                self.probed.as_ref().is_some_and(|(k, _)| *k == key),
+            ),
+        ];
+        held.into_iter()
+            .filter(|(_, held)| *held)
+            .map(|(name, _)| name)
+            .collect()
+    }
+
     /// Runs a failed reply through the same path a landed one takes.
     #[cfg(test)]
     pub fn land_failed_reply(&mut self, message: String) {
