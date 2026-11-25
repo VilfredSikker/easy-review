@@ -1,0 +1,71 @@
+@@@ 01 frame z
+| feature · feature (vs main)  +2 -2
+|  1  BRANCH   2  UNSTAGED   3  STAGED   4  HISTORY                          AI ON    Claude / Sonnet 5.5   0/1 reviewed
+| FILES (1) · 0 findings        │  ~ src/f000.rs  +2 -2                                                      Hunk 1/2
+| ~ f000.rs     ◆1 ▪1    +2 -2  │
+|                               │ ▶ @@ -1,14 +1,14 @@
+|                               │   1    1 │ let line_0 = 0;
+|                               │   2    2 │ let line_1 = 1;
+|                               │   3    3 │ let line_2 = 2;
+|                               │   4      │-let line_3 = 3;
+|                               │        4 │+let changed_3 = 3; // edited
+|                               │  ╭─ ❓  R4  ───────────────────────────────────────────────────────────────────────────
+|                               │  │  You
+|                               │  │    q-1
+|                               │  ╰────────────────────────────────────────────────────────────────────────────────────
+|                               │  ╭─ 📝  R4  ───────────────────────────────────────────────────────────────────────────
+|                               │  │  You
+|                               │  │    n-1
+|                               │  ╰────────────────────────────────────────────────────────────────────────────────────
+|                               │   5    5 │ let line_4 = 4;
+|                               │   6    6 │ let line_5 = 5;
+|                               │   7    7 │ let line_6 = 6;
+|                               │   8    8 │ let line_7 = 7;
+|                               │   9    9 │ let line_8 = 8;
+|                               │  10   10 │ let line_9 = 9;
+|                               │  11   11 │ let line_10 = 10;
+|                               │  12   12 │ let line_11 = 11;
+|                               │  13   13 │ let line_12 = 12;
+|                               │  14   14 │ let line_13 = 13;
+|                               │  ··· 6 lines hidden (+/- to expand) ···
+| ⚠  Clear 2 item(s) (questions & notes)? (y/n)
+|styles 7f2a7b567fdb406c
+@@@ 02 frame n < 01
+29| j/k nav n/N hunks +/- context ␣ review / search g git a ai o open v verify ? help ^q quit
+30|styles cd0dd35b732d0bed
+@@@ 03 frame z < 01
+@@@ 04 frame y < 02
+02| FILES (1) · 0 findings        │  ~ src/f000.rs  +2 -2                                    ● Questions & notes cleared
+03| ~ src/f000.rs          +2 -2  │
+10|                               │   5    5 │ let line_4 = 4;
+11|                               │   6    6 │ let line_5 = 5;
+12|                               │   7    7 │ let line_6 = 6;
+13|                               │   8    8 │ let line_7 = 7;
+14|                               │   9    9 │ let line_8 = 8;
+15|                               │  10   10 │ let line_9 = 9;
+16|                               │  11   11 │ let line_10 = 10;
+17|                               │  12   12 │ let line_11 = 11;
+18|                               │  13   13 │ let line_12 = 12;
+19|                               │  14   14 │ let line_13 = 13;
+20|                               │  ··· 6 lines hidden (+/- to expand) ···
+21|                               │   @@ -21,20 +21,20 @@ let line_19 = 19;
+22|                               │  21   21 │ let line_20 = 20;
+23|                               │  22   22 │ let line_21 = 21;
+24|                               │  23   23 │ let line_22 = 22;
+25|                               │  24   24 │ let line_23 = 23;
+26|                               │  25   25 │ let line_24 = 24;
+27|                               │  26   26 │ let line_25 = 25;
+28|                               │  27   27 │ let line_26 = 26;
+30|styles 3a9c444c2fa24557
+@@@ 05 frame Z < 04
+02| FILES (1) · 0 findings        │  ~ src/f000.rs  +2 -2                                                      Hunk 1/2
+29| ⚠  Clear 1 review file(s)? (y/n)
+30|styles a72480a0645f5b17
+@@@ 06 frame n < 04
+02| FILES (1) · 0 findings        │  ~ src/f000.rs  +2 -2                                                      Hunk 1/2
+30|styles 71ab6c7f5abb1118
+@@@ 07 frame Z < 05
+@@@ 08 frame y < 04
+01|  1  BRANCH   2  UNSTAGED   3  STAGED   4  HISTORY                                   Claude / Sonnet 5.5   0/1 reviewed
+02| FILES (1)                     │  ~ src/f000.rs  +2 -2                                               ● Review cleared
+30|styles b95e9a10d083e48e

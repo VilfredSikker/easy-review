@@ -89,6 +89,7 @@ fn notice(shell: &Shell) -> Option<&str> {
 /// review.
 #[test]
 fn z_and_shift_z_ask_and_clear_like_the_app() {
+    let _golden = super::parity::guard();
     let (app_repo, flag_repo) = (fixture(1), fixture(1));
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
@@ -219,17 +220,21 @@ fn clear_while_busy(shell: &mut Shell, code: char, said: &str) {
     shell.handle_key(key(KeyCode::Char(code)));
     shell.handle_key(key(KeyCode::Char('y')));
     // The clear waits out the lock for seconds; the check only touches the
-    // lease, for less time than the clear's own admission waits.
+    // lease, for less time than the clear's own admission waits. Until the
+    // clear has taken its lease, the check meets only this test's lock and
+    // answers as for a review flow, so it polls on until the clear answers.
+    const HELD: &str = "A clear is already using this review bucket";
     let deadline = Instant::now() + Duration::from_secs(10);
     let mut refusal = None;
-    while refusal.is_none() && Instant::now() < deadline {
-        refusal = er_engine::arena::check_bucket_admission(&dir).err();
+    while refusal.as_deref() != Some(HELD) && Instant::now() < deadline {
+        refusal = er_engine::arena::check_bucket_admission(&dir)
+            .err()
+            .map(|error| error.to_string());
         std::thread::sleep(Duration::from_millis(50));
     }
-    let refusal = refusal.map(|error| error.to_string());
     assert_eq!(
         refusal.as_deref(),
-        Some("A clear is already using this review bucket"),
+        Some(HELD),
         "the {code} clear never held the bucket's admission"
     );
     settle_replies(shell);

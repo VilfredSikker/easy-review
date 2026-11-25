@@ -1,0 +1,110 @@
+@@@ 01 frame Down
+| feature · feature (vs main)  +8 -8
+|  1  BRANCH   2  UNSTAGED   3  STAGED   4  HISTORY   5  TOUR                         Claude / Sonnet 5.5   0/4 reviewed
+| FILES (4)                     │  ~ src/f000.rs  +2 -2                                                      Hunk 1/2
+| ~ src/f000.rs          +2 -2  │
+| ~ src/f001.rs          +2 -2  │ ▶ @@ -1,14 +1,14 @@
+| ~ src/f002.rs          +2 -2  │   1    1 │ let line_0 = 0;
+| ~ src/f003.rs          +2 -2  │   2    2 │ let line_1 = 1;
+|                               │   3    3 │ let line_2 = 2;
+|                               │   4      │-let line_3 = 3;
+|                               │        4 │+let changed_3 = 3; // edited
+|                               │   5    5 │ let line_4 = 4;
+|                               │   6    6 │ let line_5 = 5;
+|                               │   7    7 │ let line_6 = 6;
+|                               │   8    8 │ let line_7 = 7;
+|                               │   9    9 │ let line_8 = 8;
+|                               │  10   10 │ let line_9 = 9;
+|                               │  11   11 │ let line_10 = 10;
+|                               │  12   12 │ let line_11 = 11;
+|                               │  13   13 │ let line_12 = 12;
+|                               │  14   14 │ let line_13 = 13;
+|                               │  ··· 6 lines hidden (+/- to expand) ···
+|                               │   @@ -21,20 +21,20 @@ let line_19 = 19;
+|                               │  21   21 │ let line_20 = 20;
+|                               │  22   22 │ let line_21 = 21;
+|                               │  23   23 │ let line_22 = 22;
+|                               │  24   24 │ let line_23 = 23;
+|                               │  25   25 │ let line_24 = 24;
+|                               │  26   26 │ let line_25 = 25;
+|                               │  27   27 │ let line_26 = 26;
+| j/k nav n/N hunks +/- context ␣ review / search g git a ai o open v verify ? help ^q quit
+|styles cc22ab4d719e47f9
+@@@ 02 frame Down < 01
+03| ~ src/f000.rs          +2 -2  │ ▶ @@ -1,14 +1,14 @@
+04| ~ src/f001.rs          +2 -2  │   1    1 │ let line_0 = 0;
+05| ~ src/f002.rs          +2 -2  │   2    2 │ let line_1 = 1;
+06| ~ src/f003.rs          +2 -2  │   3    3 │ let line_2 = 2;
+07|                               │   4      │-let line_3 = 3;
+08|                               │        4 │+let changed_3 = 3; // edited
+09|                               │   5    5 │ let line_4 = 4;
+10|                               │   6    6 │ let line_5 = 5;
+11|                               │   7    7 │ let line_6 = 6;
+12|                               │   8    8 │ let line_7 = 7;
+13|                               │   9    9 │ let line_8 = 8;
+14|                               │  10   10 │ let line_9 = 9;
+15|                               │  11   11 │ let line_10 = 10;
+16|                               │  12   12 │ let line_11 = 11;
+17|                               │  13   13 │ let line_12 = 12;
+18|                               │  14   14 │ let line_13 = 13;
+19|                               │  ··· 6 lines hidden (+/- to expand) ···
+20|                               │   @@ -21,20 +21,20 @@ let line_19 = 19;
+21|                               │  21   21 │ let line_20 = 20;
+22|                               │  22   22 │ let line_21 = 21;
+23|                               │  23   23 │ let line_22 = 22;
+24|                               │  24   24 │ let line_23 = 23;
+25|                               │  25   25 │ let line_24 = 24;
+26|                               │  26   26 │ let line_25 = 25;
+27|                               │  27   27 │ let line_26 = 26;
+28|                               │  28   28 │ let line_27 = 27;
+30|styles 6d5dd232726945f8
+@@@ 03 frame 5 < 01
+02| PILLARS (3)                   │ Core                                                                       File 1/4
+03| ● ◆ Core 00/02                │ Starts at f000 and its test.
+04|     src/f000.rs               │────────────────────────────────────────────────────────────────────────────────────────
+05|     ↳   src/f001.rs           │ ▶ ~ src/f000.rs  +2 -2
+06|────────────────────────────── │
+07| ○ Edge 00/01                  │ ▶ @@ -1,14 +1,14 @@
+08|     src/f002.rs               │   1    1 │ let line_0 = 0;
+09|────────────────────────────── │   2    2 │ let line_1 = 1;
+10| ○ Other changes 00/01         │   3    3 │ let line_2 = 2;
+11|     src/f003.rs               │   4      │-let line_3 = 3;
+12|────────────────────────────── │        4 │+let changed_3 = 3; // edited
+13|                               │   5    5 │ let line_4 = 4;
+14|                               │   6    6 │ let line_5 = 5;
+15|                               │   7    7 │ let line_6 = 6;
+16|                               │   8    8 │ let line_7 = 7;
+17|                               │   9    9 │ let line_8 = 8;
+18|                               │  10   10 │ let line_9 = 9;
+19|                               │  11   11 │ let line_10 = 10;
+20|                               │  12   12 │ let line_11 = 11;
+21|                               │  13   13 │ let line_12 = 12;
+22|                               │  14   14 │ let line_13 = 13;
+23|                               │  ··· 6 lines hidden ···
+24|                               │   @@ -21,20 +21,20 @@ let line_19 = 19;
+25|                               │  21   21 │ let line_20 = 20;
+26|                               │  22   22 │ let line_21 = 21;
+27|                               │  23   23 │ let line_22 = 22;
+28|                               │
+29| j/k pillars n/N files u/d scroll ↑↓ lines ␣ reviewed b review pillar g git
+30|styles a6fd5a9e40019e08
+@@@ 04 frame Space < 03
+01|  1  BRANCH   2  UNSTAGED   3  STAGED   4  HISTORY   5  TOUR                         Claude / Sonnet 5.5   1/4 reviewed
+03| ● ◆ Core 01/02                │ Starts at f000 and its test.
+04|   ✓ src/f000.rs               │────────────────────────────────────────────────────────────────────────────────────────
+05|     ↳   src/f001.rs           │ ▶ ~ src/f000.rs  +2 -2  ✓ reviewed
+30|styles f71084a612f58968
+@@@ 05 frame Space < 03
+@@@ 06 frame n < 03
+02| PILLARS (3)                   │ Core                                                                       File 2/4
+05|     ↳   src/f001.rs           │ ▶ ↳ ~ src/f001.rs  +2 -2
+30|styles 232bda22c4dd411d
+@@@ 07 frame Space < 04
+02| PILLARS (3)                   │ Core                                                                       File 2/4
+04|     src/f000.rs               │────────────────────────────────────────────────────────────────────────────────────────
+05|     ↳ ✓ src/f001.rs           │ ▶ ↳ ~ src/f001.rs  +2 -2  ✓ reviewed
+30|styles b62e0342bf7dc7bd
+@@@ 08 json marks
+|{
+|  "src/f001.rs": "c28b6f8029b80c1897dc1b29ffd87252f73b9fa4991e3e9b5d4b1240edf9bc95"
+|}

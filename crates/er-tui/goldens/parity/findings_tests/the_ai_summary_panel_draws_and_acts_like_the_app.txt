@@ -1,0 +1,136 @@
+@@@ 01 frame p
+| feature · feature (vs main)  +6 -6
+|  1  BRANCH   2  UNSTAGED   3  STAGED   4  HISTORY           AI ON    Claude / Sonnet 5.5    File Detail   0/3 reviewed
+| FILES (3) · 2 findings        │  ~ src/f000.rs  +2 -2              Hunk 1/2    │ [File] [AI] [Log]
+| ~ src/f000.rs     ●    +2 -2  │                                                │──────────────────────────────────────
+| ~ src/f001.rs          +2 -2  │ ▶ @@ -1,14 +1,14 @@                            │ src/f000.rs
+| ~ src/f002.rs     ●    +2 -2  │   1    1 │ let line_0 = 0;                     │
+|                               │   2    2 │ let line_1 = 1;                     │ ─── File risk: HIGH ───
+|                               │   3    3 │ let line_2 = 2;                     │
+|                               │   4      │-let line_3 = 3;                     │ Findings (1)
+|                               │        4 │+let changed_3 = 3; // edited        │
+|                               │  ●  Finding f1                                 │ ● i Finding f1
+|                               │   5    5 │ let line_4 = 4;                     │   hunk 1, line 4
+|                               │   6    6 │ let line_5 = 5;                     │
+|                               │   7    7 │ let line_6 = 6;                     │ No comments for this file
+|                               │   8    8 │ let line_7 = 7;                     │
+|                               │   9    9 │ let line_8 = 8;                     │
+|                               │  10   10 │ let line_9 = 9;                     │
+|                               │  11   11 │ let line_10 = 10;                   │
+|                               │  12   12 │ let line_11 = 11;                   │
+|                               │  13   13 │ let line_12 = 12;                   │
+|                               │  14   14 │ let line_13 = 13;                   │
+|                               │  ··· 6 lines hidden (+/- to expand) ···        │
+|                               │   @@ -21,20 +21,20 @@ let line_19 = 19;        │
+|                               │  21   21 │ let line_20 = 20;                   │
+|                               │  22   22 │ let line_21 = 21;                   │
+|                               │  23   23 │ let line_22 = 22;                   │
+|                               │  24   24 │ let line_23 = 23;                   │
+|                               │  25   25 │ let line_24 = 24;                   │
+|                               │  26   26 │ let line_25 = 25;                   │
+| j/k nav n/N hunks Tab focus panel p close panel g git a ai o open v verify ? help ^q quit
+|styles dda37cdbe2524a4e
+@@@ 02 frame p < 01
+01|  1  BRANCH   2  UNSTAGED   3  STAGED   4  HISTORY            AI ON    Claude / Sonnet 5.5    AI Summary   0/3 reviewed
+04| ~ src/f001.rs          +2 -2  │ ▶ @@ -1,14 +1,14 @@                            │ AI Review Summary
+06|                               │   2    2 │ let line_1 = 1;                     │ Reads the audience early.
+08|                               │   4      │-let line_3 = 3;                     │ ─── File Risk Overview ───
+10|                               │  ●  Finding f1                                 │▸ HIGH src/f000.rs
+11|                               │   5    5 │ let line_4 = 4;                     │  MED src/f001.rs
+12|                               │   6    6 │ let line_5 = 5;                     │  LOW src/f002.rs
+13|                               │   7    7 │ let line_6 = 6;                     │
+14|                               │   8    8 │ let line_7 = 7;                     │ 2 total findings across all files
+16|                               │  10   10 │ let line_9 = 9;                     │ ─── Review Checklist ───
+18|                               │  12   12 │ let line_11 = 11;                   │ ○ Check c1
+19|                               │  13   13 │ let line_12 = 12;                   │   f000.rs
+21|                               │  ··· 6 lines hidden (+/- to expand) ···        │ ○ Check c2
+22|                               │   @@ -21,20 +21,20 @@ let line_19 = 19;        │   f002.rs
+24|                               │  22   22 │ let line_21 = 21;                   │ ✓ Check c3
+25|                               │  23   23 │ let line_22 = 22;                   │   f001.rs
+30|styles 94a65780f6e4e203
+@@@ 03 frame Tab < 02
+29| j/k navigate Tab focus ␣ toggle Enter jump  [Files]
+30|styles 52d2a19aefd9f68a
+@@@ 04 frame k < 03
+10|                               │  ●  Finding f1                                 │  HIGH src/f000.rs
+11|                               │   5    5 │ let line_4 = 4;                     │▸ MED src/f001.rs
+30|styles 39c385d74d2a5571
+@@@ 05 frame k < 03
+10|                               │  ●  Finding f1                                 │  HIGH src/f000.rs
+12|                               │   6    6 │ let line_5 = 5;                     │▸ LOW src/f002.rs
+30|styles 05940991dfe80283
+@@@ 06 frame j < 04
+@@@ 07 frame Space < 04
+@@@ 08 frame Tab < 01
+01|  1  BRANCH   2  UNSTAGED   3  STAGED   4  HISTORY            AI ON    Claude / Sonnet 5.5    AI Summary   0/3 reviewed
+02| FILES (3) · 2 findings        │  ~ src/f000.rs  +2 -2              Hunk 1/2    │ ─── Review Checklist ───
+03| ~ src/f000.rs     ●    +2 -2  │                                                │
+04| ~ src/f001.rs          +2 -2  │ ▶ @@ -1,14 +1,14 @@                            │▸○ Check c1
+05| ~ src/f002.rs     ●    +2 -2  │   1    1 │ let line_0 = 0;                     │   f000.rs
+06|                               │   2    2 │ let line_1 = 1;                     │
+07|                               │   3    3 │ let line_2 = 2;                     │ ○ Check c2
+08|                               │   4      │-let line_3 = 3;                     │   f002.rs
+10|                               │  ●  Finding f1                                 │ ✓ Check c3
+11|                               │   5    5 │ let line_4 = 4;                     │   f001.rs
+13|                               │   7    7 │ let line_6 = 6;                     │
+29| j/k navigate Tab focus ␣ toggle Enter jump  [Checklist]
+30|styles b5018d908207b507
+@@@ 09 frame k < 08
+04| ~ src/f001.rs          +2 -2  │ ▶ @@ -1,14 +1,14 @@                            │ ○ Check c1
+07|                               │   3    3 │ let line_2 = 2;                     │▸○ Check c2
+30|styles 204c0ab8819535e7
+@@@ 10 frame Space < 09
+02| FILES (3) · 2 findings        │  ~ src/f000.rs  +2 -2              Hunk 1/2    │ ─── Review Checkli ● ✓ Item checked
+07|                               │   3    3 │ let line_2 = 2;                     │▸✓ Check c2
+30|styles 903b0df0ae6002d2
+@@@ 11 frame d < 08
+02| FILES (3) · 2 findings        │  ~ src/f000.rs  +2 -2              Hunk 1/2    │
+04| ~ src/f001.rs          +2 -2  │ ▶ @@ -1,14 +1,14 @@                            │
+05| ~ src/f002.rs     ●    +2 -2  │   1    1 │ let line_0 = 0;                     │
+07|                               │   3    3 │ let line_2 = 2;                     │
+08|                               │   4      │-let line_3 = 3;                     │
+10|                               │  ●  Finding f1                                 │
+11|                               │   5    5 │ let line_4 = 4;                     │
+30|styles 60b2b4ce4c92b446
+@@@ 12 frame u < 09
+07|                               │   3    3 │ let line_2 = 2;                     │▸✓ Check c2
+30|styles d44dcd3f15ed30fc
+@@@ 13 frame Enter < 08
+02| FILES (3) · 2 findings        │  ~ src/f002.rs  +2 -2              Hunk 2/2    │ ─── Review ● Jumped to: src/f002.rs
+03| ~ src/f000.rs     ●    +2 -2  │  ··· 6 lines hidden (+/- to expand) ···        │
+04| ~ src/f001.rs          +2 -2  │ ▶ @@ -21,20 +21,20 @@ let line_19 = 19;        │ ○ Check c1
+05| ~ src/f002.rs     ●    +2 -2  │  21   21 │ let line_20 = 20;                   │   f000.rs
+06|                               │  22   22 │ let line_21 = 21;                   │
+07|                               │  23   23 │ let line_22 = 22;                   │▸✓ Check c2
+08|                               │  24   24 │ let line_23 = 23;                   │   f002.rs
+09|                               │  25   25 │ let line_24 = 24;                   │
+10|                               │  26   26 │ let line_25 = 25;                   │ ✓ Check c3
+11|                               │  27   27 │ let line_26 = 26;                   │   f001.rs
+12|                               │  28   28 │ let line_27 = 27;                   │
+13|                               │  29   29 │ let line_28 = 28;                   │
+14|                               │  30   30 │ let line_29 = 29;                   │
+15|                               │  31      │-let line_30 = 30;                   │
+16|                               │       31 │+let changed_30 = 30; // edited      │
+17|                               │  ●  Finding f2  ◆ focused                      │
+18|                               │  32   32 │ let line_31 = 31;                   │
+19|                               │  33   33 │ let line_32 = 32;                   │
+20|                               │  34   34 │ let line_33 = 33;                   │
+21|                               │  35   35 │ let line_34 = 34;                   │
+22|                               │  36   36 │ let line_35 = 35;                   │
+23|                               │  37   37 │ let line_36 = 36;                   │
+24|                               │  38   38 │ let line_37 = 37;                   │
+25|                               │  39   39 │ let line_38 = 38;                   │
+26|                               │  40   40 │ let line_39 = 39;                   │
+27|                               │                                                │
+28|                               │                                                │
+30|styles db9f809bd4209df5
+@@@ 14 frame Esc < 13
+02| FILES (3) · 2 findings        │  ~ src/f002.rs  +2 -2              Hunk 2/2    │ ─── Review Checklist ───
+29| j/k nav n/N hunks Tab focus panel p close panel r reply g git a ai o open v verify ? help ^q quit
+30|styles 70ab3f4b4fb89a9f
+@@@ 15 json checked
+|[
+|  false,
+|  true,
+|  true
+|]

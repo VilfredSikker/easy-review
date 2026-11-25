@@ -11,6 +11,7 @@ use er_engine::ai::ErTour;
 use er_engine::tab_identity::DiffMode;
 use er_engine::test_support::write_sidecar_json;
 
+use super::parity::assert_json;
 use super::shell::Shell;
 use super::tests::{fixture, git, key, loaded, path_of, rows, settle, shell, shell_frame, SOURCES};
 use super::threads_tests::{active_key, args, both_on, er_dir, settle_replies, state, step};
@@ -98,6 +99,7 @@ fn marks(dir: &str) -> HashMap<String, String> {
 fn assert_same_marks(app: &er_engine::app::App, shell: &Shell, expected: &[&str]) {
     let (app_marks, flag_marks) = (marks(&app.tab().er_dir()), marks(&er_dir(shell)));
     assert_eq!(flag_marks, app_marks);
+    assert_json("marks", &flag_marks, &app_marks);
     let mut paths: Vec<&str> = flag_marks.keys().map(String::as_str).collect();
     paths.sort_unstable();
     assert_eq!(paths, expected);
@@ -108,6 +110,7 @@ fn assert_same_marks(app: &er_engine::app::App, shell: &Shell, expected: &[&str]
 /// scroll keys move as the App's do.
 #[test]
 fn the_tour_draws_and_moves_like_the_app() {
+    let _golden = super::parity::guard();
     let (app_repo, flag_repo) = (fixture(4), fixture(4));
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
@@ -140,6 +143,7 @@ fn the_tour_draws_and_moves_like_the_app() {
 /// The tour's horizontal scroll keys and its page keys draw as the App's.
 #[test]
 fn the_tour_scroll_keys_draw_like_the_app() {
+    let _golden = super::parity::guard();
     let (app_repo, flag_repo) = (fixture(4), fixture(4));
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
@@ -165,6 +169,7 @@ fn the_tour_scroll_keys_draw_like_the_app() {
 /// the marks saved match.
 #[test]
 fn the_tour_toggle_marks_like_the_app() {
+    let _golden = super::parity::guard();
     let (app_repo, flag_repo) = (fixture(4), fixture(4));
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
@@ -181,6 +186,7 @@ fn the_tour_toggle_marks_like_the_app() {
 /// App's does, and says so.
 #[test]
 fn a_pillar_review_marks_like_the_app() {
+    let _golden = super::parity::guard();
     let (app_repo, flag_repo) = (fixture(4), fixture(4));
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
@@ -198,6 +204,7 @@ fn a_pillar_review_marks_like_the_app() {
 /// Twenty frames with nothing new build the tour's rows no more.
 #[test]
 fn frames_with_nothing_new_build_the_tour_once() {
+    let _golden = super::parity::guard();
     let (app_repo, flag_repo) = (fixture(2), fixture(2));
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     er_engine::storage::with_process_test_storage_root(storage.path(), || {
