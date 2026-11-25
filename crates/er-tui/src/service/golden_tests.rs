@@ -548,7 +548,7 @@ const CHROME: &[Fixture] = &[
         drive(scene, "Web");
     }),
     fixture_of("overlay_config_hub", 90, 24, |scene| {
-        use crate::input::{Edit, OverlayAction};
+        use crate::input::keys::{Edit, OverlayAction};
         let view = scene.settings();
         let mut hub = super::config_hub::ConfigHub::open(&view);
         hub.selected = hub
@@ -659,7 +659,7 @@ fn open_ai_hub(scene: &mut Scene) {
 /// Moves the open picker down to the row holding `to` and runs it, as `j`
 /// and Enter do; the picker it opens replaces it.
 fn drive(scene: &mut Scene, to: &str) {
-    use crate::input::OverlayAction;
+    use crate::input::keys::OverlayAction;
     let view = scene.settings();
     let label = er_service::ai_labels(&scene.config).label;
     let Some(Overlay::Picker(picker)) = scene.view.overlay.as_mut() else {

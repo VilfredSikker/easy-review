@@ -411,7 +411,7 @@ fn results_of(findings: &[(&str, bool)]) -> super::flows::Results {
 #[test]
 fn the_progress_keys_only_move_and_scroll() {
     use super::flows::{progress_key, Progress, Then};
-    use crate::input::OverlayAction as O;
+    use crate::input::keys::OverlayAction as O;
     let mut flow = er_engine::ai::review_flow::ReviewFlow::new("hash");
     for id in ["a", "b"] {
         flow.tasks
@@ -451,7 +451,7 @@ fn the_progress_keys_only_move_and_scroll() {
 #[test]
 fn only_a_selectable_result_row_toggles() {
     use super::flows::{results_key, Then};
-    use crate::input::OverlayAction as O;
+    use crate::input::keys::OverlayAction as O;
     let mut results = results_of(&[("dropped", false), ("kept", true)]);
     assert!(matches!(
         results_key(&mut results, O::ToggleFlowFinding),
@@ -471,7 +471,7 @@ fn only_a_selectable_result_row_toggles() {
 #[test]
 fn accept_sends_the_captured_bucket_and_sorted_ids() {
     use super::flows::{results_key, Then};
-    use crate::input::OverlayAction as O;
+    use crate::input::keys::OverlayAction as O;
     let mut results = results_of(&[("b", true), ("a", true)]);
     assert!(matches!(
         results_key(&mut results, O::AcceptFlowFindings),

@@ -10,7 +10,7 @@ use er_engine::git::DiffFile;
 use er_engine::tab_identity::DiffMode;
 use er_service::{annotations_version, tour_resource, Command, TabContent};
 
-use crate::input::TourAction;
+use crate::input::keys::TourAction;
 use crate::screen::{view, TourView};
 
 /// One tab's tour rows and its place in them.

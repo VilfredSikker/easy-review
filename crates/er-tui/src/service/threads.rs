@@ -10,7 +10,7 @@ use er_service::{AnnotationTarget, Command, TabContent};
 use tui_textarea::TextArea;
 
 use super::tui_view::{is_stub, Mode, TabViewState};
-use crate::input::CommentAction;
+use crate::input::keys::CommentAction;
 use crate::screen::view::SplitSide;
 
 /// The diff file the composer and the hints act on: none while a watched

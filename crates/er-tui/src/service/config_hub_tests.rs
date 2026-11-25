@@ -453,7 +453,7 @@ fn the_effort_list_goes_back_to_the_models() {
 /// `char_boundaries_step_over_multibyte_chars`.
 #[test]
 fn a_setting_edit_steps_over_multibyte_chars() {
-    use crate::input::{Edit, OverlayAction};
+    use crate::input::keys::{Edit, OverlayAction};
     let repo = fixture(1);
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     let path = path_of(&repo);
@@ -500,7 +500,7 @@ fn a_setting_edit_steps_over_multibyte_chars() {
 fn a_model_pick_saves_once_its_effort_is_known() {
     use super::ai_picker::{act, open_ai_hub, HubFacts, Picker};
     use super::config_hub::Step;
-    use crate::input::OverlayAction as O;
+    use crate::input::keys::OverlayAction as O;
     use er_engine::config::{AiModelConfig, AiProviderConfig};
     let repo = fixture(1);
     let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));

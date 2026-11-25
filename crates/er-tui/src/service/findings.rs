@@ -17,7 +17,7 @@ use tui_textarea::TextArea;
 
 use super::threads::Focus;
 use super::tui_view::{is_stub, TabViewState};
-use crate::input::AiSummaryAction;
+use crate::input::keys::AiSummaryAction;
 
 /// Ctrl+j/k: moves the focus to the next or previous finding in the diff's
 /// files, wrapping, and selects its file and line, as the App's

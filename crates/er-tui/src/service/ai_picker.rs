@@ -17,7 +17,7 @@ use super::config_hub::Step;
 use super::flows::{self, Act, FlowFacts};
 use super::layers::{HubRow, Layer};
 use super::tui_view::Overlay;
-use crate::input::OverlayAction;
+use crate::input::keys::OverlayAction;
 use crate::screen::view::{HubItem, HubKind};
 
 /// The AI hub's rows as the App lists them with no review flow: a label and

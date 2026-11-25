@@ -5,7 +5,7 @@
 use er_engine::TabKey;
 use er_service::TabContent;
 
-use crate::input::OverlayAction;
+use crate::input::keys::OverlayAction;
 use crate::screen::view::HubItem;
 
 /// A stack layer's PR, which Enter opens for review.

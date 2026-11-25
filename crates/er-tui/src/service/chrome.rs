@@ -1,7 +1,7 @@
 //! The chrome keys (P75.3): the Help hub, the two layout widths and the
 //! split diff's focus side, each by the App's rules.
 
-use crate::input::OverlayAction;
+use crate::input::keys::OverlayAction;
 use crate::screen::view::{HubItem, SplitSide};
 
 use super::tui_view::TabViewState;

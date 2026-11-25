@@ -9,7 +9,7 @@ use er_service::TabContent;
 use er_store::{Artifact, Loaded};
 
 use super::tui_view::{is_stub, TabViewState};
-use crate::input::OverlayAction;
+use crate::input::keys::OverlayAction;
 use crate::screen::view::HubItem;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

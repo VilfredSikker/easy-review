@@ -10,7 +10,7 @@ use er_service::{SettingsCommand, SettingsView};
 
 use super::copy::Pick;
 use super::tui_view::Overlay;
-use crate::input::{Edit, OverlayAction};
+use crate::input::keys::{Edit, OverlayAction};
 
 /// What an overlay key asks of the loop.
 pub enum Step {

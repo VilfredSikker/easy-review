@@ -7,7 +7,7 @@ use er_engine::TabKey;
 use er_service::TabContent;
 
 use super::tui_view::{Mode, Overlay, TuiView};
-use crate::input::{Edit, NormalAction, OverlayAction};
+use crate::input::keys::{Edit, NormalAction, OverlayAction};
 
 /// What a key did: the status-line message, and a diff file the snap
 /// selected, which may be a stub to parse.
