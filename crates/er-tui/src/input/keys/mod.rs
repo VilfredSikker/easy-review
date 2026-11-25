@@ -271,13 +271,13 @@ pub fn key_action(key: KeyEvent, screen: &Screen) -> TuiAction {
     }
 }
 
-#[cfg(test)]
 // The key tables are checked on the flag path's screen, so without the
 // feature only the guard and no-write tests run, and the tables sit unused.
 #[cfg_attr(
     not(feature = "v1-service"),
     expect(dead_code, unused_imports, reason = "the table tests need v1-service")
 )]
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::screen::view::{self, ConfigEditState, OverlayData};
