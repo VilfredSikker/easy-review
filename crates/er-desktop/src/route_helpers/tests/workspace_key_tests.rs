@@ -56,7 +56,7 @@ fn with_storage(test: impl FnOnce(&ReviewFlowTestDir)) {
 /// A project on `root` that tracks the remote, so a remote open has a local
 /// project it must not key on.
 fn track_remote(root: &str) {
-    let record = crate::projects::ProjectRecord {
+    let record = er_service::app_records::projects::ProjectRecord {
         id: "widgets".to_string(),
         name: "widgets".to_string(),
         root_path: root.to_string(),
@@ -68,7 +68,7 @@ fn track_remote(root: &str) {
         Ok(true)
     });
     assert!(saved.is_ok(), "{saved:?}");
-    crate::projects::invalidate_load_cache();
+    er_service::app_records::projects::invalidate_load_cache();
 }
 
 /// Opens `sent` as the open routes do, and answers the key the content's

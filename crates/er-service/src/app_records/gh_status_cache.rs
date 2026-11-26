@@ -6,7 +6,7 @@ use anyhow::Result;
 use er_store::{Artifact, Loaded};
 use serde::{Deserialize, Serialize};
 
-use crate::page_view::GithubStatusSnapshot;
+use crate::app_records::sidebar::GithubStatusSnapshot;
 
 /// Live GitHub status cache: keyed by `(owner, repo, pr number)`.
 type GithubStatusCache = HashMap<(String, String, u64), GithubStatusSnapshot>;
@@ -201,7 +201,7 @@ mod tests {
             mergeable: Some("MERGEABLE".to_string()),
             labels: vec!["bug".to_string(), "priority".to_string()],
             checks: vec![
-                crate::page_view::CheckSummary {
+                crate::app_records::sidebar::CheckSummary {
                     name: "ci/build".to_string(),
                     status: "COMPLETED".to_string(),
                     conclusion: "SUCCESS".to_string(),
@@ -211,7 +211,7 @@ mod tests {
                     duration_secs: Some(112),
                     description: None,
                 },
-                crate::page_view::CheckSummary {
+                crate::app_records::sidebar::CheckSummary {
                     name: "ci/test".to_string(),
                     status: "COMPLETED".to_string(),
                     conclusion: "FAILURE".to_string(),
@@ -224,13 +224,13 @@ mod tests {
             ],
             comments_count: 3,
             reviews_count: 1,
-            recent_comments: vec![crate::page_view::GhCommentSummary {
+            recent_comments: vec![crate::app_records::sidebar::GhCommentSummary {
                 author: "bob".to_string(),
                 body: "LGTM".to_string(),
                 created_at: "2024-01-02T10:00:00Z".to_string(),
                 url: "https://github.com/comment/1".to_string(),
             }],
-            recent_reviews: vec![crate::page_view::GhReviewSummary {
+            recent_reviews: vec![crate::app_records::sidebar::GhReviewSummary {
                 author: "carol".to_string(),
                 state: "APPROVED".to_string(),
                 body: "Looks good".to_string(),

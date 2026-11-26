@@ -2,17 +2,10 @@
 //! app records this front end alone writes.
 //!
 //! The three are desktop-only state (D20), so they stay out of `er-engine` and
-//! out of the TUI and MCP compositions.
+//! out of the TUI and MCP compositions. er-service holds them and their
+//! registration; only this composition calls it.
 
 use er_store::Registry;
-
-/// The desktop-only kinds, as `(file, kind)`.
-#[cfg(test)]
-pub const DESKTOP_KINDS: &[(&str, &str)] = &[
-    ("gh-status-cache.json", "gh-status-cache"),
-    ("inbox.json", "inbox"),
-    ("pr-cache.json", "pr-cache"),
-];
 
 /// The registry every desktop store read and write goes through.
 pub fn registry() -> Registry {
@@ -22,21 +15,22 @@ pub fn registry() -> Registry {
         reason = "every kind is statically registered once; a duplicate fails the register test"
     )]
     {
-        register_desktop_kinds(&mut registry).expect("the desktop kinds register once");
+        er_service::app_records::register_desktop_kinds(&mut registry)
+            .expect("the desktop kinds register once");
     }
     registry
-}
-
-fn register_desktop_kinds(registry: &mut Registry) -> Result<(), er_store::StoreError> {
-    crate::gh_status_cache::register(registry)?;
-    crate::inbox::register(registry)?;
-    crate::pr_cache::register(registry)?;
-    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The desktop-only kinds, as `(file, kind)`.
+    const DESKTOP_KINDS: &[(&str, &str)] = &[
+        ("gh-status-cache.json", "gh-status-cache"),
+        ("inbox.json", "inbox"),
+        ("pr-cache.json", "pr-cache"),
+    ];
 
     /// The desktop composition is the shared table plus its three records, and
     /// each kind resolves to its file.

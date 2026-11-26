@@ -102,7 +102,7 @@ fn hold_worktrees(desktop: &DesktopState, root: &str, base: &str) {
         .iter()
         .map(|tab| tab.descriptor.repo_root.clone())
         .collect();
-    let rows = crate::app_owner::worktree_rows(rows);
+    let rows = er_service::app_records::app_owner::worktree_rows(rows);
     desktop.app_owner.hold_worktrees(root, rows, &open);
 }
 

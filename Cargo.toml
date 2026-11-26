@@ -137,10 +137,10 @@ sidecar-fs-deny = [
   "crates/er-engine/src/arena/seeded.rs",
   "crates/er-engine/src/projects_pins.rs",
   "crates/er-engine/src/release_update.rs",
-  "crates/er-desktop/src/projects.rs",
-  "crates/er-desktop/src/inbox.rs",
-  "crates/er-desktop/src/pr_cache.rs",
-  "crates/er-desktop/src/gh_status_cache.rs",
+  "crates/er-service/src/app_records/projects.rs",
+  "crates/er-service/src/app_records/inbox.rs",
+  "crates/er-service/src/app_records/pr_cache.rs",
+  "crates/er-service/src/app_records/gh_status_cache.rs",
   "crates/er-desktop/src/tabs.rs",
 ]
 
