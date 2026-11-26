@@ -182,6 +182,9 @@ pub enum After {
     },
     /// A watched-file write the user asked for: the list is read again.
     Watched,
+    /// A watched file's delete: as `Watched`, and a refusal lets the file's
+    /// first snapshot save again.
+    WatchedDelete,
     /// The snapshot a first read found missing: its diff is read again, and
     /// nothing is announced.
     SnapshotSaved,

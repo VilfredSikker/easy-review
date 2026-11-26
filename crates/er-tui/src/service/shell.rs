@@ -1107,7 +1107,7 @@ impl Shell {
                     if after == After::Commit {
                         self.committed(key);
                     }
-                    if after == After::Watched {
+                    if matches!(after, After::Watched | After::WatchedDelete) {
                         self.watched.rescan = true;
                     }
                     self.notify(notice);
@@ -1118,9 +1118,9 @@ impl Shell {
                     self.load_errors.insert(key, error.to_string());
                 }
                 Err(error) => {
-                    if after == After::Watched {
+                    if after == After::WatchedDelete {
                         if let Some(state) = self.view.tab_mut_if_open(key) {
-                            state.watched.write_refused();
+                            state.watched.delete_refused();
                         }
                     }
                     self.failure(Side::Reply, error.to_string());
@@ -1322,7 +1322,7 @@ impl Shell {
                 if let Some(path) = state.watched.deleting.take() {
                     state.watched.delete_sent(path.clone());
                     let command = Command::DeleteWatchedFile { key, path };
-                    self.post(key, workspace, command, After::Watched);
+                    self.post(key, workspace, command, After::WatchedDelete);
                 }
                 return;
             }
@@ -2650,6 +2650,7 @@ impl Shell {
         if due && state.watched.is_shown(config) && !config.paths.is_empty() {
             self.watched.scan(key, &tab.repo_root, config);
         } else if due {
+            self.watched.forget_scans();
             state.watched.clear();
         }
         // Hidden opens on its first watched file, as the App's switch does.
