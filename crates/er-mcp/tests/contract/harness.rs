@@ -230,8 +230,8 @@ impl Scenario {
         payload
     }
 
-    /// `value` differs on every run (an id the server made at random): the
-    /// golden shows `placeholder` in its place.
+    /// `value` differs on every run (an id the server made from the clock):
+    /// the golden shows `placeholder` in its place.
     pub fn generated(&mut self, value: &str, placeholder: &str) {
         self.generated
             .push((value.to_string(), placeholder.to_string()));

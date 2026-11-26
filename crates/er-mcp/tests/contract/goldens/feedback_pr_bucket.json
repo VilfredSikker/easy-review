@@ -34,7 +34,7 @@
             "bucket_path": "<root>/storage/repos/vilfredsikker-easy-review-42b93a89/prs/pr-575",
             "feedback": {
               "bucket_path": "<root>/storage/repos/vilfredsikker-easy-review-42b93a89/prs/pr-575",
-              "diff_hash": "",
+              "diff_hash": "c24f0c10ea8cc3c6ca4fd98072123cb7b69c56552e9da03ff0fcb18929bb5094",
               "findings": [
                 {
                   "category": "correctness",
@@ -126,7 +126,7 @@
             "number": 575,
             "project": null,
             "reply": {
-              "id": "<reply-1>",
+              "id": "q-<millis>-0",
               "kind": "question",
               "parent_id": "q-seed"
             },
@@ -157,7 +157,7 @@
             "number": 575,
             "project": null,
             "reply": {
-              "id": "<reply-2>",
+              "id": "n-<millis>-1",
               "kind": "note",
               "parent_id": "n-seed"
             },
@@ -187,7 +187,7 @@
             "number": 575,
             "project": null,
             "reply": {
-              "id": "<reply-3>",
+              "id": "fr-<millis>",
               "kind": "finding",
               "parent_id": "f-seed"
             },
@@ -314,7 +314,7 @@
             "bucket_path": "<root>/storage/repos/vilfredsikker-easy-review-42b93a89/prs/pr-575",
             "feedback": {
               "bucket_path": "<root>/storage/repos/vilfredsikker-easy-review-42b93a89/prs/pr-575",
-              "diff_hash": "",
+              "diff_hash": "c24f0c10ea8cc3c6ca4fd98072123cb7b69c56552e9da03ff0fcb18929bb5094",
               "findings": [
                 {
                   "category": "correctness",
@@ -329,7 +329,7 @@
                   "resolved": false,
                   "responses": [
                     {
-                      "id": "<reply-3>",
+                      "id": "fr-<millis>",
                       "in_reply_to": "",
                       "new_findings": [],
                       "text": "Intended: staging is PR-only.",
@@ -373,7 +373,7 @@
             "bucket_path": "<root>/storage/repos/vilfredsikker-easy-review-42b93a89/prs/pr-575",
             "feedback": {
               "bucket_path": "<root>/storage/repos/vilfredsikker-easy-review-42b93a89/prs/pr-575",
-              "diff_hash": "",
+              "diff_hash": "c24f0c10ea8cc3c6ca4fd98072123cb7b69c56552e9da03ff0fcb18929bb5094",
               "findings": [
                 {
                   "category": "correctness",
@@ -388,7 +388,7 @@
                   "resolved": false,
                   "responses": [
                     {
-                      "id": "<reply-3>",
+                      "id": "fr-<millis>",
                       "in_reply_to": "",
                       "new_findings": [],
                       "text": "Intended: staging is PR-only.",
@@ -428,7 +428,7 @@
                   "file": ".github/workflows/ci.yml",
                   "hunk_header": "@@ -4,7 +4,7 @@ on:",
                   "hunk_index": 0,
-                  "id": "<reply-2>",
+                  "id": "n-<millis>-1",
                   "in_reply_to": "n-seed",
                   "line_content": "    branches: [main, master, staging, 'release/**', 'release-*']",
                   "line_start": 7,
@@ -469,7 +469,7 @@
                   "file": ".github/workflows/ci.yml",
                   "hunk_header": "@@ -4,7 +4,7 @@ on:",
                   "hunk_index": 0,
-                  "id": "<reply-1>",
+                  "id": "q-<millis>-0",
                   "in_reply_to": "q-seed",
                   "line_content": "    branches: [main, master, staging, 'release/**', 'release-*']",
                   "line_start": 7,
