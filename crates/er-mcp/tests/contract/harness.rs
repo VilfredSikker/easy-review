@@ -231,10 +231,6 @@ impl Scenario {
 
     /// `value` differs on every run (an id the server made at random): the
     /// golden shows `placeholder` in its place.
-    #[expect(
-        dead_code,
-        reason = "the feedback scenarios' reply ids are its first caller"
-    )]
     pub fn generated(&mut self, value: &str, placeholder: &str) {
         self.generated
             .push((value.to_string(), placeholder.to_string()));
