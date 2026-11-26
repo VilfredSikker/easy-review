@@ -300,7 +300,8 @@ pub(crate) fn sync_tab(state: &DesktopState, key: TabKey) -> Result<Synced, Stri
         crate::route_helpers::align_branch_base_probe(state, &tab.repo_root, &tab.base_branch);
     }
     let status_key = state
-        .pr_cache
+        .app_owner
+        .pr_cache()
         .lock()
         .ok()
         .and_then(|cache| crate::page_view::resolve_github_status_key_for(&id, &cache));

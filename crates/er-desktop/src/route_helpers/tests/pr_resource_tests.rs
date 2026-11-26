@@ -112,10 +112,11 @@ fn status(title: &str) -> GithubStatusSnapshot {
 fn a_stored_status_moves_pr_status_at_the_next_publish() {
     with_storage(|dir| {
         let state = state_over(dir, super::diff_resource_tests::fake_ports());
-        state
+        *state
             .app_owner
-            .read_status_from(Arc::clone(&state.gh_status_cache));
-        *state.gh_user.lock().unwrap_or_else(|e| e.into_inner()) = Some("octo".into());
+            .gh_user()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some("octo".into());
         state.app_owner.publish();
         assert_eq!(
             state.app_owner.pr_status("acme/widgets", 7),
@@ -126,7 +127,7 @@ fn a_stored_status_moves_pr_status_at_the_next_publish() {
         let stored = status("Widgets");
         let ticket = er_service::app_records::gh_status_cache::begin_fetch();
         assert!(er_service::app_records::gh_status_cache::store_fetched(
-            &state.gh_status_cache,
+            state.app_owner.status_cache(),
             key.clone(),
             ticket,
             stored.clone()
@@ -152,7 +153,7 @@ fn a_stored_status_moves_pr_status_at_the_next_publish() {
 
         let again = er_service::app_records::gh_status_cache::begin_fetch();
         assert!(er_service::app_records::gh_status_cache::store_fetched(
-            &state.gh_status_cache,
+            state.app_owner.status_cache(),
             key,
             again,
             stored
@@ -179,7 +180,8 @@ fn pr_info(number: u64, head_ref: &str, state: &str) -> PrInfo {
 fn the_status_loop_picks_the_active_pr() {
     with_stacked_tab(|state, _| {
         state
-            .pr_cache
+            .app_owner
+            .pr_cache()
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .insert(
@@ -228,10 +230,10 @@ fn a_status_fetch_shows_on_its_pr_status_while_it_runs() {
                 .0
         };
         let before = version();
-        let fetch = state.begin_status_fetch(&key);
+        let fetch = state.app_owner.begin_status_fetch(&key);
         assert!(fetch.is_some());
         assert!(
-            state.begin_status_fetch(&key).is_none(),
+            state.app_owner.begin_status_fetch(&key).is_none(),
             "a second fetch began"
         );
         let (started, status) = status_of(&state, "acme/widgets", 9);
@@ -245,7 +247,7 @@ fn a_status_fetch_shows_on_its_pr_status_while_it_runs() {
         // from its version and the in-flight set.
         let ended = version();
         assert!(ended > started, "{ended} after {started}");
-        assert!(state.gh_status_in_flight.lock().unwrap().is_empty());
+        assert!(!state.app_owner.status_fetching(&key));
     });
 }
 
@@ -261,7 +263,7 @@ fn the_end_of_a_first_fetch_that_stored_nothing_is_pushed() {
             number: 9,
         });
         let mut last = crate::resources::watched(&state);
-        let fetch = state.begin_status_fetch(&key);
+        let fetch = state.app_owner.begin_status_fetch(&key);
         assert!(fetch.is_some());
         let began = crate::resources::relay::moved(&mut last, crate::resources::watched(&state));
         assert!(
@@ -273,7 +275,7 @@ fn the_end_of_a_first_fetch_that_stored_nothing_is_pushed() {
         let pushed = ended.iter().find(|(k, _)| *k == wire);
         assert!(pushed.is_some(), "end not pushed: {ended:?}");
         // What the page fetches for the pushed version says the fetch ended.
-        let fetching = state.gh_status_in_flight.lock().unwrap().contains(&key);
+        let fetching = state.app_owner.status_fetching(&key);
         assert!(!fetching);
     });
 }
@@ -286,17 +288,15 @@ fn a_guard_dropped_in_a_panic_ends_its_refresh_and_fetch() {
         let state = state_over(dir, er_engine::ports::Ports::for_test());
         let key = ("acme".to_string(), "widgets".to_string(), 9);
         let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _refresh = state.begin_pr_list_refresh();
-            let _fetch = state.begin_status_fetch(&key);
+            let _refresh = state.app_owner.begin_pr_list_refresh();
+            let _fetch = state.app_owner.begin_status_fetch(&key);
             panic!("the fetch failed");
         }));
         assert!(panicked.is_err());
         assert!(!jobs_of(&state).1.pr_list_refresh);
-        assert!(!state
-            .pr_list_running
-            .load(std::sync::atomic::Ordering::Acquire));
-        assert!(state.begin_pr_list_refresh().is_some());
-        assert!(state.begin_status_fetch(&key).is_some());
+        assert!(!state.app_owner.pr_list_running());
+        assert!(state.app_owner.begin_pr_list_refresh().is_some());
+        assert!(state.app_owner.begin_status_fetch(&key).is_some());
     });
 }
 
@@ -374,11 +374,9 @@ fn every_refresh_and_status_fetch_goes_through_its_guard() {
         let rest = text.split_once(&pattern).map_or("", |(_, rest)| rest);
         rest.split("\n}\n").next().unwrap_or_default().to_string()
     };
-    for (name, begin) in [
-        ("kick_pr_list_refresh", "begin_pr_list_refresh()"),
-        ("kick_github_status_refresh", "begin_status_fetch("),
-        ("refresh_status_now", "begin_status_fetch("),
-    ] {
+    // The two kicks live with the owner, whose tests hold them to their
+    // guards; the desktop's own synchronous fetch is held here.
+    for (name, begin) in [("refresh_status_now", "begin_status_fetch(")] {
         assert!(body(name).contains(begin), "{name} skips {begin}");
     }
     // Each fetch call outside its definition sits under a begin whose guard
@@ -420,10 +418,10 @@ fn a_pr_list_refresh_shows_in_jobs_while_it_runs() {
         let state = state_over(dir, er_engine::ports::Ports::for_test());
         let (before, idle) = jobs_of(&state);
         assert!(!idle.pr_list_refresh);
-        let refresh = state.begin_pr_list_refresh();
+        let refresh = state.app_owner.begin_pr_list_refresh();
         assert!(refresh.is_some());
         assert!(
-            state.begin_pr_list_refresh().is_none(),
+            state.app_owner.begin_pr_list_refresh().is_none(),
             "a second refresh began"
         );
         let (started, running) = jobs_of(&state);

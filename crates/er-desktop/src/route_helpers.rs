@@ -4,9 +4,7 @@ use std::sync::{Arc, Mutex};
 #[cfg(not(target_os = "macos"))]
 use tauri_plugin_notification::NotificationExt;
 
-use crate::page_view::{
-    CheckSummary, GhCommentSummary, GhReviewSummary, GhUser, GithubStatusSnapshot, PrInfo,
-};
+use crate::page_view::{GhUser, PrInfo};
 use crate::resources::content_routes;
 pub use crate::state::DesktopState;
 #[cfg(test)]
@@ -214,56 +212,6 @@ fn maybe_send_native_notification(
     }
 }
 
-/// Fetch a PR's status and store it, bumping the revision when stored. Blocks
-/// on `gh`, so call it off the main thread. Every writer of the status cache
-/// goes through here: the ticket taken before the fetch is what keeps an
-/// older fetch from overwriting a newer one, and a writer that inserted
-/// directly would bring that race back. Persisting is left to the caller.
-/// Returns whether the entry was stored.
-pub fn fetch_and_store_github_status(
-    cache: &Mutex<HashMap<(String, String, u64), GithubStatusSnapshot>>,
-    desktop_revision: &AtomicU64,
-    owner: &str,
-    repo: &str,
-    number: u64,
-) -> bool {
-    let ticket = er_service::app_records::gh_status_cache::begin_fetch();
-    let Some(snap) = fetch_github_status(owner, repo, number) else {
-        return false;
-    };
-    let key = (owner.to_string(), repo.to_string(), number);
-    let stored = er_service::app_records::gh_status_cache::store_fetched(cache, key, ticket, snap);
-    if stored {
-        crate::profile_log::bump_desktop_revision(desktop_revision, "gh_status_cache");
-    }
-    stored
-}
-
-/// Spawn a background fetch of the GitHub status for the given (owner, repo, number).
-///
-/// Returns immediately. The cache is updated on success; failures are logged.
-/// Deduplicates: if a fetch for the same key is already in-flight, this is a no-op.
-pub fn kick_github_status_refresh(
-    desktop: &DesktopState,
-    owner: String,
-    repo: String,
-    number: u64,
-) {
-    let key = (owner.clone(), repo.clone(), number);
-    let Some(fetch) = desktop.begin_status_fetch(&key) else {
-        return; // already fetching
-    };
-    let desktop = desktop.clone();
-    std::thread::spawn(move || {
-        let _fetch = fetch;
-        let cache = &desktop.gh_status_cache;
-        if fetch_and_store_github_status(cache, &desktop.desktop_revision, &owner, &repo, number) {
-            // Persist after the lock is released (the save helper re-locks).
-            er_service::app_records::gh_status_cache::save_persisted_gh_status_cache(cache);
-        }
-    });
-}
-
 #[cfg(test)]
 fn own_pr_approval_error() -> String {
     "GitHub does not allow approving your own pull request.".to_string()
@@ -387,181 +335,6 @@ fn file_in_inbox<'a>(
         state.app_owner.save_inbox();
         state.desktop_revision.fetch_add(1, Ordering::Relaxed);
     }
-}
-
-/// Fetch all GitHub status data for a PR. Runs 2 gh calls in parallel: one
-///
-/// combined `gh pr view --json` for overview+comments+reviews, one `gh pr
-/// checks` for CI status (separate subcommand, can't be merged into `pr view`).
-/// Returns None when the overview/status-bundle fetch fails (e.g. no network,
-/// gh not authed). Comments/reviews parse failures inside the bundle are
-/// non-fatal; checks failures are non-fatal — the snapshot still populates.
-pub fn fetch_github_status(owner: &str, repo: &str, number: u64) -> Option<GithubStatusSnapshot> {
-    let t = std::time::Instant::now();
-    // The independent lookups run concurrently. The branch and merge-queue
-    // lookups after this need the PR state, so they wait for the bundle.
-    let (bundle_res, checks, repo_merge) = std::thread::scope(|s| {
-        let b = s.spawn(|| er_engine::github::gh_pr_status_remote(owner, repo, number));
-        let c = s.spawn(|| {
-            er_engine::github::gh_pr_checks_remote(owner, repo, number).unwrap_or_default()
-        });
-        // Cached per repo, so this is usually no subprocess at all.
-        let r = s.spawn(|| er_engine::gh_pr_actions::cached_repo_merge_settings(owner, repo));
-        (
-            b.join().ok(),
-            c.join().unwrap_or_default(),
-            r.join().ok().flatten(),
-        )
-    });
-    let bundle = bundle_res?.ok()?;
-    let overview = bundle.overview;
-    let head_branch_exists =
-        head_branch_exists_after_close(owner, repo, &overview, repo_merge.as_ref());
-    let (base_has_merge_queue, in_merge_queue) = merge_queue_status(owner, repo, number, &overview);
-    let can_bypass_rules = can_bypass_rules(owner, repo, number, &overview, base_has_merge_queue);
-    let comments = bundle.comments;
-    let reviews = bundle.reviews;
-    crate::profile_log::profile_log(
-        "gh_status_fetch",
-        &[
-            ("owner", owner.to_string()),
-            ("repo", repo.to_string()),
-            ("number", number.to_string()),
-            ("ms", t.elapsed().as_millis().to_string()),
-        ],
-    );
-
-    // Most recent 5, newest last in the source — keep the trailing 5.
-    let recent_comments: Vec<GhCommentSummary> = comments
-        .iter()
-        .rev()
-        .take(5)
-        .map(|c| GhCommentSummary {
-            author: c.author.clone(),
-            body: c.body.clone(),
-            created_at: c.created_at.clone(),
-            url: c.url.clone(),
-        })
-        .collect();
-    let recent_reviews: Vec<GhReviewSummary> = reviews
-        .iter()
-        .rev()
-        .take(5)
-        .map(|r| GhReviewSummary {
-            author: r.author.clone(),
-            state: r.state.clone(),
-            body: r.body.clone(),
-            submitted_at: r.submitted_at.clone(),
-        })
-        .collect();
-
-    let check_summaries: Vec<CheckSummary> = checks.into_iter().map(CheckSummary::from).collect();
-    let reviewers = crate::page_view::github_reviewers(&overview, &reviews);
-
-    // ISO-8601-ish timestamp using only std. Format: seconds since epoch as
-    // string — frontend renders as "x sec ago". Avoids pulling in chrono.
-    let last_updated = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()
-        .map(|d| d.as_secs().to_string());
-
-    Some(GithubStatusSnapshot {
-        owner: owner.to_string(),
-        repo: repo.to_string(),
-        number,
-        url: overview.url,
-        state: overview.state,
-        is_draft: overview.is_draft,
-        title: overview.title,
-        body: overview.body,
-        author: overview.author,
-        head_ref: overview.head_ref_name,
-        base_ref: overview.base_ref_name,
-        review_decision: overview.review_decision,
-        mergeable: overview.mergeable,
-        labels: overview.labels,
-        checks: check_summaries,
-        comments_count: comments.len(),
-        reviews_count: reviews.len(),
-        recent_comments,
-        recent_reviews,
-        last_updated,
-        is_authored_by_me: false,
-        merge_state_status: overview.merge_state_status,
-        head_oid: overview.head_ref_oid,
-        is_cross_repository: overview.is_cross_repository,
-        auto_merge_method: overview.auto_merge_method,
-        head_branch_exists,
-        repo_merge: repo_merge.map(Into::into),
-        in_merge_queue,
-        base_has_merge_queue,
-        can_bypass_rules,
-        created_at: overview.created_at,
-        commit_count: overview.commit_count,
-        reviewers,
-        fetch_ticket: 0,
-    })
-}
-
-/// Delete/Restore branch only make sense once a same-repo PR is merged or
-/// closed, so the extra `gh api` lookup runs only then. A fork's branch is
-/// never looked up in the base repo: a same-named branch there is a different
-/// branch (ADR 0040).
-fn head_branch_exists_after_close(
-    owner: &str,
-    repo: &str,
-    overview: &er_engine::github::PrOverviewFull,
-    repo_merge: Option<&er_engine::gh_pr_actions::RepoMergeSettings>,
-) -> Option<bool> {
-    if overview.state == "OPEN" || overview.head_ref_name.is_empty() || overview.is_cross_repository
-    {
-        return None;
-    }
-    // GitHub deletes the branch a moment after the merge on such repos.
-    let deleting_itself =
-        overview.state == "MERGED" && repo_merge.is_some_and(|s| s.delete_branch_on_merge);
-    er_engine::gh_pr_actions::cached_remote_branch_exists(
-        owner,
-        repo,
-        &overview.head_ref_name,
-        deleting_itself,
-    )
-}
-
-/// `(base has a merge queue, PR is in it)` for an open PR. Queue presence is
-/// cached per repo and base; the membership lookup costs a `gh` call, so it
-/// runs only on a base that has a queue.
-fn merge_queue_status(
-    owner: &str,
-    repo: &str,
-    number: u64,
-    overview: &er_engine::github::PrOverviewFull,
-) -> (bool, bool) {
-    use er_engine::gh_pr_actions::{cached_base_has_merge_queue, gh_pr_in_merge_queue};
-    let has_queue = overview.state == "OPEN"
-        && cached_base_has_merge_queue(owner, repo, &overview.base_ref_name) == Some(true);
-    let queued = has_queue && gh_pr_in_merge_queue(owner, repo, number).unwrap_or(false);
-    (has_queue, queued)
-}
-
-/// Only a blocked PR can use a bypass, so other states skip the lookup. A
-/// merge-queue base is skipped too: `--admin` there merges past the queue.
-fn can_bypass_rules(
-    owner: &str,
-    repo: &str,
-    number: u64,
-    overview: &er_engine::github::PrOverviewFull,
-    base_has_merge_queue: bool,
-) -> bool {
-    overview.state == "OPEN"
-        && !base_has_merge_queue
-        && overview.merge_state_status.as_deref() == Some("BLOCKED")
-        && er_engine::gh_pr_actions::cached_viewer_can_bypass(
-            owner,
-            repo,
-            &overview.base_ref_name,
-            number,
-        ) == Some(true)
 }
 
 /// Kick off an async meta-cache refresh so the *next* poll reflects the
@@ -1152,7 +925,7 @@ pub(crate) fn pr_triage(
         .remote
         .clone()
         .ok_or_else(|| "Project has no GitHub remote".to_string())?;
-    let pr = pr_from_cache(&desktop.pr_cache, &remote, pr_number)
+    let pr = pr_from_cache(desktop.app_owner.pr_cache(), &remote, pr_number)
         .ok_or_else(|| format!("PR #{pr_number} not in cache — try Sync first"))?;
 
     let req = crate::auto_triage::AutoTriageRequest {
@@ -1188,7 +961,7 @@ pub(crate) fn branch_triage(
         .clone()
         .ok_or_else(|| "Project has no GitHub remote".to_string())?;
 
-    if let Some(pr) = open_pr_for_branch(&desktop.pr_cache, &remote, branch) {
+    if let Some(pr) = open_pr_for_branch(desktop.app_owner.pr_cache(), &remote, branch) {
         return pr_triage(desktop, ctx, project_id, pr.number);
     }
     crate::auto_triage::dispatch_branch_triage(
@@ -1269,7 +1042,7 @@ pub(crate) fn finding_linked_thread_ids(
 /// the exact source the stale-pill compares against (see `build_snapshot`), so
 /// callers can align a tab's `last_diff_head_oid` with it to clear the pill.
 pub(crate) fn pr_cache_head_oid_for_pr(state: &DesktopState, pr_number: u64) -> Option<String> {
-    state.pr_cache.lock().ok().and_then(|cache| {
+    state.app_owner.pr_cache().lock().ok().and_then(|cache| {
         cache
             .values()
             .flat_map(|prs| prs.iter())
@@ -1294,7 +1067,9 @@ pub(crate) fn align_branch_base_probe(state: &DesktopState, repo_root: &str, bas
 
 pub(crate) fn refresh_status_after_sync(state: &DesktopState, key: Option<(String, String, u64)>) {
     if let Some((owner, repo, number)) = key {
-        kick_github_status_refresh(state, owner, repo, number);
+        state
+            .app_owner
+            .kick_github_status_refresh(owner, repo, number);
     }
 }
 
@@ -1332,7 +1107,9 @@ pub(crate) fn review_comment_body(text: &str) -> Result<String, String> {
 /// return, so drop its cache and let the status card recount.
 pub(crate) fn after_github_write(state: &DesktopState, owner: String, repo: String, number: u64) {
     er_engine::github::invalidate_pr_comments_cache();
-    kick_github_status_refresh(state, owner, repo, number);
+    state
+        .app_owner
+        .kick_github_status_refresh(owner, repo, number);
 }
 
 // ── AI integration ───────────────────────────────────────────────────────────
@@ -1782,117 +1559,6 @@ fn find_project_id_for_remote(file: &projects::ProjectsFile, remote_slug: &str) 
     })
 }
 
-fn fetch_single_pr_for_remote(
-    github: &dyn er_engine::github::GitHub,
-    remote: &str,
-    pr_number: u64,
-) -> Result<PrInfo, String> {
-    #[derive(serde::Deserialize)]
-    struct RawAuthor {
-        login: Option<String>,
-    }
-    #[derive(serde::Deserialize)]
-    struct RawLogin {
-        login: String,
-    }
-    #[derive(serde::Deserialize)]
-    struct RawReviewRequest {
-        #[serde(default)]
-        login: Option<String>,
-    }
-    #[derive(serde::Deserialize)]
-    struct RawReview {
-        author: RawAuthor,
-        state: String,
-    }
-    #[derive(serde::Deserialize)]
-    struct RawPr {
-        number: u64,
-        title: String,
-        #[serde(rename = "headRefName")]
-        head_ref_name: String,
-        #[serde(default, rename = "baseRefName")]
-        base_ref_name: String,
-        #[serde(default, rename = "headRefOid")]
-        head_ref_oid: String,
-        #[serde(default, rename = "updatedAt")]
-        updated_at: String,
-        state: String,
-        #[serde(rename = "isDraft")]
-        is_draft: bool,
-        author: RawAuthor,
-        #[serde(default)]
-        assignees: Vec<RawLogin>,
-        #[serde(default, rename = "reviewRequests")]
-        review_requests: Vec<RawReviewRequest>,
-        #[serde(default, rename = "reviewDecision")]
-        review_decision: Option<String>,
-        #[serde(default, rename = "mergedAt")]
-        merged_at: Option<String>,
-        #[serde(default, rename = "latestReviews")]
-        latest_reviews: Vec<RawReview>,
-    }
-
-    let out = github
-        .pr_view_json(
-            Some(remote),
-            None,
-            pr_number,
-            "number,title,headRefName,baseRefName,headRefOid,updatedAt,state,isDraft,author,assignees,reviewRequests,reviewDecision,mergedAt,latestReviews",
-        )
-        .map_err(|e| format!("Failed to fetch PR #{pr_number} for {remote}: {e}"))?;
-    let raw: RawPr = serde_json::from_slice(&out)
-        .map_err(|e| format!("Failed to parse gh pr view output for {remote}#{pr_number}: {e}"))?;
-    let latest_reviewer_states = raw
-        .latest_reviews
-        .into_iter()
-        .filter_map(|rv| rv.author.login.map(|l| (l, rv.state)))
-        .collect();
-    Ok(PrInfo {
-        number: raw.number,
-        title: raw.title,
-        head_ref: raw.head_ref_name,
-        state: raw.state,
-        is_draft: raw.is_draft,
-        author: raw.author.login.unwrap_or_default(),
-        assignees: raw.assignees.into_iter().map(|a| a.login).collect(),
-        reviewers: raw
-            .review_requests
-            .into_iter()
-            .filter_map(|rr| rr.login)
-            .collect(),
-        checks_state: None,
-        review_decision: raw.review_decision,
-        merged_at: raw.merged_at,
-        approved_by_me: false,
-        base_ref: raw.base_ref_name,
-        head_oid: raw.head_ref_oid,
-        updated_at: raw.updated_at,
-        latest_reviewer_states,
-    })
-}
-
-pub(crate) fn cache_single_pr_for_remote(
-    state: &DesktopState,
-    remote: &str,
-    pr_number: u64,
-) -> Result<PrInfo, String> {
-    // Cache hit → reuse without a gh round-trip. The sidebar PR list comes
-    // from this same pr_cache, so a hover-prefetched remote open pays zero
-    // network on the click path (freshness parity is exact at open time).
-    if let Ok(cache) = state.pr_cache.lock() {
-        if let Some(pr) = cache
-            .get(remote)
-            .and_then(|prs| prs.iter().find(|p| p.number == pr_number))
-        {
-            return Ok(pr.clone());
-        }
-    }
-    let fetched_pr = fetch_single_pr_for_remote(&*state.ports.github, remote, pr_number)?;
-    state.app_owner.cache_pr(remote, fetched_pr.clone());
-    Ok(fetched_pr)
-}
-
 /// The local project for `remote`, which decides whether a PR URL opens as a
 /// local review or a remote PR. It never picks an actor: the opened tab's own
 /// descriptor does.
@@ -2081,37 +1747,27 @@ pub(crate) fn prefetch_remote_pr_open_impl(
 }
 
 /// Starts a PR-list fetch through the sidebar's owner, of every project
-/// remote or of `remote` alone, and runs the inbox over the result. A fetch
-/// already running absorbs it. `prefs` reads the inbox prefs once the fetch
-/// is done.
+/// remote or of `remote` alone, and runs the inbox over the result before
+/// the fetch ends. A fetch already running absorbs it. `prefs` reads the
+/// inbox prefs once the fetch is done.
 pub(crate) fn kick_pr_list_refresh(
     desktop: &DesktopState,
     remote: Option<String>,
     prefs: impl FnOnce() -> InboxConfig + Send + 'static,
 ) -> Result<(), String> {
-    let Some(refresh) = desktop.begin_pr_list_refresh() else {
-        return Ok(());
+    let reason = if remote.is_some() {
+        "pr_cache_refresh_project_manual"
+    } else {
+        "pr_cache_refresh_manual"
     };
+    let github = Arc::clone(&desktop.ports.github);
+    let owner = Arc::clone(&desktop.app_owner);
     let desktop = desktop.clone();
-    std::thread::spawn(move || {
-        let github = Arc::clone(&desktop.ports.github);
-        let owner = &desktop.app_owner;
-        let (failed, reason) = match &remote {
-            None => (owner.refresh_prs(github), "pr_cache_refresh_manual"),
-            Some(remote) => {
-                let fetched = owner.refresh_remote_prs(github, remote);
-                let failed = if fetched {
-                    Vec::new()
-                } else {
-                    vec![remote.clone()]
-                };
-                (failed, "pr_cache_refresh_project_manual")
-            }
-        };
+    owner.kick_pr_list_refresh(github, remote, move |failed| {
         let prefs = prefs();
         let handles = InboxRefreshHandles {
-            pr_cache: &desktop.pr_cache,
-            gh_user: &desktop.gh_user,
+            pr_cache: desktop.app_owner.pr_cache(),
+            gh_user: desktop.app_owner.gh_user(),
             inbox: &desktop.inbox,
             app_owner: &desktop.app_owner,
             desktop_revision: &desktop.desktop_revision,
@@ -2121,7 +1777,6 @@ pub(crate) fn kick_pr_list_refresh(
             process_inbox_after_pr_refresh(handles, &prefs, Some(remote));
         }
         process_inbox_after_pr_refresh(handles, &prefs, None);
-        drop(refresh);
         crate::profile_log::bump_desktop_revision(&desktop.desktop_revision, reason);
     });
     Ok(())
@@ -2198,7 +1853,7 @@ fn resolve_inbox_open_target(target: InboxTarget, state: &DesktopState) -> Optio
     let file = projects::load();
     // A poisoned cache only costs the hint, not the open.
     let empty = HashMap::new();
-    let guard = state.pr_cache.lock().ok();
+    let guard = state.app_owner.pr_cache().lock().ok();
     inbox_open_target_in(&file, guard.as_deref().unwrap_or(&empty), target)
 }
 
@@ -2499,7 +2154,7 @@ pub(crate) fn resolve_pr_title_for_project(
         .find(|p| p.id == project_id)
         .ok_or_else(|| format!("Project not found: {project_id}"))?;
     if let Some(remote) = proj.remote.as_ref() {
-        if let Ok(cache) = state.pr_cache.lock() {
+        if let Ok(cache) = state.app_owner.pr_cache().lock() {
             if let Some(prs) = cache.get(remote) {
                 if let Some(pr) = prs.iter().find(|p| p.number == pr_number) {
                     if !pr.title.is_empty() {
@@ -2530,13 +2185,19 @@ pub(crate) fn project_available_prs(
     };
 
     let cache_prs: Vec<PrInfo> = state
-        .pr_cache
+        .app_owner
+        .pr_cache()
         .lock()
         .ok()
         .and_then(|g| g.get(remote).cloned())
         .unwrap_or_default();
 
-    let me: Option<String> = state.gh_user.lock().ok().and_then(|v| v.clone());
+    let me: Option<String> = state
+        .app_owner
+        .gh_user()
+        .lock()
+        .ok()
+        .and_then(|v| v.clone());
 
     // Return PRs that would NOT be visible today: not dismissed, not tracked,
     // and not matching the author/assignee/reviewer filter.
@@ -3060,7 +2721,6 @@ mod tests {
             Arc::clone(&gh_user),
             Arc::clone(&inbox),
         ));
-        let gh_status_cache = Arc::new(Mutex::new(HashMap::new()));
         let watch_status = Arc::new(Mutex::new(crate::page_view::WatchStatusSnapshot::default()));
         let desktop = DesktopState {
             ports: er_engine::ports::Ports::cli(),
@@ -3069,18 +2729,12 @@ mod tests {
                 dir.path().join("settings").join("config.toml"),
             )),
             view: Default::default(),
-            pr_cache,
             branch_base_remote_oid: Arc::new(Mutex::new(HashMap::new())),
             app_owner,
-            gh_user,
             terminals: Arc::new(Mutex::new(HashMap::new())),
             pending_ai_replies: Default::default(),
             ui_annotations: Default::default(),
             ui_annotations_io: Arc::default(),
-            gh_status_cache,
-            pr_list_running: Default::default(),
-            gh_status_in_flight: Arc::new(Mutex::new(HashSet::new())),
-            gh_status_fetched: Arc::default(),
             desktop_revision,
             watch_status,
             inbox,
@@ -3090,8 +2744,6 @@ mod tests {
             session: Default::default(),
             live_jobs: Default::default(),
             live_tabs: Default::default(),
-            pr_list_clock: Default::default(),
-            status_fetch_clock: Default::default(),
             tasks: Default::default(),
         };
         crate::app_owner::startup::read_inbox_prefs_from_settings(&desktop);
@@ -3451,53 +3103,6 @@ mod tests {
             run_card_ai_subprocess(&inv, "ctx", "prompt", Some("sonnet"), None)
         });
         assert_eq!(body.as_str(), "custom-response-text");
-    }
-
-    fn github_pr_json() -> &'static [u8] {
-        br#"{"number":7,"title":"Tidy up","headRefName":"feat/x","baseRefName":"main","headRefOid":"abc123","updatedAt":"2026-01-02T03:04:05Z","state":"OPEN","isDraft":false,"author":{"login":"alice"},"assignees":[{"login":"bob"}],"reviewRequests":[{"login":"carol"}],"reviewDecision":"APPROVED","mergedAt":null,"latestReviews":[{"author":{"login":"dan"},"state":"APPROVED"}]}"#
-    }
-
-    #[test]
-    fn fetch_single_pr_for_remote_parses_the_handle_output() {
-        let github = er_engine::github::FakeGitHub::default()
-            .with_pr_view_json(Ok(github_pr_json().to_vec()));
-
-        let pr = fetch_single_pr_for_remote(&github, "o/r", 7).unwrap();
-
-        assert_eq!(pr.number, 7);
-        assert_eq!(pr.title, "Tidy up");
-        assert_eq!(pr.head_ref, "feat/x");
-        assert_eq!(pr.base_ref, "main");
-        assert_eq!(pr.head_oid, "abc123");
-        assert_eq!(pr.author, "alice");
-        assert_eq!(pr.assignees, vec!["bob".to_string()]);
-        assert_eq!(pr.reviewers, vec!["carol".to_string()]);
-        assert_eq!(pr.review_decision.as_deref(), Some("APPROVED"));
-        assert_eq!(
-            pr.latest_reviewer_states,
-            vec![("dan".to_string(), "APPROVED".to_string())]
-        );
-        assert_eq!(
-            github.calls(),
-            vec![format!(
-                "pr_view_json(repo_slug=Some({:?}), dir=None, number=7, fields={:?})",
-                "o/r",
-                "number,title,headRefName,baseRefName,headRefOid,updatedAt,state,isDraft,author,assignees,reviewRequests,reviewDecision,mergedAt,latestReviews"
-            )]
-        );
-    }
-
-    #[test]
-    fn fetch_single_pr_for_remote_prefixes_a_gh_error() {
-        let github = er_engine::github::FakeGitHub::default().with_pr_view_json(Err(
-            er_engine::github::GhError::NotFound {
-                message: "nope".into(),
-            },
-        ));
-
-        let error = fetch_single_pr_for_remote(&github, "o/r", 7).unwrap_err();
-
-        assert_eq!(error, "Failed to fetch PR #7 for o/r: nope");
     }
 
     #[cfg(unix)]

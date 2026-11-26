@@ -42,8 +42,11 @@ use crate::app_records::sidebar::{
 use er_engine::git::Git;
 use er_engine::github::GitHub;
 
+mod fetches;
 #[cfg(test)]
 mod tests;
+
+pub use fetches::{PrListRefresh, StatusFetch, StatusKey};
 
 /// What the resource host reads from the sidebar's owner.
 pub trait SidebarOwner: Send + Sync {
@@ -82,9 +85,10 @@ pub struct AppOwner {
     /// the default build's snapshot reads the App's prefs, and no reader of
     /// `inbox` exists there.
     inbox_prefs: OnceLock<InboxPrefs>,
-    /// Where `pr_status` comes from. Set on the flag path only, as
-    /// `inbox_prefs` is.
-    gh_status: OnceLock<GhStatusCache>,
+    /// Where `pr_status` comes from: each PR's last fetched GitHub status.
+    gh_status: GhStatusCache,
+    /// The fetches' bookkeeping, which `jobs` and `pr_status` read.
+    fetches: fetches::Fetches,
     published: Mutex<Published>,
     /// Wakes the resource relay after a publish that moved a version.
     wake: Mutex<Option<Sender<()>>>,
@@ -135,7 +139,8 @@ impl AppOwner {
             worktrees: Mutex::default(),
             inbox,
             inbox_prefs: OnceLock::new(),
-            gh_status: OnceLock::new(),
+            gh_status: GhStatusCache::default(),
+            fetches: fetches::Fetches::default(),
             published: Mutex::default(),
             wake: Mutex::default(),
             change_hook: OnceLock::new(),
@@ -170,11 +175,10 @@ impl AppOwner {
         let _ = self.inbox_prefs.set(Box::new(prefs));
     }
 
-    /// Builds `pr_status` from `cache` from here on. A fetch that stores a
-    /// status bumps the desktop revision, which wakes the tick that
-    /// publishes. The first call wins.
-    pub fn read_status_from(&self, cache: GhStatusCache) {
-        let _ = self.gh_status.set(cache);
+    /// Holds the statuses saved before the app last quit, then publishes.
+    pub fn restore_statuses(&self, statuses: HashMap<(String, String, u64), GithubStatusSnapshot>) {
+        *lock(&self.gh_status) = statuses;
+        self.publish();
     }
 
     /// Applies one write to the inbox and publishes, then saves the inbox.
@@ -307,15 +311,10 @@ impl AppOwner {
                 .get()
                 .and_then(|prefs| prefs())
                 .map(|prefs| build_inbox(&lock(&self.inbox), &prefs));
-            let statuses = self
-                .gh_status
-                .get()
-                .map(|cache| build_statuses(&lock(cache), me.as_deref()));
+            let statuses = build_statuses(&lock(&self.gh_status), me.as_deref());
             let mut changed =
                 published.replace(build_projects(&file), branches, prs, worktrees, inbox);
-            if let Some(statuses) = statuses {
-                published.replace_statuses(statuses, &mut changed);
-            }
+            published.replace_statuses(statuses, &mut changed);
             changed
         };
         if !changed.is_empty() {

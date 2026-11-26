@@ -184,9 +184,7 @@ fn every_inbox_command_reaches_the_sidebar_owner() {
         assert_eq!(state.inbox.lock().unwrap().last_refresh_ms, 42);
         send(&state, Command::RefreshNotifications);
         let swept = wait_for(|| {
-            let running = state
-                .pr_list_running
-                .load(std::sync::atomic::Ordering::Acquire);
+            let running = state.app_owner.pr_list_running();
             !running && state.inbox.lock().unwrap().last_refresh_ms != 42
         });
         assert!(swept, "the refresh did not run the PR sweep");
@@ -292,9 +290,9 @@ fn open_state(dir: &ReviewFlowTestDir) -> DesktopState {
     let mut state = tab_state(dir);
     state.app_owner = Arc::new(AppOwner::new(
         Default::default(),
-        Arc::clone(&state.pr_cache),
+        Arc::clone(state.app_owner.pr_cache()),
         Default::default(),
-        Arc::clone(&state.gh_user),
+        Arc::clone(state.app_owner.gh_user()),
         Arc::clone(&state.inbox),
     ));
     startup::read_inbox_prefs_from_settings(&state);

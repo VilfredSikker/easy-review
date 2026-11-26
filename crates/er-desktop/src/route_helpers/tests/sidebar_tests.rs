@@ -381,7 +381,8 @@ fn a_pr_cache_write_reaches_the_branches_within_one_tick() {
         state.app_owner.refresh_meta(&meta_git(), "");
         let before = branches_version(&state, "p");
         state
-            .pr_cache
+            .app_owner
+            .pr_cache()
             .lock()
             .unwrap()
             .insert("acme/p".into(), vec![pr(9, "feature", "someone")]);

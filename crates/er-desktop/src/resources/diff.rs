@@ -259,8 +259,11 @@ fn sync_pr(
         .remote
         .clone()
         .ok_or_else(|| refused("Project has no remote configured".into()))?;
-    let pr =
-        route_helpers::cache_single_pr_for_remote(desktop, &remote, pr_number).map_err(refused)?;
+    let github = &*desktop.ports.github;
+    let owner = &desktop.app_owner;
+    let pr = owner
+        .cache_single_pr_for_remote(github, &remote, pr_number)
+        .map_err(refused)?;
     let tabs: Vec<TabEntry> = open_tabs(desktop)
         .filter(|entry| {
             let tab = &entry.descriptor;

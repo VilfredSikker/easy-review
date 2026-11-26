@@ -53,9 +53,7 @@ pub fn jobs(desktop: &DesktopState) -> (u64, Resource) {
         review_flows,
         tasks,
         triage,
-        pr_list_refresh: desktop
-            .pr_list_running
-            .load(std::sync::atomic::Ordering::Acquire),
+        pr_list_refresh: desktop.app_owner.pr_list_running(),
     };
     (version, Resource::Jobs(jobs))
 }
@@ -90,5 +88,5 @@ fn counted(
     desktop.pending_ai_replies.clock.revision()
         + desktop.live_jobs.observe_flows(flows)
         + tasks_revision
-        + desktop.pr_list_clock.revision()
+        + desktop.app_owner.pr_list_revision()
 }

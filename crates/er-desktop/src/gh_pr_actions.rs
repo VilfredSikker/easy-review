@@ -5,7 +5,6 @@
 //! the result rather than the state before the click.
 
 use crate::page_view::GithubStatusSnapshot;
-use crate::route_helpers::fetch_and_store_github_status;
 use crate::state::DesktopState;
 use er_engine::gh_pr_actions::{self as actions, MergeMethod, PrAction};
 use serde::Deserialize;
@@ -120,7 +119,8 @@ fn cached(
     number: u64,
 ) -> Option<GithubStatusSnapshot> {
     let key = (owner.to_string(), repo.to_string(), number);
-    state.gh_status_cache.lock().ok()?.get(&key).cloned()
+    let cache = state.app_owner.status_cache().lock().ok()?;
+    cache.get(&key).cloned()
 }
 
 fn perform(
@@ -247,16 +247,12 @@ fn same_repo_status(
 fn refresh_status_now(state: &DesktopState, owner: &str, repo: &str, number: u64) {
     // A fetch already running ends on its own guard; this one shows only
     // when it began the fetch.
-    let _fetch = state.begin_status_fetch(&(owner.to_string(), repo.to_string(), number));
-    if fetch_and_store_github_status(
-        &state.gh_status_cache,
-        &state.desktop_revision,
-        owner,
-        repo,
-        number,
-    ) {
+    let key = (owner.to_string(), repo.to_string(), number);
+    let _fetch = state.app_owner.begin_status_fetch(&key);
+    let app = &state.app_owner;
+    if app.fetch_and_store_github_status(owner, repo, number) {
         er_service::app_records::gh_status_cache::save_persisted_gh_status_cache(
-            &state.gh_status_cache,
+            app.status_cache(),
         );
     }
 }

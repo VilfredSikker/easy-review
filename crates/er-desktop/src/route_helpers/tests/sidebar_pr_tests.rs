@@ -88,8 +88,8 @@ fn command_fixture(dir: &ReviewFlowTestDir) -> DesktopState {
         github: std::sync::Arc::new(er_engine::github::FakeGitHub::default()),
     };
     save(vec![record("p", "/src/p", "acme/p")]);
-    *state.gh_user.lock().unwrap() = Some("me".into());
-    state.pr_cache.lock().unwrap().insert(
+    *state.app_owner.gh_user().lock().unwrap() = Some("me".into());
+    state.app_owner.pr_cache().lock().unwrap().insert(
         "acme/p".into(),
         vec![
             pr(1, "OPEN", "me"),
@@ -367,10 +367,7 @@ fn every_pr_command_reaches_the_sidebar_owner() {
         // The refresh fetches on its own thread, which writes the cache's
         // file: it finishes inside the test's storage root.
         let deadline = Instant::now() + Duration::from_secs(10);
-        while state
-            .pr_list_running
-            .load(std::sync::atomic::Ordering::Acquire)
-        {
+        while state.app_owner.pr_list_running() {
             assert!(Instant::now() < deadline, "the refresh never finished");
             std::thread::sleep(Duration::from_millis(5));
         }

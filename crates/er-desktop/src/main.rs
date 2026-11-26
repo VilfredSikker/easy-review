@@ -11,8 +11,8 @@ use er_desktop::comment_tick::comment_sync_recently_synced;
 use er_desktop::frame_script::FRAME_SCRIPT;
 use er_desktop::page_view::{PrInfo, ProjectMeta, WatchStatusSnapshot, WatchStatusState};
 use er_desktop::{
-    browser_proxy, browser_webview, dev_log, main_webview_policy, native_notify, page_view,
-    profile_log, route_helpers, tabs, terminal, window_placement,
+    browser_proxy, browser_webview, dev_log, main_webview_policy, native_notify, profile_log,
+    route_helpers, tabs, terminal, window_placement,
 };
 use er_service::app_records::{gh_status_cache, inbox, pr_cache, projects};
 
@@ -751,12 +751,6 @@ fn main() {
         Arc::new(Mutex::new(HashMap::new()));
     let meta_cache: Arc<Mutex<HashMap<String, ProjectMeta>>> = Arc::new(Mutex::new(HashMap::new()));
     let gh_user: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
-    let gh_status_cache: page_view::GhStatusCache = Arc::new(Mutex::new(
-        gh_status_cache::load_persisted_gh_status_cache()
-            .ok()
-            .flatten()
-            .unwrap_or_default(),
-    ));
     let inbox = Arc::new(Mutex::new(inbox::load_inbox_state()));
     let app_owner = Arc::new(er_service::app_records::AppOwner::new(
         meta_cache,
@@ -765,7 +759,13 @@ fn main() {
         Arc::clone(&gh_user),
         Arc::clone(&inbox),
     ));
-    app_owner.read_status_from(Arc::clone(&gh_status_cache));
+    app_owner.restore_statuses(
+        gh_status_cache::load_persisted_gh_status_cache()
+            .ok()
+            .flatten()
+            .unwrap_or_default(),
+    );
+    let gh_status_cache = Arc::clone(app_owner.status_cache());
     let watch_status: WatchStatusState = Arc::new(Mutex::new(WatchStatusSnapshot::default()));
     let tauri_app_handle: Arc<Mutex<Option<tauri::AppHandle>>> = Arc::new(Mutex::new(None));
 
@@ -787,8 +787,6 @@ fn main() {
         });
     }
 
-    let gh_status_in_flight: Arc<Mutex<std::collections::HashSet<(String, String, u64)>>> =
-        Arc::new(Mutex::new(std::collections::HashSet::new()));
     let view_arc: er_desktop::view_state::ViewStateHandle = Arc::default();
     let terminals: Arc<Mutex<HashMap<String, terminal::PtySession>>> =
         Arc::new(Mutex::new(HashMap::new()));
@@ -836,20 +834,12 @@ fn main() {
         ports: ports.clone(),
         service: Arc::clone(&service),
         view: Arc::clone(&view_arc),
-        pr_cache: Arc::clone(&pr_cache),
         branch_base_remote_oid: Arc::clone(&branch_base_remote_oid),
         app_owner: Arc::clone(&app_owner),
-        gh_user: Arc::clone(&gh_user),
         terminals: Arc::clone(&terminals),
         pending_ai_replies: er_desktop::state::AiReplyJobs::new(session.clock()),
         ui_annotations: session.clock(),
         ui_annotations_io: Arc::default(),
-        gh_status_cache: Arc::clone(&gh_status_cache),
-        pr_list_running: Arc::default(),
-        pr_list_clock: session.clock(),
-        status_fetch_clock: session.clock(),
-        gh_status_in_flight: Arc::clone(&gh_status_in_flight),
-        gh_status_fetched: Arc::default(),
         desktop_revision: Arc::clone(&desktop_revision),
         watch_status: Arc::clone(&watch_status),
         inbox: Arc::clone(&inbox),
@@ -1037,13 +1027,12 @@ fn main() {
     // Spawn background GitHub-status refresh: every 30s, identify the active
     // tab's PR identity (briefly locking app), then shell out to gh and update
     // the cache. NEVER holds the app mutex while running gh.
-    // Shares gh_status_in_flight with kick_github_status_refresh to avoid
+    // Shares the owner's in-flight set with kick_github_status_refresh to avoid
     // duplicate concurrent fetches when a branch switch fires during this loop.
     {
         let gh_status_bg = Arc::clone(&gh_status_cache);
         let loop_state = state.clone();
-        let fetches = state.clone();
-        let gh_status_desktop_rev = Arc::clone(&desktop_revision);
+        let fetches = Arc::clone(&app_owner);
         std::thread::spawn(move || loop {
             // Sleep FIRST: kills the startup burst — a sleep at the bottom
             // lets the loop fire immediately on launch.
@@ -1075,13 +1064,7 @@ fn main() {
                 continue;
             };
             let (owner, repo, number) = &key;
-            route_helpers::fetch_and_store_github_status(
-                &gh_status_bg,
-                &gh_status_desktop_rev,
-                owner,
-                repo,
-                *number,
-            );
+            fetches.fetch_and_store_github_status(owner, repo, *number);
         });
     }
 
@@ -1135,7 +1118,7 @@ fn main() {
         }
 
         let run_refresh = || {
-            let refresh = bg_state.begin_pr_list_refresh();
+            let refresh = bg_owner.begin_pr_list_refresh();
             let failed = bg_owner.refresh_prs(Arc::clone(&bg_github));
             let prefs = er_desktop::app_owner::startup::inbox_prefs(&bg_state);
             let handles = route_helpers::InboxRefreshHandles {
@@ -1157,7 +1140,7 @@ fn main() {
         // Startup: fetch the active project's remote first so its sidebar PR
         // list lights up quickly. The full multi-remote sweep follows.
         if let Some(active_remote) = pr_cache::active_project_remote() {
-            let refresh = bg_state.begin_pr_list_refresh();
+            let refresh = bg_owner.begin_pr_list_refresh();
             let success = bg_owner.refresh_remote_prs(Arc::clone(&bg_github), &active_remote);
             let prefs = er_desktop::app_owner::startup::inbox_prefs(&bg_state);
             let handles = route_helpers::InboxRefreshHandles {

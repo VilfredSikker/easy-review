@@ -453,3 +453,38 @@ fn a_pr_list_refresh_reports_to_the_change_hook() {
         assert_eq!(*lock(&heard), ["pr_list_fetch: count remote ms"]);
     });
 }
+
+/// Each kick starts through its guard and fetches on a thread of its own, so
+/// a caller (a resource read, a command) never waits on `gh`. Reads the
+/// source, so no `gh` runs.
+#[test]
+fn each_kick_fetches_on_its_own_thread_under_its_guard() {
+    let text = production_source("src/app_records/app_owner/fetches.rs");
+    for (name, begin, fetch) in [
+        (
+            "kick_pr_list_refresh",
+            "begin_pr_list_refresh()",
+            "refresh_prs(",
+        ),
+        (
+            "kick_github_status_refresh",
+            "begin_status_fetch(",
+            "fetch_and_store_github_status(",
+        ),
+    ] {
+        let pattern = format!("fn {name}(");
+        let body = text.split_once(&pattern).map_or("", |(_, rest)| rest);
+        let body = body.split("\n    }\n").next().unwrap_or_default();
+        let begun = body
+            .find(begin)
+            .unwrap_or_else(|| panic!("{name} skips {begin}"));
+        let spawned = body
+            .find("std::thread::spawn(")
+            .unwrap_or_else(|| panic!("{name} fetches on its caller's thread"));
+        let fetched = body
+            .find(fetch)
+            .unwrap_or_else(|| panic!("{name} never fetches"));
+        assert!(begun < spawned, "{name} spawns before {begin}");
+        assert!(spawned < fetched, "{name} fetches on its caller's thread");
+    }
+}

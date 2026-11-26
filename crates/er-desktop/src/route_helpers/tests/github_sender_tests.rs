@@ -61,7 +61,8 @@ fn with_pr_tab(test: impl FnOnce(&DesktopState, TabKey, &er_engine::github::Fake
         }))
         .unwrap_or_else(|e| panic!("{e}"));
         state
-            .pr_cache
+            .app_owner
+            .pr_cache()
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .insert("acme/widgets".into(), vec![pr]);
