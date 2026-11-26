@@ -1,4 +1,8 @@
 //! The MCP contract tests; see `contract/harness.rs`.
+#![expect(
+    clippy::expect_used,
+    reason = "contract-test scaffolding: a failed setup step should abort the test"
+)]
 
 #[path = "contract/harness.rs"]
 mod harness;
