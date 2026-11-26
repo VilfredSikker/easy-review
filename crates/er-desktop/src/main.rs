@@ -9,9 +9,7 @@ use er_desktop::browser_webview::BrowserWebviewState;
 #[cfg(test)]
 use er_desktop::comment_tick::comment_sync_recently_synced;
 use er_desktop::frame_script::FRAME_SCRIPT;
-use er_desktop::page_view::{
-    PrInfo, ProjectMeta, RefreshMeta, WatchStatusSnapshot, WatchStatusState,
-};
+use er_desktop::page_view::{PrInfo, ProjectMeta, WatchStatusSnapshot, WatchStatusState};
 use er_desktop::{
     browser_proxy, browser_webview, dev_log, main_webview_policy, native_notify, page_view,
     profile_log, route_helpers, tabs, terminal, window_placement,

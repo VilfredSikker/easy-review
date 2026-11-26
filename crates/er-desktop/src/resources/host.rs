@@ -9,7 +9,6 @@ use er_protocol::{
     ResourceKey, ResourceVersion, Versioned,
 };
 
-use crate::page_view::RefreshMeta;
 use crate::state::DesktopState;
 use er_service::app_records::inbox::InboxState;
 use er_service::app_records::SidebarOwner;
