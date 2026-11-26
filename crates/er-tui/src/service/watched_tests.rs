@@ -3,20 +3,22 @@
 //! update and a delete go through the service.
 
 use std::path::Path;
-use std::time::{Duration, Instant};
+use std::sync::Arc;
+use std::time::{Duration, Instant, SystemTime};
 
 use crossterm::event::KeyCode;
-use er_engine::config::ConfigFieldValue;
+use er_engine::config::{ConfigFieldValue, WatchedConfig};
 use er_engine::tab_identity::DiffMode;
 use er_service::{Command, SettingsCommand};
 
+use super::loop_tests::{Gate, GatedGit};
 use super::parity::assert_frame;
 use super::shell::Shell;
 use super::startup::Args;
 use super::tests::{
     fixture, key, loaded, path_of, settle, settle_within, shell, shell_frame, WAIT,
 };
-use super::watched::TabWatched;
+use super::watched::{Landed, Reader, TabWatched};
 use crate::screen::watched::SnapshotDiff;
 use crate::ui::highlight::Highlighter;
 
@@ -272,4 +274,123 @@ fn emptied_watched_paths_clear_the_list() {
         });
         assert!(cleared, "the old list still draws");
     });
+}
+
+/// The scans that land before a diff read sent after them. The worker
+/// answers in order, so once the diff lands every earlier scan has landed
+/// or been dropped.
+fn scans_before_a_diff(reader: &Reader, key: er_engine::TabKey, root: &str) -> usize {
+    reader.diff(key, root, "a.env".into(), root);
+    let deadline = Instant::now() + WAIT;
+    let mut scans = 0;
+    while Instant::now() < deadline {
+        match reader.try_landed() {
+            Some(Landed::Scanned { .. }) => scans += 1,
+            Some(Landed::Diff { .. }) => return scans,
+            None => std::thread::sleep(Duration::from_millis(10)),
+        }
+    }
+    panic!("the diff read never landed");
+}
+
+/// A held scan on `root`, with the reader whose next due the caller picks.
+fn held_scan(root: &str) -> (Arc<Gate>, Reader, er_engine::TabKey, Instant) {
+    let gate = Arc::new(Gate::default());
+    let mut reader = Reader::spawn(Arc::new(GatedGit(Arc::clone(&gate))));
+    let config = WatchedConfig {
+        paths: vec!["*.env".into()],
+        ..WatchedConfig::default()
+    };
+    let key = er_engine::TabKey::next();
+    let start = Instant::now();
+    gate.set(true);
+    assert!(reader.scan_due(key, 1, start));
+    reader.scan(key, root, &config);
+    (gate, reader, key, start)
+}
+
+/// A scan still held when the five-second rescan comes due lands once
+/// released: the rescan does not make it stale.
+#[test]
+fn a_scan_slower_than_the_rescan_still_lands() {
+    let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+    let repo = watched_repo(storage.path());
+    let root = path_of(&repo);
+    let (gate, mut reader, key, start) = held_scan(&root);
+    assert!(reader.scan_due(key, 1, start + Duration::from_secs(6)));
+    gate.set(false);
+    assert_eq!(
+        scans_before_a_diff(&reader, key, &root),
+        1,
+        "the held scan was dropped"
+    );
+}
+
+/// A scan held across a settings edit is dropped once released.
+#[test]
+fn a_scan_sent_before_a_settings_edit_is_dropped() {
+    let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+    let repo = watched_repo(storage.path());
+    let root = path_of(&repo);
+    let (gate, mut reader, key, start) = held_scan(&root);
+    assert!(reader.scan_due(key, 2, start));
+    gate.set(false);
+    assert_eq!(
+        scans_before_a_diff(&reader, key, &root),
+        0,
+        "the stale scan landed"
+    );
+}
+
+fn listed(path: &str, modified: SystemTime) -> er_git::WatchedFile {
+    er_git::WatchedFile {
+        path: path.into(),
+        modified,
+        size: 4,
+    }
+}
+
+/// A file whose delete was sent saves no first snapshot while a listing
+/// still shows it as it was. A listing without it, a listing that shows it
+/// re-created, or a refused delete lets its first snapshot save again.
+#[test]
+fn a_file_being_deleted_saves_no_first_snapshot() {
+    let old = SystemTime::now() - Duration::from_secs(600);
+    let created =
+        |watched: &mut TabWatched, path: &str| watched.read(path.into(), SnapshotDiff::Created);
+    let mut watched = TabWatched::default();
+    watched.scanned(vec![listed("a.env", old), listed("b.env", old)], Vec::new());
+    watched.delete_sent("a.env".into());
+    assert_eq!(
+        created(&mut watched, "a.env"),
+        None,
+        "the deleted file saved"
+    );
+    assert_eq!(created(&mut watched, "b.env").as_deref(), Some("b.env"));
+
+    watched.scanned(vec![listed("a.env", old), listed("b.env", old)], Vec::new());
+    assert_eq!(
+        created(&mut watched, "a.env"),
+        None,
+        "a listing as it was dropped the record"
+    );
+    watched.scanned(vec![listed("b.env", old)], Vec::new());
+    assert_eq!(created(&mut watched, "a.env").as_deref(), Some("a.env"));
+
+    watched.delete_sent("b.env".into());
+    let later = SystemTime::now() + Duration::from_secs(1);
+    watched.scanned(vec![listed("b.env", later)], Vec::new());
+    assert_eq!(
+        created(&mut watched, "b.env").as_deref(),
+        Some("b.env"),
+        "the re-created file"
+    );
+
+    watched.delete_sent("b.env".into());
+    watched.delete_refused();
+    assert_eq!(
+        created(&mut watched, "b.env").as_deref(),
+        Some("b.env"),
+        "the refused delete"
+    );
 }
