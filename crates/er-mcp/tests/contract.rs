@@ -61,6 +61,77 @@ fn a_gh_call_with_no_fixture_fails_the_scenario() {
     assert!(message.contains("called gh with no fixture"), "{message}");
 }
 
+/// A project for the fixture repo, rooted at the child's working dir (a
+/// checkout of the fixture PR's head branch), made the active project.
+fn seed_project(s: &Scenario) {
+    let work = s.root().join("work");
+    git(&work, &["init", "-q", "-b", "ci/staging-prs"]);
+    git(
+        &work,
+        &[
+            "remote",
+            "add",
+            "origin",
+            "https://github.com/VilfredSikker/easy-review.git",
+        ],
+    );
+    git(&work, &["commit", "-q", "--allow-empty", "-m", "head"]);
+    let root_path = work.to_string_lossy().into_owned();
+    er_engine::storage::with_test_storage_root(s.root().join("storage"), || {
+        er_engine::projects_pins::update(|file| {
+            file.projects.push(er_engine::projects_pins::ProjectRecord {
+                id: "easy-review".into(),
+                name: "easy-review".into(),
+                root_path,
+                remote: Some(REPO.into()),
+                ..Default::default()
+            });
+            file.active_id = Some("easy-review".into());
+            Ok(true)
+        })
+    })
+    .expect("seed the project");
+}
+
+/// The review queue, ranked three ways and across projects.
+fn queue_and_stats(s: &mut Scenario) {
+    seed_project(s);
+    s.call("prs_query", json!({ "repo": REPO, "limit": 2 }));
+    s.call(
+        "prs_query",
+        json!({ "repo": REPO, "sort": "updated", "limit": 2 }),
+    );
+    s.call(
+        "prs_query",
+        json!({ "repo": REPO, "filter": "review_debt", "limit": 2 }),
+    );
+    s.call("prs_query", json!({ "cross_repo": true, "limit": 2 }));
+    s.call("pr_stats", json!({ "ref": PR, "include_hotspots": true }));
+    s.call("pr_stats", json!({ "repo": REPO, "numbers": [575, 600] }));
+}
+
+/// The `pr_resolve` forms that ask `gh`, and the bare number.
+fn resolve_forms(s: &mut Scenario) {
+    seed_project(s);
+    let work = s.root().join("work").to_string_lossy().into_owned();
+    s.call("pr_resolve", json!({ "ref": work }));
+    s.call("pr_resolve", json!({ "ref": REPO }));
+    s.call("pr_resolve", json!({ "ref": "epic/p78-mcp-contract" }));
+    s.call("pr_resolve", json!({ "ref": "main" }));
+    s.call("pr_resolve", json!({ "ref": "no-such-branch" }));
+    s.call("pr_resolve", json!({ "ref": "575" }));
+}
+
+#[test]
+fn the_queue_and_stats_match_their_golden() {
+    assert_golden("queue_and_stats", &run_twice(queue_and_stats));
+}
+
+#[test]
+fn the_gh_resolve_forms_match_their_golden() {
+    assert_golden("resolve_forms", &run_twice(resolve_forms));
+}
+
 /// `text` with the kit's `<DIFF_HASH>` placeholder filled in.
 fn with_hash(example: &Value, hash: &str) -> String {
     example.to_string().replace("<DIFF_HASH>", hash)
