@@ -1,0 +1,120 @@
+{
+  // The intended structure of easy-review on main. Read by er-arch-extract.
+  // Order matters: a file belongs to the first part whose paths match it.
+  "name": "easy-review",
+  "description": "Three front ends on one shared engine, which shells out to git, gh and the agent CLIs.",
+  "layers": ["Front ends & tools", "Engine"],
+  "groups": [
+    { "id": "desktop", "name": "desktop", "layer": "Front ends & tools", "layers": ["UI", "Backend"],
+      "description": "A Svelte UI over a Tauri backend. The UI calls commands over IPC; the backend pushes revision events back up (ADR 0011)." },
+    { "id": "desktop-ui", "group": "desktop", "layer": "UI", "layers": ["Shell", "Views", "State", "Foundations"],
+      "description": "Svelte front end. Calls Tauri commands and applies optimistic local writes." },
+    { "id": "er-desktop", "group": "desktop", "layer": "Backend", "layers": ["Entry & commands", "App logic", "Caches & platform"],
+      "description": "Tauri commands, snapshots, inbox, projects, PR caches and tab persistence." },
+    { "id": "engine", "name": "er-engine", "layer": "Engine",
+      "layers": ["Orchestration", "Domains", "Agent runtime", "Integrations", "Foundation"],
+      "description": "The shared core. App and TabState are the UI contract both front ends read and write (ADR 0006)." }
+  ],
+  "parts": [
+    { "id": "er-tui", "layer": "Front ends & tools", "paths": ["crates/er-tui/**"] },
+    { "id": "er-mcp", "layer": "Front ends & tools", "paths": ["crates/er-mcp/**"] },
+    { "id": "er-crap", "layer": "Front ends & tools", "kind": "tool", "paths": ["crates/er-crap/**"] },
+    { "id": "er-lint-gate", "layer": "Front ends & tools", "kind": "tool", "paths": ["crates/er-lint-gate/**"] },
+    { "id": "repo-tooling", "name": "repo tooling", "layer": "Front ends & tools", "kind": "tool",
+      "paths": [".claude/**", "docs/**", "npm/**", "tools/**", "tests/**", "scripts/**"] },
+
+    { "id": "ui-shell", "name": "app shell", "group": "desktop-ui", "layer": "Shell",
+      "paths": ["desktop-ui/src/App.svelte", "desktop-ui/src/main.ts", "desktop-ui/src/lib/components/shell/**"] },
+    { "id": "ui-kit", "name": "ui kit", "group": "desktop-ui", "layer": "Foundations",
+      "paths": ["desktop-ui/src/lib/components/ui/**", "desktop-ui/src/lib/components/icons/**"] },
+    { "id": "ui-dev", "name": "dev & stories", "group": "desktop-ui", "layer": "Shell", "kind": "tool",
+      "paths": ["desktop-ui/src/lib/dev/**", "desktop-ui/src/lib/stories/**"] },
+    { "id": "ui-views", "name": "views", "group": "desktop-ui", "layer": "Views", "paths": ["desktop-ui/src/lib/components/**"] },
+    { "id": "ui-stores", "name": "stores", "group": "desktop-ui", "layer": "State", "paths": ["desktop-ui/src/lib/stores/**"] },
+    { "id": "ui-models", "name": "models & utils", "group": "desktop-ui", "layer": "Foundations", "paths": ["desktop-ui/src/lib/**"] },
+    { "id": "ui-other", "name": "build config", "group": "desktop-ui", "layer": "Shell", "kind": "tool", "paths": ["desktop-ui/**"] },
+
+    { "id": "be-shell", "name": "shell", "group": "er-desktop", "layer": "Entry & commands",
+      "paths": ["crates/er-desktop/src/lib.rs", "crates/er-desktop/src/main.rs"] },
+    { "id": "be-commands", "name": "commands", "group": "er-desktop", "layer": "Entry & commands",
+      "paths": ["crates/er-desktop/src/commands.rs", "crates/er-desktop/src/commands/**", "crates/er-desktop/src/arena_commands.rs", "crates/er-desktop/src/config_commands.rs",
+                "crates/er-desktop/src/gh_pr_actions.rs", "crates/er-desktop/src/export.rs", "crates/er-desktop/src/triage_update.rs"] },
+    { "id": "be-snapshot", "name": "snapshot", "group": "er-desktop", "layer": "App logic", "paths": ["crates/er-desktop/src/snapshot.rs"] },
+    { "id": "be-logic", "name": "inbox & projects", "group": "er-desktop", "layer": "App logic",
+      "paths": ["crates/er-desktop/src/inbox.rs", "crates/er-desktop/src/projects.rs", "crates/er-desktop/src/auto_triage.rs"] },
+    { "id": "be-tabs", "name": "tabs & persistence", "group": "er-desktop", "layer": "App logic",
+      "paths": ["crates/er-desktop/src/tabs.rs", "crates/er-desktop/src/persist.rs", "crates/er-desktop/src/window_placement.rs"] },
+    { "id": "be-browser", "name": "browser pane", "group": "er-desktop", "layer": "App logic",
+      "paths": ["crates/er-desktop/src/browser_*.rs", "crates/er-desktop/src/frame_script.rs", "crates/er-desktop/src/main_webview_policy.rs"] },
+    { "id": "be-caches", "name": "PR caches", "group": "er-desktop", "layer": "Caches & platform",
+      "paths": ["crates/er-desktop/src/*pr_open_cache.rs", "crates/er-desktop/src/pr_cache.rs", "crates/er-desktop/src/gh_status_cache.rs", "crates/er-desktop/src/github_image.rs"] },
+    { "id": "be-platform", "name": "platform", "group": "er-desktop", "layer": "Caches & platform",
+      "paths": ["crates/er-desktop/src/terminal.rs", "crates/er-desktop/src/native_notify.rs", "crates/er-desktop/src/dev_log.rs", "crates/er-desktop/src/profile_log.rs"] },
+    { "id": "be-other", "name": "build and tests", "group": "er-desktop", "layer": "Entry & commands", "kind": "tool", "paths": ["crates/er-desktop/**"] },
+
+    { "id": "crate-root", "name": "lib.rs", "group": "engine", "layer": "Orchestration", "paths": ["crates/er-engine/src/lib.rs"],
+      "description": "The crate root. Declares the modules and re-exports a few of them." },
+    { "id": "app", "group": "engine", "layer": "Orchestration", "paths": ["crates/er-engine/src/app/**"] },
+    { "id": "ai", "group": "engine", "layer": "Domains", "paths": ["crates/er-engine/src/ai/**"] },
+    { "id": "arena", "group": "engine", "layer": "Domains", "paths": ["crates/er-engine/src/arena/**"] },
+    { "id": "sidecars", "group": "engine", "layer": "Domains",
+      "paths": ["crates/er-engine/src/sidecar_upload.rs", "crates/er-engine/src/sidecar_summary.rs", "crates/er-engine/src/sidecar_specs.rs", "crates/er-engine/src/diagram_upload.rs"] },
+    { "id": "export", "group": "engine", "layer": "Domains", "paths": ["crates/er-engine/src/export.rs"] },
+    { "id": "sync", "group": "engine", "layer": "Domains", "paths": ["crates/er-engine/src/sync.rs"] },
+    { "id": "pr_review_feedback", "group": "engine", "layer": "Domains", "paths": ["crates/er-engine/src/pr_review_feedback.rs"] },
+    { "id": "agents", "group": "engine", "layer": "Agent runtime",
+      "paths": ["crates/er-engine/src/agent_*.rs", "crates/er-engine/src/model_discovery.rs"] },
+    { "id": "config", "group": "engine", "layer": "Integrations", "paths": ["crates/er-engine/src/config/**"] },
+    { "id": "git", "group": "engine", "layer": "Integrations", "paths": ["crates/er-engine/src/git/**"] },
+    { "id": "github", "group": "engine", "layer": "Integrations",
+      "paths": ["crates/er-engine/src/github.rs", "crates/er-engine/src/github/**", "crates/er-engine/src/gh_*.rs", "crates/er-engine/src/pr_resolve.rs", "crates/er-engine/src/review_queue.rs"] },
+    { "id": "storage", "group": "engine", "layer": "Foundation", "paths": ["crates/er-engine/src/storage.rs"] },
+    { "id": "proc", "group": "engine", "layer": "Foundation", "paths": ["crates/er-engine/src/proc.rs"] },
+    { "id": "utilities", "group": "engine", "layer": "Foundation",
+      "paths": ["crates/er-engine/src/paths.rs", "crates/er-engine/src/env_path.rs", "crates/er-engine/src/dev_log.rs", "crates/er-engine/src/highlight.rs",
+                "crates/er-engine/src/watch/**", "crates/er-engine/src/projects_pins.rs", "crates/er-engine/src/release_update.rs", "crates/er-engine/src/uninstall.rs"] },
+    { "id": "engine-tests", "name": "tests and other files", "group": "engine", "layer": "Orchestration", "paths": ["crates/er-engine/**"] }
+  ],
+  "rules": {
+    "allowed": {},
+    "ports": {},
+    "independent": [],
+    "exceptions": [
+      { "from": "er-desktop", "to": "desktop-ui", "kind": "event", "why": "ADR 0011: the backend pushes revision events up to the UI on purpose." }
+    ]
+  },
+  "nonFunctional": {
+    "test": ["crates/er-engine/tests/**"],
+    "generated": [],
+    "dev": ["desktop-ui/src/lib/dev/**", "desktop-ui/src/lib/stories/**"],
+    "tooling": [".claude/**", "docs/**", "npm/**", "tools/**", "scripts/**"]
+  },
+  "decisions": [
+    { "ref": "ADR 0006", "title": "Engine state is the UI contract", "door": "one", "why": "Both front ends read and write engine fields directly, so a renamed field is a change to every caller." },
+    { "ref": "ADR 0001", "title": "Shell out to git", "door": "one", "why": "Many parts start git themselves, so the choice is spread through the code." },
+    { "ref": "ADR 0031", "title": "Agents write sidecar files", "door": "one", "why": "The file format is read and written by tools outside this repo." },
+    { "ref": "ADR 0003", "title": "Managed review storage", "door": "one", "why": "Several parts write files directly. Reshaping storage touches each one." },
+    { "ref": "ADR 0011", "title": "Push a revision, do not poll", "door": "two", "why": "One event path, with a timer only as a safety net." },
+    { "ref": "ADR 0005", "title": "Global-only config", "door": "two", "why": "One file and one reader path. Cheap to revisit." }
+  ],
+  "flows": [
+    { "name": "A reviewer marks a file reviewed", "steps": [
+      ["ui-stores", "be-commands", "sends a command", "ipc"],
+      ["be-commands", "app", "changes App under the lock", "call"],
+      ["app", "x-disk", "writes the sidecar inline", "fs"],
+      ["be-snapshot", "ui-stores", "replies with the whole snapshot", "event"] ] },
+    { "name": "Code changes on disk during a review", "steps": [
+      ["x-disk", "utilities", "the file watcher fires", "fs"],
+      ["utilities", "app", "asks for a fresh diff", "call"],
+      ["app", "git", "computes the diff", "call"],
+      ["git", "x-proc-git", "starts git and parses its output", "spawn"],
+      ["be-commands", "ui-stores", "pushes a revision event", "event"] ] },
+    { "name": "Run an AI review", "steps": [
+      ["ui-views", "be-commands", "asks for a review", "ipc"],
+      ["be-commands", "app", "queues a background job", "call"],
+      ["app", "agents", "waits for a free slot", "call"],
+      ["agents", "x-proc-other", "starts the agent CLI", "spawn"],
+      ["x-proc-other", "x-disk", "the agent writes sidecar files", "fs"],
+      ["x-disk", "ai", "the loader reads them back", "fs"] ] }
+  ]
+}
