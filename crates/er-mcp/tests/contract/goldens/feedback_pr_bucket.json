@@ -1,0 +1,498 @@
+[
+  {
+    "arguments": {
+      "ref": "VilfredSikker/easy-review#575"
+    },
+    "reply": {
+      "content": [
+        {
+          "json": {
+            "bucket_path": "<root>/storage/repos/vilfredsikker-easy-review-42b93a89/prs/pr-575",
+            "number": 575,
+            "owner": "VilfredSikker",
+            "pr_url": "https://github.com/VilfredSikker/easy-review/pull/575",
+            "repo": "easy-review",
+            "resolved_via": "ref_repo_number"
+          },
+          "type": "text"
+        }
+      ],
+      "isError": false,
+      "resultType": "complete"
+    },
+    "tool": "pr_resolve"
+  },
+  {
+    "arguments": {
+      "ref": "VilfredSikker/easy-review#575"
+    },
+    "reply": {
+      "content": [
+        {
+          "json": {
+            "bucket": "pr",
+            "bucket_path": "<root>/storage/repos/vilfredsikker-easy-review-42b93a89/prs/pr-575",
+            "feedback": {
+              "bucket_path": "<root>/storage/repos/vilfredsikker-easy-review-42b93a89/prs/pr-575",
+              "diff_hash": "c24f0c10ea8cc3c6ca4fd98072123cb7b69c56552e9da03ff0fcb18929bb5094",
+              "findings": [
+                {
+                  "category": "correctness",
+                  "confidence": "tentative",
+                  "description": "Only PRs from staging run it.",
+                  "file": ".github/workflows/ci.yml",
+                  "hunk_index": 2,
+                  "id": "f-seed",
+                  "line_end": null,
+                  "line_start": 173,
+                  "outside_diff": false,
+                  "resolved": false,
+                  "responses": [],
+                  "severity": "low",
+                  "source": "review",
+                  "suggestion": "",
+                  "title": "crap job skips staging pushes"
+                }
+              ],
+              "notes": [
+                {
+                  "anchor_status": "original",
+                  "author": "You",
+                  "context_after": [],
+                  "context_before": [],
+                  "file": ".github/workflows/ci.yml",
+                  "hunk_header": "@@ -4,7 +4,7 @@ on:",
+                  "hunk_index": 0,
+                  "id": "n-seed",
+                  "line_content": "    branches: [main, master, staging, 'release/**', 'release-*']",
+                  "line_start": 7,
+                  "old_line_start": null,
+                  "relocated_at_hash": "",
+                  "resolved": false,
+                  "side": "RIGHT",
+                  "text": "Mirror this in release.yml",
+                  "timestamp": "2026-01-01T00:00:00Z"
+                }
+              ],
+              "number": 575,
+              "owner": "VilfredSikker",
+              "questions": [
+                {
+                  "anchor_status": "original",
+                  "author": "You",
+                  "context_after": [],
+                  "context_before": [],
+                  "file": ".github/workflows/ci.yml",
+                  "hunk_header": "@@ -4,7 +4,7 @@ on:",
+                  "hunk_index": 0,
+                  "id": "q-seed",
+                  "line_content": "    branches: [main, master, staging, 'release/**', 'release-*']",
+                  "line_start": 7,
+                  "old_line_start": null,
+                  "relocated_at_hash": "",
+                  "resolved": false,
+                  "side": "RIGHT",
+                  "text": "Why staging?",
+                  "timestamp": "2026-01-01T00:00:00Z"
+                }
+              ],
+              "repo": "easy-review"
+            },
+            "number": 575,
+            "project": null,
+            "repo": "VilfredSikker/easy-review"
+          },
+          "type": "text"
+        }
+      ],
+      "isError": false,
+      "resultType": "complete"
+    },
+    "tool": "pr_feedback_get"
+  },
+  {
+    "arguments": {
+      "id": "q-seed",
+      "ref": "VilfredSikker/easy-review#575",
+      "text": "Staging gets release candidates.",
+      "type": "question"
+    },
+    "reply": {
+      "content": [
+        {
+          "json": {
+            "bucket": "pr",
+            "bucket_path": "<root>/storage/repos/vilfredsikker-easy-review-42b93a89/prs/pr-575",
+            "number": 575,
+            "project": null,
+            "reply": {
+              "id": "q-<millis>-0",
+              "kind": "question",
+              "parent_id": "q-seed"
+            },
+            "repo": "VilfredSikker/easy-review"
+          },
+          "type": "text"
+        }
+      ],
+      "isError": false,
+      "resultType": "complete"
+    },
+    "tool": "pr_feedback_reply"
+  },
+  {
+    "arguments": {
+      "author": "reviewer",
+      "id": "n-seed",
+      "ref": "VilfredSikker/easy-review#575",
+      "text": "Done.",
+      "type": "note"
+    },
+    "reply": {
+      "content": [
+        {
+          "json": {
+            "bucket": "pr",
+            "bucket_path": "<root>/storage/repos/vilfredsikker-easy-review-42b93a89/prs/pr-575",
+            "number": 575,
+            "project": null,
+            "reply": {
+              "id": "n-<millis>-1",
+              "kind": "note",
+              "parent_id": "n-seed"
+            },
+            "repo": "VilfredSikker/easy-review"
+          },
+          "type": "text"
+        }
+      ],
+      "isError": false,
+      "resultType": "complete"
+    },
+    "tool": "pr_feedback_reply"
+  },
+  {
+    "arguments": {
+      "id": "f-seed",
+      "ref": "VilfredSikker/easy-review#575",
+      "text": "Intended: staging is PR-only.",
+      "type": "finding"
+    },
+    "reply": {
+      "content": [
+        {
+          "json": {
+            "bucket": "pr",
+            "bucket_path": "<root>/storage/repos/vilfredsikker-easy-review-42b93a89/prs/pr-575",
+            "number": 575,
+            "project": null,
+            "reply": {
+              "id": "fr-<millis>",
+              "kind": "finding",
+              "parent_id": "f-seed"
+            },
+            "repo": "VilfredSikker/easy-review"
+          },
+          "type": "text"
+        }
+      ],
+      "isError": false,
+      "resultType": "complete"
+    },
+    "tool": "pr_feedback_reply"
+  },
+  {
+    "arguments": {
+      "id": "q-seed",
+      "ref": "VilfredSikker/easy-review#575",
+      "type": "question"
+    },
+    "reply": {
+      "content": [
+        {
+          "json": {
+            "bucket": "pr",
+            "bucket_path": "<root>/storage/repos/vilfredsikker-easy-review-42b93a89/prs/pr-575",
+            "number": 575,
+            "project": null,
+            "repo": "VilfredSikker/easy-review",
+            "resolved": {
+              "already_resolved": false,
+              "id": "q-seed",
+              "kind": "question"
+            }
+          },
+          "type": "text"
+        }
+      ],
+      "isError": false,
+      "resultType": "complete"
+    },
+    "tool": "pr_feedback_resolve"
+  },
+  {
+    "arguments": {
+      "id": "q-seed",
+      "ref": "VilfredSikker/easy-review#575",
+      "type": "question"
+    },
+    "reply": {
+      "content": [
+        {
+          "json": {
+            "bucket": "pr",
+            "bucket_path": "<root>/storage/repos/vilfredsikker-easy-review-42b93a89/prs/pr-575",
+            "number": 575,
+            "project": null,
+            "repo": "VilfredSikker/easy-review",
+            "resolved": {
+              "already_resolved": true,
+              "id": "q-seed",
+              "kind": "question"
+            }
+          },
+          "type": "text"
+        }
+      ],
+      "isError": false,
+      "resultType": "complete"
+    },
+    "tool": "pr_feedback_resolve"
+  },
+  {
+    "arguments": {
+      "id": "n-seed",
+      "ref": "VilfredSikker/easy-review#575",
+      "type": "note"
+    },
+    "reply": {
+      "content": [
+        {
+          "json": {
+            "bucket": "pr",
+            "bucket_path": "<root>/storage/repos/vilfredsikker-easy-review-42b93a89/prs/pr-575",
+            "number": 575,
+            "project": null,
+            "repo": "VilfredSikker/easy-review",
+            "resolved": {
+              "already_resolved": false,
+              "id": "n-seed",
+              "kind": "note"
+            }
+          },
+          "type": "text"
+        }
+      ],
+      "isError": false,
+      "resultType": "complete"
+    },
+    "tool": "pr_feedback_resolve"
+  },
+  {
+    "arguments": {
+      "id": "f-seed",
+      "ref": "VilfredSikker/easy-review#575",
+      "type": "finding"
+    },
+    "reply": {
+      "error": {
+        "code": -32602,
+        "message": "findings cannot be resolved over MCP; reply with pr_feedback_reply and leave dismissal to the reviewer"
+      }
+    },
+    "tool": "pr_feedback_resolve"
+  },
+  {
+    "arguments": {
+      "ref": "VilfredSikker/easy-review#575"
+    },
+    "reply": {
+      "content": [
+        {
+          "json": {
+            "bucket": "pr",
+            "bucket_path": "<root>/storage/repos/vilfredsikker-easy-review-42b93a89/prs/pr-575",
+            "feedback": {
+              "bucket_path": "<root>/storage/repos/vilfredsikker-easy-review-42b93a89/prs/pr-575",
+              "diff_hash": "c24f0c10ea8cc3c6ca4fd98072123cb7b69c56552e9da03ff0fcb18929bb5094",
+              "findings": [
+                {
+                  "category": "correctness",
+                  "confidence": "tentative",
+                  "description": "Only PRs from staging run it.",
+                  "file": ".github/workflows/ci.yml",
+                  "hunk_index": 2,
+                  "id": "f-seed",
+                  "line_end": null,
+                  "line_start": 173,
+                  "outside_diff": false,
+                  "resolved": false,
+                  "responses": [
+                    {
+                      "id": "fr-<millis>",
+                      "in_reply_to": "",
+                      "new_findings": [],
+                      "text": "Intended: staging is PR-only.",
+                      "timestamp": "<clock>"
+                    }
+                  ],
+                  "severity": "low",
+                  "source": "review",
+                  "suggestion": "",
+                  "title": "crap job skips staging pushes"
+                }
+              ],
+              "notes": [],
+              "number": 575,
+              "owner": "VilfredSikker",
+              "questions": [],
+              "repo": "easy-review"
+            },
+            "number": 575,
+            "project": null,
+            "repo": "VilfredSikker/easy-review"
+          },
+          "type": "text"
+        }
+      ],
+      "isError": false,
+      "resultType": "complete"
+    },
+    "tool": "pr_feedback_get"
+  },
+  {
+    "arguments": {
+      "include_resolved": true,
+      "ref": "VilfredSikker/easy-review#575"
+    },
+    "reply": {
+      "content": [
+        {
+          "json": {
+            "bucket": "pr",
+            "bucket_path": "<root>/storage/repos/vilfredsikker-easy-review-42b93a89/prs/pr-575",
+            "feedback": {
+              "bucket_path": "<root>/storage/repos/vilfredsikker-easy-review-42b93a89/prs/pr-575",
+              "diff_hash": "c24f0c10ea8cc3c6ca4fd98072123cb7b69c56552e9da03ff0fcb18929bb5094",
+              "findings": [
+                {
+                  "category": "correctness",
+                  "confidence": "tentative",
+                  "description": "Only PRs from staging run it.",
+                  "file": ".github/workflows/ci.yml",
+                  "hunk_index": 2,
+                  "id": "f-seed",
+                  "line_end": null,
+                  "line_start": 173,
+                  "outside_diff": false,
+                  "resolved": false,
+                  "responses": [
+                    {
+                      "id": "fr-<millis>",
+                      "in_reply_to": "",
+                      "new_findings": [],
+                      "text": "Intended: staging is PR-only.",
+                      "timestamp": "<clock>"
+                    }
+                  ],
+                  "severity": "low",
+                  "source": "review",
+                  "suggestion": "",
+                  "title": "crap job skips staging pushes"
+                }
+              ],
+              "notes": [
+                {
+                  "anchor_status": "original",
+                  "author": "You",
+                  "context_after": [],
+                  "context_before": [],
+                  "file": ".github/workflows/ci.yml",
+                  "hunk_header": "@@ -4,7 +4,7 @@ on:",
+                  "hunk_index": 0,
+                  "id": "n-seed",
+                  "line_content": "    branches: [main, master, staging, 'release/**', 'release-*']",
+                  "line_start": 7,
+                  "old_line_start": null,
+                  "relocated_at_hash": "",
+                  "resolved": true,
+                  "side": "RIGHT",
+                  "text": "Mirror this in release.yml",
+                  "timestamp": "2026-01-01T00:00:00Z"
+                },
+                {
+                  "anchor_status": "original",
+                  "author": "reviewer",
+                  "context_after": [],
+                  "context_before": [],
+                  "file": ".github/workflows/ci.yml",
+                  "hunk_header": "@@ -4,7 +4,7 @@ on:",
+                  "hunk_index": 0,
+                  "id": "n-<millis>-1",
+                  "in_reply_to": "n-seed",
+                  "line_content": "    branches: [main, master, staging, 'release/**', 'release-*']",
+                  "line_start": 7,
+                  "old_line_start": null,
+                  "relocated_at_hash": "",
+                  "resolved": false,
+                  "side": "RIGHT",
+                  "text": "Done.",
+                  "timestamp": "<clock>"
+                }
+              ],
+              "number": 575,
+              "owner": "VilfredSikker",
+              "questions": [
+                {
+                  "anchor_status": "original",
+                  "author": "You",
+                  "context_after": [],
+                  "context_before": [],
+                  "file": ".github/workflows/ci.yml",
+                  "hunk_header": "@@ -4,7 +4,7 @@ on:",
+                  "hunk_index": 0,
+                  "id": "q-seed",
+                  "line_content": "    branches: [main, master, staging, 'release/**', 'release-*']",
+                  "line_start": 7,
+                  "old_line_start": null,
+                  "relocated_at_hash": "",
+                  "resolved": true,
+                  "side": "RIGHT",
+                  "text": "Why staging?",
+                  "timestamp": "2026-01-01T00:00:00Z"
+                },
+                {
+                  "anchor_status": "original",
+                  "author": "agent",
+                  "context_after": [],
+                  "context_before": [],
+                  "file": ".github/workflows/ci.yml",
+                  "hunk_header": "@@ -4,7 +4,7 @@ on:",
+                  "hunk_index": 0,
+                  "id": "q-<millis>-0",
+                  "in_reply_to": "q-seed",
+                  "line_content": "    branches: [main, master, staging, 'release/**', 'release-*']",
+                  "line_start": 7,
+                  "old_line_start": null,
+                  "relocated_at_hash": "",
+                  "resolved": false,
+                  "side": "RIGHT",
+                  "text": "Staging gets release candidates.",
+                  "timestamp": "<clock>"
+                }
+              ],
+              "repo": "easy-review"
+            },
+            "number": 575,
+            "project": null,
+            "repo": "VilfredSikker/easy-review"
+          },
+          "type": "text"
+        }
+      ],
+      "isError": false,
+      "resultType": "complete"
+    },
+    "tool": "pr_feedback_get"
+  }
+]
