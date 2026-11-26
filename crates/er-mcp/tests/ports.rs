@@ -8,16 +8,20 @@ use std::path::Path;
 /// The source of `path` up to its inline test module.
 fn code(path: &Path) -> String {
     let text = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
-    match text.find("#[cfg(test)]") {
-        Some(at) => text[..at].to_string(),
-        None => text,
-    }
+    text.split("#[cfg(test)]")
+        .next()
+        .unwrap_or_default()
+        .to_string()
 }
 
 fn rust_files(dir: &Path) -> Vec<std::path::PathBuf> {
     let mut files: Vec<_> = std::fs::read_dir(dir)
         .unwrap_or_else(|e| panic!("{}: {e}", dir.display()))
-        .map(|entry| entry.expect("dir entry").path())
+        .map(|entry| {
+            entry
+                .unwrap_or_else(|e| panic!("{}: {e}", dir.display()))
+                .path()
+        })
         .filter(|path| path.extension().is_some_and(|ext| ext == "rs"))
         .collect();
     files.sort();

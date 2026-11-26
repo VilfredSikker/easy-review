@@ -18,10 +18,10 @@ fn read(path: &Path) -> String {
 /// The code of a module, up to its inline test module.
 fn code(path: &Path) -> String {
     let text = read(path);
-    match text.find("#[cfg(test)]") {
-        Some(at) => text[..at].to_string(),
-        None => text,
-    }
+    text.split("#[cfg(test)]")
+        .next()
+        .unwrap_or_default()
+        .to_string()
 }
 
 fn crates() -> std::path::PathBuf {
@@ -53,7 +53,9 @@ fn every_headless_function_is_one_mcp_calls_or_one_it_needs() {
         .join("\n");
     for module in &headless {
         for (at, _) in module.match_indices("pub fn ") {
-            let name: String = module[at + 7..]
+            let name: String = module
+                .get(at + 7..)
+                .unwrap_or_default()
                 .chars()
                 .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
                 .collect();

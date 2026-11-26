@@ -1252,7 +1252,7 @@ impl ErMcp {
         match args.action.to_ascii_lowercase().as_str() {
             "pin" => self.pr_saved_pin(args).await,
             "unpin" => self.pr_saved_unpin(args).await,
-            "list" => self.pr_saved_list(args).await,
+            "list" => Self::pr_saved_list(args).await,
             _ => Err(tool_err("action must be pin, unpin, or list")),
         }
     }
@@ -1322,7 +1322,7 @@ impl ErMcp {
         }))
     }
 
-    async fn pr_saved_list(&self, args: PrSavedArgs) -> Result<CallToolResult, McpError> {
+    async fn pr_saved_list(args: PrSavedArgs) -> Result<CallToolResult, McpError> {
         let source = args.source.as_deref().unwrap_or("all").to_ascii_lowercase();
         let (repo, project_id) = query_repo_args(&args.target);
         let (owner, name, project_name) =
