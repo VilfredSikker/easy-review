@@ -1,0 +1,895 @@
+{
+  "cacheScope": "private",
+  "resultType": "complete",
+  "tools": [
+    {
+      "description": "List, prepare, or upload Mermaid diagrams for a PR (kind: mental-model|subsystems|flows|custom). action=list (default) reads diagrams/*.json; action=prepare fetches diff + prompt for one kind; action=upload writes the diagram JSON.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "action": {
+            "default": null,
+            "description": "`list` (default) fetches existing diagrams; `prepare` fetches diff + prompt for\none kind; `upload` writes the diagram JSON.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "files": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "default": null,
+            "description": "Required for `upload`: exactly one entry, `{ \"<output_file>\": \"<diagram JSON>\" }`\nusing the filename from `action=prepare`'s `kit.output_file`.",
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "kind": {
+            "default": null,
+            "description": "Required for `prepare`/`upload`: `mental-model` | `subsystems` | `flows` | `custom`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "number": {
+            "default": null,
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "pr_url": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "project_id": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "prompt": {
+            "default": null,
+            "description": "For `kind=custom`: the diagram instructions (required on `prepare`; pinned onto\nthe sidecar on `upload`, overriding whatever `prompt` the uploaded JSON carries).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "ref": {
+            "default": null,
+            "description": "Universal ref: PR URL, worktree path, `owner/repo`, `owner/repo#N`, branch name, or bare PR number.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "refresh_diff": {
+            "default": null,
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "repo": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "name": "pr_diagram"
+    },
+    {
+      "description": "Read review questions, notes, and AI findings for a PR. bucket=local reads the current checked-out branch's local branch bucket.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "bucket": {
+            "default": null,
+            "description": "`pr` (default) or `local` for the current checked-out branch's branch bucket.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "include_resolved": {
+            "default": null,
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "number": {
+            "default": null,
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "pr_url": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "project_id": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "ref": {
+            "default": null,
+            "description": "Universal ref: PR URL, worktree path, `owner/repo`, `owner/repo#N`, branch name, or bare PR number.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "repo": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "name": "pr_feedback_get"
+    },
+    {
+      "description": "Reply to a question, note, or AI finding on a PR. bucket=local replies in the current checked-out branch's local branch bucket.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "author": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "bucket": {
+            "default": null,
+            "description": "`pr` (default) or `local` for the current checked-out branch's branch bucket.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "number": {
+            "default": null,
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "pr_url": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "project_id": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "ref": {
+            "default": null,
+            "description": "Universal ref: PR URL, worktree path, `owner/repo`, `owner/repo#N`, branch name, or bare PR number.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "repo": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "text": {
+            "type": "string"
+          },
+          "type": {
+            "description": "`question` | `note` | `finding`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "id",
+          "text"
+        ],
+        "type": "object"
+      },
+      "name": "pr_feedback_reply"
+    },
+    {
+      "description": "Resolve a question or note thread once it is answered or implemented. Marks it resolved (hidden from pr_feedback_get by default); nothing is deleted. Findings are not resolvable here. bucket=local resolves in the current checked-out branch's local branch bucket.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "bucket": {
+            "default": null,
+            "description": "`pr` (default) or `local` for the current checked-out branch's branch bucket.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "description": "Top-level thread id from `pr_feedback_get`, not a reply id.",
+            "type": "string"
+          },
+          "number": {
+            "default": null,
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "pr_url": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "project_id": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "ref": {
+            "default": null,
+            "description": "Universal ref: PR URL, worktree path, `owner/repo`, `owner/repo#N`, branch name, or bare PR number.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "repo": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "type": {
+            "description": "`question` | `note`. Findings are not resolvable here.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "id"
+        ],
+        "type": "object"
+      },
+      "name": "pr_feedback_resolve"
+    },
+    {
+      "description": "Create a guided tour (tour.json) for a PR. action=prepare fetches diff + tour schema; action=upload writes tour.json.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "action": {
+            "default": null,
+            "description": "`prepare` (default) fetches diff + tour spec; `upload` writes tour.json.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "files": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "default": null,
+            "description": "Required for `upload`: `{ \"tour.json\": \"...\" }`.",
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "number": {
+            "default": null,
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "pr_url": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "project_id": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "ref": {
+            "default": null,
+            "description": "Universal ref: PR URL, worktree path, `owner/repo`, `owner/repo#N`, branch name, or bare PR number.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "refresh_diff": {
+            "default": null,
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "repo": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "name": "pr_guide"
+    },
+    {
+      "description": "Prepare a PR review kit (diff-tmp + diff_hash + artifact_specs). You review; then call pr_upload.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "kinds": {
+            "default": null,
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "number": {
+            "default": null,
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "pr_url": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "project_id": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "ref": {
+            "default": null,
+            "description": "Universal ref: PR URL, worktree path, `owner/repo`, `owner/repo#N`, branch name, or bare PR number.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "repo": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "name": "pr_prepare"
+    },
+    {
+      "description": "Resolve a PR ref (URL, worktree path, owner/repo, owner/repo#N, branch, or number) to owner/repo/number + bucket_path.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "number": {
+            "default": null,
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "pr_url": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "project_id": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "ref": {
+            "default": null,
+            "description": "Universal ref: PR URL, worktree path, `owner/repo`, `owner/repo#N`, branch name, or bare PR number.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "repo": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "name": "pr_resolve"
+    },
+    {
+      "description": "Pin, unpin, or list saved PRs and uploaded artifacts.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "action": {
+            "description": "`pin` | `unpin` | `list`.",
+            "type": "string"
+          },
+          "kinds": {
+            "default": null,
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "limit": {
+            "default": null,
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "number": {
+            "default": null,
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "pr_url": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "project_id": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "ref": {
+            "default": null,
+            "description": "Universal ref: PR URL, worktree path, `owner/repo`, `owner/repo#N`, branch name, or bare PR number.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "repo": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source": {
+            "default": null,
+            "description": "For `list`: `pinned` | `artifacts` | `all` (default `all`).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "title": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "type": "object"
+      },
+      "name": "pr_saved"
+    },
+    {
+      "description": "PR diff stats (production vs test/docs). Single PR via ref, or batch via numbers=[…]. Optional hotspots.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "hotspot_limit": {
+            "default": null,
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "include_files": {
+            "default": null,
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "include_hotspots": {
+            "default": null,
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "number": {
+            "default": null,
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "numbers": {
+            "default": null,
+            "description": "Compare multiple PR numbers in one repo (max 12). When set, `target.number` is ignored.",
+            "items": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "pr_url": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "project_id": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "ref": {
+            "default": null,
+            "description": "Universal ref: PR URL, worktree path, `owner/repo`, `owner/repo#N`, branch name, or bare PR number.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "repo": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "name": "pr_stats"
+    },
+    {
+      "description": "Summarize managed triage/review/tour sidecars for a PR.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "number": {
+            "default": null,
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "pr_url": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "project_id": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "ref": {
+            "default": null,
+            "description": "Universal ref: PR URL, worktree path, `owner/repo`, `owner/repo#N`, branch name, or bare PR number.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "repo": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "name": "pr_summarize"
+    },
+    {
+      "description": "Upload triage or review sidecars into shared Easy Review storage. Tours use pr_guide.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "files": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "number": {
+            "default": null,
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "pr_url": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "project_id": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "ref": {
+            "default": null,
+            "description": "Universal ref: PR URL, worktree path, `owner/repo`, `owner/repo#N`, branch name, or bare PR number.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "refresh_diff": {
+            "default": null,
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "repo": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "kind",
+          "files"
+        ],
+        "type": "object"
+      },
+      "name": "pr_upload"
+    },
+    {
+      "description": "List Easy Review projects from the app store.",
+      "inputSchema": {
+        "properties": {},
+        "type": "object"
+      },
+      "name": "projects_list"
+    },
+    {
+      "description": "Query open PRs: sort (priority|smallest|updated), filter (review_debt|stale|blocked|failing_ci|ready|addressed|…), optional cross_repo.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "cross_repo": {
+            "default": null,
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "filter": {
+            "default": null,
+            "description": "`review_debt` | `stale` | `blocked` | `failing_ci` | `ready` | `outdated` |\n`waiting_on_author` | `addressed` | `draft` | `approved` | `merge_ready`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "include_drafts": {
+            "default": null,
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "limit": {
+            "default": null,
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "number": {
+            "default": null,
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "pr_url": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "production_lines": {
+            "default": null,
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "project_id": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "ref": {
+            "default": null,
+            "description": "Universal ref: PR URL, worktree path, `owner/repo`, `owner/repo#N`, branch name, or bare PR number.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "repo": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "scan_limit": {
+            "default": null,
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "sort": {
+            "default": null,
+            "description": "`priority` | `smallest` | `updated` (default `priority`).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "stale_days": {
+            "default": null,
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "name": "prs_query"
+    }
+  ],
+  "ttlMs": 0
+}

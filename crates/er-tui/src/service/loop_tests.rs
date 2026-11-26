@@ -252,8 +252,9 @@ fn a_restored_draft_keeps_its_client_id() {
     });
 }
 
-/// Holds `diff_raw` and `current_branch` while closed, so a tab load's
-/// effect stays in flight until the test opens it.
+/// Holds `diff_raw`, `current_branch` and `gitignored_paths` while
+/// closed, so a tab load's effect, or a watched scan, stays in flight until
+/// the test opens it.
 #[derive(Default)]
 pub(super) struct Gate {
     closed: Mutex<bool>,
@@ -308,6 +309,11 @@ impl Git for GatedGit {
         CliGit.current_branch(repo_root)
     }
 
+    fn gitignored_paths(&self, repo_root: &str, paths: &[String]) -> HashSet<String> {
+        self.0.pass();
+        CliGit.gitignored_paths(repo_root, paths)
+    }
+
     pass_through! {
         repo_root_cwd() -> Result<String, GitError>;
         repo_root_in(dir: &str) -> Result<String, GitError>;
@@ -335,7 +341,6 @@ impl Git for GatedGit {
         blob_oid(root: &str, spec: &str) -> Result<String, GitError>;
         read_blob(root: &str, spec: &str, max_bytes: usize) -> Result<Vec<u8>, GitError>;
         paths_present_at(root: &str, rev: &str, paths: &[String]) -> Result<Vec<String>, GitError>;
-        gitignored_paths(repo_root: &str, paths: &[String]) -> HashSet<String>;
         diff_watched_file_snapshot(repo_root: &str, rel_path: &str, snapshots_dir: &str) -> Result<Option<String>, GitError>;
         blame_range(request: &BlameRequest<'_>) -> Result<LineAttribution, GitError>;
         merge_base(repo_root: &str, a: &str, b: &str) -> Result<String, GitError>;
@@ -447,6 +452,39 @@ fn a_refusal_holds_until_it_has_been_drawn() {
         );
         shell.tick(Instant::now() + Duration::from_secs(60));
         assert_eq!(shown(&shell), "tour completed (feature)");
+    });
+}
+
+/// A long notice that waits behind a held refusal keeps its long dwell, and
+/// the refusal keeps its own short one.
+#[test]
+fn a_long_notice_behind_a_refusal_keeps_its_own_dwell() {
+    let repo = fixture(1);
+    let storage = storage();
+    er_engine::storage::with_process_test_storage_root(storage.path(), || {
+        let mut shell = shell(&args(vec![path_of(&repo)]), storage.path());
+        settle(&mut shell, loaded);
+        let shown = |shell: &Shell| shell.view().notification.clone().unwrap_or_default();
+        shell.land_failed_reply("summary failed (feature): no agent".into());
+        (shell.host().task_hooks().notify)("Risk rules committed".into(), true);
+        shell.tick(Instant::now());
+        shell_frame(&mut shell, &mut Highlighter::new());
+        // Past the short dwell, within the long one.
+        shell.tick(Instant::now() + Duration::from_secs(4));
+        assert_eq!(
+            shown(&shell),
+            "Risk rules committed",
+            "the refusal took the long dwell"
+        );
+        let at = Instant::now();
+        shell.tick(at + Duration::from_secs(4));
+        assert_eq!(
+            shown(&shell),
+            "Risk rules committed",
+            "the notice lost its long dwell"
+        );
+        shell.tick(at + Duration::from_secs(6));
+        assert_eq!(shown(&shell), "");
     });
 }
 

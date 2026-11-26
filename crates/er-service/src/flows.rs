@@ -89,7 +89,13 @@ impl FlowRunner {
             tasks: HashMap::new(),
             finished: Arc::new(Mutex::new(HashMap::new())),
             panel_runs_seen: HashSet::new(),
+            task_host: deps.tasks().cloned().unwrap_or_default(),
         };
+        // A flow whose release a host task held back advances when that
+        // task moves; the watcher goes when the actor does.
+        let wake = tx.clone();
+        host.task_host
+            .watch(move |_| wake.send(ActorMsg::TasksChanged).is_ok());
         Self {
             shared: Arc::new(Mutex::new(Flows {
                 flows: ReviewFlows::default(),
@@ -289,6 +295,8 @@ struct ServiceFlowHost {
     /// Filled by each stage's worker when its job and commit are done.
     finished: Arc<Mutex<HashMap<String, StageCompletion>>>,
     panel_runs_seen: HashSet<(String, String)>,
+    /// The app's task host, whose tasks write into the same buckets.
+    task_host: crate::tasks::TaskHost,
 }
 
 impl ServiceFlowHost {
@@ -316,11 +324,13 @@ impl ServiceFlowHost {
         self.tasks.contains_key(id) && !self.finished().contains_key(id)
     }
 
-    /// A stage of this host still writes into the bucket.
+    /// A stage of this host, or a task on the app's task host, still writes
+    /// into the bucket (#764).
     fn has_producers(&self, er_dir: &str) -> bool {
         self.tasks
             .iter()
             .any(|(id, task)| task.target.er_dir == er_dir && self.is_running(id))
+            || self.task_host.writes_into(er_dir)
     }
 
     fn lease_is_valid(&self, lease: &ReviewFlowLease) -> bool {
@@ -419,9 +429,6 @@ impl ReviewFlowHost for ServiceFlowHost {
 
     fn acquire_review_flow_lease(&mut self, er_dir: &str) -> Result<ReviewFlowLease> {
         arena::check_bucket_admission(er_dir)?;
-        if self.has_producers(er_dir) {
-            bail!("Review work is already queued or running in this review bucket");
-        }
         let sequence = self.next_lease;
         self.next_lease = sequence.wrapping_add(1).max(1);
         let scope = er_store::Scope::dir(er_dir)?;
@@ -432,6 +439,12 @@ impl ReviewFlowHost for ServiceFlowHost {
                 &format!("flow-{sequence}"),
             )
             .with_context(|| format!("take the review flow lease for {er_dir}"))?;
+        // Read after the lease is held: a task queued from here on is refused
+        // by the task host's own admission, so none slips in unseen. Lock
+        // order: this host's lock, the lease, then the task host's lock.
+        if self.has_producers(er_dir) {
+            bail!("Review work is already queued or running in this review bucket");
+        }
         let lease = ReviewFlowLease::new(er_dir.to_owned(), sequence, guard.holder().clone());
         self.leases.insert(er_dir.to_owned(), guard);
         Ok(lease)

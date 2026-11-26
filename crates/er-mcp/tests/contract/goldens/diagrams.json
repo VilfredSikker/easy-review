@@ -1,0 +1,144 @@
+[
+  {
+    "arguments": {
+      "ref": "VilfredSikker/easy-review#575"
+    },
+    "reply": {
+      "content": [
+        {
+          "json": {
+            "bucket_path": "<root>/storage/repos/vilfredsikker-easy-review-42b93a89/prs/pr-575",
+            "diagrams": [],
+            "er_dir": "<root>/storage/repos/vilfredsikker-easy-review-42b93a89/prs/pr-575",
+            "number": 575,
+            "project": null,
+            "repo": "VilfredSikker/easy-review"
+          },
+          "type": "text"
+        }
+      ],
+      "isError": false,
+      "resultType": "complete"
+    },
+    "tool": "pr_diagram"
+  },
+  {
+    "arguments": {
+      "action": "prepare",
+      "kind": "flows",
+      "ref": "VilfredSikker/easy-review#575"
+    },
+    "reply": {
+      "content": [
+        {
+          "json": {
+            "bucket_path": "<root>/storage/repos/vilfredsikker-easy-review-42b93a89/prs/pr-575",
+            "kit": {
+              "diff_hash": "c24f0c10ea8cc3c6ca4fd98072123cb7b69c56552e9da03ff0fcb18929bb5094",
+              "diff_tmp_path": "<root>/storage/repos/vilfredsikker-easy-review-42b93a89/prs/pr-575/diff-tmp",
+              "er_dir": "<root>/storage/repos/vilfredsikker-easy-review-42b93a89/prs/pr-575",
+              "instructions": "Read the prepared diff at diff_tmp_path (do not re-fetch). Embed diff_hash=c24f0c10ea8cc3c6ca4fd98072123cb7b69c56552e9da03ff0fcb18929bb5094 in the diagram JSON, then call pr_diagram with action=upload, the same kind, and files={\"flows.json\": \"<diagram JSON>\"}.",
+              "kind": "flows",
+              "output_file": "flows.json",
+              "owner": "VilfredSikker",
+              "pr": 575,
+              "prompt": "You are preparing a **Mermaid diagram** of a code diff for a reviewer. A diff for scope `PR diff` is already captured at `'<root>/storage/repos/vilfredsikker-easy-review-42b93a89/prs/pr-575'/diff-tmp`.\n\n## Steps\n1. The diff hash is `c24f0c10ea8cc3c6ca4fd98072123cb7b69c56552e9da03ff0fcb18929bb5094` — SHA-256 of `'<root>/storage/repos/vilfredsikker-easy-review-42b93a89/prs/pr-575'/diff-tmp`, computed by the harness. Record it as `diff_hash` in the output (do **not** run `sha256sum`).\n2. Read `'<root>/storage/repos/vilfredsikker-easy-review-42b93a89/prs/pr-575'/diff-tmp` (the full diff) into context. You may read referenced source files under the repo to understand surrounding structure, but the diagram is about **the change**.\n3. Build a **flow diagram** of this diff: the runtime flow(s) through the changed code for the main scenario the diff implements (e.g. a request path, a user action, a data pipeline).\n\n- Prefer `sequenceDiagram` when the flow crosses component boundaries (actors = modules/functions); use `flowchart TD` for branching logic.\n- Show the flow *after* the change; only include pre-change steps when they are essential context.\n- One diagram for the primary scenario; mention a fork/alt path inside the same diagram only if it is central.\n4. Call `pr_diagram` with `action=\"upload\"`, the same `kind`, and `files` set to a single entry keyed by the output filename from `action=\"prepare\"` (`kit.output_file`), with this exact JSON shape as the value:\n\n```json\n{\n  \"version\": 1,\n  \"diff_hash\": \"<sha256 from step 1>\",\n  \"created_at\": \"<ISO 8601>\",\n  \"kind\": \"flows\",\n  \"title\": \"<short diagram title>\",\n  \"prompt\": \"<the custom instructions, or empty string for presets>\",\n  \"mermaid\": \"<bare mermaid source — no ``` fences>\"\n}\n```\n\n## Mermaid rules (the renderer rejects invalid source)\n- First line must be the diagram type (`flowchart TD`, `sequenceDiagram`, …). No title/frontmatter comment before it.\n- Quote any node label containing special characters: `A[\"calls foo()\"]`, not `A[calls foo()]`.\n- Keep ids alphanumeric (`parser`, `store2`) — put display text in the quoted label.\n- No `click` handlers, links, or raw HTML in labels.\n- Aim for readability in a ~350px-wide panel: ≤ 15 nodes for flowcharts, ≤ 8 participants for sequence diagrams. Omit detail rather than shrink it.",
+              "repo": "easy-review"
+            },
+            "number": 575,
+            "project": null,
+            "repo": "VilfredSikker/easy-review"
+          },
+          "type": "text"
+        }
+      ],
+      "isError": false,
+      "resultType": "complete"
+    },
+    "tool": "pr_diagram"
+  },
+  {
+    "arguments": {
+      "action": "upload",
+      "files": {
+        "flows.json": "{\"diff_hash\":\"c24f0c10ea8cc3c6ca4fd98072123cb7b69c56552e9da03ff0fcb18929bb5094\",\"kind\":\"flows\",\"mermaid\":\"flowchart TD\\n  PR-->CI\",\"prompt\":\"\",\"title\":\"CI triggers\",\"version\":1}"
+      },
+      "kind": "flows",
+      "ref": "VilfredSikker/easy-review#575"
+    },
+    "reply": {
+      "content": [
+        {
+          "json": {
+            "bucket_path": "<root>/storage/repos/vilfredsikker-easy-review-42b93a89/prs/pr-575",
+            "number": 575,
+            "project": null,
+            "repo": "VilfredSikker/easy-review",
+            "uploaded": {
+              "diff_hash": "c24f0c10ea8cc3c6ca4fd98072123cb7b69c56552e9da03ff0fcb18929bb5094",
+              "er_dir": "<root>/storage/repos/vilfredsikker-easy-review-42b93a89/prs/pr-575",
+              "id": "flows",
+              "kind": "flows"
+            }
+          },
+          "type": "text"
+        }
+      ],
+      "isError": false,
+      "resultType": "complete"
+    },
+    "tool": "pr_diagram"
+  },
+  {
+    "arguments": {
+      "action": "upload",
+      "files": {
+        "mental-model.json": "{\"diff_hash\":\"c24f0c10ea8cc3c6ca4fd98072123cb7b69c56552e9da03ff0fcb18929bb5094\",\"kind\":\"flows\",\"mermaid\":\"flowchart TD\\n  PR-->CI\",\"prompt\":\"\",\"title\":\"CI triggers\",\"version\":1}"
+      },
+      "kind": "flows",
+      "ref": "VilfredSikker/easy-review#575"
+    },
+    "reply": {
+      "error": {
+        "code": -32602,
+        "message": "flows diagram must upload as 'flows.json' (got 'mental-model.json')"
+      }
+    },
+    "tool": "pr_diagram"
+  },
+  {
+    "arguments": {
+      "action": "list",
+      "ref": "VilfredSikker/easy-review#575"
+    },
+    "reply": {
+      "content": [
+        {
+          "json": {
+            "bucket_path": "<root>/storage/repos/vilfredsikker-easy-review-42b93a89/prs/pr-575",
+            "diagrams": [
+              {
+                "created_at": "<clock>",
+                "diff_hash": "c24f0c10ea8cc3c6ca4fd98072123cb7b69c56552e9da03ff0fcb18929bb5094",
+                "id": "flows",
+                "kind": "flows",
+                "mermaid": "flowchart TD\n  PR-->CI",
+                "prompt": "",
+                "title": "CI triggers",
+                "version": 1
+              }
+            ],
+            "er_dir": "<root>/storage/repos/vilfredsikker-easy-review-42b93a89/prs/pr-575",
+            "number": 575,
+            "project": null,
+            "repo": "VilfredSikker/easy-review"
+          },
+          "type": "text"
+        }
+      ],
+      "isError": false,
+      "resultType": "complete"
+    },
+    "tool": "pr_diagram"
+  }
+]

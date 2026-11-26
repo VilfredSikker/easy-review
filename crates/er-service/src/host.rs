@@ -45,7 +45,7 @@ pub struct ServiceHost {
     settings: OnceLock<SettingsHandle>,
     settings_path: PathBuf,
     events: Option<Sender<Event>>,
-    tasks: OnceLock<TaskHost>,
+    tasks: TaskHost,
     worker: OnceLock<Worker>,
     /// The sender the task host's events go to, read at each send, so a host
     /// whose tasks started before `with_events` still sends them.
@@ -61,19 +61,29 @@ impl ServiceHost {
 
     /// The same, over deps the caller built, such as a test's job sink. A
     /// registry the deps already carry is replaced by the host's own, which
-    /// never persists.
+    /// never persists. A task host the deps carry is kept, and its row
+    /// changes reach this host's events too.
     pub fn with_deps(deps: WorkspaceDeps, settings_path: PathBuf) -> Self {
         let registry = Arc::new(AppRegistry::in_memory(deps.ports().clone()));
+        let task_events: Arc<Mutex<Option<Sender<Event>>>> = Arc::default();
+        let tasks = deps.tasks().cloned().unwrap_or_default();
+        let events = Arc::clone(&task_events);
+        tasks.watch(move |revision| {
+            send(&events, Event::TasksChanged { revision });
+            true
+        });
         Self {
-            deps: deps.with_app_registry(Arc::clone(&registry)),
+            deps: deps
+                .with_app_registry(Arc::clone(&registry))
+                .with_tasks(tasks.clone()),
             registry,
             handles: Arc::default(),
             settings: OnceLock::new(),
             settings_path,
             events: None,
-            tasks: OnceLock::new(),
+            tasks,
             worker: OnceLock::new(),
-            task_events: Arc::default(),
+            task_events,
         }
     }
 
@@ -160,10 +170,7 @@ impl ServiceHost {
 
     /// The app's one task host. Each row change sends `TasksChanged`.
     pub fn tasks(&self) -> &TaskHost {
-        self.tasks.get_or_init(|| {
-            let events = Arc::clone(&self.task_events);
-            TaskHost::new(move |revision| send(&events, Event::TasksChanged { revision }))
-        })
+        &self.tasks
     }
 
     /// What a task on this host reads and tells: the settings view's config,

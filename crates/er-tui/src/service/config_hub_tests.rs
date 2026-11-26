@@ -189,9 +189,9 @@ fn hub_keys_match_the_apps() {
             }
         }
         let files = |dir: &Path| ["config.toml", "agents.toml"].map(|name| read(&dir.join(name)));
-        settle_quietly(&mut shell, || {
-            files(config_dir.path())[0].contains("snapshot")
-        });
+        // A write's revision is published before its save lands, so the
+        // files are read once every reply, sent after its save, has landed.
+        settle(&mut shell, |shell| shell.settings().in_flight() == 0);
         let lines = |dir: &Path| files(dir).map(|file| toml_lines(&file));
         assert_json("files", &lines(config_dir.path()));
         let flag_file = &files(config_dir.path())[0];

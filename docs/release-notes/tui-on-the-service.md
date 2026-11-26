@@ -98,7 +98,8 @@
 - Importance is refused for a custom CLI family, as on the desktop.
 - A disabled row, such as an unset Verify command, says what it needs when
   chosen.
-- The tour row is enabled when the diff has files.
+- The tour row is enabled when the tab's diff has files. In History mode the
+  old TUI read the selected commit's files instead.
 - A caught planning panic shows "planning panicked: …", and the TUI keeps
   running.
 
@@ -109,6 +110,16 @@
 - The results overlay opens a moment after its row, once its read lands.
 - A rerun the service refuses from the progress overlay says "Review: …".
 - Cancel review says "No running review to cancel" for any refusal.
+- The Review row's Start is enabled when the tab's diff has files, as the
+  tour row is.
+- While a review flow holds a bucket, Summary, Questions, Notes and the named
+  `[commands]` are refused with "A review flow is already using this review
+  bucket", as review runs already were. Tours still run beside a flow. The
+  desktop refuses the same runs, and Send to agent on a note too. While a
+  clear runs on the bucket, they are refused with "A clear is already using
+  this review bucket".
+- A review flow does not start while a run or tab command is queued or
+  running in its bucket, and keeps the bucket until those finish.
 
 ### Copy, export and open
 
@@ -116,7 +127,8 @@
 - Copying, or `e`, before a file's parse lands says "File is still loading".
 - A shift-arrow selection never carries into another file. After a jump, a
   filter change or a refresh moves to another file, a context copy reads the
-  line or hunk.
+  line or hunk. In History mode the same holds when the commit's file is not
+  the file the selection started in.
 
 ### Notices
 

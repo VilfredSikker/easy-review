@@ -5,9 +5,10 @@
 //! draw, as the App's does (left from P63). A snapshot save or a delete is a
 //! service command; this module writes nothing.
 
+use std::collections::HashMap;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use er_engine::config::WatchedConfig;
 use er_engine::TabKey;
@@ -23,6 +24,7 @@ const RESCAN_INTERVAL: Duration = Duration::from_secs(5);
 enum Request {
     Scan {
         key: TabKey,
+        generation: u64,
         root: String,
         patterns: Vec<String>,
     },
@@ -38,6 +40,7 @@ enum Request {
 pub enum Landed {
     Scanned {
         key: TabKey,
+        generation: u64,
         files: Vec<WatchedFile>,
         not_ignored: Vec<String>,
     },
@@ -54,6 +57,11 @@ pub struct Reader {
     landed: Receiver<Landed>,
     /// The tab, settings revision and time of the last scan.
     scanned: Option<(TabKey, u64, Instant)>,
+    /// Raised when the tab or the settings revision moves, or the list is
+    /// cleared, so a scan sent before lands as stale. The five-second rescan
+    /// and the rescan after a write leave it: the worker answers in order,
+    /// so a scan still in flight then is as current as the next one.
+    generation: u64,
     /// A write landed, so the list is read again on the next tick.
     pub rescan: bool,
 }
@@ -74,33 +82,53 @@ impl Reader {
             requests,
             landed,
             scanned: None,
+            generation: 0,
             rescan: false,
         }
     }
 
+    /// The next landed read. A scan sent before a newer one was due is
+    /// dropped: its patterns or its tab are no longer the ones shown, and
+    /// applied after a clear it would put back a list the config emptied.
     pub fn try_landed(&self) -> Option<Landed> {
-        self.landed.try_recv().ok()
+        loop {
+            match self.landed.try_recv().ok()? {
+                Landed::Scanned { generation, .. } if generation != self.generation => {}
+                landed => return Some(landed),
+            }
+        }
     }
 
     /// Whether `key`'s list is due: on its first frame, after a write, every
     /// five seconds, and when the settings revision moves, so a hub edit to
     /// the watched paths shows.
     pub fn scan_due(&mut self, key: TabKey, settings_revision: u64, now: Instant) -> bool {
+        let moved = self
+            .scanned
+            .is_none_or(|(tab, revision, _)| tab != key || revision != settings_revision);
         let due = std::mem::take(&mut self.rescan)
-            || self.scanned.is_none_or(|(tab, revision, at)| {
-                tab != key
-                    || revision != settings_revision
-                    || now.saturating_duration_since(at) >= RESCAN_INTERVAL
-            });
+            || moved
+            || self
+                .scanned
+                .is_some_and(|(_, _, at)| now.saturating_duration_since(at) >= RESCAN_INTERVAL);
+        if moved {
+            self.generation += 1;
+        }
         if due {
             self.scanned = Some((key, settings_revision, now));
         }
         due
     }
 
+    /// The list was cleared, so no scan in flight may fill it again.
+    pub fn forget_scans(&mut self) {
+        self.generation += 1;
+    }
+
     pub fn scan(&self, key: TabKey, root: &str, config: &WatchedConfig) {
         let _ = self.requests.send(Request::Scan {
             key,
+            generation: self.generation,
             root: root.to_string(),
             patterns: config.paths.clone(),
         });
@@ -120,6 +148,7 @@ fn read(git: &dyn Git, request: Request) -> Landed {
     match request {
         Request::Scan {
             key,
+            generation,
             root,
             patterns,
         } => {
@@ -132,6 +161,7 @@ fn read(git: &dyn Git, request: Request) -> Landed {
                 .collect();
             Landed::Scanned {
                 key,
+                generation,
                 files,
                 not_ignored,
             }
@@ -168,6 +198,10 @@ pub struct TabWatched {
     pub deleting: Option<String>,
     /// The last snapshot diff read, and its path.
     snapshot: Option<(String, SnapshotDiff)>,
+    /// Paths whose delete was sent, with when, while a listing still shows
+    /// the file as it was then. A read sent before the delete can land after
+    /// it, and a first snapshot saved then would fail on the missing file.
+    deleted: HashMap<String, SystemTime>,
     reading: bool,
     stale: bool,
 }
@@ -237,6 +271,10 @@ impl TabWatched {
         if self.shown == Some(false) {
             return;
         }
+        // A file listed as modified since its delete was sent is a new one.
+        self.deleted.retain(|path, sent| {
+            (files.iter()).any(|file| file.path == *path && file.modified <= *sent)
+        });
         self.files = files;
         self.not_ignored = not_ignored;
         if let Some(idx) = self.selected {
@@ -250,9 +288,22 @@ impl TabWatched {
     /// lands and the diff is read again.
     pub fn read(&mut self, path: String, diff: SnapshotDiff) -> Option<String> {
         self.reading = false;
-        let created = matches!(diff, SnapshotDiff::Created).then(|| path.clone());
+        let created = matches!(diff, SnapshotDiff::Created) && !self.deleted.contains_key(&path);
+        let created = created.then(|| path.clone());
         self.snapshot = Some((path, diff));
         created
+    }
+
+    /// A delete of `path` was sent: no first snapshot is saved for it.
+    pub fn delete_sent(&mut self, path: String) {
+        self.deleted.insert(path, SystemTime::now());
+    }
+
+    /// A delete was refused and may have left its file in place, so that
+    /// file's first snapshot saves again. The refusal does not name its
+    /// path, so every record goes.
+    pub fn delete_refused(&mut self) {
+        self.deleted.clear();
     }
 
     /// The selected file's diff is read again on the next tick.
