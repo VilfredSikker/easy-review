@@ -7,12 +7,17 @@
 #[path = "contract/harness.rs"]
 mod harness;
 
-use harness::{assert_golden, mask_root, run_twice, Mcp, Scenario};
+use std::path::Path;
+
+use er_engine::ai::{ErNotes, ErQuestions, ErReview};
+use er_engine::test_support::write_sidecar_json;
+use harness::{assert_golden, mask_root, run_twice, Mcp, Scenario, SEEDED_AT};
 use serde_json::{json, Value};
 
 /// The PR the `gh` fixtures were captured from.
 const PR: &str = "VilfredSikker/easy-review#575";
 const REPO: &str = "VilfredSikker/easy-review";
+const FILE: &str = ".github/workflows/ci.yml";
 
 /// `tools/list` on one fresh child, tools in name order, the temp root masked.
 fn tools_list() -> Value {
@@ -132,6 +137,134 @@ fn saved(s: &mut Scenario) {
     s.call("pr_saved", json!({ "repo": REPO, "action": "list" }));
 }
 
+fn thread(id: &str, text: &str) -> Value {
+    json!({
+        "id": id,
+        "timestamp": SEEDED_AT,
+        "file": FILE,
+        "hunk_index": 0,
+        "line_start": 7,
+        "line_content": "    branches: [main, master, staging, 'release/**', 'release-*']",
+        "text": text,
+        "hunk_header": "@@ -4,7 +4,7 @@ on:",
+    })
+}
+
+/// A question, a note and a finding in `bucket`.
+fn seed_feedback(bucket: &Path) {
+    write_sidecar_json::<ErQuestions>(
+        bucket,
+        json!({ "version": 1, "diff_hash": "", "questions": [thread("q-seed", "Why staging?")] }),
+    );
+    write_sidecar_json::<ErNotes>(
+        bucket,
+        json!({ "version": 1, "diff_hash": "", "notes": [thread("n-seed", "Mirror this in release.yml")] }),
+    );
+    write_sidecar_json::<ErReview>(
+        bucket,
+        json!({
+            "version": 1,
+            "diff_hash": "",
+            "created_at": SEEDED_AT,
+            "files": { FILE: {
+                "risk": "low",
+                "risk_reason": "CI triggers only",
+                "summary": "Runs CI on PRs into staging",
+                "findings": [{
+                    "id": "f-seed",
+                    "severity": "low",
+                    "category": "correctness",
+                    "title": "crap job skips staging pushes",
+                    "description": "Only PRs from staging run it.",
+                    "hunk_index": 2,
+                    "line_start": 173,
+                }],
+            } },
+        }),
+    );
+}
+
+/// Reply to each kind (the first with no author), resolve each, read back.
+fn feedback_steps(s: &mut Scenario, target: &Value) {
+    let with = |extra: Value| {
+        let mut args = target.clone();
+        args.as_object_mut()
+            .expect("target object")
+            .extend(extra.as_object().expect("args object").clone());
+        args
+    };
+    s.call("pr_feedback_get", with(json!({})));
+    let replies = [
+        json!({ "type": "question", "id": "q-seed", "text": "Staging gets release candidates." }),
+        json!({ "type": "note", "id": "n-seed", "text": "Done.", "author": "reviewer" }),
+        json!({ "type": "finding", "id": "f-seed", "text": "Intended: staging is PR-only." }),
+    ];
+    for (n, reply) in replies.into_iter().enumerate() {
+        let made = s.call("pr_feedback_reply", with(reply));
+        let id = made["reply"]["id"].as_str().expect("reply id").to_string();
+        s.generated(&id, &format!("<reply-{}>", n + 1));
+    }
+    for (kind, id) in [
+        ("question", "q-seed"),
+        ("question", "q-seed"),
+        ("note", "n-seed"),
+        ("finding", "f-seed"),
+    ] {
+        s.call(
+            "pr_feedback_resolve",
+            with(json!({ "type": kind, "id": id })),
+        );
+    }
+    s.call("pr_feedback_get", with(json!({})));
+    s.call("pr_feedback_get", with(json!({ "include_resolved": true })));
+}
+
+fn feedback_pr_bucket(s: &mut Scenario) {
+    let pr = s.call("pr_resolve", json!({ "ref": PR }));
+    seed_feedback(Path::new(pr["bucket_path"].as_str().expect("bucket_path")));
+    feedback_steps(s, &json!({ "ref": PR }));
+}
+
+fn git(dir: &Path, args: &[&str]) {
+    let status = std::process::Command::new("git")
+        .args([
+            "-c",
+            "user.name=contract",
+            "-c",
+            "user.email=contract@example.invalid",
+        ])
+        .args(["-c", "commit.gpgsign=false"])
+        .args(args)
+        .current_dir(dir)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .status()
+        .expect("run git");
+    assert!(status.success(), "git {args:?}");
+}
+
+/// The child's working dir is a checkout of the fixture PR's head branch.
+fn feedback_local_bucket(s: &mut Scenario) {
+    let work = s.root().join("work");
+    git(&work, &["init", "-q", "-b", "ci/staging-prs"]);
+    git(
+        &work,
+        &[
+            "remote",
+            "add",
+            "origin",
+            "https://github.com/VilfredSikker/easy-review.git",
+        ],
+    );
+    git(&work, &["commit", "-q", "--allow-empty", "-m", "head"]);
+    s.call("pr_feedback_get", json!({ "bucket": "local", "ref": PR }));
+    let empty = s.call("pr_feedback_get", json!({ "bucket": "local" }));
+    seed_feedback(Path::new(
+        empty["bucket_path"].as_str().expect("bucket_path"),
+    ));
+    feedback_steps(s, &json!({ "bucket": "local" }));
+}
+
 #[test]
 fn review_flow_matches_its_golden() {
     assert_golden("review_flow", &run_twice(review_flow));
@@ -145,4 +278,14 @@ fn diagrams_match_their_golden() {
 #[test]
 fn saved_prs_match_their_golden() {
     assert_golden("saved", &run_twice(saved));
+}
+
+#[test]
+fn pr_bucket_feedback_matches_its_golden() {
+    assert_golden("feedback_pr_bucket", &run_twice(feedback_pr_bucket));
+}
+
+#[test]
+fn local_bucket_feedback_matches_its_golden() {
+    assert_golden("feedback_local_bucket", &run_twice(feedback_local_bucket));
 }

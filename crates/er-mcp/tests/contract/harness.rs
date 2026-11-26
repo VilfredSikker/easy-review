@@ -204,6 +204,10 @@ impl Scenario {
         }
     }
 
+    pub fn root(&self) -> &Path {
+        self.mcp.root()
+    }
+
     /// Call `tool`, record the step, and return what the reply's text says,
     /// parsed, or the JSON-RPC error under `error`.
     pub fn call(&mut self, tool: &str, arguments: Value) -> Value {
