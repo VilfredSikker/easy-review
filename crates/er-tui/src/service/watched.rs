@@ -5,10 +5,10 @@
 //! draw, as the App's does (left from P63). A snapshot save or a delete is a
 //! service command; this module writes nothing.
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use er_engine::config::WatchedConfig;
 use er_engine::TabKey;
@@ -57,8 +57,10 @@ pub struct Reader {
     landed: Receiver<Landed>,
     /// The tab, settings revision and time of the last scan.
     scanned: Option<(TabKey, u64, Instant)>,
-    /// Raised each time a scan is due, whether it is sent or the list is
-    /// cleared instead, so a scan sent before lands as stale.
+    /// Raised when the tab or the settings revision moves, or the list is
+    /// cleared, so a scan sent before lands as stale. The five-second rescan
+    /// and the rescan after a write leave it: the worker answers in order,
+    /// so a scan still in flight then is as current as the next one.
     generation: u64,
     /// A write landed, so the list is read again on the next tick.
     pub rescan: bool,
@@ -101,17 +103,26 @@ impl Reader {
     /// five seconds, and when the settings revision moves, so a hub edit to
     /// the watched paths shows.
     pub fn scan_due(&mut self, key: TabKey, settings_revision: u64, now: Instant) -> bool {
+        let moved = self
+            .scanned
+            .is_none_or(|(tab, revision, _)| tab != key || revision != settings_revision);
         let due = std::mem::take(&mut self.rescan)
-            || self.scanned.is_none_or(|(tab, revision, at)| {
-                tab != key
-                    || revision != settings_revision
-                    || now.saturating_duration_since(at) >= RESCAN_INTERVAL
-            });
-        if due {
-            self.scanned = Some((key, settings_revision, now));
+            || moved
+            || self
+                .scanned
+                .is_some_and(|(_, _, at)| now.saturating_duration_since(at) >= RESCAN_INTERVAL);
+        if moved {
             self.generation += 1;
         }
+        if due {
+            self.scanned = Some((key, settings_revision, now));
+        }
         due
+    }
+
+    /// The list was cleared, so no scan in flight may fill it again.
+    pub fn forget_scans(&mut self) {
+        self.generation += 1;
     }
 
     pub fn scan(&self, key: TabKey, root: &str, config: &WatchedConfig) {
@@ -187,10 +198,10 @@ pub struct TabWatched {
     pub deleting: Option<String>,
     /// The last snapshot diff read, and its path.
     snapshot: Option<(String, SnapshotDiff)>,
-    /// Paths whose delete was sent and that a listing still shows. A read
-    /// sent before the delete can land after it, and a first snapshot saved
-    /// then would fail on the missing file.
-    deleted: HashSet<String>,
+    /// Paths whose delete was sent, with when, while a listing still shows
+    /// the file as it was then. A read sent before the delete can land after
+    /// it, and a first snapshot saved then would fail on the missing file.
+    deleted: HashMap<String, SystemTime>,
     reading: bool,
     stale: bool,
 }
@@ -260,8 +271,10 @@ impl TabWatched {
         if self.shown == Some(false) {
             return;
         }
-        self.deleted
-            .retain(|path| files.iter().any(|file| file.path == *path));
+        // A file listed as modified since its delete was sent is a new one.
+        self.deleted.retain(|path, sent| {
+            (files.iter()).any(|file| file.path == *path && file.modified <= *sent)
+        });
         self.files = files;
         self.not_ignored = not_ignored;
         if let Some(idx) = self.selected {
@@ -275,7 +288,7 @@ impl TabWatched {
     /// lands and the diff is read again.
     pub fn read(&mut self, path: String, diff: SnapshotDiff) -> Option<String> {
         self.reading = false;
-        let created = matches!(diff, SnapshotDiff::Created) && !self.deleted.contains(&path);
+        let created = matches!(diff, SnapshotDiff::Created) && !self.deleted.contains_key(&path);
         let created = created.then(|| path.clone());
         self.snapshot = Some((path, diff));
         created
@@ -283,12 +296,13 @@ impl TabWatched {
 
     /// A delete of `path` was sent: no first snapshot is saved for it.
     pub fn delete_sent(&mut self, path: String) {
-        self.deleted.insert(path);
+        self.deleted.insert(path, SystemTime::now());
     }
 
-    /// A watched write was refused, so a delete may have left its file in
-    /// place, and that file's first snapshot saves again.
-    pub fn write_refused(&mut self) {
+    /// A delete was refused and may have left its file in place, so that
+    /// file's first snapshot saves again. The refusal does not name its
+    /// path, so every record goes.
+    pub fn delete_refused(&mut self) {
         self.deleted.clear();
     }
 
