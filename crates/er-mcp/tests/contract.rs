@@ -87,6 +87,10 @@ fn review_flow(s: &mut Scenario) {
         "pr_guide",
         json!({ "ref": PR, "action": "upload", "files": { "tour.json": with_hash(tour, &hash) } }),
     );
+    s.call(
+        "pr_saved",
+        json!({ "repo": REPO, "action": "list", "source": "artifacts" }),
+    );
     s.call("pr_summarize", json!({ "ref": PR }));
 }
 
@@ -117,15 +121,10 @@ fn diagrams(s: &mut Scenario) {
 
 /// Pin (which adds the project), list, the projects record, unpin, list.
 fn saved(s: &mut Scenario) {
-    let pinned = s.call(
+    s.call(
         "pr_saved",
         json!({ "ref": PR, "action": "pin", "title": "CI: run on pull requests into staging" }),
     );
-    let project_id = pinned["project_id"]
-        .as_str()
-        .expect("project_id")
-        .to_string();
-    s.generated(&project_id, "<project-id>");
     s.call("pr_saved", json!({ "repo": REPO, "action": "list" }));
     s.call("projects_list", json!({}));
     s.call("pr_saved", json!({ "ref": PR, "action": "unpin" }));
