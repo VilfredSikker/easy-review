@@ -24,6 +24,7 @@ use crate::handle::ActorMsg;
 use crate::protocol::FlowContext;
 
 mod driver;
+mod producers;
 mod record;
 mod results;
 mod views;
@@ -31,19 +32,30 @@ mod views;
 /// A flow runner on its own host, whose actor messages nobody reads.
 pub(super) struct Harness {
     runner: FlowRunner,
-    _actor: Receiver<ActorMsg>,
+    actor: Receiver<ActorMsg>,
 }
 
 impl Harness {
     pub(super) fn new(ports: Ports) -> Self {
+        Self::with_deps(WorkspaceDeps::new(ports))
+    }
+
+    /// A runner whose flows see `tasks`, the app's task host.
+    pub(super) fn with_tasks(ports: Ports, tasks: crate::tasks::TaskHost) -> Self {
+        Self::with_deps(WorkspaceDeps::new(ports).with_tasks(tasks))
+    }
+
+    fn with_deps(deps: WorkspaceDeps) -> Self {
         let (tx, actor) = mpsc::channel();
         let sink: Arc<dyn JobSink> = Arc::new(LocalJobSink);
         let arena = ArenaRunControls::with_jobs(Arc::clone(&sink));
-        let runner = FlowRunner::new(&WorkspaceDeps::new(ports), sink, arena, &tx);
-        Self {
-            runner,
-            _actor: actor,
-        }
+        let runner = FlowRunner::new(&deps, sink, arena, &tx);
+        Self { runner, actor }
+    }
+
+    /// The next message the runner sent its actor, if one is waiting.
+    pub(super) fn actor_message(&self) -> Option<ActorMsg> {
+        self.actor.try_recv().ok()
     }
 
     /// The flows and their host, as an effect holds them.

@@ -54,6 +54,14 @@ fn quiet_hooks() -> TaskHooks {
     }
 }
 
+/// Runs `test` on a bucket under a test storage root: a launcher task
+/// probes its bucket's admission (#764).
+fn in_storage<R>(test: impl FnOnce(&str) -> R) -> R {
+    let root = tempfile::tempdir().unwrap();
+    let bucket = root.path().join("bucket").to_string_lossy().into_owned();
+    er_engine::storage::with_test_storage_root(root.path(), || test(&bucket))
+}
+
 /// A launcher task on `bucket` whose agent printed `lines` lines and
 /// succeeded.
 fn printed(host: &TaskHost, bucket: &str, lines: usize) -> anyhow::Result<String> {
@@ -145,86 +153,91 @@ fn a_stop_reaches_the_runner() -> anyhow::Result<()> {
 /// task that wrote them has left the list.
 #[test]
 fn a_bucket_log_keeps_its_last_lines_after_the_task_leaves() -> anyhow::Result<()> {
-    let host = TaskHost::default();
-    let id = printed(&host, "/bucket", BUCKET_LOG_LINES + 10)?;
-    let done = || {
-        host.rows()
-            .iter()
-            .any(|row| row.id == id && row.status == "done")
-    };
-    wait_until("the task to finish", done)?;
-    let texts = |log: Vec<AgentLogEntry>| log.into_iter().map(|line| line.text).collect::<Vec<_>>();
+    in_storage(|bucket| {
+        let host = TaskHost::default();
+        let id = printed(&host, bucket, BUCKET_LOG_LINES + 10)?;
+        let done = || {
+            host.rows()
+                .iter()
+                .any(|row| row.id == id && row.status == "done")
+        };
+        wait_until("the task to finish", done)?;
+        let texts =
+            |log: Vec<AgentLogEntry>| log.into_iter().map(|line| line.text).collect::<Vec<_>>();
 
-    let kept = texts(host.bucket_log("/bucket"));
-    assert_eq!(kept.len(), BUCKET_LOG_LINES, "the log outgrew its cap");
-    // The finish adds a status line, so eleven of the agent's lines went.
-    assert_eq!(kept.first().map(String::as_str), Some("line-11"));
-    assert!(kept.last().is_some_and(|line| line.contains("completed")));
+        let kept = texts(host.bucket_log(bucket));
+        assert_eq!(kept.len(), BUCKET_LOG_LINES, "the log outgrew its cap");
+        // The finish adds a status line, so eleven of the agent's lines went.
+        assert_eq!(kept.first().map(String::as_str), Some("line-11"));
+        assert!(kept.last().is_some_and(|line| line.contains("completed")));
 
-    tasks::retire(&host, u64::MAX);
-    assert!(host.rows().is_empty(), "the finished task is still listed");
-    assert_eq!(
-        texts(host.bucket_log("/bucket")),
-        kept,
-        "the lines left with the task"
-    );
-    assert!(host.bucket_log("/other").is_empty());
-    Ok(())
+        tasks::retire(&host, u64::MAX);
+        assert!(host.rows().is_empty(), "the finished task is still listed");
+        assert_eq!(
+            texts(host.bucket_log(bucket)),
+            kept,
+            "the lines left with the task"
+        );
+        assert!(host.bucket_log("/other").is_empty());
+        Ok(())
+    })
 }
 
 /// The rows hold the host's tasks, and every view's arena runs and review
 /// flows, each part sorted by its key.
 #[test]
 fn the_job_rows_list_tasks_runs_and_flows() -> anyhow::Result<()> {
-    let host = TaskHost::default();
-    let id = printed(&host, "/bucket", 1)?;
-    let run = |run_id: &str| LiveArenaRun {
-        run_id: run_id.into(),
-        er_dir: "/bucket".into(),
-        status: RunStatus::Running { round: 1 },
-        progress: Default::default(),
-    };
-    let flow = |er_dir: &str| LiveReviewFlow {
-        er_dir: er_dir.into(),
-        flow: ReviewFlow::new("hash"),
-        draining: false,
-        run_targets: Vec::new(),
-        rerun_stages: Vec::new(),
-    };
-    let views = [
-        Arc::new(WorkspaceView {
-            arena_runs: vec![run("b")],
-            review_flows: vec![flow("/z")],
-            ..WorkspaceView::default()
-        }),
-        Arc::new(WorkspaceView {
-            arena_runs: vec![run("a")],
-            review_flows: vec![flow("/y")],
-            ..WorkspaceView::default()
-        }),
-    ];
+    in_storage(|bucket| {
+        let host = TaskHost::default();
+        let id = printed(&host, bucket, 1)?;
+        let run = |run_id: &str| LiveArenaRun {
+            run_id: run_id.into(),
+            er_dir: "/bucket".into(),
+            status: RunStatus::Running { round: 1 },
+            progress: Default::default(),
+        };
+        let flow = |er_dir: &str| LiveReviewFlow {
+            er_dir: er_dir.into(),
+            flow: ReviewFlow::new("hash"),
+            draining: false,
+            run_targets: Vec::new(),
+            rerun_stages: Vec::new(),
+        };
+        let views = [
+            Arc::new(WorkspaceView {
+                arena_runs: vec![run("b")],
+                review_flows: vec![flow("/z")],
+                ..WorkspaceView::default()
+            }),
+            Arc::new(WorkspaceView {
+                arena_runs: vec![run("a")],
+                review_flows: vec![flow("/y")],
+                ..WorkspaceView::default()
+            }),
+        ];
 
-    let rows = crate::job_rows(&views, &host);
+        let rows = crate::job_rows(&views, &host);
 
-    let ids: Vec<_> = rows.tasks.iter().map(|row| row.id.as_str()).collect();
-    assert_eq!(ids, [id.as_str()]);
-    let runs: Vec<_> = rows
-        .arena_runs
-        .iter()
-        .map(|run| run.run_id.as_str())
-        .collect();
-    assert_eq!(runs, ["a", "b"]);
-    assert!(rows
-        .arena_runs
-        .iter()
-        .all(|run| run.status == er_protocol::ArenaRunStatus::Running { round: 1 }));
-    let flows: Vec<_> = rows
-        .review_flows
-        .iter()
-        .map(|flow| flow.er_dir.as_str())
-        .collect();
-    assert_eq!(flows, ["/y", "/z"]);
-    Ok(())
+        let ids: Vec<_> = rows.tasks.iter().map(|row| row.id.as_str()).collect();
+        assert_eq!(ids, [id.as_str()]);
+        let runs: Vec<_> = rows
+            .arena_runs
+            .iter()
+            .map(|run| run.run_id.as_str())
+            .collect();
+        assert_eq!(runs, ["a", "b"]);
+        assert!(rows
+            .arena_runs
+            .iter()
+            .all(|run| run.status == er_protocol::ArenaRunStatus::Running { round: 1 }));
+        let flows: Vec<_> = rows
+            .review_flows
+            .iter()
+            .map(|flow| flow.er_dir.as_str())
+            .collect();
+        assert_eq!(flows, ["/y", "/z"]);
+        Ok(())
+    })
 }
 
 /// The host's row changes reach the events sender as `TasksChanged` with a
@@ -238,7 +251,13 @@ fn the_task_events_reach_the_sender() -> anyhow::Result<()> {
         let _ = host.tasks();
         let (tx, events) = std::sync::mpsc::channel();
         let host = host.with_events(tx);
-        printed_with(host.tasks(), &host.task_hooks(), "/bucket", 1)?;
+        let bucket = dir.path().join("bucket");
+        printed_with(
+            host.tasks(),
+            &host.task_hooks(),
+            &bucket.to_string_lossy(),
+            1,
+        )?;
 
         let mut revisions = Vec::new();
         let deadline = Instant::now() + WAIT;
@@ -259,6 +278,38 @@ fn the_task_events_reach_the_sender() -> anyhow::Result<()> {
             revisions.windows(2).all(|pair| pair[0] < pair[1]),
             "{revisions:?}"
         );
+        Ok(())
+    })
+}
+
+/// A task host the deps carry is the service host's own: its tasks are
+/// listed, and its row changes reach the host's events.
+#[test]
+fn a_service_host_keeps_the_task_host_its_deps_carry() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    er_engine::storage::with_process_test_storage_root(dir.path().join("storage"), || {
+        let given = TaskHost::default();
+        let deps = crate::WorkspaceDeps::new(Ports::for_test()).with_tasks(given.clone());
+        let (tx, events) = std::sync::mpsc::channel();
+        let host = ServiceHost::with_deps(deps, dir.path().join("config.toml")).with_events(tx);
+        let bucket = dir.path().join("bucket");
+
+        let id = printed(&given, &bucket.to_string_lossy(), 1)?;
+
+        assert!(
+            host.tasks().rows().iter().any(|row| row.id == id),
+            "the service host replaced the task host its deps carried"
+        );
+        let deadline = Instant::now() + WAIT;
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if matches!(
+                events.recv_timeout(left)?,
+                crate::Event::TasksChanged { .. }
+            ) {
+                break;
+            }
+        }
         Ok(())
     })
 }

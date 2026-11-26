@@ -82,7 +82,14 @@ pub fn tour(run: &RunTab<'_>) -> Result<(), ErError> {
         &diff_hash,
     );
     let target = target(content, er_dir, "branch".to_string());
-    queue(run, "tour", "tour", target, prompt, None)
+    queue(
+        run,
+        tasks::TOUR_TASK_KIND,
+        tasks::TOUR_TASK_KIND,
+        target,
+        prompt,
+        None,
+    )
 }
 
 /// The prompt names the repo, not a diff.

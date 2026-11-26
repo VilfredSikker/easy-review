@@ -17,9 +17,7 @@ use std::thread;
 use er_engine::tab_identity::DiffMode;
 use er_engine::TabKey;
 
-use crate::actor::{
-    broadcast, publish, refuse_unknown_tab, reload_input, spawn_effect, WorkspaceDeps,
-};
+use crate::actor::{broadcast, publish, refuse_unknown_tab, reload_input, WorkspaceDeps};
 use crate::content::{ContentPatch, LoadedTab, PatchRefused, TabContent};
 use crate::handle::{ActorMsg, ReplySender, WorkspaceError};
 use crate::protocol::{Event, Reply};
@@ -249,6 +247,10 @@ pub(crate) enum Watched {
 
 /// Runs a watched-file write in the tab's repo off the actor. The diff
 /// section does not show watched files, so nothing reloads.
+///
+/// Each write waits for the one sent before it, as the App ran them in
+/// turn: a first snapshot sent just before a delete of the same file would
+/// otherwise run after it and fail on the missing file.
 pub(crate) fn spawn_watched(
     state: &WorkspaceState,
     tx: &Sender<ActorMsg>,
@@ -259,28 +261,44 @@ pub(crate) fn spawn_watched(
     let Some(content) = state.view().tabs.get(&key).cloned() else {
         return refuse_unknown_tab(reply);
     };
-    spawn_effect(tx, reply, move || {
-        crate::guard::assert_off_actor();
-        let tab = &content.tab;
-        if tab.identity().is_remote() {
-            return Err(failed("This tab has no working tree to write in"));
+    let previous = state.chain_watched_write(None);
+    let tx = tx.clone();
+    // Unnamed, as `spawn_effect`'s threads are, for the storage guard.
+    let spawned = thread::Builder::new().spawn(move || {
+        if let Some(previous) = previous {
+            let _ = previous.join();
         }
-        let root = &tab.repo_root;
-        let notice = match write {
-            Watched::Snapshot(path) => {
-                let snapshots = format!("{}/snapshots", content.context.er_dir);
-                er_git::save_snapshot(root, &path, &snapshots)
-                    .map_err(|error| failed(format!("Snapshot error: {error}")))?;
-                "Snapshot updated".to_string()
-            }
-            Watched::Delete(path) => {
-                er_git::delete_watched_file(root, &path)
-                    .map_err(|error| failed(format!("Delete failed: {error}")))?;
-                format!("Deleted: {path}")
-            }
-        };
-        Ok(Reply::WorktreeWritten { key, notice })
+        let result = write_watched(&content, key, write).map(Into::into);
+        let _ = tx.send(ActorMsg::EffectDone { result, reply });
     });
+    state.chain_watched_write(spawned.ok());
+}
+
+fn write_watched(
+    content: &TabContent,
+    key: TabKey,
+    write: Watched,
+) -> Result<Reply, WorkspaceError> {
+    crate::guard::assert_off_actor();
+    let tab = &content.tab;
+    if tab.identity().is_remote() {
+        return Err(failed("This tab has no working tree to write in"));
+    }
+    let root = &tab.repo_root;
+    let notice = match write {
+        Watched::Snapshot(path) => {
+            let snapshots = format!("{}/snapshots", content.context.er_dir);
+            er_git::save_snapshot(root, &path, &snapshots)
+                .map_err(|error| failed(format!("Snapshot error: {error}")))?;
+            "Snapshot updated".to_string()
+        }
+        Watched::Delete(path) => {
+            er_git::delete_watched_file(root, &path)
+                .map_err(|error| failed(format!("Delete failed: {error}")))?;
+            format!("Deleted: {path}")
+        }
+    };
+    Ok(Reply::WorktreeWritten { key, notice })
 }
 
 /// The repo's worktrees, as git lists them; run on an effect thread.

@@ -4,7 +4,7 @@ Access-Control-Expose-Headers: ETag, Link, Location, Retry-After, X-GitHub-OTP, 
 Content-Length: 127
 Content-Security-Policy: default-src 'none'
 Content-Type: application/json; charset=utf-8
-Date: Thu, 26 Nov 2026 07:25:42 GMT
+Date: Thu, 26 Nov 2026 13:55:27 GMT
 Referrer-Policy: origin-when-cross-origin, strict-origin-when-cross-origin
 Server: github.com
 Strict-Transport-Security: max-age=31536000; includeSubdomains; preload
@@ -14,12 +14,12 @@ X-Frame-Options: deny
 X-Github-Api-Version-Selected: 2022-11-28
 X-Github-Edge-Region: fra
 X-Github-Media-Type: github.v3; param=raw; format=json
-X-Github-Request-Id: D9BB:2EA2FD:4EC4C60:7405CF5:6B07DEF6
+X-Github-Request-Id: DE2F:4427A:48B05F2:6B640CF:6B083A4F
 X-Ratelimit-Limit: 5000
-X-Ratelimit-Remaining: 4947
-X-Ratelimit-Reset: 1795678264
+X-Ratelimit-Remaining: 4971
+X-Ratelimit-Reset: 1795703814
 X-Ratelimit-Resource: core
-X-Ratelimit-Used: 53
+X-Ratelimit-Used: 29
 X-Xss-Protection: 0
 
 {"message":"Not Found","documentation_url":"https://docs.github.com/rest/repos/contents#get-repository-content","status":"404"}

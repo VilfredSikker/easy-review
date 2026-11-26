@@ -25,7 +25,7 @@
               "triage": null
             },
             "project": "vilfredsikker/easy-review",
-            "project_id": "<project-id>",
+            "project_id": "remote-vilfredsikker-easy-review",
             "repo": "VilfredSikker/easy-review"
           },
           "type": "text"
@@ -64,7 +64,7 @@
               }
             ],
             "project": "vilfredsikker/easy-review",
-            "project_id": "<project-id>",
+            "project_id": "remote-vilfredsikker-easy-review",
             "repo": "VilfredSikker/easy-review"
           },
           "type": "text"
@@ -84,7 +84,7 @@
             "active_id": null,
             "projects": [
               {
-                "id": "<project-id>",
+                "id": "remote-vilfredsikker-easy-review",
                 "name": "vilfredsikker/easy-review",
                 "remote": "vilfredsikker/easy-review",
                 "root_path": ""
@@ -110,7 +110,7 @@
           "json": {
             "number": 575,
             "project": "vilfredsikker/easy-review",
-            "project_id": "<project-id>",
+            "project_id": "remote-vilfredsikker-easy-review",
             "removed": true,
             "repo": "VilfredSikker/easy-review"
           },
@@ -134,7 +134,7 @@
             "artifacts": [],
             "pinned": [],
             "project": "vilfredsikker/easy-review",
-            "project_id": "<project-id>",
+            "project_id": "remote-vilfredsikker-easy-review",
             "repo": "VilfredSikker/easy-review"
           },
           "type": "text"

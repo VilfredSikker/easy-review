@@ -189,8 +189,8 @@ pub fn mask_root(text: &str, root: &Path) -> String {
 }
 
 /// The time every fixture carries (the kit's examples and the seeded
-/// threads); any other `timestamp` or `created_at` was written by the run and
-/// reads `<clock>` in a golden.
+/// threads); any other time in a `timestamp` or `created_at` was written by
+/// the run and reads `<clock>` in a golden.
 pub const SEEDED_AT: &str = "2026-01-01T00:00:00Z";
 
 /// One scenario's calls and replies, recorded for one golden.
@@ -229,8 +229,12 @@ impl Scenario {
         payload
     }
 
-    /// `value` differs on every run (an id the server made): the golden
-    /// shows `placeholder` in its place.
+    /// `value` differs on every run (an id the server made at random): the
+    /// golden shows `placeholder` in its place.
+    #[expect(
+        dead_code,
+        reason = "the feedback scenarios' reply ids are its first caller"
+    )]
     pub fn generated(&mut self, value: &str, placeholder: &str) {
         self.generated
             .push((value.to_string(), placeholder.to_string()));
@@ -287,18 +291,42 @@ fn readable(mut reply: Value) -> Value {
     reply
 }
 
-/// Clock values the run wrote: `saved_at_ms`, and any `timestamp` or
-/// `created_at` string that is not [`SEEDED_AT`] (the fixtures' time).
+/// `text` reads as an RFC 3339 time: `YYYY-MM-DDTHH:MM:SS`, then a zone.
+fn is_rfc3339(text: &str) -> bool {
+    const SHAPE: &str = "dddd-dd-ddTdd:dd:dd";
+    text.len() > SHAPE.len()
+        && text.chars().zip(SHAPE.chars()).all(|(c, want)| {
+            if want == 'd' {
+                c.is_ascii_digit()
+            } else {
+                c == want
+            }
+        })
+}
+
+/// A clock the run wrote: an RFC 3339 time other than [`SEEDED_AT`], an
+/// epoch count written as digits, or an epoch number in a plausible range.
+/// An empty string or a zero is no clock and reaches the golden as it is.
+fn is_written_clock(key: &str, value: &Value) -> bool {
+    let in_range = |range: std::ops::Range<u64>| value.as_u64().is_some_and(|n| range.contains(&n));
+    match key {
+        "timestamp" | "created_at" => value.as_str().is_some_and(|text| {
+            text != SEEDED_AT
+                && (is_rfc3339(text)
+                    || ((9..=13).contains(&text.len()) && text.chars().all(|c| c.is_ascii_digit())))
+        }),
+        "saved_at_ms" => in_range(1_000_000_000_000..10_000_000_000_000),
+        "mtime_secs" => in_range(1_000_000_000..10_000_000_000),
+        _ => false,
+    }
+}
+
+/// Every clock the run wrote reads `<clock>`.
 fn mask_clocks(value: &mut Value) {
     match value {
         Value::Object(map) => {
             for (key, child) in map.iter_mut() {
-                let written = match key.as_str() {
-                    "saved_at_ms" => child.is_number(),
-                    "timestamp" | "created_at" => child.as_str().is_some_and(|at| at != SEEDED_AT),
-                    _ => false,
-                };
-                if written {
+                if is_written_clock(key, child) {
                     *child = Value::String("<clock>".into());
                 } else {
                     mask_clocks(child);
