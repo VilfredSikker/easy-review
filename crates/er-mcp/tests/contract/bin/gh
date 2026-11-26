@@ -1,21 +1,35 @@
 #!/bin/sh
 # Fake gh for the er-mcp contract tests. It answers only the calls listed in
 # $ER_FAKE_GH_FIXTURES/index.tsv, with fixtures captured from real gh. Any
-# other call is appended to $ER_FAKE_GH_LOG, which fails the scenario.
-args="$*"
+# other call, or a listed call whose fixture file is missing, is appended to
+# $ER_FAKE_GH_LOG, which fails the scenario.
 tab=$(printf '\t')
+# The arguments, each after a tab, so their boundaries survive the compare.
+call=""
+for arg in "$@"; do
+  call="$call$tab$arg"
+done
+refuse() {
+  reason=$1
+  shift
+  printf '%s\n' "$*" >>"$ER_FAKE_GH_LOG"
+  echo "fake gh: $reason: gh $*" >&2
+  exit 97
+}
 index="$ER_FAKE_GH_FIXTURES/index.tsv"
 if [ -f "$index" ]; then
-  while IFS="$tab" read -r want body code; do
-    case "$want" in
+  while IFS= read -r line; do
+    case "$line" in
       '#'* | '') continue ;;
     esac
-    if [ "$want" = "$args" ]; then
-      cat "$ER_FAKE_GH_FIXTURES/$body"
+    body=${line%%"$tab"*}
+    rest=${line#*"$tab"}
+    code=${rest%%"$tab"*}
+    want=${rest#"$code"}
+    if [ "$want" = "$call" ]; then
+      cat "$ER_FAKE_GH_FIXTURES/$body" 2>/dev/null || refuse "fixture $body is missing" "$@"
       exit "${code:-0}"
     fi
   done <"$index"
 fi
-printf '%s\n' "$args" >>"$ER_FAKE_GH_LOG"
-echo "fake gh: no fixture for: gh $args" >&2
-exit 97
+refuse "no fixture" "$@"
