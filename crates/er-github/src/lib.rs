@@ -484,6 +484,14 @@ pub trait GitHub: Send + Sync {
         repo: &str,
         pr: u64,
     ) -> Result<ThreadAddressingSummary, GhError>;
+    /// The review queue's PR rows for one repo and state (`gh pr list`).
+    fn pr_list_queue(
+        &self,
+        owner: &str,
+        repo: &str,
+        state: &str,
+        limit: usize,
+    ) -> Result<Vec<QueuePr>, GhError>;
 }
 
 /// The prefix the old free functions put in front of gh's reason, kept so
