@@ -21,11 +21,22 @@ path reaches. The server builds one `Ports` and passes it to every call, so
 each `gh` and git call goes through it; `crates/er-mcp/tests/ports.rs` fails
 on a handle built anywhere else.
 
+Question and note replies and resolves have one writer there,
+`write_thread_reply` and `resolve_thread_row`, which MCP and the workspace
+effects both call. The reply's place is a parameter: the effect passes the
+anchor it re-read from the diff it fetched, and MCP, which fetches nothing,
+has the writer copy the parent row. Each caller's rows stay as they were
+before the two writers merged; `roots_only` keeps MCP from resolving a reply.
+
 ## Considered Options
 
 - **An actor per MCP call.** It would load a workspace view MCP never reads
   and add a thread hop to each tool, for no state worth keeping between
   calls.
+- **One reply row for both callers.** The writer would copy the parent row
+  for the desktop and the TUI too, which changes where their replies sit
+  (side, range, finding link). Ruled out on #774: phase 6 changes nothing a
+  user sees.
 - **Leave the modules in er-engine.** er-mcp would keep an er-engine
   dependency only for them, outside the manifest rule (decision 6).
 

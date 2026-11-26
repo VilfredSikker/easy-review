@@ -194,7 +194,7 @@ fn write_reply(
         text: input.text,
         author: input.attribution.author.as_deref().unwrap_or("You"),
         diff_hash: input.branch_diff_hash,
-        anchor: ReplyAnchor::Resolved(ReplyPlace {
+        anchor: ReplyAnchor::Resolved(Box::new(ReplyPlace {
             file: input.file.to_string(),
             hunk_index,
             anchor,
@@ -204,7 +204,7 @@ fn write_reply(
             relocated_at_hash: input.diff_hash.to_string(),
             finding_ref: input.finding_ref.clone(),
             ai_action: input.attribution.ai_action.clone(),
-        }),
+        })),
     })
     .map_err(|error| failed("write the annotation", error))?;
     Ok((id, sidecar(&ctx.er_dir, payload)))

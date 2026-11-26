@@ -472,7 +472,7 @@ pub enum ReplyAnchor {
     FromParent,
     /// A place the workspace effect resolved against the diff it fetched. A
     /// missing file is started, and its diff hash is always replaced.
-    Resolved(ReplyPlace),
+    Resolved(Box<ReplyPlace>),
 }
 
 /// One question or note reply to write.
