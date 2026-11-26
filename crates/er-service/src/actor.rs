@@ -39,6 +39,9 @@ pub struct WorkspaceDeps {
     /// The process's app registry, shared by every workspace actor. Actors
     /// read or request through it; it alone writes the app records.
     app_registry: Option<Arc<crate::app_registry::AppRegistry>>,
+    /// The app's task host. A review flow reads it to see the host tasks
+    /// that write into its bucket (#764).
+    tasks: Option<crate::tasks::TaskHost>,
 }
 
 impl WorkspaceDeps {
@@ -50,7 +53,21 @@ impl WorkspaceDeps {
                 er_engine::github_post_session::PostSession::default(),
             )),
             app_registry: None,
+            tasks: None,
         }
+    }
+
+    /// Shares the app's task host with the actors built from this, so their
+    /// flows see the host's tasks.
+    #[must_use]
+    pub fn with_tasks(mut self, tasks: crate::tasks::TaskHost) -> Self {
+        self.tasks = Some(tasks);
+        self
+    }
+
+    /// The task host these deps share, when one was given.
+    pub fn tasks(&self) -> Option<&crate::tasks::TaskHost> {
+        self.tasks.as_ref()
     }
 
     /// Shares the service's one app registry with the actors built from this.
@@ -168,6 +185,11 @@ fn run(
                 }
             }
             ActorMsg::FlowTick => flows.request_advance(),
+            ActorMsg::TasksChanged => {
+                if !state.view().review_flows.is_empty() {
+                    flows.request_advance();
+                }
+            }
             ActorMsg::Worktree(step) => {
                 crate::worktree::step(&deps, &mut state, &tx, *step, &subscribers, &view);
             }
