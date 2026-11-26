@@ -252,8 +252,9 @@ fn a_restored_draft_keeps_its_client_id() {
     });
 }
 
-/// Holds `diff_raw` and `current_branch` while closed, so a tab load's
-/// effect stays in flight until the test opens it.
+/// Holds `diff_raw`, `current_branch` and `gitignored_paths` while
+/// closed, so a tab load's effect, or a watched scan, stays in flight until
+/// the test opens it.
 #[derive(Default)]
 pub(super) struct Gate {
     closed: Mutex<bool>,
@@ -308,6 +309,11 @@ impl Git for GatedGit {
         CliGit.current_branch(repo_root)
     }
 
+    fn gitignored_paths(&self, repo_root: &str, paths: &[String]) -> HashSet<String> {
+        self.0.pass();
+        CliGit.gitignored_paths(repo_root, paths)
+    }
+
     pass_through! {
         repo_root_cwd() -> Result<String, GitError>;
         repo_root_in(dir: &str) -> Result<String, GitError>;
@@ -335,7 +341,6 @@ impl Git for GatedGit {
         blob_oid(root: &str, spec: &str) -> Result<String, GitError>;
         read_blob(root: &str, spec: &str, max_bytes: usize) -> Result<Vec<u8>, GitError>;
         paths_present_at(root: &str, rev: &str, paths: &[String]) -> Result<Vec<String>, GitError>;
-        gitignored_paths(repo_root: &str, paths: &[String]) -> HashSet<String>;
         diff_watched_file_snapshot(repo_root: &str, rel_path: &str, snapshots_dir: &str) -> Result<Option<String>, GitError>;
         blame_range(request: &BlameRequest<'_>) -> Result<LineAttribution, GitError>;
         merge_base(repo_root: &str, a: &str, b: &str) -> Result<String, GitError>;
