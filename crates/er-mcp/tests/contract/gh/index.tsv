@@ -17,7 +17,3 @@ pr-600-size.json	0	pr	view	600	--repo	VilfredSikker/easy-review	--json	additions
 pr-600.diff	0	pr	diff	600	--repo	VilfredSikker/easy-review
 pr-head-no-such-branch.json	0	pr	list	--repo	VilfredSikker/easy-review	--head	no-such-branch	--state	open	--limit	10	--json	number,isDraft
 api-user-login.txt	0	api	--include	user	--jq	.login
-mcpjam-8156-refs.txt	0	pr	view	8156	--repo	MCPJam/inspector	--json	baseRefName,headRefName	--jq	[.baseRefName, .headRefName] | @tsv
-mcpjam-review-md-main.txt	0	api	--include	repos/MCPJam/inspector/contents/REVIEW.md?ref=main	-H	Accept: application/vnd.github.raw+json
-mcpjam-8156-size.json	0	pr	view	8156	--repo	MCPJam/inspector	--json	additions,deletions,changedFiles	--jq	{additions: .additions, deletions: .deletions, files: .changedFiles}
-mcpjam-8156.diff	0	pr	diff	8156	--repo	MCPJam/inspector

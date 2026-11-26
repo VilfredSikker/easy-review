@@ -201,9 +201,10 @@ pub struct Scenario {
 }
 
 impl Scenario {
-    pub fn start() -> Self {
+    /// A scenario whose fake `gh` serves `fixtures`.
+    pub fn start_with_fixtures(fixtures: &Path) -> Self {
         Self {
-            mcp: Mcp::start(),
+            mcp: Mcp::start_with_fixtures(fixtures),
             steps: Vec::new(),
             generated: Vec::new(),
         }
@@ -257,7 +258,17 @@ impl Scenario {
 
 /// Run `scenario` on two fresh temp roots; both must record the same steps.
 pub fn run_twice(scenario: fn(&mut Scenario)) -> Value {
-    let mut runs = [Scenario::start(), Scenario::start()].map(|mut run| {
+    run_twice_with("gh", scenario)
+}
+
+/// [`run_twice`] with the fake `gh` serving `tests/contract/<fixtures>/`.
+pub fn run_twice_with(fixtures: &str, scenario: fn(&mut Scenario)) -> Value {
+    let fixtures = contract_dir().join(fixtures);
+    let mut runs = [
+        Scenario::start_with_fixtures(&fixtures),
+        Scenario::start_with_fixtures(&fixtures),
+    ]
+    .map(|mut run| {
         scenario(&mut run);
         run.finish()
     });
