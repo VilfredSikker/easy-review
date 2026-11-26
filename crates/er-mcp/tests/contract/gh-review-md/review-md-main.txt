@@ -1,0 +1,32 @@
+HTTP/2.0 200 OK
+Access-Control-Allow-Origin: *
+Access-Control-Expose-Headers: ETag, Link, Location, Retry-After, X-GitHub-OTP, X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Used, X-RateLimit-Resource, X-RateLimit-Reset, X-OAuth-Scopes, X-Accepted-OAuth-Scopes, X-Poll-Interval, X-GitHub-Media-Type, X-GitHub-SSO, X-GitHub-Request-Id, Deprecation, Sunset, Warning
+Cache-Control: private, max-age=60, s-maxage=60
+Content-Length: 158
+Content-Security-Policy: default-src 'none'
+Content-Type: application/vnd.github.raw+json; charset=utf-8
+Date: Thu, 26 Nov 2026 14:55:36 GMT
+Etag: "ab7a7174e3a35e2ccf7b4324846e44471c59c758"
+Last-Modified: Sat, 21 Nov 2026 10:45:19 GMT
+Referrer-Policy: origin-when-cross-origin, strict-origin-when-cross-origin
+Server: github.com
+Strict-Transport-Security: max-age=31536000; includeSubdomains; preload
+Vary: Accept, Authorization, Cookie, X-GitHub-OTP, Accept-Encoding, Accept, X-Requested-With
+X-Content-Type-Options: nosniff
+X-Frame-Options: deny
+X-Github-Api-Version-Selected: 2022-11-28
+X-Github-Edge-Region: fra
+X-Github-Media-Type: github.v3; param=raw; format=json
+X-Github-Request-Id: 56A8:199464:5423675:7C49956:6B084868
+X-Ratelimit-Limit: 5000
+X-Ratelimit-Remaining: 4983
+X-Ratelimit-Reset: 1795707455
+X-Ratelimit-Resource: core
+X-Ratelimit-Used: 17
+X-Xss-Protection: 0
+
+# Review rules
+
+- Report broken contracts, data loss and wrong results first.
+- Skip formatting, naming and import order.
+- Cite the line a finding is about.

@@ -9,7 +9,3 @@ pr-575-size.json	0	pr	view	575	--repo	VilfredSikker/easy-review	--json	additions
 review-md-main.txt	1	api	--include	repos/VilfredSikker/easy-review/contents/REVIEW.md?ref=main	-H	Accept: application/vnd.github.raw+json
 pr-575.diff	0	pr	diff	575	--repo	VilfredSikker/easy-review
 pr-for-branch-ci-staging-prs.json	0	pr	view	--json	number,headRepository
-mcpjam-8156-refs.txt	0	pr	view	8156	--repo	MCPJam/inspector	--json	baseRefName,headRefName	--jq	[.baseRefName, .headRefName] | @tsv
-mcpjam-review-md-main.txt	0	api	--include	repos/MCPJam/inspector/contents/REVIEW.md?ref=main	-H	Accept: application/vnd.github.raw+json
-mcpjam-8156-size.json	0	pr	view	8156	--repo	MCPJam/inspector	--json	additions,deletions,changedFiles	--jq	{additions: .additions, deletions: .deletions, files: .changedFiles}
-mcpjam-8156.diff	0	pr	diff	8156	--repo	MCPJam/inspector
