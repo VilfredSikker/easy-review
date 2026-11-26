@@ -94,6 +94,13 @@ impl SettingsBridge {
         landed
     }
 
+    /// The commands whose reply has not landed. A write's reply lands once
+    /// its save is on disk.
+    #[cfg(test)]
+    pub fn in_flight(&self) -> usize {
+        self.replies.len()
+    }
+
     /// Whether a start notice is new at the settings `revision`.
     pub fn admit_once(&mut self, revision: u64, message: &str) -> bool {
         let entry = (revision, message.to_string());
