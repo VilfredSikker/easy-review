@@ -11,7 +11,7 @@ use std::path::Path;
 
 use er_engine::ai::{ErNotes, ErQuestions, ErReview};
 use er_engine::test_support::write_sidecar_json;
-use harness::{assert_golden, mask_root, run_twice, Mcp, Scenario, SEEDED_AT};
+use harness::{assert_golden, mask_root, run_twice, run_twice_with, Mcp, Scenario, SEEDED_AT};
 use serde_json::{json, Value};
 
 /// The PR the `gh` fixtures were captured from.
@@ -132,9 +132,6 @@ fn the_gh_resolve_forms_match_their_golden() {
     assert_golden("resolve_forms", &run_twice(resolve_forms));
 }
 
-/// A PR whose base branch holds a REVIEW.md, so the kit names one.
-const PR_WITH_REVIEW_MD: &str = "MCPJam/inspector#8156";
-
 /// The tour example the kit offers, as `pr_guide` prepare returns it.
 fn tour_example() -> Value {
     json!({
@@ -157,9 +154,10 @@ fn tour_example() -> Value {
 }
 
 /// A review-kind kit with a REVIEW.md, every sidecar uploaded, then the
-/// pinned row and the summary that read them.
+/// pinned row and the summary that read them. Its fake `gh` serves PR #575
+/// with a REVIEW.md on its base (`tests/contract/gh-review-md/`).
 fn review_kinds(s: &mut Scenario) {
-    let pr = PR_WITH_REVIEW_MD;
+    let pr = PR;
     let kit = s.call(
         "pr_prepare",
         json!({ "ref": pr, "kinds": ["triage", "review"] }),
@@ -202,14 +200,17 @@ fn review_kinds(s: &mut Scenario) {
     );
     s.call(
         "pr_saved",
-        json!({ "repo": "MCPJam/inspector", "action": "list", "source": "pinned" }),
+        json!({ "repo": REPO, "action": "list", "source": "pinned" }),
     );
     s.call("pr_summarize", json!({ "ref": pr }));
 }
 
 #[test]
 fn the_review_kinds_match_their_golden() {
-    assert_golden("review_kinds", &run_twice(review_kinds));
+    assert_golden(
+        "review_kinds",
+        &run_twice_with("gh-review-md", review_kinds),
+    );
 }
 
 /// `text` with the kit's `<DIFF_HASH>` placeholder filled in.
