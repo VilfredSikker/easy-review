@@ -376,9 +376,8 @@ fn every_refresh_and_status_fetch_goes_through_its_guard() {
     };
     // The two kicks live with the owner, whose tests hold them to their
     // guards; the desktop's own synchronous fetch is held here.
-    for (name, begin) in [("refresh_status_now", "begin_status_fetch(")] {
-        assert!(body(name).contains(begin), "{name} skips {begin}");
-    }
+    let (name, begin) = ("refresh_status_now", "begin_status_fetch(");
+    assert!(body(name).contains(begin), "{name} skips {begin}");
     // Each fetch call outside its definition sits under a begin whose guard
     // is kept.
     for (path, text) in &sources {
