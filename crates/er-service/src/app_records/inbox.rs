@@ -631,7 +631,7 @@ pub fn load_inbox_state() -> InboxState {
     }
 }
 
-pub fn save_inbox_state(handle: &InboxHandle) {
+pub(crate) fn save_inbox_state(handle: &InboxHandle) {
     let Ok(key) = er_engine::store_registry::app_key::<InboxFile>() else {
         return;
     };

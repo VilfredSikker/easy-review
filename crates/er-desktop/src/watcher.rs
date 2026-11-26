@@ -149,7 +149,7 @@ pub fn probe_target(service: &ServiceState) -> Option<ProbeTarget> {
     let remote = slug
         .map(|(owner, repo)| format!("{owner}/{repo}"))
         .or_else(|| {
-            crate::projects::load()
+            er_service::app_records::projects::load()
                 .projects
                 .into_iter()
                 .find(|project| project.root_path == tab.repo_root)

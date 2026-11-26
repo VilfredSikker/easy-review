@@ -9,9 +9,10 @@ use er_protocol::{
     ResourceKey, ResourceVersion, Versioned,
 };
 
-use crate::app_owner::SidebarOwner;
-use crate::inbox::InboxState;
+use crate::page_view::RefreshMeta;
 use crate::state::DesktopState;
+use er_service::app_records::inbox::InboxState;
+use er_service::app_records::SidebarOwner;
 
 /// `key`'s content at the version its owner last published.
 pub fn fetch(desktop: &DesktopState, key: ResourceKey) -> Result<Versioned<Resource>, ErError> {
@@ -52,7 +53,7 @@ pub fn fetch(desktop: &DesktopState, key: ResourceKey) -> Result<Versioned<Resou
                 .map_err(|message| failed(project, message))?;
             let prs = prs
                 .iter()
-                .map(|pr| crate::app_owner::pr_row(pr, None))
+                .map(|pr| er_service::app_records::app_owner::pr_row(pr, None))
                 .collect();
             (0, Resource::AvailablePrs(AvailablePrs { prs }))
         }
@@ -190,7 +191,10 @@ pub fn send(desktop: &DesktopState, command: Command) -> Result<Ack, ErError> {
     let mut opened = None;
     match command {
         Command::ReorderProjects { ordered } => {
-            crate::projects::reorder_projects(&ordered).map_err(|e| failed("", e.to_string()))?;
+            desktop
+                .app_owner
+                .reorder_projects(&ordered)
+                .map_err(|e| failed("", e.to_string()))?;
         }
         Command::DeleteProject { project } => {
             crate::route_helpers::delete_project_and_its_prs(desktop, &project)
@@ -207,19 +211,21 @@ pub fn send(desktop: &DesktopState, command: Command) -> Result<Ack, ErError> {
             desktop.app_owner.refresh_project_meta(git, &project);
         }
         Command::PatchProjectReviewSettings { project, patch } => {
-            let patch = crate::projects::ProjectReviewSettingsPatch {
+            let patch = er_service::app_records::projects::ProjectReviewSettingsPatch {
                 auto_triage_max_diff_kb: patch.auto_triage_max_diff_kb,
                 review_ignore_glob_add: patch.review_ignore_glob_add,
                 review_ignore_glob_remove: patch
                     .review_ignore_glob_remove
                     .and_then(|index| usize::try_from(index).ok()),
             };
-            crate::projects::patch_project_review_settings(&project, patch)
+            desktop
+                .app_owner
+                .patch_project_review_settings(&project, patch)
                 .map_err(|e| failed(&project, e.to_string()))?;
         }
         Command::RefreshPrList => refresh_prs(desktop, None)?,
         Command::RefreshProjectPrList { project } => {
-            let file = crate::projects::load();
+            let file = er_service::app_records::projects::load();
             let Some(record) = file.projects.iter().find(|p| p.id == project) else {
                 return Err(failed(&project, format!("Project not found: {project}")));
             };
@@ -228,18 +234,24 @@ pub fn send(desktop: &DesktopState, command: Command) -> Result<Ack, ErError> {
             }
         }
         Command::DismissPr { project, number } => {
-            crate::projects::dismiss_pr(&project, number);
+            desktop.app_owner.dismiss_pr(&project, number);
         }
         Command::UndismissPr { project, number } => {
-            crate::projects::undismiss_pr(&project, number)
+            desktop
+                .app_owner
+                .undismiss_pr(&project, number)
                 .map_err(|e| failed(&project, e.to_string()))?;
         }
         Command::TrackPr { project, number } => {
-            crate::projects::track_pr(&project, number)
+            desktop
+                .app_owner
+                .track_pr(&project, number)
                 .map_err(|e| failed(&project, e.to_string()))?;
         }
         Command::UntrackPr { project, number } => {
-            crate::projects::untrack_pr(&project, number)
+            desktop
+                .app_owner
+                .untrack_pr(&project, number)
                 .map_err(|e| failed(&project, e.to_string()))?;
         }
         Command::SavePr {
@@ -251,25 +263,29 @@ pub fn send(desktop: &DesktopState, command: Command) -> Result<Ack, ErError> {
                 &project, number, title, desktop,
             )
             .map_err(|message| failed(&project, message))?;
-            crate::projects::save_pr(&project, number, &title)
+            desktop
+                .app_owner
+                .save_pr(&project, number, &title)
                 .map_err(|e| failed(&project, e.to_string()))?;
         }
         Command::UnsavePr { project, number } => {
-            crate::projects::unsave_pr(&project, number)
+            desktop
+                .app_owner
+                .unsave_pr(&project, number)
                 .map_err(|e| failed(&project, e.to_string()))?;
         }
         Command::MarkInboxItemRead { id } => {
-            let now = crate::inbox::now_epoch_ms();
+            let now = er_service::app_records::inbox::now_epoch_ms();
             write_inbox(desktop, |inbox| {
                 inbox.mark_item_read(&id, now);
             })?;
         }
         Command::MarkAllInboxRead => {
-            let now = crate::inbox::now_epoch_ms();
+            let now = er_service::app_records::inbox::now_epoch_ms();
             write_inbox(desktop, |inbox| inbox.mark_all_read(now))?;
         }
         Command::MarkInboxItemsRead { ids } => {
-            let now = crate::inbox::now_epoch_ms();
+            let now = er_service::app_records::inbox::now_epoch_ms();
             write_inbox(desktop, |inbox| inbox.mark_items_read(&ids, now))?;
         }
         Command::ClearReadInboxItems => write_inbox(desktop, InboxState::clear_read)?,
@@ -456,7 +472,7 @@ fn refresh_prs(desktop: &DesktopState, remote: Option<String>) -> Result<(), ErE
 /// not found.
 fn failed(project: &str, message: String) -> ErError {
     let missing = !project.is_empty()
-        && !crate::projects::load()
+        && !er_service::app_records::projects::load()
             .projects
             .iter()
             .any(|p| p.id == project);

@@ -33,3 +33,15 @@ lock and writes after releasing it, and port calls run on effect threads.
 - A workspace actor's key is `workspace_key` of the tab's identity: its local
   root, or `remote:<owner/repo>` for a remote PR. It never reads the project
   list, so a tab cannot drift to another actor.
+- The inbox, the projects record, the PR cache and the GitHub status cache
+  followed this home. They live in er-service's `app_records` module with
+  the owner that publishes the sidebar's resources from them
+  (`crates/er-service/src/app_records/app_owner.rs`). The desktop builds that
+  owner, a second app-scoped owner beside `AppRegistry`. In its process it
+  is the one writer of the projects record and the one saver of the inbox:
+  the record's writers are private to the crate, and the desktop calls the
+  owner's methods. Across processes, MCP's pin tools still write the record
+  through the engine, and the store's scope lock orders the writers. The
+  three cache kinds register through `register_desktop_kinds`, which only
+  the desktop's composition calls, so the TUI and MCP registries leave them
+  out.
