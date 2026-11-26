@@ -230,7 +230,6 @@ fn thread(id: &str, text: &str) -> Value {
     })
 }
 
-/// A question, a note and a finding in `bucket`.
 /// A reply id with its clock digits as `<millis>`: `q-1795…-0` reads
 /// `q-<millis>-0`, so the prefix and the sequence stay in the golden.
 fn clock_digits_masked(id: &str) -> String {
@@ -246,8 +245,8 @@ fn clock_digits_masked(id: &str) -> String {
     )
 }
 
-/// The thread fixtures, and PR #575's diff as the bucket's `diff-tmp`, so
-/// the replies' and reads' diff hash is the real one.
+/// A question, a note and a finding in `bucket`, and PR #575's diff as its
+/// `diff-tmp`, so the replies and reads carry the real diff hash.
 fn seed_feedback(bucket: &Path) {
     let diff = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/contract/gh/pr-575.diff");
     std::fs::create_dir_all(bucket).expect("bucket dir");
