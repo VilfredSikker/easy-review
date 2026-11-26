@@ -51,3 +51,58 @@ fn a_gh_call_with_no_fixture_fails_the_scenario() {
         .unwrap_or_default();
     assert!(message.contains("called gh with no fixture"), "{message}");
 }
+
+/// A pin with no title asks gh for one: `gh pr view 7 --repo acme/widgets
+/// --json title`. The fixtures dir lists that call against `fixture`.
+fn pin_with_fixture(fixture: &str, body: Option<&str>) -> (Mcp, Value, tempfile::TempDir) {
+    let fixtures = tempfile::tempdir().expect("fixtures dir");
+    let call = [
+        "pr",
+        "view",
+        "7",
+        "--repo",
+        "acme/widgets",
+        "--json",
+        "title",
+    ]
+    .join("\t");
+    std::fs::write(
+        fixtures.path().join("index.tsv"),
+        format!("{fixture}\t0\t{call}\n"),
+    )
+    .expect("index");
+    if let Some(body) = body {
+        std::fs::write(fixtures.path().join(fixture), body).expect("fixture");
+    }
+    let mut mcp = Mcp::start_with_fixtures(fixtures.path());
+    let reply = mcp.call(
+        "pr_saved",
+        json!({ "action": "pin", "repo": "acme/widgets", "number": 7 }),
+    );
+    (mcp, reply, fixtures)
+}
+
+#[test]
+fn a_listed_call_is_served_from_its_fixture() {
+    let (mcp, reply, _fixtures) = pin_with_fixture("title.json", Some(r#"{"title":"Fix"}"#));
+    mcp.finish();
+    assert!(
+        reply.to_string().contains(r#"\"title\": \"Fix\""#),
+        "{reply}"
+    );
+}
+
+#[test]
+fn a_listed_call_whose_fixture_is_missing_fails_the_scenario() {
+    let (mcp, _reply, _fixtures) = pin_with_fixture("missing.json", None);
+    let finished = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| mcp.finish()));
+    let message = finished
+        .expect_err("a missing fixture must fail the scenario")
+        .downcast::<String>()
+        .map(|message| *message)
+        .unwrap_or_default();
+    assert!(
+        message.contains("pr view 7 --repo acme/widgets"),
+        "{message}"
+    );
+}

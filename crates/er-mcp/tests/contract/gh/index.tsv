@@ -1,3 +1,3 @@
 # Calls the fake gh answers, one per line, tab-separated:
-# <arguments after gh, exactly as er-mcp passes them> <fixture file> <exit code>
-# Each fixture is real gh's stdout for "gh <arguments>", captured as is.
+# <fixture file> <exit code> <each argument after gh, as er-mcp passes it>
+# Each fixture is real gh's stdout for that call, captured as is.

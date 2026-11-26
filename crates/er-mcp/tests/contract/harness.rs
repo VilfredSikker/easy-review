@@ -41,6 +41,11 @@ impl Mcp {
     /// Start the binary with an empty storage root, home and legacy config
     /// dir, and the fake `gh` first on `PATH`.
     pub fn start() -> Self {
+        Self::start_with_fixtures(&contract_dir().join("gh"))
+    }
+
+    /// [`Mcp::start`] with the fake `gh` serving `fixtures`.
+    pub fn start_with_fixtures(fixtures: &Path) -> Self {
         let root = tempfile::tempdir().expect("temp root");
         let dirs = ["storage", "home", "legacy-config", "work"];
         for dir in dirs {
@@ -58,7 +63,7 @@ impl Mcp {
             .env("HOME", root.path().join("home"))
             .env("ER_STORAGE_ROOT", root.path().join("storage"))
             .env("ER_LEGACY_CONFIG_DIR", root.path().join("legacy-config"))
-            .env("ER_FAKE_GH_FIXTURES", contract_dir().join("gh"))
+            .env("ER_FAKE_GH_FIXTURES", fixtures)
             .env("ER_FAKE_GH_LOG", root.path().join("gh-calls.log"))
             .env("TMPDIR", std::env::temp_dir())
             .current_dir(root.path().join("work"))
@@ -209,6 +214,10 @@ pub fn assert_golden(name: &str, value: &Value) {
     text.push('\n');
     let path = contract_dir().join("goldens").join(format!("{name}.json"));
     if std::env::var_os("ER_UPDATE_GOLDENS").is_some() {
+        assert!(
+            std::env::var_os("CI").is_none(),
+            "ER_UPDATE_GOLDENS is refused under CI: record goldens locally"
+        );
         std::fs::create_dir_all(path.parent().expect("goldens dir")).expect("goldens dir");
         std::fs::write(&path, &text).expect("write golden");
         return;
