@@ -336,7 +336,8 @@ impl AppOwner {
         git: &dyn Git,
         refs: &[TabProjectRef],
     ) {
-        self.wrote(projects::sync_projects_from_refs(github, git, refs));
+        projects::sync_projects_from_refs(github, git, refs);
+        self.publish();
     }
 
     pub fn ensure_remote_project(&self, remote: &str) -> anyhow::Result<String> {
@@ -352,7 +353,8 @@ impl AppOwner {
     }
 
     pub fn set_active_project(&self, project: &str) {
-        self.wrote(projects::set_active(project));
+        projects::set_active(project);
+        self.publish();
     }
 
     pub fn patch_project_review_settings(
@@ -372,7 +374,8 @@ impl AppOwner {
     }
 
     pub fn dismiss_pr(&self, project: &str, number: u64) {
-        self.wrote(projects::dismiss_pr(project, number));
+        projects::dismiss_pr(project, number);
+        self.publish();
     }
 
     pub fn undismiss_pr(&self, project: &str, number: u64) -> anyhow::Result<()> {
