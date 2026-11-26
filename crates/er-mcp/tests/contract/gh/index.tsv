@@ -1,3 +1,9 @@
 # Calls the fake gh answers, one per line, tab-separated:
 # <arguments after gh, exactly as er-mcp passes them> <fixture file> <exit code>
-# Each fixture is real gh's stdout for "gh <arguments>", captured as is.
+# Each fixture is real gh's stdout for "gh <arguments>", captured as is, except
+# that the X-Oauth-* response headers (the capturing account's token scopes) are
+# dropped from the --include captures.
+pr view 575 --repo VilfredSikker/easy-review --json baseRefName,headRefName --jq [.baseRefName, .headRefName] | @tsv	pr-575-refs.txt	0
+pr view 575 --repo VilfredSikker/easy-review --json additions,deletions,changedFiles --jq {additions: .additions, deletions: .deletions, files: .changedFiles}	pr-575-size.json	0
+api --include repos/VilfredSikker/easy-review/contents/REVIEW.md?ref=main -H Accept: application/vnd.github.raw+json	review-md-main.txt	1
+pr diff 575 --repo VilfredSikker/easy-review	pr-575.diff	0

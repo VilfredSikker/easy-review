@@ -1,0 +1,148 @@
+[
+  {
+    "arguments": {
+      "action": "pin",
+      "ref": "VilfredSikker/easy-review#575",
+      "title": "CI: run on pull requests into staging"
+    },
+    "reply": {
+      "content": [
+        {
+          "json": {
+            "pinned": {
+              "bucket_path": "<root>/storage/repos/vilfredsikker-easy-review-42b93a89/prs/pr-575",
+              "kinds": [],
+              "missing": [
+                "triage.json",
+                "review.json",
+                "tour.json"
+              ],
+              "number": 575,
+              "review": null,
+              "saved_at_ms": "<clock>",
+              "title": "CI: run on pull requests into staging",
+              "tour": null,
+              "triage": null
+            },
+            "project": "vilfredsikker/easy-review",
+            "project_id": "<project-id>",
+            "repo": "VilfredSikker/easy-review"
+          },
+          "type": "text"
+        }
+      ],
+      "isError": false,
+      "resultType": "complete"
+    },
+    "tool": "pr_saved"
+  },
+  {
+    "arguments": {
+      "action": "list",
+      "repo": "VilfredSikker/easy-review"
+    },
+    "reply": {
+      "content": [
+        {
+          "json": {
+            "artifacts": [],
+            "pinned": [
+              {
+                "bucket_path": "<root>/storage/repos/vilfredsikker-easy-review-42b93a89/prs/pr-575",
+                "kinds": [],
+                "missing": [
+                  "triage.json",
+                  "review.json",
+                  "tour.json"
+                ],
+                "number": 575,
+                "review": null,
+                "saved_at_ms": "<clock>",
+                "title": "CI: run on pull requests into staging",
+                "tour": null,
+                "triage": null
+              }
+            ],
+            "project": "vilfredsikker/easy-review",
+            "project_id": "<project-id>",
+            "repo": "VilfredSikker/easy-review"
+          },
+          "type": "text"
+        }
+      ],
+      "isError": false,
+      "resultType": "complete"
+    },
+    "tool": "pr_saved"
+  },
+  {
+    "arguments": {},
+    "reply": {
+      "content": [
+        {
+          "json": {
+            "active_id": null,
+            "projects": [
+              {
+                "id": "<project-id>",
+                "name": "vilfredsikker/easy-review",
+                "remote": "vilfredsikker/easy-review",
+                "root_path": ""
+              }
+            ]
+          },
+          "type": "text"
+        }
+      ],
+      "isError": false,
+      "resultType": "complete"
+    },
+    "tool": "projects_list"
+  },
+  {
+    "arguments": {
+      "action": "unpin",
+      "ref": "VilfredSikker/easy-review#575"
+    },
+    "reply": {
+      "content": [
+        {
+          "json": {
+            "number": 575,
+            "project": "vilfredsikker/easy-review",
+            "project_id": "<project-id>",
+            "removed": true,
+            "repo": "VilfredSikker/easy-review"
+          },
+          "type": "text"
+        }
+      ],
+      "isError": false,
+      "resultType": "complete"
+    },
+    "tool": "pr_saved"
+  },
+  {
+    "arguments": {
+      "action": "list",
+      "repo": "VilfredSikker/easy-review"
+    },
+    "reply": {
+      "content": [
+        {
+          "json": {
+            "artifacts": [],
+            "pinned": [],
+            "project": "vilfredsikker/easy-review",
+            "project_id": "<project-id>",
+            "repo": "VilfredSikker/easy-review"
+          },
+          "type": "text"
+        }
+      ],
+      "isError": false,
+      "resultType": "complete"
+    },
+    "tool": "pr_saved"
+  }
+]

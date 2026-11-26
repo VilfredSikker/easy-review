@@ -7,8 +7,12 @@
 #[path = "contract/harness.rs"]
 mod harness;
 
-use harness::{assert_golden, mask_root, Mcp};
+use harness::{assert_golden, mask_root, run_twice, Mcp, Scenario};
 use serde_json::{json, Value};
+
+/// The PR the `gh` fixtures were captured from.
+const PR: &str = "VilfredSikker/easy-review#575";
+const REPO: &str = "VilfredSikker/easy-review";
 
 /// `tools/list` on one fresh child, tools in name order, the temp root masked.
 fn tools_list() -> Value {
@@ -50,4 +54,95 @@ fn a_gh_call_with_no_fixture_fails_the_scenario() {
         .map(|message| *message)
         .unwrap_or_default();
     assert!(message.contains("called gh with no fixture"), "{message}");
+}
+
+/// `text` with the kit's `<DIFF_HASH>` placeholder filled in.
+fn with_hash(example: &Value, hash: &str) -> String {
+    example.to_string().replace("<DIFF_HASH>", hash)
+}
+
+/// Prepare, upload triage (accepted, then rejected twice), guide, summarize.
+fn review_flow(s: &mut Scenario) {
+    let kit = s.call("pr_prepare", json!({ "ref": PR }));
+    let hash = kit["kit"]["diff_hash"]
+        .as_str()
+        .expect("diff_hash")
+        .to_string();
+    let triage = &kit["artifact_specs"]["specs"][0]["examples"]["triage.json"];
+    s.call(
+        "pr_upload",
+        json!({ "ref": PR, "kind": "triage", "files": { "triage.json": with_hash(triage, &hash) } }),
+    );
+    s.call(
+        "pr_upload",
+        json!({ "ref": PR, "kind": "triage", "files": { "triage.json": with_hash(triage, "stale") } }),
+    );
+    s.call(
+        "pr_upload",
+        json!({ "ref": PR, "kind": "tour", "files": { "tour.json": "{}" } }),
+    );
+    let guide = s.call("pr_guide", json!({ "ref": PR }));
+    let tour = &guide["artifact_specs"]["specs"][0]["examples"]["tour.json"];
+    s.call(
+        "pr_guide",
+        json!({ "ref": PR, "action": "upload", "files": { "tour.json": with_hash(tour, &hash) } }),
+    );
+    s.call("pr_summarize", json!({ "ref": PR }));
+}
+
+/// List, prepare, upload (accepted and rejected), list again.
+fn diagrams(s: &mut Scenario) {
+    s.call("pr_diagram", json!({ "ref": PR }));
+    let kit = s.call(
+        "pr_diagram",
+        json!({ "ref": PR, "action": "prepare", "kind": "flows" }),
+    );
+    let diagram = json!({
+        "version": 1,
+        "diff_hash": kit["kit"]["diff_hash"],
+        "kind": "flows",
+        "title": "CI triggers",
+        "prompt": "",
+        "mermaid": "flowchart TD\n  PR-->CI",
+    })
+    .to_string();
+    for file in ["flows.json", "mental-model.json"] {
+        s.call(
+            "pr_diagram",
+            json!({ "ref": PR, "action": "upload", "kind": "flows", "files": { file: diagram } }),
+        );
+    }
+    s.call("pr_diagram", json!({ "ref": PR, "action": "list" }));
+}
+
+/// Pin (which adds the project), list, the projects record, unpin, list.
+fn saved(s: &mut Scenario) {
+    let pinned = s.call(
+        "pr_saved",
+        json!({ "ref": PR, "action": "pin", "title": "CI: run on pull requests into staging" }),
+    );
+    let project_id = pinned["project_id"]
+        .as_str()
+        .expect("project_id")
+        .to_string();
+    s.generated(&project_id, "<project-id>");
+    s.call("pr_saved", json!({ "repo": REPO, "action": "list" }));
+    s.call("projects_list", json!({}));
+    s.call("pr_saved", json!({ "ref": PR, "action": "unpin" }));
+    s.call("pr_saved", json!({ "repo": REPO, "action": "list" }));
+}
+
+#[test]
+fn review_flow_matches_its_golden() {
+    assert_golden("review_flow", &run_twice(review_flow));
+}
+
+#[test]
+fn diagrams_match_their_golden() {
+    assert_golden("diagrams", &run_twice(diagrams));
+}
+
+#[test]
+fn saved_prs_match_their_golden() {
+    assert_golden("saved", &run_twice(saved));
 }
