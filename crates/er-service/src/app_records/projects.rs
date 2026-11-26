@@ -31,7 +31,7 @@ pub fn remote_slug_as_written(remote: &str) -> String {
 
 /// Split a project remote into `(owner, repo)` keeping its spelling, which is
 /// what the sidebar passes and so what the remote open cache is keyed by.
-pub(crate) fn remote_owner_repo(remote: &str) -> Option<(String, String)> {
+pub fn remote_owner_repo(remote: &str) -> Option<(String, String)> {
     er_engine::github::RepoSlug::parse(remote).map(|slug| (slug.owner, slug.repo))
 }
 
@@ -84,7 +84,7 @@ fn ensure_remote_project_in_file(file: &mut ProjectsFile, remote: &str) -> anyho
     Ok(unique_id)
 }
 
-pub fn ensure_remote_project(remote: &str) -> anyhow::Result<String> {
+pub(crate) fn ensure_remote_project(remote: &str) -> anyhow::Result<String> {
     let mut project_id = None;
     update_file(|file| {
         let before = file.projects.len();
@@ -106,7 +106,7 @@ fn delete_project_in_file(file: &mut ProjectsFile, project_id: &str) -> anyhow::
     Ok(())
 }
 
-pub fn delete_project(project_id: &str) -> anyhow::Result<()> {
+pub(crate) fn delete_project(project_id: &str) -> anyhow::Result<()> {
     update_file(|file| {
         delete_project_in_file(file, project_id)?;
         Ok(true)
@@ -118,7 +118,7 @@ pub fn delete_project(project_id: &str) -> anyhow::Result<()> {
 /// payload are ignored; records missing from the payload keep their relative
 /// order at the end. Empty payloads are a no-op so a bad client cannot wipe
 /// the list.
-pub fn reorder_projects(ordered_ids: &[String]) -> anyhow::Result<()> {
+pub(crate) fn reorder_projects(ordered_ids: &[String]) -> anyhow::Result<()> {
     update_file(|file| Ok(reorder_projects_in_file(file, ordered_ids)))
 }
 
@@ -153,7 +153,7 @@ fn reorder_projects_in_file(file: &mut ProjectsFile, ordered_ids: &[String]) -> 
 // Pin/ignore mutations run on the blocking pool (their Tauri commands are
 // async) while other projects.json writers stay on the main thread, so they
 // take the `update_file` lock instead of an unguarded load-mutate-save.
-pub fn save_pr(project_id: &str, pr_number: u64, title: &str) -> anyhow::Result<()> {
+pub(crate) fn save_pr(project_id: &str, pr_number: u64, title: &str) -> anyhow::Result<()> {
     update_file(|file| {
         let proj = file
             .projects
@@ -175,7 +175,7 @@ pub fn save_pr(project_id: &str, pr_number: u64, title: &str) -> anyhow::Result<
     })
 }
 
-pub fn unsave_pr(project_id: &str, pr_number: u64) -> anyhow::Result<()> {
+pub(crate) fn unsave_pr(project_id: &str, pr_number: u64) -> anyhow::Result<()> {
     update_file(|file| {
         let proj = file
             .projects
@@ -450,7 +450,7 @@ fn sync_project_refs_in_file(file: &mut ProjectsFile, refs: &[TabProjectRef]) ->
 }
 
 /// Register every unique local repo and remote slug in `refs`.
-pub fn sync_projects_from_refs(
+pub(crate) fn sync_projects_from_refs(
     github: &dyn er_engine::github::GitHub,
     git: &dyn er_engine::git::Git,
     refs: &[TabProjectRef],
@@ -499,7 +499,7 @@ fn project_root_for(git: &dyn er_engine::git::Git, path: &str) -> Option<String>
 
 /// Register the repository containing `root_path`, or `None` when the path
 /// isn't in a repository. Returns the existing row when one already covers it.
-pub fn auto_register(
+pub(crate) fn auto_register(
     github: &dyn er_engine::github::GitHub,
     git: &dyn er_engine::git::Git,
     root_path: &str,
@@ -566,7 +566,7 @@ pub fn auto_register(
     record
 }
 
-pub fn dismiss_pr(project_id: &str, pr_number: u64) {
+pub(crate) fn dismiss_pr(project_id: &str, pr_number: u64) {
     let _ = update_file(|file| {
         let Some(p) = file.projects.iter_mut().find(|p| p.id == project_id) else {
             return Ok(false);
@@ -579,7 +579,7 @@ pub fn dismiss_pr(project_id: &str, pr_number: u64) {
     });
 }
 
-pub fn undismiss_pr(project_id: &str, pr_number: u64) -> anyhow::Result<()> {
+pub(crate) fn undismiss_pr(project_id: &str, pr_number: u64) -> anyhow::Result<()> {
     update_file(|file| {
         let proj = file
             .projects
@@ -592,7 +592,7 @@ pub fn undismiss_pr(project_id: &str, pr_number: u64) -> anyhow::Result<()> {
     })
 }
 
-pub fn track_pr(project_id: &str, pr_number: u64) -> anyhow::Result<()> {
+pub(crate) fn track_pr(project_id: &str, pr_number: u64) -> anyhow::Result<()> {
     update_file(|file| {
         let proj = file
             .projects
@@ -615,7 +615,7 @@ pub fn track_pr(project_id: &str, pr_number: u64) -> anyhow::Result<()> {
     })
 }
 
-pub fn untrack_pr(project_id: &str, pr_number: u64) -> anyhow::Result<()> {
+pub(crate) fn untrack_pr(project_id: &str, pr_number: u64) -> anyhow::Result<()> {
     update_file(|file| {
         let proj = file
             .projects
@@ -643,7 +643,7 @@ fn add_tracked_branch_on_project(proj: &mut ProjectRecord, name: &str) -> bool {
     changed
 }
 
-pub fn add_tracked_branch(project_id: &str, name: &str) -> anyhow::Result<()> {
+pub(crate) fn add_tracked_branch(project_id: &str, name: &str) -> anyhow::Result<()> {
     update_file(|file| {
         let proj = file
             .projects
@@ -668,7 +668,7 @@ fn remove_tracked_branch_on_project(proj: &mut ProjectRecord, name: &str) -> boo
     changed
 }
 
-pub fn remove_tracked_branch(project_id: &str, name: &str) -> anyhow::Result<()> {
+pub(crate) fn remove_tracked_branch(project_id: &str, name: &str) -> anyhow::Result<()> {
     update_file(|file| {
         let proj = file
             .projects
@@ -679,7 +679,7 @@ pub fn remove_tracked_branch(project_id: &str, name: &str) -> anyhow::Result<()>
     })
 }
 
-pub fn set_active(id: &str) {
+pub(crate) fn set_active(id: &str) {
     let _ = update_file(|file| {
         if file.projects.iter().any(|p| p.id == id) {
             file.active_id = Some(id.to_string());
@@ -698,7 +698,7 @@ pub struct ProjectReviewSettingsPatch {
     pub review_ignore_glob_remove: Option<usize>,
 }
 
-pub fn patch_project_review_settings(
+pub(crate) fn patch_project_review_settings(
     project_id: &str,
     patch: ProjectReviewSettingsPatch,
 ) -> anyhow::Result<()> {
@@ -750,7 +750,7 @@ pub fn resolve_project_id_for_inbox(
     resolve_inbox_project_in_file(&load(), stored_id, repo_root, remote)
 }
 
-pub(crate) fn resolve_inbox_project_in_file(
+pub fn resolve_inbox_project_in_file(
     file: &ProjectsFile,
     stored_id: Option<&str>,
     repo_root: Option<&str>,

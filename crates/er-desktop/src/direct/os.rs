@@ -370,7 +370,7 @@ mod tests {
             "acme/widgets"
         );
         assert_eq!(
-            crate::projects::slug_from_remote_url(remote).as_deref(),
+            er_service::app_records::projects::slug_from_remote_url(remote).as_deref(),
             Some("Acme/Widgets")
         );
         assert_eq!(parse_github_slug(remote).as_deref(), Some("Acme/Widgets"));

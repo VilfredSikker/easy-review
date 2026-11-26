@@ -13,9 +13,9 @@ use er_service::{
     same_pr, AppCommand, Command, OpenTarget, Reply, TabContent, TabContext, TabEntry, TabsView,
 };
 
-use crate::projects;
 use crate::service::actor_key;
 use crate::state::DesktopState;
+use er_service::app_records::projects;
 
 /// The app registry's active tab.
 struct Active {
