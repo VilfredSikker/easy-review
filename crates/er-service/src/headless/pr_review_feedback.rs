@@ -12,8 +12,6 @@ use er_engine::ai::{
     append_finding_response, compute_diff_hash, load_ai_state, ErNotes, ErQuestions, Finding,
     PrivateAnnotation, RiskLevel,
 };
-use er_engine::github::owner_repo_storage_slug;
-use er_engine::storage::resolve_managed_root_for_pr_bucket;
 use er_engine::sync::chrono_now;
 
 /// Slim finding row for MCP / API consumers (merged review + experts + professor).
@@ -64,9 +62,10 @@ pub struct PrFeedbackResolve {
     pub already_resolved: bool,
 }
 
+#[cfg(test)]
 fn resolve_pr_er_dir(owner: &str, repo: &str, pr: u64) -> Result<String> {
-    let slug = owner_repo_storage_slug(owner, repo);
-    let er_dir = resolve_managed_root_for_pr_bucket(&slug, pr).er_dir();
+    let slug = er_engine::github::owner_repo_storage_slug(owner, repo);
+    let er_dir = er_engine::storage::resolve_managed_root_for_pr_bucket(&slug, pr).er_dir();
     if er_dir.is_empty() {
         bail!("failed to resolve managed PR storage for {owner}/{repo}#{pr}");
     }
@@ -391,17 +390,6 @@ pub fn get_review_feedback_in_dir(
     })
 }
 
-/// Read questions, notes, and merged AI findings from the managed PR bucket.
-pub fn get_pr_review_feedback(
-    owner: &str,
-    repo: &str,
-    number: u64,
-    include_resolved: bool,
-) -> Result<PrReviewFeedback> {
-    let er_dir = resolve_pr_er_dir(owner, repo, number)?;
-    get_review_feedback_in_dir(owner, repo, number, &er_dir, None, include_resolved)
-}
-
 /// Reply to a top-level question thread in a review bucket.
 pub fn reply_to_question_in_dir(
     er_dir: &str,
@@ -421,19 +409,6 @@ pub fn reply_to_question_in_dir(
         kind: "question".to_string(),
         parent_id: Some(question_id.to_string()),
     })
-}
-
-/// Reply to a top-level question thread in the managed PR bucket.
-pub fn reply_to_pr_question(
-    owner: &str,
-    repo: &str,
-    number: u64,
-    question_id: &str,
-    text: &str,
-    author: Option<&str>,
-) -> Result<PrFeedbackReply> {
-    let er_dir = resolve_pr_er_dir(owner, repo, number)?;
-    reply_to_question_in_dir(&er_dir, question_id, text, author)
 }
 
 /// Reply to a top-level note thread in a review bucket.
@@ -457,19 +432,6 @@ pub fn reply_to_note_in_dir(
     })
 }
 
-/// Reply to a top-level note thread in the managed PR bucket.
-pub fn reply_to_pr_note(
-    owner: &str,
-    repo: &str,
-    number: u64,
-    note_id: &str,
-    text: &str,
-    author: Option<&str>,
-) -> Result<PrFeedbackReply> {
-    let er_dir = resolve_pr_er_dir(owner, repo, number)?;
-    reply_to_note_in_dir(&er_dir, note_id, text, author)
-}
-
 /// Append a validation / follow-up reply on an AI finding in a review bucket.
 pub fn reply_to_finding_in_dir(
     er_dir: &str,
@@ -485,18 +447,6 @@ pub fn reply_to_finding_in_dir(
         kind: "finding".to_string(),
         parent_id: Some(finding_id.to_string()),
     })
-}
-
-/// Append a validation / follow-up reply on an AI finding in the managed PR bucket.
-pub fn reply_to_pr_finding(
-    owner: &str,
-    repo: &str,
-    number: u64,
-    finding_id: &str,
-    text: &str,
-) -> Result<PrFeedbackReply> {
-    let er_dir = resolve_pr_er_dir(owner, repo, number)?;
-    reply_to_finding_in_dir(&er_dir, finding_id, text)
 }
 
 /// Mark the top-level thread `id` resolved. Returns whether it already was.
@@ -626,15 +576,15 @@ mod tests {
             };
             write_sidecar(Path::new(&er_dir), &qs);
 
-            let feedback = get_pr_review_feedback("acme", "widgets", 5, true).unwrap();
+            let feedback = get_review_feedback_in_dir("acme", "widgets", 5, &er_dir, None, true).unwrap();
             assert_eq!(feedback.questions.len(), 1);
             assert!(feedback.findings.is_empty());
 
             let reply =
-                reply_to_pr_question("acme", "widgets", 5, "q-root", "Because.", None).unwrap();
+                reply_to_question_in_dir(&er_dir, "q-root", "Because.", None).unwrap();
             assert_eq!(reply.kind, "question");
 
-            let feedback = get_pr_review_feedback("acme", "widgets", 5, true).unwrap();
+            let feedback = get_review_feedback_in_dir("acme", "widgets", 5, &er_dir, None, true).unwrap();
             assert_eq!(feedback.questions.len(), 2);
             assert_eq!(feedback.questions[1].in_reply_to.as_deref(), Some("q-root"));
             assert_eq!(feedback.questions[1].author, "agent");
@@ -692,8 +642,8 @@ mod tests {
             };
             write_sidecar(Path::new(&er_dir), &review);
 
-            reply_to_pr_finding("acme", "widgets", 6, "f1", "Confirmed.").unwrap();
-            let feedback = get_pr_review_feedback("acme", "widgets", 6, true).unwrap();
+            reply_to_finding_in_dir(&er_dir, "f1", "Confirmed.").unwrap();
+            let feedback = get_review_feedback_in_dir("acme", "widgets", 6, &er_dir, None, true).unwrap();
             assert_eq!(feedback.findings.len(), 1);
             assert_eq!(feedback.findings[0].responses[0].text, "Confirmed.");
         });

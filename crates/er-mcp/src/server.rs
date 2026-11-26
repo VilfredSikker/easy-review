@@ -4,25 +4,27 @@ use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use er_service::headless::diagram_upload::{
-    list_diagrams, prepare_diagram_kit, upload_diagram, DiagramUpload,
-};
 use er_engine::git::ProdDiffStats;
 use er_engine::github::{gh_pr_prod_diff_stats, with_gh_sentence};
 use er_engine::ports::Ports;
+use er_engine::projects_pins::{self, PinnedPr};
+use er_engine::sidecar_upload::artifact_specs_for_dir;
+use er_engine::sidecar_upload::{
+    prepare_review_kit, upload_pr_artifacts, SidecarKind, UploadArtifactsRequest,
+};
+use er_service::headless::diagram_upload::{
+    list_diagrams, prepare_diagram_kit, upload_diagram, DiagramUpload,
+};
 use er_service::headless::pr_review_feedback::{
     get_review_feedback_in_dir, reply_to_finding_in_dir, reply_to_note_in_dir,
     reply_to_question_in_dir, resolve_note_in_dir, resolve_question_in_dir,
 };
-use er_engine::projects_pins::{self, PinnedPr};
 use er_service::headless::review_queue::{
     filter_blocked, filter_by_status, filter_failing_ci, filter_review_debt, filter_stale,
     rank_low_hanging, rank_priority, score_pr, QueuePr, RankedPr, ReviewStatus,
 };
-use er_service::headless::sidecar_summary::{list_repo_pr_artifacts, present_kinds, summarize_pr_sidecars};
-use er_engine::sidecar_upload::artifact_specs_for_dir;
-use er_engine::sidecar_upload::{
-    prepare_review_kit, upload_pr_artifacts, SidecarKind, UploadArtifactsRequest,
+use er_service::headless::sidecar_summary::{
+    list_repo_pr_artifacts, present_kinds, summarize_pr_sidecars,
 };
 use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
@@ -396,13 +398,7 @@ async fn enrich_production_lines(
     }
 }
 
-async fn enrich_ci(
-    ports: &Ports,
-    owner: &str,
-    repo: &str,
-    prs: &mut [QueuePr],
-    max_enrich: usize,
-) {
+async fn enrich_ci(ports: &Ports, owner: &str, repo: &str, prs: &mut [QueuePr], max_enrich: usize) {
     let jobs: Vec<_> = prs
         .iter()
         .take(max_enrich)
@@ -655,17 +651,12 @@ async fn query_cross_repo(
             continue;
         };
         let project_name = project.name.clone();
-        list_jobs.push((
-            project_name,
-            owner.clone(),
-            name.clone(),
-            {
-                let ports = ports.clone();
-                tokio::task::spawn_blocking(move || {
-                    ports.github.pr_list_queue(&owner, &name, "open", 50)
-                })
-            },
-        ));
+        list_jobs.push((project_name, owner.clone(), name.clone(), {
+            let ports = ports.clone();
+            tokio::task::spawn_blocking(move || {
+                ports.github.pr_list_queue(&owner, &name, "open", 50)
+            })
+        }));
     }
     for (project_name, owner, name, handle) in list_jobs {
         let prs = handle.await.ok().and_then(|r| r.ok()).unwrap_or_default();
@@ -899,14 +890,17 @@ impl ErMcp {
 
                 let ports = self.ports.clone();
                 let result = tokio::task::spawn_blocking(move || {
-                    upload_pr_artifacts(&ports, UploadArtifactsRequest {
-                        owner,
-                        repo: name,
-                        pr: number,
-                        kind: SidecarKind::Tour,
-                        files,
-                        refresh_diff,
-                    })
+                    upload_pr_artifacts(
+                        &ports,
+                        UploadArtifactsRequest {
+                            owner,
+                            repo: name,
+                            pr: number,
+                            kind: SidecarKind::Tour,
+                            files,
+                            refresh_diff,
+                        },
+                    )
                 })
                 .await
                 .map_err(|e| McpError::internal_error(e.to_string(), None))?
@@ -947,14 +941,17 @@ impl ErMcp {
 
         let ports = self.ports.clone();
         let result = tokio::task::spawn_blocking(move || {
-            upload_pr_artifacts(&ports, UploadArtifactsRequest {
-                owner,
-                repo: name,
-                pr: number,
-                kind,
-                files,
-                refresh_diff,
-            })
+            upload_pr_artifacts(
+                &ports,
+                UploadArtifactsRequest {
+                    owner,
+                    repo: name,
+                    pr: number,
+                    kind,
+                    files,
+                    refresh_diff,
+                },
+            )
         })
         .await
         .map_err(|e| McpError::internal_error(e.to_string(), None))?
@@ -1031,7 +1028,15 @@ impl ErMcp {
                 let prompt = args.prompt.clone();
                 let ports = self.ports.clone();
                 let kit = tokio::task::spawn_blocking(move || {
-                    prepare_diagram_kit(&ports, &owner, &name, number, &kind, prompt.as_deref(), &[])
+                    prepare_diagram_kit(
+                        &ports,
+                        &owner,
+                        &name,
+                        number,
+                        &kind,
+                        prompt.as_deref(),
+                        &[],
+                    )
                 })
                 .await
                 .map_err(|e| McpError::internal_error(e.to_string(), None))?
@@ -1527,15 +1532,63 @@ mod tests {
         assert!(feedback_bucket(Some("unstaged")).is_err());
     }
 
+    fn queue_pr(number: u64, additions: u64) -> er_service::headless::review_queue::QueuePr {
+        serde_json::from_value(json!({
+            "number": number,
+            "title": format!("PR {number}"),
+            "author": "alice",
+            "is_draft": false,
+            "state": "OPEN",
+            "review_decision": "REVIEW_REQUIRED",
+            "additions": additions,
+            "deletions": 0,
+            "changed_files": 1,
+        }))
+        .unwrap()
+    }
+
+    /// The queue comes from the server's GitHub port and from nowhere else:
+    /// a `gh` call that bypasses it reaches no script and fails the query.
+    #[test]
+    fn prs_query_lists_the_queue_through_the_github_port() {
+        let github = std::sync::Arc::new(
+            er_engine::github::FakeGitHub::default()
+                .with_pr_list_queue(Ok(vec![queue_pr(9, 900), queue_pr(7, 5)])),
+        );
+        let server = ErMcp::with_ports(Ports::with_github(github.clone()));
+        let args: PrsQueryArgs =
+            serde_json::from_value(json!({ "repo": "acme/widgets", "limit": 2 })).unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let result = er_engine::storage::with_test_storage_root(root.path(), || {
+            runtime.block_on(server.prs_query(Parameters(args)))
+        })
+        .unwrap();
+        let reply = serde_json::to_value(&result).unwrap();
+        let body: serde_json::Value =
+            serde_json::from_str(reply["content"][0]["text"].as_str().unwrap()).unwrap();
+        let numbers: Vec<u64> = body["prs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|ranked| ranked["pr"]["number"].as_u64().unwrap())
+            .collect();
+        assert_eq!(numbers, [7, 9]);
+        assert_eq!(
+            github.calls(),
+            [r#"pr_list_queue(owner="acme", repo="widgets", state="open", limit=100)"#]
+        );
+    }
+
     #[test]
     fn local_feedback_rejects_an_explicit_pr_target() {
         let target = PrRefFields {
             r#ref: Some("https://github.com/acme/widgets/pull/1".into()),
             ..Default::default()
         };
-        assert!(
-            resolve_feedback_target(&Ports::for_test(), &target, "local")
-                .is_err()
-        );
+        assert!(resolve_feedback_target(&Ports::for_test(), &target, "local").is_err());
     }
 }
