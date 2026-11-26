@@ -74,7 +74,7 @@ fn flight_key(req: &AutoTriageRequest) -> String {
 /// carry any remote form git writes, so the split goes through the shared
 /// project parser rather than the first `/`.
 fn remote_owner_repo(remote: &str) -> Result<(String, String), String> {
-    crate::projects::remote_owner_repo(remote)
+    er_service::app_records::projects::remote_owner_repo(remote)
         .ok_or_else(|| format!("Invalid remote slug: {remote}"))
 }
 

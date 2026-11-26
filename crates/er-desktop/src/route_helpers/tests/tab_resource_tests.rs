@@ -91,7 +91,7 @@ pub(super) fn dir_in(dir: &ReviewFlowTestDir, name: &str) -> String {
 
 /// A project on `root` that tracks the remote.
 pub(super) fn register_project(root: &str) {
-    let record = crate::projects::ProjectRecord {
+    let record = er_service::app_records::projects::ProjectRecord {
         id: "widgets".to_string(),
         name: "widgets".to_string(),
         root_path: root.to_string(),
@@ -103,7 +103,7 @@ pub(super) fn register_project(root: &str) {
         Ok(true)
     });
     assert!(saved.is_ok(), "{saved:?}");
-    crate::projects::invalidate_load_cache();
+    er_service::app_records::projects::invalidate_load_cache();
 }
 
 /// The webview steps a browser command asked for, by tab key and position.

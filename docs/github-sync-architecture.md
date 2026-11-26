@@ -175,6 +175,6 @@ The GitHub API layer is roughly 35% of the mobile port ([mobile-port.md](./mobil
 - [`crates/er-github/`](../crates/er-github/) — the `GitHub` port and its `gh` adapter
 - [`crates/er-engine/src/app/state/github_sync.rs`](../crates/er-engine/src/app/state/github_sync.rs) — comment sync and anchor resolution
 - [`crates/er-desktop/src/revision_watcher.rs`](../crates/er-desktop/src/revision_watcher.rs) — follows `desktop_revision` and wakes the backend tick
-- [`crates/er-desktop/src/page_view.rs`](../crates/er-desktop/src/page_view.rs) — PR and GitHub status types, meta fingerprint
-- [`pr_cache.rs`](../crates/er-desktop/src/pr_cache.rs), [`gh_status_cache.rs`](../crates/er-desktop/src/gh_status_cache.rs) — TTL-gated chrome caches
+- [`crates/er-service/src/app_records/sidebar.rs`](../crates/er-service/src/app_records/sidebar.rs) — PR and GitHub status types; [`page_view.rs`](../crates/er-desktop/src/page_view.rs) — meta fingerprint
+- [`pr_cache.rs`](../crates/er-service/src/app_records/pr_cache.rs), [`gh_status_cache.rs`](../crates/er-service/src/app_records/gh_status_cache.rs) — TTL-gated chrome caches
 - `ER_DESKTOP_PROFILE_POLL=1` → [`profile_log.rs`](../crates/er-desktop/src/profile_log.rs)

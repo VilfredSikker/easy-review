@@ -1,5 +1,13 @@
 pub mod ai_ask;
-pub mod app_owner;
+/// The desktop's side of the app owner, which lives in er-service: the
+/// startup steps that read `DesktopState`, and the tests of that wiring.
+pub mod app_owner {
+    pub mod startup;
+    #[cfg(test)]
+    mod tests {
+        mod wiring;
+    }
+}
 pub mod arena_service;
 pub mod ask_context;
 pub mod auto_triage;
@@ -12,17 +20,13 @@ pub mod export;
 pub mod flow_service;
 pub mod frame_script;
 pub mod gh_pr_actions;
-pub mod gh_status_cache;
 pub mod github_image;
-pub mod inbox;
 pub mod line_commits_cache;
 pub mod main_webview_policy;
 pub mod native_notify;
 pub mod os_launch;
 pub mod page_view;
-pub mod pr_cache;
 pub mod profile_log;
-pub mod projects;
 pub mod resources;
 pub mod revision_watcher;
 pub mod route_helpers;
