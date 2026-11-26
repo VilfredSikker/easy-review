@@ -35,6 +35,10 @@ const LOG_LINES: usize = 500;
 pub const BUCKET_LOG_LINES: usize = 5_000;
 /// Lines a job may get ahead of its log drain before the runner drops some.
 const PROGRESS_CAPACITY: usize = 256;
+/// A tour's task kind. A tour reads its own prepared diff and writes only
+/// `tour.json`, which no review-flow stage reads or writes, so it is the one
+/// task that runs beside a flow.
+pub const TOUR_TASK_KIND: &str = "tour";
 
 /// The app's background tasks. A clone shares them.
 #[derive(Clone, Default)]
@@ -51,7 +55,11 @@ pub struct TaskHost {
 pub struct TaskClock {
     revision: Arc<AtomicU64>,
     wake: Option<Arc<dyn Fn(u64) + Send + Sync>>,
+    /// Called on every row change; one that answers `false` is dropped.
+    watchers: Arc<Mutex<Vec<Watcher>>>,
 }
+
+type Watcher = Box<dyn Fn(u64) -> bool + Send + Sync>;
 
 impl TaskClock {
     pub fn revision(&self) -> u64 {
@@ -63,6 +71,7 @@ impl TaskClock {
         if let Some(wake) = &self.wake {
             wake(revision);
         }
+        lock(&self.watchers).retain(|watch| watch(revision));
     }
 }
 
@@ -130,6 +139,7 @@ impl TaskHost {
             clock: TaskClock {
                 revision: Arc::default(),
                 wake: Some(Arc::new(wake)),
+                watchers: Arc::default(),
             },
             ..Self::default()
         }
@@ -137,6 +147,24 @@ impl TaskHost {
 
     fn lock(&self) -> MutexGuard<'_, Vec<Task>> {
         self.tasks.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Calls `watch` with the new revision on every row change until it
+    /// answers `false`. Every
+    /// caller bumps the clock after it lets the tasks go, so a watcher never
+    /// runs under the tasks lock.
+    pub fn watch(&self, watch: impl Fn(u64) -> bool + Send + Sync + 'static) {
+        lock(&self.clock.watchers).push(Box::new(watch));
+    }
+
+    /// Whether a task that writes into `er_dir` is queued or running there.
+    /// A review flow counts these as its bucket's producers, as the App did.
+    pub fn writes_into(&self, er_dir: &str) -> bool {
+        self.lock().iter().any(|task| {
+            task.target.er_dir == er_dir
+                && task.row.kind != TOUR_TASK_KIND
+                && (task.run.is_some() || task.queued.is_some())
+        })
     }
 
     /// Every listed task's row, oldest first.
@@ -288,9 +316,11 @@ pub fn enqueue(host: &TaskHost, hooks: &TaskHooks, launch: Launch) -> Result<Str
     let command_name = launch.command_name.clone();
     let quiet = launch.quiet;
     {
-        // One lock over the busy check and the push, so two clicks at once
-        // queue one task.
+        // One lock over the busy check, the admission and the push, so two
+        // clicks at once queue one task, and a flow that takes the bucket
+        // either sees this task or refuses it here.
         let mut tasks = host.lock();
+        admit(&launch.kind, &target.er_dir)?;
         let busy = tasks.iter().any(|task| {
             task.row.kind == launch.kind
                 && task.target == target
@@ -352,10 +382,37 @@ pub fn hold_agent(
     name: &str,
     launch: impl FnOnce(Sender<AgentLogEntry>) -> anyhow::Result<AgentPromptRun>,
 ) -> Result<String, String> {
+    hold(host, hooks, target, name, true, launch)
+}
+
+/// [`hold_agent`] past the bucket's admission, so a test can put a host
+/// task in a bucket a flow already holds.
+#[cfg(test)]
+pub(crate) fn hold_agent_unadmitted(
+    host: &TaskHost,
+    hooks: &TaskHooks,
+    target: BackgroundTaskTarget,
+    name: &str,
+    launch: impl FnOnce(Sender<AgentLogEntry>) -> anyhow::Result<AgentPromptRun>,
+) -> Result<String, String> {
+    hold(host, hooks, target, name, false, launch)
+}
+
+fn hold(
+    host: &TaskHost,
+    hooks: &TaskHooks,
+    target: BackgroundTaskTarget,
+    name: &str,
+    admitted: bool,
+    launch: impl FnOnce(Sender<AgentLogEntry>) -> anyhow::Result<AgentPromptRun>,
+) -> Result<String, String> {
     // One lock over the busy check, the launch and the push, so two sends at
     // once start one agent. The launch only spawns: the runner waits for its
     // slot on its own thread.
     let mut tasks = host.lock();
+    if admitted {
+        admit(name, &target.er_dir)?;
+    }
     let busy = tasks.iter().any(|task| {
         task.row.kind == name && task.target.er_dir == target.er_dir && task.run.is_some()
     });
@@ -410,6 +467,17 @@ pub fn hold_agent(
         })
         .map_err(|e| format!("start the task worker: {e}"))?;
     Ok(id)
+}
+
+/// Refuses a task that writes into a bucket a review flow holds. Called
+/// under the tasks lock: a flow takes its lease before it reads the tasks,
+/// so either it sees this task or this probe sees its lease. The probe never
+/// waits, so holding the tasks lock across it cannot deadlock with a flow.
+fn admit(kind: &str, er_dir: &str) -> Result<(), String> {
+    if kind == TOUR_TASK_KIND {
+        return Ok(());
+    }
+    er_engine::arena::check_bucket_admission(er_dir).map_err(|e| e.to_string())
 }
 
 /// Lets the queued task `id` tell the person when it starts.

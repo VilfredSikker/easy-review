@@ -1,0 +1,1 @@
+main	codex/docs-footer-layout

@@ -132,6 +132,86 @@ fn the_gh_resolve_forms_match_their_golden() {
     assert_golden("resolve_forms", &run_twice(resolve_forms));
 }
 
+/// A PR whose base branch holds a REVIEW.md, so the kit names one.
+const PR_WITH_REVIEW_MD: &str = "MCPJam/inspector#8156";
+
+/// The tour example the kit offers, as `pr_guide` prepare returns it.
+fn tour_example() -> Value {
+    json!({
+        "version": 1,
+        "diff_hash": "<DIFF_HASH>",
+        "created_at": "2026-01-01T00:00:00Z",
+        "title": "Tour: Example change",
+        "overview": "Start with the foundation types, then the UI.",
+        "pillars": [{
+            "id": "p-1",
+            "title": "Foundation",
+            "summary": "Core types other files depend on",
+            "description": "Core types other files depend on.",
+            "order": 0,
+            "importance": 90,
+            "foundation": true,
+            "files": [{ "path": "src/types.rs", "reason": "Shared model", "finding_ids": [] }],
+        }],
+    })
+}
+
+/// A review-kind kit with a REVIEW.md, every sidecar uploaded, then the
+/// pinned row and the summary that read them.
+fn review_kinds(s: &mut Scenario) {
+    let pr = PR_WITH_REVIEW_MD;
+    let kit = s.call(
+        "pr_prepare",
+        json!({ "ref": pr, "kinds": ["triage", "review"] }),
+    );
+    let hash = kit["kit"]["diff_hash"]
+        .as_str()
+        .expect("diff_hash")
+        .to_string();
+    let examples = |at: usize| kit["artifact_specs"]["specs"][at]["examples"].clone();
+    let triage = examples(0);
+    s.call(
+        "pr_upload",
+        json!({ "ref": pr, "kind": "triage", "files": { "triage.json": with_hash(&triage["triage.json"], &hash) } }),
+    );
+    let review = examples(1);
+    let files: serde_json::Map<String, Value> = ["review.json", "order.json", "checklist.json"]
+        .iter()
+        .map(|name| {
+            (
+                name.to_string(),
+                Value::String(with_hash(&review[*name], &hash)),
+            )
+        })
+        .chain(std::iter::once((
+            "summary.md".to_string(),
+            review["summary.md"].clone(),
+        )))
+        .collect();
+    s.call(
+        "pr_upload",
+        json!({ "ref": pr, "kind": "review", "files": files }),
+    );
+    s.call(
+        "pr_guide",
+        json!({ "ref": pr, "action": "upload", "files": { "tour.json": with_hash(&tour_example(), &hash) } }),
+    );
+    s.call(
+        "pr_saved",
+        json!({ "ref": pr, "action": "pin", "title": "Remove a line" }),
+    );
+    s.call(
+        "pr_saved",
+        json!({ "repo": "MCPJam/inspector", "action": "list", "source": "pinned" }),
+    );
+    s.call("pr_summarize", json!({ "ref": pr }));
+}
+
+#[test]
+fn the_review_kinds_match_their_golden() {
+    assert_golden("review_kinds", &run_twice(review_kinds));
+}
+
 /// `text` with the kit's `<DIFF_HASH>` placeholder filled in.
 fn with_hash(example: &Value, hash: &str) -> String {
     example.to_string().replace("<DIFF_HASH>", hash)
@@ -163,6 +243,10 @@ fn review_flow(s: &mut Scenario) {
         "pr_guide",
         json!({ "ref": PR, "action": "upload", "files": { "tour.json": with_hash(tour, &hash) } }),
     );
+    s.call(
+        "pr_saved",
+        json!({ "repo": REPO, "action": "list", "source": "artifacts" }),
+    );
     s.call("pr_summarize", json!({ "ref": PR }));
 }
 
@@ -193,15 +277,10 @@ fn diagrams(s: &mut Scenario) {
 
 /// Pin (which adds the project), list, the projects record, unpin, list.
 fn saved(s: &mut Scenario) {
-    let pinned = s.call(
+    s.call(
         "pr_saved",
         json!({ "ref": PR, "action": "pin", "title": "CI: run on pull requests into staging" }),
     );
-    let project_id = pinned["project_id"]
-        .as_str()
-        .expect("project_id")
-        .to_string();
-    s.generated(&project_id, "<project-id>");
     s.call("pr_saved", json!({ "repo": REPO, "action": "list" }));
     s.call("projects_list", json!({}));
     s.call("pr_saved", json!({ "ref": PR, "action": "unpin" }));
