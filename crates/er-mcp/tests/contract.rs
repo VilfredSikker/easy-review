@@ -302,7 +302,27 @@ fn thread(id: &str, text: &str) -> Value {
 }
 
 /// A question, a note and a finding in `bucket`.
+/// A reply id with its clock digits as `<millis>`: `q-1795…-0` reads
+/// `q-<millis>-0`, so the prefix and the sequence stay in the golden.
+fn clock_digits_masked(id: &str) -> String {
+    let start = id.find(|c: char| c.is_ascii_digit()).unwrap_or(id.len());
+    let end = id
+        .get(start..)
+        .and_then(|rest| rest.find(|c: char| !c.is_ascii_digit()))
+        .map_or(id.len(), |len| start + len);
+    format!(
+        "{}<millis>{}",
+        id.get(..start).unwrap_or_default(),
+        id.get(end..).unwrap_or_default()
+    )
+}
+
+/// The thread fixtures, and PR #575's diff as the bucket's `diff-tmp`, so
+/// the replies' and reads' diff hash is the real one.
 fn seed_feedback(bucket: &Path) {
+    let diff = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/contract/gh/pr-575.diff");
+    std::fs::create_dir_all(bucket).expect("bucket dir");
+    std::fs::copy(diff, bucket.join("diff-tmp")).expect("seed diff-tmp");
     write_sidecar_json::<ErQuestions>(
         bucket,
         json!({ "version": 1, "diff_hash": "", "questions": [thread("q-seed", "Why staging?")] }),
@@ -350,10 +370,10 @@ fn feedback_steps(s: &mut Scenario, target: &Value) {
         json!({ "type": "note", "id": "n-seed", "text": "Done.", "author": "reviewer" }),
         json!({ "type": "finding", "id": "f-seed", "text": "Intended: staging is PR-only." }),
     ];
-    for (n, reply) in replies.into_iter().enumerate() {
+    for reply in replies {
         let made = s.call("pr_feedback_reply", with(reply));
         let id = made["reply"]["id"].as_str().expect("reply id").to_string();
-        s.generated(&id, &format!("<reply-{}>", n + 1));
+        s.generated(&id, &clock_digits_masked(&id));
     }
     for (kind, id) in [
         ("question", "q-seed"),
