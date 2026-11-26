@@ -42,6 +42,6 @@ lock and writes after releasing it, and port calls run on effect threads.
   the record's writers are private to the crate, and the desktop calls the
   owner's methods. Across processes, MCP's pin tools still write the record
   through the engine, and the store's scope lock orders the writers. The
-  three cache kinds register through `register_desktop_kinds`, which only
-  the desktop's composition calls, so the TUI and MCP registries leave them
-  out.
+  desktop's three store kinds (the inbox, the PR cache and the GitHub status
+  cache) register through `register_desktop_kinds`, which only the
+  desktop's composition calls, so the TUI and MCP registries leave them out.
