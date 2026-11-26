@@ -1,7 +1,7 @@
 //! Read the Easy Review projects record from the app store.
 
 use anyhow::{Context, Result};
-use er_engine::pr_resolve::{self, ProjectHint, ResolvePrRefInput, ResolvedPrRef};
+use er_service::headless::pr_resolve::{self, ProjectHint, ResolvePrRefInput, ResolvedPrRef};
 use er_engine::projects_pins::{ProjectRecord, ProjectsFile};
 
 /// The `projects_list` tool description. The macro needs an expression it can

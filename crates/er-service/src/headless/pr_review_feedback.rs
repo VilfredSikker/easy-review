@@ -8,13 +8,13 @@ use std::path::Path;
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 
-use crate::ai::{
+use er_engine::ai::{
     append_finding_response, compute_diff_hash, load_ai_state, ErNotes, ErQuestions, Finding,
     PrivateAnnotation, RiskLevel,
 };
-use crate::github::owner_repo_storage_slug;
-use crate::storage::resolve_managed_root_for_pr_bucket;
-use crate::sync::chrono_now;
+use er_engine::github::owner_repo_storage_slug;
+use er_engine::storage::resolve_managed_root_for_pr_bucket;
+use er_engine::sync::chrono_now;
 
 /// Slim finding row for MCP / API consumers (merged review + experts + professor).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -32,7 +32,7 @@ pub struct PrFindingItem {
     pub confidence: String,
     pub resolved: bool,
     pub outside_diff: bool,
-    pub responses: Vec<crate::ai::AiResponse>,
+    pub responses: Vec<er_engine::ai::AiResponse>,
     /// `review`, `professor`, or `expert:<id>`.
     pub source: String,
 }
@@ -84,7 +84,7 @@ fn pr_diff_hash(er_dir: &str) -> String {
             return compute_diff_hash(&content);
         }
     }
-    if let Some(review) = crate::store_registry::read_found::<crate::ai::ErReview>(er_dir, ()) {
+    if let Some(review) = er_engine::store_registry::read_found::<er_engine::ai::ErReview>(er_dir, ()) {
         if !review.diff_hash.is_empty() {
             return review.diff_hash;
         }
@@ -93,14 +93,14 @@ fn pr_diff_hash(er_dir: &str) -> String {
         return String::new();
     };
     if let Ok(er_store::Loaded::Found(stored)) =
-        crate::ai::annotation_store::load_questions(&store, &scope)
+        er_engine::ai::annotation_store::load_questions(&store, &scope)
     {
         if !stored.value.diff_hash.is_empty() {
             return stored.value.diff_hash;
         }
     }
     if let Ok(er_store::Loaded::Found(stored)) =
-        crate::ai::annotation_store::load_notes(&store, &scope)
+        er_engine::ai::annotation_store::load_notes(&store, &scope)
     {
         if !stored.value.diff_hash.is_empty() {
             return stored.value.diff_hash;
@@ -124,18 +124,18 @@ const fn severity_label(level: RiskLevel) -> &'static str {
 /// Reads the finding's `lens`. `category` holds a defect kind, not the
 /// producer, so it is the wrong field for this.
 fn finding_source(lens: &str) -> String {
-    if lens == crate::ai::PROFESSOR_ID {
+    if lens == er_engine::ai::PROFESSOR_ID {
         "professor".to_string()
     } else if lens.starts_with("expert:") {
         lens.to_string()
-    } else if crate::ai::expert_by_id(lens).is_some() {
+    } else if er_engine::ai::expert_by_id(lens).is_some() {
         format!("expert:{lens}")
     } else {
         "review".to_string()
     }
 }
 
-fn collect_findings(review: &crate::ai::ErReview) -> Vec<PrFindingItem> {
+fn collect_findings(review: &er_engine::ai::ErReview) -> Vec<PrFindingItem> {
     let mut out = Vec::new();
     for (file, fr) in &review.files {
         for f in &fr.findings {
@@ -174,14 +174,14 @@ fn finding_to_item(file: &str, f: &Finding) -> PrFindingItem {
 /// The store and bucket scope for one review bucket.
 fn store_for(er_dir: &str) -> Result<(er_store::ArtifactStore, er_store::Scope)> {
     Ok((
-        crate::store_registry::store(),
+        er_engine::store_registry::store(),
         er_store::Scope::dir(er_dir)?,
     ))
 }
 
 fn load_questions(er_dir: &str) -> Result<ErQuestions> {
     let (store, scope) = store_for(er_dir)?;
-    match crate::ai::annotation_store::load_questions(&store, &scope)? {
+    match er_engine::ai::annotation_store::load_questions(&store, &scope)? {
         er_store::Loaded::Found(stored) => Ok(stored.value),
         er_store::Loaded::Absent => Ok(ErQuestions {
             version: 1,
@@ -189,7 +189,7 @@ fn load_questions(er_dir: &str) -> Result<ErQuestions> {
             questions: Vec::new(),
         }),
         er_store::Loaded::Unreadable(reason) => {
-            let path = crate::ai::annotation_store::path_of::<ErQuestions>(&store, &scope)?;
+            let path = er_engine::ai::annotation_store::path_of::<ErQuestions>(&store, &scope)?;
             bail!("parse corrupt annotation at {}: {reason:?}", path.display())
         }
     }
@@ -197,7 +197,7 @@ fn load_questions(er_dir: &str) -> Result<ErQuestions> {
 
 fn load_notes(er_dir: &str) -> Result<ErNotes> {
     let (store, scope) = store_for(er_dir)?;
-    match crate::ai::annotation_store::load_notes(&store, &scope)? {
+    match er_engine::ai::annotation_store::load_notes(&store, &scope)? {
         er_store::Loaded::Found(stored) => Ok(stored.value),
         er_store::Loaded::Absent => Ok(ErNotes {
             version: 1,
@@ -205,7 +205,7 @@ fn load_notes(er_dir: &str) -> Result<ErNotes> {
             notes: Vec::new(),
         }),
         er_store::Loaded::Unreadable(reason) => {
-            let path = crate::ai::annotation_store::path_of::<ErNotes>(&store, &scope)?;
+            let path = er_engine::ai::annotation_store::path_of::<ErNotes>(&store, &scope)?;
             bail!("parse corrupt annotation at {}: {reason:?}", path.display())
         }
     }
@@ -233,7 +233,7 @@ fn append_question_reply(
     author: &str,
 ) -> Result<String> {
     let diff_hash = pr_diff_hash(er_dir);
-    let id = crate::ai::annotation_store::new_annotation_id("q-");
+    let id = er_engine::ai::annotation_store::new_annotation_id("q-");
     let reply = PrivateAnnotation {
         id: id.clone(),
         timestamp: chrono_now(),
@@ -260,9 +260,9 @@ fn append_question_reply(
     };
 
     let (store, scope) = store_for(er_dir)?;
-    let path = crate::ai::annotation_store::path_of::<ErQuestions>(&store, &scope)?;
+    let path = er_engine::ai::annotation_store::path_of::<ErQuestions>(&store, &scope)?;
     let message = format!("{} is missing or unreadable", path.display());
-    crate::ai::annotation_store::update_questions(&store, &scope, move |current| {
+    er_engine::ai::annotation_store::update_questions(&store, &scope, move |current| {
         let mut questions = current.context(message)?;
         // Record the new diff hash whenever we have one or none is stored yet
         // (assigning an equal value is a no-op, so the inequality guard adds nothing).
@@ -283,7 +283,7 @@ fn append_note_reply(
     author: &str,
 ) -> Result<String> {
     let diff_hash = pr_diff_hash(er_dir);
-    let id = crate::ai::annotation_store::new_annotation_id("n-");
+    let id = er_engine::ai::annotation_store::new_annotation_id("n-");
     let reply = PrivateAnnotation {
         id: id.clone(),
         timestamp: chrono_now(),
@@ -310,9 +310,9 @@ fn append_note_reply(
     };
 
     let (store, scope) = store_for(er_dir)?;
-    let path = crate::ai::annotation_store::path_of::<ErNotes>(&store, &scope)?;
+    let path = er_engine::ai::annotation_store::path_of::<ErNotes>(&store, &scope)?;
     let message = format!("{} is missing or unreadable", path.display());
-    crate::ai::annotation_store::update_notes(&store, &scope, move |current| {
+    er_engine::ai::annotation_store::update_notes(&store, &scope, move |current| {
         let mut notes = current.context(message)?;
         // Record the new diff hash whenever we have one or none is stored yet
         // (assigning an equal value is a no-op, so the inequality guard adds nothing).
@@ -520,10 +520,10 @@ pub fn resolve_question_in_dir(er_dir: &str, question_id: &str) -> Result<PrFeed
     let already_resolved = mark_thread_resolved(&mut questions.questions, question_id, "question")?;
     if !already_resolved {
         let (store, scope) = store_for(er_dir)?;
-        let path = crate::ai::annotation_store::path_of::<ErQuestions>(&store, &scope)?;
+        let path = er_engine::ai::annotation_store::path_of::<ErQuestions>(&store, &scope)?;
         let message = format!("{} is missing or unreadable", path.display());
         let id = question_id.to_string();
-        crate::ai::annotation_store::update_questions(&store, &scope, move |current| {
+        er_engine::ai::annotation_store::update_questions(&store, &scope, move |current| {
             let mut questions = current.context(message)?;
             mark_thread_resolved(&mut questions.questions, &id, "question")?;
             Ok::<_, anyhow::Error>(questions)
@@ -543,10 +543,10 @@ pub fn resolve_note_in_dir(er_dir: &str, note_id: &str) -> Result<PrFeedbackReso
     let already_resolved = mark_thread_resolved(&mut notes.notes, note_id, "note")?;
     if !already_resolved {
         let (store, scope) = store_for(er_dir)?;
-        let path = crate::ai::annotation_store::path_of::<ErNotes>(&store, &scope)?;
+        let path = er_engine::ai::annotation_store::path_of::<ErNotes>(&store, &scope)?;
         let message = format!("{} is missing or unreadable", path.display());
         let id = note_id.to_string();
-        crate::ai::annotation_store::update_notes(&store, &scope, move |current| {
+        er_engine::ai::annotation_store::update_notes(&store, &scope, move |current| {
             let mut notes = current.context(message)?;
             mark_thread_resolved(&mut notes.notes, &id, "note")?;
             Ok::<_, anyhow::Error>(notes)
@@ -563,8 +563,8 @@ pub fn resolve_note_in_dir(er_dir: &str, note_id: &str) -> Result<PrFeedbackReso
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ai::{Confidence, ErFileReview, ErReview, Finding};
-    use crate::test_support::write_sidecar;
+    use er_engine::ai::{Confidence, ErFileReview, ErReview, Finding};
+    use er_engine::test_support::write_sidecar;
     use std::collections::HashMap;
 
     /// The source label comes from `lens`, which holds the flat producer
@@ -584,7 +584,7 @@ mod tests {
 
     fn with_storage_root<F: FnOnce()>(f: F) {
         let dir = tempfile::tempdir().unwrap();
-        crate::storage::with_test_storage_root(dir.path(), f);
+        er_engine::storage::with_test_storage_root(dir.path(), f);
     }
 
     fn sample_question(id: &str) -> PrivateAnnotation {

@@ -1,25 +1,25 @@
 //! Prepare/list/upload PR Mermaid diagrams for MCP clients.
 //!
-//! Parallel to [`crate::sidecar_upload`] (triage/review/tour), but diagrams
-//! don't fit [`crate::sidecar_upload::SidecarKind`]'s fixed-filename-per-kind
+//! Parallel to [`er_engine::sidecar_upload`] (triage/review/tour), but diagrams
+//! don't fit [`er_engine::sidecar_upload::SidecarKind`]'s fixed-filename-per-kind
 //! model: presets overwrite in place (`<kind>.json`) while `custom` diagrams
 //! accumulate under timestamped ids, so a bucket can hold any number of
 //! `diagrams/*.json` files. This module owns that variable-id upload path;
-//! [`crate::ai::diagrams`] owns the sidecar shape and validation itself.
+//! [`er_engine::ai::diagrams`] owns the sidecar shape and validation itself.
 //!
 //! Flow: [`prepare_diagram_kit`] writes shared `diff-tmp` + a prompt for one
 //! kind; the MCP client (the reviewing agent itself — no subprocess spawn)
 //! authors the diagram JSON; [`upload_diagram`] validates and stores it.
 
-use crate::ai::diagrams::{
+use er_engine::ai::diagrams::{
     diagram_output_file, diagram_sidecar_path, is_safe_diagram_id, is_valid_diagram_kind,
     persist_diagram_json, DIAGRAM_KIND_CUSTOM,
 };
-use crate::ai::prompts::build_diagram_prompt_mcp;
-use crate::ai::{compute_diff_hash, load_diagrams, prepared_diff::diff_tmp_hash, ErDiagram};
-use crate::github::owner_repo_storage_slug;
-use crate::sidecar_upload::prepare_pr_diff_tmp;
-use crate::storage::resolve_managed_root_for_pr_bucket;
+use er_engine::ai::prompts::build_diagram_prompt_mcp;
+use er_engine::ai::{compute_diff_hash, load_diagrams, prepared_diff::diff_tmp_hash, ErDiagram};
+use er_engine::github::owner_repo_storage_slug;
+use er_engine::sidecar_upload::prepare_pr_diff_tmp;
+use er_engine::storage::resolve_managed_root_for_pr_bucket;
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -60,7 +60,7 @@ pub fn prepare_diagram_kit(
     }
 
     let (er_dir, diff_tmp_path) = prepare_pr_diff_tmp(owner, repo, pr, ignore_globs, None)?;
-    let diff = crate::ai::prepared_diff::read_diff_tmp(&er_dir)
+    let diff = er_engine::ai::prepared_diff::read_diff_tmp(&er_dir)
         .map_err(|error| anyhow::anyhow!("{error}"))?;
     let diff_hash = compute_diff_hash(&diff);
     let output_file = diagram_output_file(kind);
@@ -160,7 +160,7 @@ pub fn upload_diagram(
             er_dir
         }
     };
-    let diff = crate::ai::prepared_diff::read_diff_tmp(&er_dir)
+    let diff = er_engine::ai::prepared_diff::read_diff_tmp(&er_dir)
         .map_err(|error| anyhow::anyhow!("{error}"))?;
     let expected_hash = compute_diff_hash(&diff);
 
@@ -193,7 +193,7 @@ mod tests {
 
     fn with_storage_root<T>(f: impl FnOnce() -> T) -> T {
         let root = tempfile::tempdir().unwrap();
-        crate::storage::with_test_storage_root(root.path(), f)
+        er_engine::storage::with_test_storage_root(root.path(), f)
     }
 
     fn write_diff_tmp(er_dir: &str, diff: &str) -> String {

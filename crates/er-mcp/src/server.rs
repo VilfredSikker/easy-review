@@ -4,7 +4,7 @@ use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use er_engine::diagram_upload::{
+use er_service::headless::diagram_upload::{
     list_diagrams, prepare_diagram_kit, upload_diagram, DiagramUpload,
 };
 use er_engine::git::ProdDiffStats;
@@ -12,16 +12,16 @@ use er_engine::github::{
     gh_pr_checks_state_remote, gh_pr_list_queue, gh_pr_prod_diff_stats,
     gh_pr_thread_addressing_remote,
 };
-use er_engine::pr_review_feedback::{
+use er_service::headless::pr_review_feedback::{
     get_review_feedback_in_dir, reply_to_finding_in_dir, reply_to_note_in_dir,
     reply_to_question_in_dir, resolve_note_in_dir, resolve_question_in_dir,
 };
 use er_engine::projects_pins::{self, PinnedPr};
-use er_engine::review_queue::{
+use er_service::headless::review_queue::{
     filter_blocked, filter_by_status, filter_failing_ci, filter_review_debt, filter_stale,
     rank_low_hanging, rank_priority, score_pr, QueuePr, RankedPr, ReviewStatus,
 };
-use er_engine::sidecar_summary::{list_repo_pr_artifacts, present_kinds, summarize_pr_sidecars};
+use er_service::headless::sidecar_summary::{list_repo_pr_artifacts, present_kinds, summarize_pr_sidecars};
 use er_engine::sidecar_upload::artifact_specs_for_dir;
 use er_engine::sidecar_upload::{
     prepare_review_kit, upload_pr_artifacts, SidecarKind, UploadArtifactsRequest,
@@ -352,7 +352,7 @@ fn fetch_pr_title(owner: &str, repo: &str, number: u64) -> Option<String> {
 
 fn pinned_sidecar_json(
     entry: &PinnedPr,
-    summary: &er_engine::sidecar_summary::PrSidecarSummary,
+    summary: &er_service::headless::sidecar_summary::PrSidecarSummary,
 ) -> serde_json::Value {
     json!({
         "number": entry.number,
