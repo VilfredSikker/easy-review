@@ -37,3 +37,78 @@ fn only_the_desktop_registers_the_app_record_kinds() {
         ]
     );
 }
+
+/// Every er-service source under `src`, outside the tests, with its path
+/// from `src`.
+fn service_sources() -> Vec<(String, String)> {
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut out = Vec::new();
+    let mut dirs = vec![src.clone()];
+    while let Some(dir) = dirs.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            let name = path
+                .strip_prefix(&src)
+                .unwrap()
+                .to_string_lossy()
+                .into_owned();
+            if path.is_dir() {
+                if !name.ends_with("tests") {
+                    dirs.push(path);
+                }
+            } else if path.extension().is_some_and(|ext| ext == "rs") && !name.ends_with("tests.rs")
+            {
+                let text = std::fs::read_to_string(&path).unwrap();
+                let code = text
+                    .split("#[cfg(test)]\nmod tests {")
+                    .next()
+                    .unwrap_or_default();
+                out.push((name, code.to_string()));
+            }
+        }
+    }
+    out
+}
+
+/// Inside er-service the owner is the one writer of the projects record and
+/// the one saver of the inbox: no other module calls the record's writers,
+/// the engine's, or the inbox's save, so none can write and skip the
+/// publish. `projects.rs` holds the record's writers and calls the engine's.
+#[test]
+fn only_the_owner_writes_the_projects_record_and_saves_the_inbox() {
+    let owned = [
+        "projects::ensure_remote_project(",
+        "projects::delete_project(",
+        "projects::reorder_projects(",
+        "projects::save_pr(",
+        "projects::unsave_pr(",
+        "projects::sync_projects_from_refs(",
+        "projects::auto_register(",
+        "projects::dismiss_pr(",
+        "projects::undismiss_pr(",
+        "projects::track_pr(",
+        "projects::untrack_pr(",
+        "projects::add_tracked_branch(",
+        "projects::remove_tracked_branch(",
+        "projects::set_active(",
+        "projects::patch_project_review_settings(",
+        "inbox::save_inbox_state(",
+    ];
+    let engine = [
+        "projects_pins::update",
+        "projects_pins::pin_pr",
+        "projects_pins::unpin_pr",
+        "projects_pins::ensure_project_for_remote",
+        "projects_pins::resolve_project_for_pin",
+    ];
+    for (path, text) in service_sources() {
+        if path == "app_records/app_owner.rs" {
+            continue;
+        }
+        let writers = owned.iter();
+        let writers = writers.chain(engine.iter().filter(|_| path != "app_records/projects.rs"));
+        for writer in writers {
+            assert!(!text.contains(writer), "{path} writes a record ({writer})");
+        }
+    }
+}
