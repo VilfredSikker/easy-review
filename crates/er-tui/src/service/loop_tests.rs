@@ -455,6 +455,39 @@ fn a_refusal_holds_until_it_has_been_drawn() {
     });
 }
 
+/// A long notice that waits behind a held refusal keeps its long dwell, and
+/// the refusal keeps its own short one.
+#[test]
+fn a_long_notice_behind_a_refusal_keeps_its_own_dwell() {
+    let repo = fixture(1);
+    let storage = storage();
+    er_engine::storage::with_process_test_storage_root(storage.path(), || {
+        let mut shell = shell(&args(vec![path_of(&repo)]), storage.path());
+        settle(&mut shell, loaded);
+        let shown = |shell: &Shell| shell.view().notification.clone().unwrap_or_default();
+        shell.land_failed_reply("summary failed (feature): no agent".into());
+        (shell.host().task_hooks().notify)("Risk rules committed".into(), true);
+        shell.tick(Instant::now());
+        shell_frame(&mut shell, &mut Highlighter::new());
+        // Past the short dwell, within the long one.
+        shell.tick(Instant::now() + Duration::from_secs(4));
+        assert_eq!(
+            shown(&shell),
+            "Risk rules committed",
+            "the refusal took the long dwell"
+        );
+        let at = Instant::now();
+        shell.tick(at + Duration::from_secs(4));
+        assert_eq!(
+            shown(&shell),
+            "Risk rules committed",
+            "the notice lost its long dwell"
+        );
+        shell.tick(at + Duration::from_secs(6));
+        assert_eq!(shown(&shell), "");
+    });
+}
+
 /// A key press ends a refusal's hold and shows the notice that waited behind it.
 #[test]
 fn a_key_press_shows_the_notice_a_refusal_held_back() {
