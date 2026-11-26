@@ -408,3 +408,49 @@ fn a_watched_delete_outside_the_root_is_refused() -> anyhow::Result<()> {
         Ok(())
     })
 }
+
+/// A watched write waits for the one sent before it, so a first snapshot
+/// sent just before a delete of the same file runs first.
+#[test]
+fn a_watched_write_waits_for_the_one_sent_before_it() -> anyhow::Result<()> {
+    with_root(|repo| {
+        repo_at(repo);
+        write(repo, "a.env", "A=1\n");
+        let mut state = crate::workspace::WorkspaceState::new();
+        let key = TabKey::next();
+        let loaded = super::loaded_tab(repo);
+        let since = None;
+        state
+            .apply_patch(crate::content::ContentPatch::Loaded { key, since, loaded })
+            .map_err(|refused| anyhow::anyhow!("{refused}"))?;
+        let (release, held) = std::sync::mpsc::channel::<()>();
+        let before = std::thread::spawn(move || {
+            let _ = held.recv();
+        });
+        state.chain_watched_write(Some(before));
+        let (tx, actor) = std::sync::mpsc::channel();
+        let (reply, _replies) = std::sync::mpsc::channel();
+        let delete = crate::worktree::Watched::Delete("a.env".into());
+        crate::worktree::spawn_watched(&state, &tx, reply, key, delete);
+
+        let early = actor.recv_timeout(std::time::Duration::from_millis(300));
+        assert!(
+            early.is_err(),
+            "the delete ran before the write sent ahead of it"
+        );
+        let file = Path::new(repo).join("a.env");
+        assert!(
+            file.exists(),
+            "the delete ran before the write sent ahead of it"
+        );
+        release.send(())?;
+        let done = actor.recv_timeout(WAIT)?;
+        let ok = matches!(
+            done,
+            crate::handle::ActorMsg::EffectDone { result: Ok(_), .. }
+        );
+        assert!(ok, "the delete was refused");
+        assert!(!file.exists(), "a.env stayed");
+        Ok(())
+    })
+}

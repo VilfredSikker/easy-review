@@ -595,3 +595,80 @@ fn a_cancel_stops_a_finder_waiting_for_its_slot() {
         );
     });
 }
+
+/// A host task in the bucket when the flow finishes holds back its release,
+/// so the flow drains. When that task ends, the task host's wake, with
+/// nothing else to tick the flow, lets the lease go (#764). The task is put
+/// in past its admission: under the fix none can start while a flow holds
+/// the bucket, so this is the state a task that slipped in would leave.
+#[test]
+fn a_release_held_back_by_a_host_task_goes_through_when_it_ends() {
+    let _serial = er_agent::agent_slots::test_serial();
+    let dir = tempfile::tempdir().unwrap();
+    er_engine::storage::with_process_test_storage_root(dir.path(), || {
+        let repo = dir.path().join("repo");
+        let bucket_path = dir.path().join("bucket");
+        std::fs::create_dir_all(&repo).unwrap();
+        std::fs::create_dir_all(&bucket_path).unwrap();
+        let repo = repo.to_string_lossy().into_owned();
+        let bucket = bucket_path.to_string_lossy().into_owned();
+        let config = gated_standard_config(&bucket, dir.path());
+        let tasks = crate::tasks::TaskHost::default();
+        let handle = spawn(WorkspaceDeps::new(ports()).with_tasks(tasks.clone()));
+
+        handle
+            .send_and_wait_with(
+                Command::Flow(FlowCommand::Start {
+                    context: context(&config, view_of(&repo, &bucket)),
+                    scope: "branch".into(),
+                }),
+                DEADLINE,
+            )
+            .unwrap();
+        wait_until("the flow holds its bucket", || {
+            er_engine::arena::check_bucket_admission(&bucket).is_err()
+        });
+        let quiet = Arc::new(ErConfig::default());
+        let hooks = crate::tasks::TaskHooks {
+            ports: Ports::for_test(),
+            config: Arc::new(move || Arc::clone(&quiet)),
+            notify: Arc::new(|_, _| {}),
+            finished: Arc::new(|_| {}),
+        };
+        let (done, result) = std::sync::mpsc::channel();
+        crate::tasks::hold_agent_unadmitted(
+            &tasks,
+            &hooks,
+            view_of(&repo, &bucket).target,
+            "summary",
+            |_| {
+                Ok(er_engine::agent_prompt::AgentPromptRun {
+                    run: er_engine::jobs::AgentRunHandle::new(),
+                    result,
+                })
+            },
+        )
+        .unwrap();
+
+        std::fs::write(dir.path().join("gate"), "").unwrap();
+        wait_until("the finished flow drains behind the host task", || {
+            handle
+                .view()
+                .review_flow(&bucket)
+                .is_some_and(|live| !live.flow.is_running() && live.draining)
+        });
+        assert!(
+            er_engine::arena::check_bucket_admission(&bucket).is_err(),
+            "the flow let its bucket go while a host task still writes"
+        );
+
+        done.send(Ok(())).unwrap();
+        wait_until("the release goes through once the host task ends", || {
+            !handle
+                .view()
+                .review_flow(&bucket)
+                .is_some_and(|live| live.draining)
+                && er_engine::arena::check_bucket_admission(&bucket).is_ok()
+        });
+    });
+}

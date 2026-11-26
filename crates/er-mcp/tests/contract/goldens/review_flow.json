@@ -766,6 +766,70 @@
   },
   {
     "arguments": {
+      "action": "list",
+      "repo": "VilfredSikker/easy-review",
+      "source": "artifacts"
+    },
+    "reply": {
+      "content": [
+        {
+          "json": {
+            "artifacts": [
+              {
+                "bucket_path": "<root>/storage/repos/vilfredsikker-easy-review-42b93a89/prs/pr-575",
+                "kinds": [
+                  "triage",
+                  "tour"
+                ],
+                "missing": [
+                  "review.json"
+                ],
+                "mtime_secs": "<clock>",
+                "number": 575,
+                "pinned": false,
+                "review": null,
+                "tour": {
+                  "created_at": "2026-01-01T00:00:00Z",
+                  "diff_hash": "c24f0c10ea8cc3c6ca4fd98072123cb7b69c56552e9da03ff0fcb18929bb5094",
+                  "files": 2,
+                  "overview": "Start with the foundation types, then the UI.",
+                  "pillar_titles": [
+                    "Foundation"
+                  ],
+                  "pillars": 1,
+                  "title": "Tour: Example change"
+                },
+                "triage": {
+                  "approx_risk": "low",
+                  "confidence": "high",
+                  "created_at": "2026-01-01T00:00:00Z",
+                  "diff_hash": "c24f0c10ea8cc3c6ca4fd98072123cb7b69c56552e9da03ff0fcb18929bb5094",
+                  "domains": [
+                    "ui"
+                  ],
+                  "first_impression": "Small focused change.",
+                  "primary": "general",
+                  "priority_files": [
+                    "src/app.rs"
+                  ],
+                  "rationale": "Straightforward UI tweak"
+                }
+              }
+            ],
+            "project": null,
+            "project_id": null,
+            "repo": "VilfredSikker/easy-review"
+          },
+          "type": "text"
+        }
+      ],
+      "isError": false,
+      "resultType": "complete"
+    },
+    "tool": "pr_saved"
+  },
+  {
+    "arguments": {
       "ref": "VilfredSikker/easy-review#575"
     },
     "reply": {
