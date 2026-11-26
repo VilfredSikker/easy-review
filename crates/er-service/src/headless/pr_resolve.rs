@@ -46,10 +46,7 @@ pub struct ResolvePrRefInput<'a> {
 }
 
 /// Resolve a PR target from explicit fields and/or a single `ref` string.
-pub fn resolve_pr_ref(
-    ports: &Ports,
-    input: &ResolvePrRefInput<'_>,
-) -> Result<ResolvedPrRef> {
+pub fn resolve_pr_ref(ports: &Ports, input: &ResolvePrRefInput<'_>) -> Result<ResolvedPrRef> {
     if let Some(url) = input.pr_url.map(str::trim).filter(|s| !s.is_empty()) {
         return resolve_from_pr_url(url, None, "pr_url");
     }
@@ -106,7 +103,10 @@ fn resolve_ref_string(
             input.projects,
             input.active_project_id,
         ) {
-            if let Some(number) = ports.github.open_pr_number_for_head(&gh_owner, &gh_repo, raw)? {
+            if let Some(number) = ports
+                .github
+                .open_pr_number_for_head(&gh_owner, &gh_repo, raw)?
+            {
                 return finish(
                     &gh_owner,
                     &gh_repo,
@@ -178,7 +178,9 @@ pub fn resolve_local_branch(ports: &Ports) -> Result<ResolvedPrRef> {
     let (owner, repo, number) = ports
         .github
         .get_pr_info(&*ports.git, &repo_root)
-        .map_err(|e| anyhow::anyhow!("bucket=local could not resolve the current branch PR: {e}"))?;
+        .map_err(|e| {
+            anyhow::anyhow!("bucket=local could not resolve the current branch PR: {e}")
+        })?;
     let bucket_path = storage::local_branch_bucket_dir(&*ports.git, &repo_root, &branch)
         .to_string_lossy()
         .into_owned();

@@ -83,7 +83,9 @@ fn pr_diff_hash(er_dir: &str) -> String {
             return compute_diff_hash(&content);
         }
     }
-    if let Some(review) = er_engine::store_registry::read_found::<er_engine::ai::ErReview>(er_dir, ()) {
+    if let Some(review) =
+        er_engine::store_registry::read_found::<er_engine::ai::ErReview>(er_dir, ())
+    {
         if !review.diff_hash.is_empty() {
             return review.diff_hash;
         }
@@ -576,15 +578,16 @@ mod tests {
             };
             write_sidecar(Path::new(&er_dir), &qs);
 
-            let feedback = get_review_feedback_in_dir("acme", "widgets", 5, &er_dir, None, true).unwrap();
+            let feedback =
+                get_review_feedback_in_dir("acme", "widgets", 5, &er_dir, None, true).unwrap();
             assert_eq!(feedback.questions.len(), 1);
             assert!(feedback.findings.is_empty());
 
-            let reply =
-                reply_to_question_in_dir(&er_dir, "q-root", "Because.", None).unwrap();
+            let reply = reply_to_question_in_dir(&er_dir, "q-root", "Because.", None).unwrap();
             assert_eq!(reply.kind, "question");
 
-            let feedback = get_review_feedback_in_dir("acme", "widgets", 5, &er_dir, None, true).unwrap();
+            let feedback =
+                get_review_feedback_in_dir("acme", "widgets", 5, &er_dir, None, true).unwrap();
             assert_eq!(feedback.questions.len(), 2);
             assert_eq!(feedback.questions[1].in_reply_to.as_deref(), Some("q-root"));
             assert_eq!(feedback.questions[1].author, "agent");
@@ -643,7 +646,8 @@ mod tests {
             write_sidecar(Path::new(&er_dir), &review);
 
             reply_to_finding_in_dir(&er_dir, "f1", "Confirmed.").unwrap();
-            let feedback = get_review_feedback_in_dir("acme", "widgets", 6, &er_dir, None, true).unwrap();
+            let feedback =
+                get_review_feedback_in_dir("acme", "widgets", 6, &er_dir, None, true).unwrap();
             assert_eq!(feedback.findings.len(), 1);
             assert_eq!(feedback.findings[0].responses[0].text, "Confirmed.");
         });

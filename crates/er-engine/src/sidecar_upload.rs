@@ -319,11 +319,7 @@ pub fn prepare_pr_diff_tmp(
     }
     // Rule tables are keyed the way `storage::slug_repo` names a clone of this
     // repo (the origin URL's basename), not by the owner/repo storage slug.
-    let key = crate::storage::rules_key(
-        &*ports.git,
-        "",
-        Some(&format!("{owner}/{repo}")),
-    );
+    let key = crate::storage::rules_key(&*ports.git, "", Some(&format!("{owner}/{repo}")));
     crate::ai::prepared_diff::ensure_review_inputs_from_config(&er_dir, &raw, &key, review_md)
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     let diff_path = format!("{er_dir}/diff-tmp");

@@ -11,6 +11,7 @@
 //! kind; the MCP client (the reviewing agent itself — no subprocess spawn)
 //! authors the diagram JSON; [`upload_diagram`] validates and stores it.
 
+use anyhow::{bail, Context, Result};
 use er_engine::ai::diagrams::{
     diagram_output_file, diagram_sidecar_path, is_safe_diagram_id, is_valid_diagram_kind,
     persist_diagram_json, DIAGRAM_KIND_CUSTOM,
@@ -21,7 +22,6 @@ use er_engine::github::owner_repo_storage_slug;
 use er_engine::ports::Ports;
 use er_engine::sidecar_upload::prepare_pr_diff_tmp;
 use er_engine::storage::resolve_managed_root_for_pr_bucket;
-use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -219,7 +219,16 @@ mod tests {
     #[test]
     fn prepare_rejects_custom_without_prompt() {
         with_storage_root(|| {
-            let err = prepare_diagram_kit(&Ports::for_test(), "acme", "widgets", 1, "custom", None, &[]).unwrap_err();
+            let err = prepare_diagram_kit(
+                &Ports::for_test(),
+                "acme",
+                "widgets",
+                1,
+                "custom",
+                None,
+                &[],
+            )
+            .unwrap_err();
             assert!(err.to_string().contains("requires a non-empty prompt"));
         });
     }

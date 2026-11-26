@@ -1,6 +1,8 @@
 //! Compact summaries of managed triage / review / tour sidecars for MCP tooling.
 
-use er_engine::ai::{load_tour_sidecar, load_triage_review, ErReview, ErTour, RiskLevel, TriageReview};
+use er_engine::ai::{
+    load_tour_sidecar, load_triage_review, ErReview, ErTour, RiskLevel, TriageReview,
+};
 use er_engine::github::owner_repo_storage_slug;
 use er_engine::sidecar_upload::SidecarKind;
 use er_engine::storage::{pr_bucket_dir, storage_root};
