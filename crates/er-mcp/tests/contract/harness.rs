@@ -188,6 +188,152 @@ pub fn mask_root(text: &str, root: &Path) -> String {
     })
 }
 
+/// The time every fixture carries (the kit's examples and the seeded
+/// threads); any other time in a `timestamp` or `created_at` was written by
+/// the run and reads `<clock>` in a golden.
+pub const SEEDED_AT: &str = "2026-01-01T00:00:00Z";
+
+/// One scenario's calls and replies, recorded for one golden.
+pub struct Scenario {
+    mcp: Mcp,
+    steps: Vec<Value>,
+    generated: Vec<(String, String)>,
+}
+
+impl Scenario {
+    pub fn start() -> Self {
+        Self {
+            mcp: Mcp::start(),
+            steps: Vec::new(),
+            generated: Vec::new(),
+        }
+    }
+
+    /// Call `tool`, record the step, and return what the reply's text says,
+    /// parsed, or the JSON-RPC error under `error`.
+    pub fn call(&mut self, tool: &str, arguments: Value) -> Value {
+        let reply = self.mcp.call(tool, arguments.clone());
+        let reply = readable(reply);
+        let payload = reply
+            .get("content")
+            .and_then(|content| content.get(0))
+            .and_then(|block| block.get("json"))
+            .cloned()
+            .unwrap_or_else(|| reply.clone());
+        self.steps
+            .push(json!({ "tool": tool, "arguments": arguments, "reply": reply }));
+        payload
+    }
+
+    /// `value` differs on every run (an id the server made at random): the
+    /// golden shows `placeholder` in its place.
+    #[expect(
+        dead_code,
+        reason = "the feedback scenarios' reply ids are its first caller"
+    )]
+    pub fn generated(&mut self, value: &str, placeholder: &str) {
+        self.generated
+            .push((value.to_string(), placeholder.to_string()));
+    }
+
+    /// Stop the child and return the steps, masked.
+    pub fn finish(self) -> Value {
+        let Self {
+            mcp,
+            steps,
+            mut generated,
+        } = self;
+        let text = mask_root(&Value::Array(steps).to_string(), mcp.root());
+        mcp.finish();
+        generated.sort_by_key(|(value, _)| std::cmp::Reverse(value.len()));
+        let text = generated.iter().fold(text, |out, (value, placeholder)| {
+            out.replace(value.as_str(), placeholder)
+        });
+        let mut steps: Value = serde_json::from_str(&text).expect("masked JSON");
+        mask_clocks(&mut steps);
+        steps
+    }
+}
+
+/// Run `scenario` on two fresh temp roots; both must record the same steps.
+pub fn run_twice(scenario: fn(&mut Scenario)) -> Value {
+    let mut runs = [Scenario::start(), Scenario::start()].map(|mut run| {
+        scenario(&mut run);
+        run.finish()
+    });
+    let second = runs[1].take();
+    assert_eq!(
+        runs[0], second,
+        "the scenario differs between two temp roots"
+    );
+    second
+}
+
+/// The reply with each text block that holds JSON shown as that JSON, under
+/// `json`, so a golden reads as the payload a skill parses.
+fn readable(mut reply: Value) -> Value {
+    if let Some(blocks) = reply.get_mut("content").and_then(Value::as_array_mut) {
+        for block in blocks {
+            let parsed = block
+                .get("text")
+                .and_then(Value::as_str)
+                .and_then(|text| serde_json::from_str::<Value>(text).ok());
+            if let (Some(parsed), Some(block)) = (parsed, block.as_object_mut()) {
+                block.remove("text");
+                block.insert("json".into(), parsed);
+            }
+        }
+    }
+    reply
+}
+
+/// `text` reads as an RFC 3339 time: `YYYY-MM-DDTHH:MM:SS`, then a zone.
+fn is_rfc3339(text: &str) -> bool {
+    const SHAPE: &str = "dddd-dd-ddTdd:dd:dd";
+    text.len() > SHAPE.len()
+        && text.chars().zip(SHAPE.chars()).all(|(c, want)| {
+            if want == 'd' {
+                c.is_ascii_digit()
+            } else {
+                c == want
+            }
+        })
+}
+
+/// A clock the run wrote: an RFC 3339 time other than [`SEEDED_AT`], an
+/// epoch count written as digits, or an epoch number in a plausible range.
+/// An empty string or a zero is no clock and reaches the golden as it is.
+fn is_written_clock(key: &str, value: &Value) -> bool {
+    let in_range = |range: std::ops::Range<u64>| value.as_u64().is_some_and(|n| range.contains(&n));
+    match key {
+        "timestamp" | "created_at" => value.as_str().is_some_and(|text| {
+            text != SEEDED_AT
+                && (is_rfc3339(text)
+                    || ((9..=13).contains(&text.len()) && text.chars().all(|c| c.is_ascii_digit())))
+        }),
+        "saved_at_ms" => in_range(1_000_000_000_000..10_000_000_000_000),
+        "mtime_secs" => in_range(1_000_000_000..10_000_000_000),
+        _ => false,
+    }
+}
+
+/// Every clock the run wrote reads `<clock>`.
+fn mask_clocks(value: &mut Value) {
+    match value {
+        Value::Object(map) => {
+            for (key, child) in map.iter_mut() {
+                if is_written_clock(key, child) {
+                    *child = Value::String("<clock>".into());
+                } else {
+                    mask_clocks(child);
+                }
+            }
+        }
+        Value::Array(items) => items.iter_mut().for_each(mask_clocks),
+        _ => {}
+    }
+}
+
 /// `value` with every object's keys in sorted order. serde_json keeps
 /// insertion order when another crate in the build turns on
 /// `preserve_order`, so the goldens fix one order for both builds.

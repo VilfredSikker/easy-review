@@ -34,7 +34,8 @@ Installed skills call these tools by name, so the contract only grows:
   1.0.0 release; the skills keep their own `metadata.version`.
 
 `crates/er-mcp/tests/contract.rs` holds this: it drives the built binary over
-stdio and compares `tools/list` with the golden beside it. A change to a golden is a change to the contract and is reviewed as one.
+stdio and compares `tools/list` and each tool's reply with the goldens beside
+it. A change to a golden is a change to the contract and is reviewed as one.
 
 ## Universal `ref` targeting
 
