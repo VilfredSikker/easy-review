@@ -426,10 +426,16 @@ fn run_pr_list(
     state: &str,
     limit: usize,
 ) -> Option<Vec<PrInfo>> {
-    let out = github
-        .pr_list_json(remote, state, limit, PR_LIST_FIELDS)
-        .ok()?;
+    let out = gh_call(|| github.pr_list_json(remote, state, limit, PR_LIST_FIELDS))?;
     parse_pr_list(&out)
+}
+
+/// One `gh` call's output. A call that panics answers None, as a failed
+/// call does, so its remote counts as failed and the inbox hears of it.
+fn gh_call(call: impl FnOnce() -> Result<Vec<u8>, er_engine::github::GhError>) -> Option<Vec<u8>> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(call))
+        .ok()?
+        .ok()
 }
 
 fn parse_pr_list(stdout: &[u8]) -> Option<Vec<PrInfo>> {
@@ -562,6 +568,14 @@ mod tests {
             call.starts_with("pr_list_json(repo_slug=\"o/r\", state=\"open\", limit=30"),
             "{call}"
         );
+    }
+
+    /// A `gh` call that panics fails its remote, as one that errors does;
+    /// the panic never reaches the refresh's join.
+    #[test]
+    fn a_gh_call_that_panics_answers_none() {
+        assert_eq!(gh_call(|| Ok(b"[]".to_vec())), Some(b"[]".to_vec()));
+        assert_eq!(gh_call(|| panic!("gh died")), None);
     }
 
     #[test]

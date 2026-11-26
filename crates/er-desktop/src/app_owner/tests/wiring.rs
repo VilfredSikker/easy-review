@@ -32,25 +32,21 @@ fn sources() -> Vec<(String, String)> {
     out
 }
 
-/// The projects record has one writer, `projects.rs`, and the metadata
-/// cache has one, the owner: no other file writes either.
+/// The projects record and the metadata cache each have one writer, the
+/// owner in er-service: no desktop file writes either.
 #[test]
 fn the_projects_record_and_the_metadata_cache_each_have_one_writer() {
     for (path, text) in sources() {
-        if path != "src/projects.rs" {
-            for writer in ["projects_pins::update", "ProjectsFile>()"] {
-                assert!(
-                    !text.contains(writer),
-                    "{path} writes the projects record ({writer})"
-                );
-            }
-        }
-        if path != "src/app_owner.rs" && path != "src/page_view.rs" {
+        for writer in ["projects_pins::update", "ProjectsFile>()"] {
             assert!(
-                !text.contains("refresh_meta_cache"),
-                "{path} writes the metadata cache"
+                !text.contains(writer),
+                "{path} writes the projects record ({writer})"
             );
         }
+        assert!(
+            !text.contains("refresh_meta_cache"),
+            "{path} writes the metadata cache"
+        );
     }
 }
 
@@ -62,11 +58,12 @@ fn no_desktop_module_writes_the_inbox_or_projects_record() {
     let writers = [
         "inbox.json",
         "projects.json",
-        "InboxState>()",
         "ProjectsFile>()",
         "projects_pins::update",
         "projects_pins::pin_pr",
         "projects_pins::unpin_pr",
+        "projects_pins::ensure_project_for_remote",
+        "projects_pins::resolve_project_for_pin",
     ];
     for (path, text) in sources() {
         let code = text
@@ -80,9 +77,9 @@ fn no_desktop_module_writes_the_inbox_or_projects_record() {
     }
 }
 
-/// The PR cache has one writer, the owner, over the helpers in
-/// `pr_cache.rs`: no other file locks it or its fetch times to write, or
-/// calls a helper that does.
+/// The PR cache has one writer, the owner in er-service, over the helpers in
+/// its `pr_cache.rs`: no desktop file locks it or its fetch times to write,
+/// or calls a helper that does.
 #[test]
 fn the_pr_cache_has_one_writer() {
     let writers = [
@@ -94,9 +91,6 @@ fn the_pr_cache_has_one_writer() {
         "save_persisted_pr_cache",
     ];
     for (path, text) in sources() {
-        if path == "src/app_owner.rs" || path == "src/pr_cache.rs" {
-            continue;
-        }
         for writer in writers {
             assert!(
                 !text.contains(writer),
