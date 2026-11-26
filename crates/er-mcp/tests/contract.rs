@@ -415,3 +415,21 @@ fn a_listed_call_whose_fixture_is_missing_fails_the_scenario() {
         "{message}"
     );
 }
+
+/// MCP's reply copies its parent's row and fetches no diff: with no fixture
+/// listed, any `gh` call it made would fail the scenario.
+#[test]
+fn a_feedback_reply_calls_no_gh() {
+    let fixtures = tempfile::tempdir().expect("fixtures dir");
+    let mut mcp = Mcp::start_with_fixtures(fixtures.path());
+    let pr = mcp.call("pr_resolve", json!({ "ref": PR }));
+    let pr: Value = serde_json::from_str(pr["content"][0]["text"].as_str().expect("text"))
+        .expect("pr_resolve JSON");
+    seed_feedback(Path::new(pr["bucket_path"].as_str().expect("bucket_path")));
+    let reply = mcp.call(
+        "pr_feedback_reply",
+        json!({ "ref": PR, "type": "question", "id": "q-seed", "text": "Because." }),
+    );
+    assert_eq!(reply["isError"], json!(false), "{reply}");
+    mcp.finish();
+}
