@@ -1,4 +1,4 @@
-//! The desktop app owner: the one writer of the sidebar's resources.
+//! The app owner: the one writer of the sidebar's resources.
 //!
 //! It publishes `projects`, each project's `branches`, each remote's `prs`,
 //! each open root's `worktrees` and the `inbox` from the projects record, the
@@ -8,14 +8,14 @@
 //! it last published, so any row field that moves moves the version. It is
 //! also the one writer of the metadata cache and of the PR cache: every
 //! refresh, sweep and patch runs through it and publishes after, and so does
-//! every inbox command. Changes it
+//! every inbox command and every write of the projects record. Changes it
 //! does not make (another process writing the projects record, the GitHub
 //! login arriving after launch) reach the resources at the next publish,
 //! which the backend tick runs.
 //!
-//! The owner never names the App. The resource host reads it through
-//! [`SidebarOwner`], so moving the owner into the service changes neither the
-//! host nor the frontend.
+//! The owner never names the App. The desktop's resource host reads it through
+//! [`SidebarOwner`], which is why the move into the service changed neither the
+//! host's reads nor the frontend.
 
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -29,15 +29,17 @@ use er_protocol::{
     StatusComment, StatusReview, StatusReviewer, Worktree, Worktrees,
 };
 
-use crate::inbox::{InboxHandle, InboxState};
-use crate::page_view::{
+use crate::app_records::inbox::{InboxHandle, InboxState};
+use crate::app_records::pr_cache::{self, PrCacheFetchedAtMap, PrCacheMap};
+use crate::app_records::projects::{
+    self, ProjectRecord, ProjectReviewSettingsPatch, ProjectsFile, TabProjectRef,
+};
+use crate::app_records::sidebar::{
     self, BranchInfo, GhStatusCache, GhUser, GithubStatusSnapshot, MetaCache, PrInfo, ProjectMeta,
     WorktreeSnapshot,
 };
-use crate::pr_cache::{self, PrCacheFetchedAtMap, PrCacheMap};
-use crate::projects::{self, ProjectRecord, ProjectsFile};
-
-pub mod startup;
+use er_engine::git::Git;
+use er_engine::github::GitHub;
 
 #[cfg(test)]
 mod tests;
@@ -85,7 +87,12 @@ pub struct AppOwner {
     published: Mutex<Published>,
     /// Wakes the resource relay after a publish that moved a version.
     wake: Mutex<Option<Sender<()>>>,
+    /// Hears each PR-list fetch and sweep, with its kind and fields.
+    change_hook: OnceLock<Box<ChangeHook>>,
 }
+
+/// What [`AppOwner::set_change_hook`] takes: a kind and its fields.
+pub type ChangeHook = dyn Fn(&str, &[(&str, String)]) + Send + Sync;
 
 #[derive(Default)]
 struct Published {
@@ -129,11 +136,25 @@ impl AppOwner {
             gh_status: OnceLock::new(),
             published: Mutex::default(),
             wake: Mutex::default(),
+            change_hook: OnceLock::new(),
         }
     }
 
     pub fn set_wake(&self, wake: Sender<()>) {
         *lock(&self.wake) = Some(wake);
+    }
+
+    /// Has `hook` hear each PR-list fetch and sweep the owner runs, with its
+    /// kind and fields; the desktop logs them. The first call wins.
+    pub fn set_change_hook(&self, hook: impl Fn(&str, &[(&str, String)]) + Send + Sync + 'static) {
+        let _ = self.change_hook.set(Box::new(hook));
+    }
+
+    fn change_hook(&self) -> &ChangeHook {
+        fn unheard(_: &str, _: &[(&str, String)]) {}
+        self.change_hook
+            .get()
+            .map_or(&unheard, |hook| hook.as_ref())
     }
 
     /// Builds `inbox` from here on, with the kind filter `prefs` reads at
@@ -160,21 +181,19 @@ impl AppOwner {
             write(&mut inbox);
         }
         self.publish();
-        crate::inbox::save_inbox_state(&self.inbox);
+        crate::app_records::inbox::save_inbox_state(&self.inbox);
         Ok(())
     }
 
-    /// Refreshes every project's metadata, then publishes. Answers whether
-    /// the cache's fingerprint moved, which the snapshot's revision follows.
-    pub fn refresh_meta(&self, git: &dyn er_engine::git::Git, active_root: &str) -> bool {
-        let moved = page_view::refresh_meta_cache(git, active_root, &self.meta);
-        self.publish();
-        moved
+    /// Saves the inbox as a sweep left it. The tick publishes.
+    pub fn save_inbox(&self) {
+        crate::app_records::inbox::save_inbox_state(&self.inbox);
     }
 
-    /// Refreshes one project's metadata, then publishes.
-    pub fn refresh_project_meta(&self, git: &dyn er_engine::git::Git, project_id: &str) -> bool {
-        let moved = page_view::refresh_meta_cache_for_project(git, project_id, &self.meta);
+    /// Runs `refresh` over the metadata cache, then publishes. Answers what
+    /// `refresh` answers: whether the cache's fingerprint moved.
+    pub fn refresh_meta_with(&self, refresh: impl FnOnce(&MetaCache) -> bool) -> bool {
+        let moved = refresh(&self.meta);
         self.publish();
         moved
     }
@@ -191,14 +210,15 @@ impl AppOwner {
 
     /// Fetches the PRs of every project remote with a checkout, then
     /// publishes. Answers the remotes whose fetch failed.
-    pub async fn refresh_prs(&self, github: Arc<dyn er_engine::github::GitHub>) -> Vec<String> {
-        let failed = pr_cache::refresh_pr_cache(github, &self.pr_cache, &self.pr_fetched_at).await;
+    pub fn refresh_prs(&self, github: Arc<dyn er_engine::github::GitHub>) -> Vec<String> {
+        let hook = self.change_hook();
+        let failed = pr_cache::refresh_pr_cache(github, &self.pr_cache, &self.pr_fetched_at, hook);
         self.publish();
         failed
     }
 
     /// Fetches one remote's PRs, then publishes. Answers whether it fetched.
-    pub async fn refresh_remote_prs(
+    pub fn refresh_remote_prs(
         &self,
         github: Arc<dyn er_engine::github::GitHub>,
         remote: &str,
@@ -208,8 +228,8 @@ impl AppOwner {
             remote,
             &self.pr_cache,
             &self.pr_fetched_at,
-        )
-        .await;
+            self.change_hook(),
+        );
         self.publish();
         fetched
     }
@@ -292,6 +312,93 @@ impl AppOwner {
             }
         }
         changed
+    }
+}
+
+/// The projects record's writes. Each runs through `projects.rs`, under the
+/// store's scope lock, then publishes, so the owner is the record's one
+/// writer in its process.
+impl AppOwner {
+    /// Registers the repository holding `path`; see [`projects::auto_register`].
+    pub fn auto_register(
+        &self,
+        github: &dyn GitHub,
+        git: &dyn Git,
+        path: &str,
+    ) -> Option<ProjectRecord> {
+        self.wrote(projects::auto_register(github, git, path))
+    }
+
+    /// Registers every root and remote `refs` names.
+    pub fn sync_projects_from_refs(
+        &self,
+        github: &dyn GitHub,
+        git: &dyn Git,
+        refs: &[TabProjectRef],
+    ) {
+        self.wrote(projects::sync_projects_from_refs(github, git, refs));
+    }
+
+    pub fn ensure_remote_project(&self, remote: &str) -> anyhow::Result<String> {
+        self.wrote(projects::ensure_remote_project(remote))
+    }
+
+    pub fn delete_project(&self, project: &str) -> anyhow::Result<()> {
+        self.wrote(projects::delete_project(project))
+    }
+
+    pub fn reorder_projects(&self, ordered: &[String]) -> anyhow::Result<()> {
+        self.wrote(projects::reorder_projects(ordered))
+    }
+
+    pub fn set_active_project(&self, project: &str) {
+        self.wrote(projects::set_active(project));
+    }
+
+    pub fn patch_project_review_settings(
+        &self,
+        project: &str,
+        patch: ProjectReviewSettingsPatch,
+    ) -> anyhow::Result<()> {
+        self.wrote(projects::patch_project_review_settings(project, patch))
+    }
+
+    pub fn add_tracked_branch(&self, project: &str, name: &str) -> anyhow::Result<()> {
+        self.wrote(projects::add_tracked_branch(project, name))
+    }
+
+    pub fn remove_tracked_branch(&self, project: &str, name: &str) -> anyhow::Result<()> {
+        self.wrote(projects::remove_tracked_branch(project, name))
+    }
+
+    pub fn dismiss_pr(&self, project: &str, number: u64) {
+        self.wrote(projects::dismiss_pr(project, number));
+    }
+
+    pub fn undismiss_pr(&self, project: &str, number: u64) -> anyhow::Result<()> {
+        self.wrote(projects::undismiss_pr(project, number))
+    }
+
+    pub fn track_pr(&self, project: &str, number: u64) -> anyhow::Result<()> {
+        self.wrote(projects::track_pr(project, number))
+    }
+
+    pub fn untrack_pr(&self, project: &str, number: u64) -> anyhow::Result<()> {
+        self.wrote(projects::untrack_pr(project, number))
+    }
+
+    pub fn save_pr(&self, project: &str, number: u64, title: &str) -> anyhow::Result<()> {
+        self.wrote(projects::save_pr(project, number, title))
+    }
+
+    pub fn unsave_pr(&self, project: &str, number: u64) -> anyhow::Result<()> {
+        self.wrote(projects::unsave_pr(project, number))
+    }
+
+    /// Publishes after a write and answers what the write answered.
+    fn wrote<T>(&self, answer: T) -> T {
+        self.publish();
+        answer
     }
 }
 
@@ -739,7 +846,7 @@ fn project_prs(
     } else {
         let (mine, to_review) = listed_open_prs(cached, dismissed, me);
         let shown = cached.iter().filter(|pr| !dismissed.contains(&pr.number));
-        let merged = page_view::recently_merged_prs(shown.cloned().collect());
+        let merged = sidebar::recently_merged_prs(shown.cloned().collect());
         (
             numbers(mine),
             numbers(to_review),
@@ -780,7 +887,7 @@ fn entry_row(number: u64, title: &str, cached: &[PrInfo], rows: &mut Vec<PrRow>)
         return None;
     }
     if !rows.iter().any(|row| row.number == number) {
-        rows.push(pr_row(&page_view::minimal_pr_info(number, title), None));
+        rows.push(pr_row(&sidebar::minimal_pr_info(number, title), None));
     }
     Some(number)
 }
@@ -825,7 +932,7 @@ pub fn build_inbox(state: &InboxState, prefs: &InboxConfig) -> Inbox {
         .map(|item| InboxItem {
             id: item.id.clone(),
             kind: item.kind.clone(),
-            category: crate::inbox::category_for_kind(&item.kind)
+            category: crate::app_records::inbox::category_for_kind(&item.kind)
                 .as_str()
                 .to_string(),
             severity: item.severity.clone(),

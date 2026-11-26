@@ -14,13 +14,13 @@ use er_service::AppCommand;
 
 use super::{git_fixture_command, review_flow_test_state, ReviewFlowTestDir};
 use crate::app_owner::startup::{meta_refresh_interval, register_open_projects};
-use crate::app_owner::SidebarOwner;
-use crate::page_view::PrInfo;
-use crate::projects::{self, ProjectRecord, ProjectsFile};
+use crate::page_view::{PrInfo, RefreshMeta};
 use crate::resources::content_routes;
 use crate::resources::{self, relay, tick, Watched};
 use crate::route_helpers::DesktopState;
 use crate::service::ServiceState;
+use er_service::app_records::projects::{self, ProjectRecord, ProjectsFile};
+use er_service::app_records::SidebarOwner;
 
 const WAIT: Duration = Duration::from_secs(10);
 

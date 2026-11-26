@@ -6,12 +6,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex, OnceLock};
 
-use crate::inbox::InboxHandle;
 use crate::line_commits_cache::LineCommitsCache;
 use crate::page_view::{
     GhStatusCache, GhUser, PendingAiReplies, PendingAiReply, PrInfo, WatchStatusSnapshot,
     WatchStatusState,
 };
+use er_service::app_records::inbox::InboxHandle;
 
 #[derive(Clone)]
 pub struct DesktopState {
@@ -26,7 +26,7 @@ pub struct DesktopState {
     /// so nothing reads it now.
     pub branch_base_remote_oid: Arc<Mutex<HashMap<String, String>>>,
     /// The sidebar's resources and the metadata cache's one writer.
-    pub app_owner: Arc<crate::app_owner::AppOwner>,
+    pub app_owner: Arc<er_service::app_records::AppOwner>,
     pub gh_user: GhUser,
     /// Active PTY sessions keyed by frontend session_id (e.g. `tab-<idx>`).
     /// Dropping an entry kills its child shell via `PtySession::drop`.

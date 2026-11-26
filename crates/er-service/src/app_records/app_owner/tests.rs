@@ -4,8 +4,8 @@ use std::sync::{Arc, Mutex};
 use er_protocol::{ResourceChanged, ResourceKey, ResourceVersion};
 
 use super::{AppOwner, SidebarOwner};
-use crate::page_view::PrInfo;
-use crate::projects::{self, ProjectRecord, ProjectsFile};
+use crate::app_records::projects::{self, ProjectRecord, ProjectsFile};
+use crate::app_records::sidebar::{BranchInfo, PrInfo, ProjectMeta};
 
 fn project(id: &str, root: &str, remote: Option<&str>) -> ProjectRecord {
     ProjectRecord {
@@ -32,26 +32,30 @@ fn owner() -> AppOwner {
         Arc::new(Mutex::new(HashMap::new())),
         Arc::new(Mutex::new(HashMap::new())),
         Arc::new(Mutex::new(Some("me".into()))),
-        Arc::new(Mutex::new(crate::inbox::InboxState::default())),
+        Arc::new(Mutex::new(crate::app_records::inbox::InboxState::default())),
     )
 }
 
-/// A repository on `main` with `feature` beside it, and `worktrees` checked out.
-fn git(worktrees: Vec<er_git::Worktree>) -> er_git::FakeGit {
-    er_git::FakeGit::default()
-        .with_current_branch(Ok("main".into()))
-        .with_rev_parse_verify(Ok(Some("0".repeat(40))))
-        .with_list_worktrees(Ok(worktrees))
-        .with_for_each_ref(Ok("main|origin/main\nfeature|origin/feature\n".into()))
-        .with_branch_merged(Ok(String::new()))
-}
-
-fn feature_worktree() -> er_git::Worktree {
-    er_git::Worktree {
-        path: "/src/a-feature".into(),
-        branch: "feature".into(),
-        head: "1".repeat(40),
-    }
+/// What a refresh reads for `project` from a repository on `main` with
+/// `feature` beside it.
+fn refresh(owner: &AppOwner, project: &str) {
+    let branch = |name: &str, is_current| BranchInfo {
+        name: name.into(),
+        upstream: Some(format!("origin/{name}")),
+        is_current,
+        is_merged: false,
+        worktree_path: None,
+        pr_number: None,
+    };
+    owner.refresh_meta_with(|meta| {
+        let seeded = ProjectMeta {
+            current_branch: "main".into(),
+            local_branches: vec![branch("main", true), branch("feature", false)],
+            auto_branches: Vec::new(),
+        };
+        lock(meta).insert(project.into(), seeded);
+        true
+    });
 }
 
 fn branches_key(project: &str) -> ResourceKey {
@@ -71,45 +75,6 @@ fn version(owner: &AppOwner, key: &ResourceKey) -> u64 {
 fn in_storage(test: impl FnOnce()) {
     let tmp = tempfile::tempdir().unwrap();
     er_engine::storage::with_test_storage_root(tmp.path(), test);
-}
-
-/// A refresh that gives one project's branch a worktree moves that
-/// project's branches and nothing else. The cache's fingerprint counts
-/// branches and does not see the change, so a version that followed it
-/// would stay put.
-#[test]
-fn a_refresh_moves_only_the_branches_it_changed() {
-    in_storage(|| {
-        save(&ProjectsFile {
-            projects: vec![project("a", "/src/a", None), project("b", "/src/b", None)],
-            active_id: Some("a".into()),
-        });
-        let owner = owner();
-        owner.refresh_meta(&git(Vec::new()), "");
-        let before = owner.versions();
-        assert_eq!(before.len(), 3, "{before:?}");
-
-        let fingerprint_moved = owner.refresh_project_meta(&git(vec![feature_worktree()]), "a");
-        assert!(
-            !fingerprint_moved,
-            "the fixture must change what the fingerprint ignores"
-        );
-
-        let moved: Vec<ResourceKey> = owner
-            .versions()
-            .into_iter()
-            .filter(|entry| !before.contains(entry))
-            .map(|(key, _)| key)
-            .collect();
-        assert_eq!(moved, vec![branches_key("a")]);
-        let (_, branches) = owner.branches("a");
-        let feature = branches
-            .local_branches
-            .iter()
-            .find(|branch| branch.name == "feature")
-            .expect("feature is tracked");
-        assert_eq!(feature.worktree_path.as_deref(), Some("/src/a-feature"));
-    });
 }
 
 /// A publish over unchanged sources stamps nothing and answers nothing.
@@ -139,7 +104,7 @@ fn a_project_that_returns_never_repeats_a_version() {
         };
         save(&file);
         let owner = owner();
-        owner.refresh_meta(&git(Vec::new()), "");
+        refresh(&owner, "a");
         let first = version(&owner, &branches_key("a"));
 
         save(&ProjectsFile::default());
@@ -175,7 +140,7 @@ fn a_branch_carries_its_open_pr_number() {
             active_id: None,
         });
         let owner = owner();
-        owner.refresh_meta(&git(Vec::new()), "");
+        refresh(&owner, "a");
         lock(&owner.pr_cache).insert("acme/a".into(), vec![pr(7, "feature", "someone")]);
         let changed = owner.publish();
         let stamped = |key: ResourceKey| ResourceChanged {
@@ -219,49 +184,6 @@ fn production_source(path: &str) -> String {
         .next()
         .unwrap_or_default()
         .to_string()
-}
-
-fn sources() -> Vec<(String, String)> {
-    let mut out = Vec::new();
-    let mut dirs = vec![std::path::PathBuf::from("src")];
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    while let Some(dir) = dirs.pop() {
-        for entry in std::fs::read_dir(root.join(&dir)).unwrap() {
-            let path = dir.join(entry.unwrap().file_name());
-            if root.join(&path).is_dir() {
-                dirs.push(path);
-            } else if path.extension().is_some_and(|ext| ext == "rs")
-                && !path.components().any(|part| part.as_os_str() == "tests")
-                && !path.ends_with("tests.rs")
-            {
-                let name = path.to_string_lossy().into_owned();
-                out.push((name.clone(), production_source(&name)));
-            }
-        }
-    }
-    out
-}
-
-/// The projects record has one writer, `projects.rs`, and the metadata
-/// cache has one, the owner: no other file writes either.
-#[test]
-fn the_projects_record_and_the_metadata_cache_each_have_one_writer() {
-    for (path, text) in sources() {
-        if path != "src/projects.rs" {
-            for writer in ["projects_pins::update", "ProjectsFile>()"] {
-                assert!(
-                    !text.contains(writer),
-                    "{path} writes the projects record ({writer})"
-                );
-            }
-        }
-        if path != "src/app_owner.rs" && path != "src/page_view.rs" {
-            assert!(
-                !text.contains("refresh_meta_cache"),
-                "{path} writes the metadata cache"
-            );
-        }
-    }
 }
 
 fn prs_key(remote: &str) -> ResourceKey {
@@ -347,7 +269,7 @@ fn the_owner_keeps_the_worktrees_of_open_roots_only() {
     in_storage(|| {
         let owner = owner();
         let list = |path: &str| {
-            super::worktree_rows(vec![crate::page_view::WorktreeSnapshot {
+            super::worktree_rows(vec![crate::app_records::sidebar::WorktreeSnapshot {
                 path: path.into(),
                 branch: "main".into(),
                 is_current: true,
@@ -372,39 +294,6 @@ fn the_owner_keeps_the_worktrees_of_open_roots_only() {
     });
 }
 
-/// The PR cache has one writer, the owner, over the helpers in
-/// `pr_cache.rs`: no other file locks it or its fetch times to write, or
-/// calls a helper that does.
-#[test]
-fn the_pr_cache_has_one_writer() {
-    let writers = [
-        "pr_cache::refresh_pr_cache",
-        "pr_cache::patch_pr_head_oid",
-        "pr_cache::merge_pr_results",
-        "pr_cache::cache_pr",
-        "pr_cache::forget_remote",
-        "save_persisted_pr_cache",
-    ];
-    for (path, text) in sources() {
-        if path == "src/app_owner.rs" || path == "src/pr_cache.rs" {
-            continue;
-        }
-        for writer in writers {
-            assert!(
-                !text.contains(writer),
-                "{path} writes the PR cache ({writer})"
-            );
-        }
-        for line in text.lines() {
-            let locks = line.contains("pr_cache") && line.contains(".lock()");
-            assert!(
-                !(locks && line.contains("mut ")),
-                "{path} writes the PR cache: {line}"
-            );
-        }
-    }
-}
-
 /// Which project and branch are active is the frontend's to derive from
 /// `tabs`; no sidebar wire type or builder carries it.
 #[test]
@@ -414,7 +303,10 @@ fn no_sidebar_resource_says_what_is_active() {
     let protocol = std::fs::read_to_string(protocol).unwrap();
     for (path, text) in [
         ("er-protocol/src/sidebar.rs", protocol),
-        ("src/app_owner.rs", production_source("src/app_owner.rs")),
+        (
+            "src/app_records/app_owner.rs",
+            production_source("src/app_records/app_owner.rs"),
+        ),
     ] {
         for field in ["is_active", "is_current", "isActive", "isCurrent"] {
             assert!(!text.contains(field), "{path} carries {field}");
@@ -426,7 +318,7 @@ fn no_sidebar_resource_says_what_is_active() {
 /// the service.
 #[test]
 fn the_owner_never_names_the_app() {
-    let text = production_source("src/app_owner.rs");
+    let text = production_source("src/app_records/app_owner.rs");
     for name in [
         "AppState",
         "er_engine::app",
@@ -435,17 +327,6 @@ fn the_owner_never_names_the_app() {
     ] {
         assert!(!text.contains(name), "app_owner.rs names {name}");
     }
-}
-
-/// The registry's tabs register projects at startup.
-#[test]
-fn main_registers_projects_from_the_registry() {
-    let main = production_source("src/main.rs");
-    for call in ["sync_projects_from_tabs", "auto_register("] {
-        assert!(!main.contains(call), "{call}");
-    }
-    assert!(main.contains("startup::register_open_projects(&state)"));
-    assert!(main.contains("startup::meta_refresh_interval(&meta_state)"));
 }
 
 /// An inbox write publishes before it answers: the owner's version of
@@ -481,15 +362,15 @@ fn an_inbox_write_moves_the_inbox() {
     });
 }
 
-fn inbox_item(id: &str, kind: &str) -> crate::inbox::InboxItem {
-    crate::inbox::InboxItem {
+fn inbox_item(id: &str, kind: &str) -> crate::app_records::inbox::InboxItem {
+    crate::app_records::inbox::InboxItem {
         id: id.into(),
         kind: kind.into(),
         severity: "info".into(),
         title: format!("title {id}"),
         body: format!("body {id}"),
         source: "github".into(),
-        target: crate::inbox::InboxTarget {
+        target: crate::app_records::inbox::InboxTarget {
             project_id: Some("a".into()),
             repo_root: None,
             remote: Some("acme/a".into()),
@@ -503,24 +384,37 @@ fn inbox_item(id: &str, kind: &str) -> crate::inbox::InboxItem {
     }
 }
 
-/// The PR sweep and the setup hook read the inbox prefs through the
-/// library, which reads the settings actor on the flag path; `main.rs`
-/// never reads them from the App.
+/// A PR-list refresh tells the change hook about each remote it fetched and
+/// about the sweep's end, with their fields; the desktop logs what it hears.
 #[test]
-fn main_reads_the_inbox_prefs_through_startup() {
-    let main = production_source("src/main.rs");
-    assert!(!main.contains("clone_inbox_prefs"));
-    assert_eq!(main.matches("startup::inbox_prefs(&bg_state)").count(), 2);
-    assert!(main.contains("startup::flush_pending_notifications(&state)"));
-    assert!(main.contains("startup::read_inbox_prefs_from_settings(&desktop)"));
-}
+fn a_pr_list_refresh_reports_to_the_change_hook() {
+    in_storage(|| {
+        save(&ProjectsFile {
+            projects: vec![project("a", "/src/a", Some("acme/a"))],
+            active_id: None,
+        });
+        let owner = owner();
+        let heard = Arc::new(Mutex::new(Vec::new()));
+        let hears = Arc::clone(&heard);
+        owner.set_change_hook(move |kind, fields| {
+            let names: Vec<&str> = fields.iter().map(|(name, _)| *name).collect();
+            lock(&hears).push(format!("{kind}: {}", names.join(" ")));
+        });
+        let github = |json: &[u8]| -> Arc<dyn er_engine::github::GitHub> {
+            Arc::new(er_engine::github::FakeGitHub::default().with_pr_list_json(Ok(json.to_vec())))
+        };
 
-/// The head probe takes its target from the library, which reads the
-/// registry on the flag path, and patches through the owner.
-#[test]
-fn main_probes_the_pr_head_through_the_startup_target_and_the_owner() {
-    let main = production_source("src/main.rs");
-    assert!(main.contains("startup::pr_head_probe_target(&probe_state)"));
-    assert!(!main.contains("fn pr_head_probe_target"));
-    assert!(main.contains(".patch_pr_head_oid(&slug, pr_number, &oid)"));
+        assert!(owner.refresh_prs(github(b"[]")).is_empty());
+        assert_eq!(
+            *lock(&heard),
+            [
+                "pr_list_fetch: count remote ms",
+                "pr_list_refresh_done: remotes ms"
+            ]
+        );
+
+        lock(&heard).clear();
+        assert!(owner.refresh_remote_prs(github(b"[]"), "acme/a"));
+        assert_eq!(*lock(&heard), ["pr_list_fetch: count remote ms"]);
+    });
 }

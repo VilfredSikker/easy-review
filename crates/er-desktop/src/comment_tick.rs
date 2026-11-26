@@ -62,7 +62,7 @@ pub fn tick(state: &crate::state::DesktopState, synced: &mut Synced) -> Option<T
 /// an empty OID is also `PrInfo::head_oid`'s `#[serde(default)]` value, not a
 /// real "no head" signal.
 pub fn cached_head_oid(
-    pr_cache: &crate::pr_cache::PrCacheMap,
+    pr_cache: &er_service::app_records::pr_cache::PrCacheMap,
     owner: &str,
     repo: &str,
     number: u64,

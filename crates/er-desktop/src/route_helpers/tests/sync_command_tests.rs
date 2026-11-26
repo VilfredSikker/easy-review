@@ -12,10 +12,10 @@ use er_protocol::{Ack, Command, ResourceKey};
 
 use super::diff_resource_tests::{fake_git, raw_diff, state_over, with_storage};
 use super::ReviewFlowTestDir;
-use crate::projects::{self, ProjectRecord, ProjectsFile};
 use crate::resources::content_routes;
 use crate::resources::send::{apply, Effects};
 use crate::route_helpers::DesktopState;
+use er_service::app_records::projects::{self, ProjectRecord, ProjectsFile};
 
 const PROJECT: &str = "widgets";
 const REMOTE: &str = "acme/widgets";
