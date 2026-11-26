@@ -12,9 +12,9 @@ use er_service::AppCommand;
 use super::{review_flow_test_state, ReviewFlowTestDir};
 use crate::app_owner::startup::pr_head_probe_target;
 use crate::page_view::PrInfo;
-use crate::projects::{self, ProjectRecord, ProjectsFile};
 use crate::resources;
 use crate::state::DesktopState;
+use er_service::app_records::projects::{self, ProjectRecord, ProjectsFile};
 
 fn with_storage(test: impl FnOnce(&ReviewFlowTestDir)) {
     let dir = ReviewFlowTestDir::new();

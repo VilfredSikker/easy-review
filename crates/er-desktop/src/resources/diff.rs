@@ -250,7 +250,7 @@ fn sync_pr(
     pr_number: u64,
     effects: &Effects<'_>,
 ) -> Result<Ack, ErError> {
-    let project = crate::projects::load()
+    let project = er_service::app_records::projects::load()
         .projects
         .into_iter()
         .find(|p| p.id == project_id)
@@ -281,7 +281,7 @@ fn sync_pr(
 /// tab's diff has no local open key.
 fn remember_synced_diff(
     desktop: &DesktopState,
-    project: &crate::projects::ProjectRecord,
+    project: &er_service::app_records::projects::ProjectRecord,
     pr: &crate::page_view::PrInfo,
     tabs: &[TabEntry],
 ) {
@@ -312,7 +312,7 @@ fn sync_branch(
     branch: &str,
     effects: &Effects<'_>,
 ) -> Result<Ack, ErError> {
-    let root = crate::projects::load()
+    let root = er_service::app_records::projects::load()
         .projects
         .into_iter()
         .find(|p| p.id == project_id)

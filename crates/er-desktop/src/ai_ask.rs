@@ -22,7 +22,7 @@ use er_service::{AnnotationTarget, Command, Reply, TabContent, TabContext};
 
 use crate::arena_service::ArenaTab;
 use crate::ask_context::{self, AnswerTarget, AskContext, AskTab};
-use crate::page_view::PendingAiReply;
+use crate::page_view::{PendingAiReply, RefreshMeta};
 use crate::resources::content_routes;
 use crate::route_helpers::{
     card_action_prompt, card_model, card_progress, now_ms, DEFAULT_ASK_AI_PROMPT,

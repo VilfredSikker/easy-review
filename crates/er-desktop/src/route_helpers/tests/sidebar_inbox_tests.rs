@@ -11,11 +11,12 @@ use er_protocol::{Command, ConfigFieldValue, ErErrorKind, Inbox, Resource, Resou
 use super::on_a_thread;
 use super::tab_resource_tests::{dir_in, register_project, send_on_a_thread, state as tab_state};
 use super::{review_flow_test_state, ReviewFlowTestDir};
-use crate::app_owner::{startup, AppOwner};
-use crate::inbox::{InboxItem, InboxTarget};
+use crate::app_owner::startup;
 use crate::resources;
 use crate::resources::content_routes;
 use crate::route_helpers::DesktopState;
+use er_service::app_records::inbox::{InboxItem, InboxTarget};
+use er_service::app_records::AppOwner;
 
 fn with_storage(test: impl FnOnce(&ReviewFlowTestDir)) {
     let dir = ReviewFlowTestDir::new();
@@ -140,7 +141,7 @@ fn a_mark_read_moves_the_inbox_in_its_ack() {
         assert_eq!(inbox.unread_count, 2);
         assert_eq!(unread(&inbox), ["merged", "ai"]);
 
-        let saved = crate::inbox::load_inbox_state();
+        let saved = er_service::app_records::inbox::load_inbox_state();
         let ci = saved.items.iter().find(|item| item.id == "ci").unwrap();
         assert!(ci.read_at_ms.is_some(), "the read was not saved");
     });
@@ -270,7 +271,7 @@ fn branch_item(id: &str, root: &str) -> InboxItem {
 /// A project known only by its remote, as the sidebar adds one for a PR
 /// opened by URL.
 fn register_remote_only(id: &str, remote: &str) {
-    let record = crate::projects::ProjectRecord {
+    let record = er_service::app_records::projects::ProjectRecord {
         id: id.to_string(),
         name: id.to_string(),
         root_path: String::new(),
@@ -282,7 +283,7 @@ fn register_remote_only(id: &str, remote: &str) {
         Ok(true)
     });
     assert!(saved.is_ok(), "{saved:?}");
-    crate::projects::invalidate_load_cache();
+    er_service::app_records::projects::invalidate_load_cache();
 }
 
 /// `tab_resource_tests`' state, which opens through fake ports, with the
