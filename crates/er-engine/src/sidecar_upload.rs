@@ -9,7 +9,8 @@ use crate::ai::prompts::{
     build_review_prompt_prepared_diff, build_tour_prompt_prepared_diff,
     build_triage_review_prompt_prepared_diff,
 };
-use crate::github::{gh_pr_diff_remote, gh_pr_metadata_remote, owner_repo_storage_slug};
+use crate::github::{owner_repo_storage_slug, with_gh_sentence};
+use crate::ports::Ports;
 use crate::storage::resolve_managed_root_for_pr_bucket;
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -293,13 +294,17 @@ fn resolve_er_dir(owner: &str, repo: &str, pr: u64) -> String {
 
 /// Resolve managed PR bucket and write `diff-tmp` for a remote PR.
 pub fn prepare_pr_diff_tmp(
+    ports: &Ports,
     owner: &str,
     repo: &str,
     pr: u64,
     ignore_globs: &[String],
     review_md: Option<&str>,
 ) -> Result<(String, String)> {
-    let mut raw = gh_pr_diff_remote(&*crate::ports::Ports::cli().git, owner, repo, pr)?;
+    let mut raw = ports
+        .github
+        .pr_diff_remote(&*ports.git, owner, repo, pr)
+        .map_err(|error| with_gh_sentence("Failed to get PR diff", error))?;
     if !ignore_globs.is_empty() {
         raw = crate::git::filter_raw_diff_exclude_globs(&raw, ignore_globs);
     }
@@ -315,7 +320,7 @@ pub fn prepare_pr_diff_tmp(
     // Rule tables are keyed the way `storage::slug_repo` names a clone of this
     // repo (the origin URL's basename), not by the owner/repo storage slug.
     let key = crate::storage::rules_key(
-        &*crate::ports::Ports::cli().git,
+        &*ports.git,
         "",
         Some(&format!("{owner}/{repo}")),
     );
@@ -327,6 +332,7 @@ pub fn prepare_pr_diff_tmp(
 
 /// Fetch PR diff into managed storage and return prompts for the client agent.
 pub fn prepare_review_kit(
+    ports: &Ports,
     owner: &str,
     repo: &str,
     pr: u64,
@@ -337,10 +343,12 @@ pub fn prepare_review_kit(
         bail!("at least one artifact kind is required (triage, review, tour)");
     }
 
-    let (meta_base, meta_head) = gh_pr_metadata_remote(owner, repo, pr)
+    let (meta_base, meta_head) = ports
+        .github
+        .pr_metadata_remote(owner, repo, pr)
         .unwrap_or_else(|_| ("main".into(), format!("pr-{pr}")));
     let review_md = crate::ai::review_md::collect(
-        &crate::ports::Ports::cli(),
+        ports,
         &crate::ai::review_md::ReviewMdSource::Gh {
             repo_slug: format!("{owner}/{repo}"),
             base_ref: meta_base.clone(),
@@ -348,7 +356,7 @@ pub fn prepare_review_kit(
         "",
     );
     let (er_dir, diff_tmp_path) =
-        prepare_pr_diff_tmp(owner, repo, pr, ignore_globs, review_md.as_deref())?;
+        prepare_pr_diff_tmp(ports, owner, repo, pr, ignore_globs, review_md.as_deref())?;
     let diff = crate::ai::prepared_diff::read_diff_tmp(&er_dir)
         .map_err(|error| anyhow::anyhow!("{error}"))?;
     let diff_bytes = crate::ai::prepared_diff::diff_tmp_len(&er_dir);
@@ -467,14 +475,17 @@ pub fn upload_artifacts_to_dir(
 }
 
 /// Resolve the PR bucket (optionally refresh `diff-tmp`) and upload artifacts.
-pub fn upload_pr_artifacts(req: UploadArtifactsRequest) -> Result<UploadArtifactsResult> {
+pub fn upload_pr_artifacts(
+    ports: &Ports,
+    req: UploadArtifactsRequest,
+) -> Result<UploadArtifactsResult> {
     let er_dir = if req.refresh_diff {
-        prepare_pr_diff_tmp(&req.owner, &req.repo, req.pr, &[], None)?.0
+        prepare_pr_diff_tmp(ports, &req.owner, &req.repo, req.pr, &[], None)?.0
     } else {
         let er_dir = resolve_er_dir(&req.owner, &req.repo, req.pr);
         let diff_path = Path::new(&er_dir).join("diff-tmp");
         if !diff_path.exists() {
-            prepare_pr_diff_tmp(&req.owner, &req.repo, req.pr, &[], None)?.0
+            prepare_pr_diff_tmp(ports, &req.owner, &req.repo, req.pr, &[], None)?.0
         } else {
             er_dir
         }

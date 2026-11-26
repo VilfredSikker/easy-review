@@ -8,10 +8,8 @@ use er_service::headless::diagram_upload::{
     list_diagrams, prepare_diagram_kit, upload_diagram, DiagramUpload,
 };
 use er_engine::git::ProdDiffStats;
-use er_engine::github::{
-    gh_pr_checks_state_remote, gh_pr_list_queue, gh_pr_prod_diff_stats,
-    gh_pr_thread_addressing_remote,
-};
+use er_engine::github::{gh_pr_prod_diff_stats, with_gh_sentence};
+use er_engine::ports::Ports;
 use er_service::headless::pr_review_feedback::{
     get_review_feedback_in_dir, reply_to_finding_in_dir, reply_to_note_in_dir,
     reply_to_question_in_dir, resolve_note_in_dir, resolve_question_in_dir,
@@ -40,7 +38,7 @@ use crate::projects::{self, PrTargetInput, ResolvedPr};
 #[derive(Clone)]
 pub struct ErMcp {
     tool_router: ToolRouter<Self>,
-    ports: er_engine::ports::Ports,
+    ports: Ports,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
@@ -252,8 +250,8 @@ fn target_input(target: &PrRefFields) -> PrTargetInput<'_> {
     }
 }
 
-fn resolve_target(target: &PrRefFields) -> Result<ResolvedPr, McpError> {
-    projects::resolve_pr_target(&target_input(target)).map_err(|e| tool_err(e.to_string()))
+fn resolve_target(ports: &Ports, target: &PrRefFields) -> Result<ResolvedPr, McpError> {
+    projects::resolve_pr_target(ports, &target_input(target)).map_err(|e| tool_err(e.to_string()))
 }
 
 fn feedback_bucket(value: Option<&str>) -> Result<&str, McpError> {
@@ -269,38 +267,8 @@ fn feedback_bucket(value: Option<&str>) -> Result<&str, McpError> {
     }
 }
 
-fn resolve_local_feedback_target(git: &dyn er_engine::git::Git) -> Result<ResolvedPr, McpError> {
-    let repo_root = git.repo_root_cwd().map_err(|e| tool_err(e.to_string()))?;
-    let branch = git
-        .current_branch(&repo_root)
-        .map_err(|e| tool_err(e.to_string()))?;
-    if branch.is_empty() || branch == "HEAD" {
-        return Err(tool_err(
-            "bucket=local requires a checked-out branch, not a detached HEAD",
-        ));
-    }
-    let (owner, repo, number) = er_engine::github::get_pr_info(git, &repo_root).map_err(|e| {
-        tool_err(format!(
-            "bucket=local could not resolve the current branch PR: {e}"
-        ))
-    })?;
-    let bucket_path = er_engine::storage::local_branch_bucket_dir(git, &repo_root, &branch)
-        .to_string_lossy()
-        .into_owned();
-    Ok(ResolvedPr {
-        owner: owner.clone(),
-        repo: repo.clone(),
-        number,
-        pr_url: format!("https://github.com/{owner}/{repo}/pull/{number}"),
-        bucket_path,
-        branch: Some(branch),
-        project_name: None,
-        resolved_via: "local_branch".to_string(),
-    })
-}
-
 fn resolve_feedback_target(
-    git: &dyn er_engine::git::Git,
+    ports: &Ports,
     target: &PrRefFields,
     bucket: &str,
 ) -> Result<ResolvedPr, McpError> {
@@ -315,9 +283,10 @@ fn resolve_feedback_target(
                 "bucket=local uses the current checked-out branch; omit ref, repo, project_id, and number",
             ));
         }
-        resolve_local_feedback_target(git)
+        er_service::headless::pr_resolve::resolve_local_branch(ports)
+            .map_err(|e| tool_err(e.to_string()))
     } else {
-        resolve_target(target)
+        resolve_target(ports, target)
     }
 }
 
@@ -346,8 +315,8 @@ fn query_repo_args(target: &PrRefFields) -> (Option<&str>, Option<&str>) {
     (None, target.project_id.as_deref())
 }
 
-fn fetch_pr_title(owner: &str, repo: &str, number: u64) -> Option<String> {
-    er_engine::github::gh_pr_title(owner, repo, number)
+fn fetch_pr_title(ports: &Ports, owner: &str, repo: &str, number: u64) -> Option<String> {
+    ports.github.pr_title(owner, repo, number).ok().flatten()
 }
 
 fn pinned_sidecar_json(
@@ -368,6 +337,7 @@ fn pinned_sidecar_json(
 }
 
 async fn load_queue(
+    ports: &Ports,
     repo: Option<&str>,
     project_id: Option<&str>,
 ) -> Result<(String, String, Option<String>, Vec<QueuePr>), McpError> {
@@ -376,7 +346,13 @@ async fn load_queue(
     let prs = tokio::task::spawn_blocking({
         let owner = owner.clone();
         let name = name.clone();
-        move || gh_pr_list_queue(&owner, &name, "open", 100)
+        let ports = ports.clone();
+        move || {
+            ports
+                .github
+                .pr_list_queue(&owner, &name, "open", 100)
+                .map_err(|error| with_gh_sentence("gh pr list failed", error))
+        }
     })
     .await
     .map_err(|e| McpError::internal_error(e.to_string(), None))?
@@ -385,7 +361,7 @@ async fn load_queue(
 }
 
 async fn enrich_production_lines(
-    ports: &er_engine::ports::Ports,
+    ports: &Ports,
     owner: &str,
     repo: &str,
     prs: &mut [QueuePr],
@@ -402,7 +378,7 @@ async fn enrich_production_lines(
             (
                 number,
                 tokio::task::spawn_blocking(move || {
-                    gh_pr_prod_diff_stats(&*ports.git, &owner, &repo, number)
+                    gh_pr_prod_diff_stats(&ports, &owner, &repo, number)
                 }),
             )
         })
@@ -420,7 +396,13 @@ async fn enrich_production_lines(
     }
 }
 
-async fn enrich_ci(owner: &str, repo: &str, prs: &mut [QueuePr], max_enrich: usize) {
+async fn enrich_ci(
+    ports: &Ports,
+    owner: &str,
+    repo: &str,
+    prs: &mut [QueuePr],
+    max_enrich: usize,
+) {
     let jobs: Vec<_> = prs
         .iter()
         .take(max_enrich)
@@ -428,10 +410,14 @@ async fn enrich_ci(owner: &str, repo: &str, prs: &mut [QueuePr], max_enrich: usi
             let owner = owner.to_string();
             let repo = repo.to_string();
             let number = pr.number;
+            let ports = ports.clone();
             (
                 number,
                 tokio::task::spawn_blocking(move || {
-                    gh_pr_checks_state_remote(&owner, &repo, number).unwrap_or("unknown")
+                    ports
+                        .github
+                        .pr_checks_state_remote(&owner, &repo, number)
+                        .unwrap_or("unknown")
                 }),
             )
         })
@@ -494,6 +480,7 @@ fn parse_prepare_kinds(kinds: Option<Vec<String>>) -> Result<Vec<SidecarKind>, M
 }
 
 async fn prepare_kit_json(
+    ports: &Ports,
     pr: &ResolvedPr,
     kinds: &[SidecarKind],
     note: &str,
@@ -504,8 +491,9 @@ async fn prepare_kit_json(
     let name = pr.repo.clone();
     let number = pr.number;
 
+    let ports = ports.clone();
     let kit = tokio::task::spawn_blocking(move || {
-        prepare_review_kit(&owner, &name, number, &kinds_vec, &[])
+        prepare_review_kit(&ports, &owner, &name, number, &kinds_vec, &[])
     })
     .await
     .map_err(|e| McpError::internal_error(e.to_string(), None))?
@@ -538,7 +526,7 @@ struct TaggedRankedPr<'a> {
 }
 
 async fn query_single_repo(
-    ports: &er_engine::ports::Ports,
+    ports: &Ports,
     args: &PrsQueryArgs,
 ) -> Result<serde_json::Value, McpError> {
     let limit = clamp_limit(args.limit, 10, 50);
@@ -551,12 +539,12 @@ async fn query_single_repo(
     let filter = args.filter.as_deref().map(|s| s.to_ascii_lowercase());
 
     let (repo, project_id) = query_repo_args(&args.target);
-    let (owner, name, project_name, mut prs) = load_queue(repo, project_id).await?;
+    let (owner, name, project_name, mut prs) = load_queue(ports, repo, project_id).await?;
 
     let needs_ci = matches!(filter.as_deref(), Some("blocked" | "failing_ci"));
     if needs_ci {
         let n = prs.len().min(scan);
-        enrich_ci(&owner, &name, &mut prs[..n], scan).await;
+        enrich_ci(ports, &owner, &name, &mut prs[..n], scan).await;
     }
 
     if args.production_lines.unwrap_or(false)
@@ -579,7 +567,7 @@ async fn query_single_repo(
         }
         Some("blocked") => filter_blocked(&prs, limit),
         Some("failing_ci") => filter_failing_ci(&prs, limit),
-        Some("addressed") => filter_addressed(&owner, &name, &prs, scan, limit).await?,
+        Some("addressed") => filter_addressed(ports, &owner, &name, &prs, scan, limit).await?,
         Some(f) => {
             let status = parse_status_filter(f)?;
             let mut rows = filter_by_status(&prs, status);
@@ -609,6 +597,7 @@ async fn query_single_repo(
 }
 
 async fn filter_addressed(
+    ports: &Ports,
     owner: &str,
     name: &str,
     prs: &[QueuePr],
@@ -624,8 +613,12 @@ async fn filter_addressed(
         let owner_c = owner.to_string();
         let name_c = name.to_string();
         let number = pr.number;
+        let ports = ports.clone();
         let summary = tokio::task::spawn_blocking(move || {
-            gh_pr_thread_addressing_remote(&owner_c, &name_c, number).unwrap_or_default()
+            ports
+                .github
+                .pr_thread_addressing_remote(&owner_c, &name_c, number)
+                .unwrap_or_default()
         })
         .await
         .unwrap_or_default();
@@ -645,7 +638,7 @@ async fn filter_addressed(
 }
 
 async fn query_cross_repo(
-    ports: &er_engine::ports::Ports,
+    ports: &Ports,
     args: &PrsQueryArgs,
 ) -> Result<serde_json::Value, McpError> {
     let limit = clamp_limit(args.limit, 10, 50);
@@ -666,7 +659,12 @@ async fn query_cross_repo(
             project_name,
             owner.clone(),
             name.clone(),
-            tokio::task::spawn_blocking(move || gh_pr_list_queue(&owner, &name, "open", 50)),
+            {
+                let ports = ports.clone();
+                tokio::task::spawn_blocking(move || {
+                    ports.github.pr_list_queue(&owner, &name, "open", 50)
+                })
+            },
         ));
     }
     for (project_name, owner, name, handle) in list_jobs {
@@ -708,9 +706,14 @@ async fn query_cross_repo(
 #[tool_router]
 impl ErMcp {
     pub fn new() -> Self {
+        Self::with_ports(Ports::cli())
+    }
+
+    /// A server over `ports`; tests pass scripted fakes.
+    pub fn with_ports(ports: Ports) -> Self {
         Self {
             tool_router: Self::tool_router(),
-            ports: er_engine::ports::Ports::cli(),
+            ports,
         }
     }
 
@@ -735,7 +738,7 @@ impl ErMcp {
         &self,
         Parameters(args): Parameters<PrResolveArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let pr = resolve_target(&args.target)?;
+        let pr = resolve_target(&self.ports, &args.target)?;
         text_json(&pr)
     }
 
@@ -776,7 +779,7 @@ impl ErMcp {
                 let name_c = name.clone();
                 let ports = self.ports.clone();
                 let stats = tokio::task::spawn_blocking(move || {
-                    gh_pr_prod_diff_stats(&*ports.git, &owner_c, &name_c, number)
+                    gh_pr_prod_diff_stats(&ports, &owner_c, &name_c, number)
                 })
                 .await
                 .ok()
@@ -803,7 +806,7 @@ impl ErMcp {
             }));
         }
 
-        let pr = resolve_target(&args.target)?;
+        let pr = resolve_target(&self.ports, &args.target)?;
         let owner = pr.owner.clone();
         let name = pr.repo.clone();
         let number = pr.number;
@@ -814,7 +817,7 @@ impl ErMcp {
             let owner = owner.clone();
             let name = name.clone();
             let ports = self.ports.clone();
-            move || gh_pr_prod_diff_stats(&*ports.git, &owner, &name, number)
+            move || gh_pr_prod_diff_stats(&ports, &owner, &name, number)
         })
         .await
         .map_err(|e| McpError::internal_error(e.to_string(), None))?
@@ -847,9 +850,10 @@ impl ErMcp {
         &self,
         Parameters(args): Parameters<PrPrepareArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let pr = resolve_target(&args.target)?;
+        let pr = resolve_target(&self.ports, &args.target)?;
         let kinds = parse_prepare_kinds(args.kinds)?;
         let body = prepare_kit_json(
+            &self.ports,
             &pr,
             &kinds,
             "Author files per artifact_specs; embed kit.diff_hash; then pr_upload.",
@@ -870,11 +874,12 @@ impl ErMcp {
             .as_deref()
             .unwrap_or("prepare")
             .to_ascii_lowercase();
-        let pr = resolve_target(&args.target)?;
+        let pr = resolve_target(&self.ports, &args.target)?;
 
         match action.as_str() {
             "prepare" => {
                 let body = prepare_kit_json(
+                    &self.ports,
                     &pr,
                     &[SidecarKind::Tour],
                     "Read diff_tmp_path, author tour.json per artifact_specs (3–7 pillars), embed kit.diff_hash, then pr_guide action=upload.",
@@ -892,8 +897,9 @@ impl ErMcp {
                 let number = pr.number;
                 let refresh_diff = args.refresh_diff.unwrap_or(false);
 
+                let ports = self.ports.clone();
                 let result = tokio::task::spawn_blocking(move || {
-                    upload_pr_artifacts(UploadArtifactsRequest {
+                    upload_pr_artifacts(&ports, UploadArtifactsRequest {
                         owner,
                         repo: name,
                         pr: number,
@@ -926,7 +932,7 @@ impl ErMcp {
         &self,
         Parameters(args): Parameters<PrUploadArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let pr = resolve_target(&args.target)?;
+        let pr = resolve_target(&self.ports, &args.target)?;
         let kind = parse_kind(&args.kind)?;
         if kind == SidecarKind::Tour {
             return Err(tool_err(
@@ -939,8 +945,9 @@ impl ErMcp {
         let files = args.files;
         let refresh_diff = args.refresh_diff.unwrap_or(false);
 
+        let ports = self.ports.clone();
         let result = tokio::task::spawn_blocking(move || {
-            upload_pr_artifacts(UploadArtifactsRequest {
+            upload_pr_artifacts(&ports, UploadArtifactsRequest {
                 owner,
                 repo: name,
                 pr: number,
@@ -967,7 +974,7 @@ impl ErMcp {
         &self,
         Parameters(args): Parameters<PrSummarizeArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let pr = resolve_target(&args.target)?;
+        let pr = resolve_target(&self.ports, &args.target)?;
         let owner = pr.owner.clone();
         let name = pr.repo.clone();
         let number = pr.number;
@@ -996,7 +1003,7 @@ impl ErMcp {
             .as_deref()
             .unwrap_or("list")
             .to_ascii_lowercase();
-        let pr = resolve_target(&args.target)?;
+        let pr = resolve_target(&self.ports, &args.target)?;
         let owner = pr.owner.clone();
         let name = pr.repo.clone();
         let number = pr.number;
@@ -1022,8 +1029,9 @@ impl ErMcp {
                     .filter(|k| !k.trim().is_empty())
                     .ok_or_else(|| tool_err("prepare requires kind"))?;
                 let prompt = args.prompt.clone();
+                let ports = self.ports.clone();
                 let kit = tokio::task::spawn_blocking(move || {
-                    prepare_diagram_kit(&owner, &name, number, &kind, prompt.as_deref(), &[])
+                    prepare_diagram_kit(&ports, &owner, &name, number, &kind, prompt.as_deref(), &[])
                 })
                 .await
                 .map_err(|e| McpError::internal_error(e.to_string(), None))?
@@ -1054,8 +1062,10 @@ impl ErMcp {
                 let custom_prompt = args.prompt.clone();
                 let refresh_diff = args.refresh_diff.unwrap_or(false);
 
+                let ports = self.ports.clone();
                 let result = tokio::task::spawn_blocking(move || {
                     upload_diagram(
+                        &ports,
                         &owner,
                         &name,
                         number,
@@ -1092,7 +1102,7 @@ impl ErMcp {
         Parameters(args): Parameters<PrFeedbackGetArgs>,
     ) -> Result<CallToolResult, McpError> {
         let bucket = feedback_bucket(args.bucket.as_deref())?;
-        let pr = resolve_feedback_target(&*self.ports.git, &args.target, bucket)?;
+        let pr = resolve_feedback_target(&self.ports, &args.target, bucket)?;
         let owner = pr.owner.clone();
         let name = pr.repo.clone();
         let number = pr.number;
@@ -1135,7 +1145,7 @@ impl ErMcp {
         Parameters(args): Parameters<PrFeedbackReplyArgs>,
     ) -> Result<CallToolResult, McpError> {
         let bucket = feedback_bucket(args.bucket.as_deref())?;
-        let pr = resolve_feedback_target(&*self.ports.git, &args.target, bucket)?;
+        let pr = resolve_feedback_target(&self.ports, &args.target, bucket)?;
         let er_dir = pr.bucket_path.clone();
         let text = args.text;
         let author = args.author;
@@ -1193,7 +1203,7 @@ impl ErMcp {
         Parameters(args): Parameters<PrFeedbackResolveArgs>,
     ) -> Result<CallToolResult, McpError> {
         let bucket = feedback_bucket(args.bucket.as_deref())?;
-        let pr = resolve_feedback_target(&*self.ports.git, &args.target, bucket)?;
+        let pr = resolve_feedback_target(&self.ports, &args.target, bucket)?;
         let er_dir = pr.bucket_path.clone();
         let id = args.id;
 
@@ -1245,19 +1255,20 @@ impl ErMcp {
 
 impl ErMcp {
     async fn pr_saved_pin(&self, args: PrSavedArgs) -> Result<CallToolResult, McpError> {
-        let pr = resolve_target(&args.target)?;
+        let pr = resolve_target(&self.ports, &args.target)?;
         let owner = pr.owner.clone();
         let name = pr.repo.clone();
         let number = pr.number;
         let title_arg = args.title.clone();
         let project_id_arg = args.target.project_id.clone();
 
+        let ports = self.ports.clone();
         let result = tokio::task::spawn_blocking(move || {
             let (project_id, project_name) =
                 projects_pins::resolve_project_for_pin(project_id_arg.as_deref(), &owner, &name)?;
             let title = title_arg
                 .filter(|t| !t.trim().is_empty())
-                .or_else(|| fetch_pr_title(&owner, &name, number))
+                .or_else(|| fetch_pr_title(&ports, &owner, &name, number))
                 .unwrap_or_default();
             let pinned = projects_pins::pin_pr(&project_id, number, &title)?;
             let summary = summarize_pr_sidecars(&owner, &name, number);
@@ -1277,7 +1288,7 @@ impl ErMcp {
     }
 
     async fn pr_saved_unpin(&self, args: PrSavedArgs) -> Result<CallToolResult, McpError> {
-        let pr = resolve_target(&args.target)?;
+        let pr = resolve_target(&self.ports, &args.target)?;
         let owner = pr.owner.clone();
         let name = pr.repo.clone();
         let number = pr.number;
@@ -1523,7 +1534,7 @@ mod tests {
             ..Default::default()
         };
         assert!(
-            resolve_feedback_target(&*er_engine::ports::Ports::cli().git, &target, "local")
+            resolve_feedback_target(&Ports::for_test(), &target, "local")
                 .is_err()
         );
     }

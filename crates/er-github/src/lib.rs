@@ -503,7 +503,7 @@ pub(crate) fn with_prefix(prefix: &str, error: GhError) -> anyhow::Error {
 /// [`with_prefix`] for a sentence that names the PR or size, and for errors
 /// that already read on their own: a spawn failure or a local sentence passes
 /// through unchanged, as it did before.
-pub(crate) fn with_gh_sentence(prefix: impl std::fmt::Display, error: GhError) -> anyhow::Error {
+pub fn with_gh_sentence(prefix: impl std::fmt::Display, error: GhError) -> anyhow::Error {
     match error {
         GhError::Local { .. }
         | GhError::NotInstalled

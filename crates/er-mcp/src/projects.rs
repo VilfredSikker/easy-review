@@ -43,11 +43,14 @@ pub struct PrTargetInput<'a> {
     pub number: Option<u64>,
 }
 
-pub fn resolve_pr_target(input: &PrTargetInput<'_>) -> Result<ResolvedPr> {
+pub fn resolve_pr_target(
+    ports: &er_engine::ports::Ports,
+    input: &PrTargetInput<'_>,
+) -> Result<ResolvedPr> {
     let file = load_projects();
     let hints = project_hints(&file);
     pr_resolve::resolve_pr_ref(
-        &*er_engine::github::default_handle(),
+        ports,
         &ResolvePrRefInput {
             ref_str: input.ref_str,
             pr_url: input.pr_url,
@@ -109,7 +112,7 @@ mod tests {
     fn resolve_pr_from_url() {
         let dir = tempfile::tempdir().unwrap();
         er_engine::storage::with_test_storage_root(dir.path(), || {
-            let pr = resolve_pr_target(&PrTargetInput {
+            let pr = resolve_pr_target(&er_engine::ports::Ports::for_test(), &PrTargetInput {
                 pr_url: Some("https://github.com/acme/widgets/pull/42/files"),
                 ..Default::default()
             })
@@ -125,7 +128,7 @@ mod tests {
     fn resolve_pr_from_repo_and_number() {
         let dir = tempfile::tempdir().unwrap();
         er_engine::storage::with_test_storage_root(dir.path(), || {
-            let pr = resolve_pr_target(&PrTargetInput {
+            let pr = resolve_pr_target(&er_engine::ports::Ports::for_test(), &PrTargetInput {
                 repo: Some("acme/widgets"),
                 number: Some(7),
                 ..Default::default()
