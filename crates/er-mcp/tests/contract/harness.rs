@@ -209,6 +209,10 @@ impl Scenario {
         }
     }
 
+    pub fn root(&self) -> &Path {
+        self.mcp.root()
+    }
+
     /// Call `tool`, record the step, and return what the reply's text says,
     /// parsed, or the JSON-RPC error under `error`.
     pub fn call(&mut self, tool: &str, arguments: Value) -> Value {
@@ -225,12 +229,8 @@ impl Scenario {
         payload
     }
 
-    /// `value` differs on every run (an id the server made at random): the
-    /// golden shows `placeholder` in its place.
-    #[expect(
-        dead_code,
-        reason = "the feedback scenarios' reply ids are its first caller"
-    )]
+    /// `value` differs on every run (an id the server made from the clock):
+    /// the golden shows `placeholder` in its place.
     pub fn generated(&mut self, value: &str, placeholder: &str) {
         self.generated
             .push((value.to_string(), placeholder.to_string()));
