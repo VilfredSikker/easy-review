@@ -11,7 +11,7 @@ use std::path::Path;
 
 use er_engine::ai::{ErNotes, ErQuestions, ErReview};
 use er_engine::test_support::write_sidecar_json;
-use harness::{assert_golden, mask_root, run_twice, Mcp, Scenario, SEEDED_AT};
+use harness::{assert_golden, mask_root, run_twice, run_twice_with, Mcp, Scenario, SEEDED_AT};
 use serde_json::{json, Value};
 
 /// The PR the `gh` fixtures were captured from.
@@ -59,6 +59,112 @@ fn a_gh_call_with_no_fixture_fails_the_scenario() {
         .map(|message| *message)
         .unwrap_or_default();
     assert!(message.contains("called gh with no fixture"), "{message}");
+}
+
+/// The tour example the kit offers, as `pr_guide` prepare returns it.
+fn tour_example() -> Value {
+    json!({
+        "version": 1,
+        "diff_hash": "<DIFF_HASH>",
+        "created_at": "2026-01-01T00:00:00Z",
+        "title": "Tour: Example change",
+        "overview": "Start with the foundation types, then the UI.",
+        "pillars": [{
+            "id": "p-1",
+            "title": "Foundation",
+            "summary": "Core types other files depend on",
+            "description": "Core types other files depend on.",
+            "order": 0,
+            "importance": 90,
+            "foundation": true,
+            "files": [{ "path": "src/types.rs", "reason": "Shared model", "finding_ids": [] }],
+        }],
+    })
+}
+
+/// The REVIEW.md body the fixture's response carries, after its headers.
+fn review_md_body() -> String {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/contract/gh-review-md/review-md-main.txt");
+    let response = std::fs::read_to_string(fixture).expect("REVIEW.md fixture");
+    let (_, body) = response.split_once("\r\n\r\n").expect("headers end");
+    body.to_string()
+}
+
+/// The file the kit names at `review_md_path`, as an agent reads it.
+fn read_review_md(kit: &Value) -> String {
+    let path = kit["kit"]["review_md_path"]
+        .as_str()
+        .expect("review_md_path");
+    std::fs::read_to_string(path).expect("review-md.md")
+}
+
+/// A review-kind kit with a REVIEW.md, every sidecar uploaded, then the
+/// pinned row and the summary that read them. Its fake `gh` serves PR #575
+/// with a REVIEW.md on its base (`tests/contract/gh-review-md/`).
+fn review_kinds(s: &mut Scenario) {
+    let pr = PR;
+    let kit = s.call(
+        "pr_prepare",
+        json!({ "ref": pr, "kinds": ["triage", "review"] }),
+    );
+    let hash = kit["kit"]["diff_hash"]
+        .as_str()
+        .expect("diff_hash")
+        .to_string();
+    assert_eq!(
+        read_review_md(&kit),
+        format!(
+            "REVIEW.md files from the base branch (main). Each applies to files under its folder.\n\n## REVIEW.md\n\n{}\n\n",
+            review_md_body().trim()
+        ),
+        "the file at kit.review_md_path holds the fixture's REVIEW.md"
+    );
+    let examples = |at: usize| kit["artifact_specs"]["specs"][at]["examples"].clone();
+    let triage = examples(0);
+    s.call(
+        "pr_upload",
+        json!({ "ref": pr, "kind": "triage", "files": { "triage.json": with_hash(&triage["triage.json"], &hash) } }),
+    );
+    let review = examples(1);
+    let files: serde_json::Map<String, Value> = ["review.json", "order.json", "checklist.json"]
+        .iter()
+        .map(|name| {
+            (
+                name.to_string(),
+                Value::String(with_hash(&review[*name], &hash)),
+            )
+        })
+        .chain(std::iter::once((
+            "summary.md".to_string(),
+            review["summary.md"].clone(),
+        )))
+        .collect();
+    s.call(
+        "pr_upload",
+        json!({ "ref": pr, "kind": "review", "files": files }),
+    );
+    s.call(
+        "pr_guide",
+        json!({ "ref": pr, "action": "upload", "files": { "tour.json": with_hash(&tour_example(), &hash) } }),
+    );
+    s.call(
+        "pr_saved",
+        json!({ "ref": pr, "action": "pin", "title": "CI: run on pull requests into staging" }),
+    );
+    s.call(
+        "pr_saved",
+        json!({ "repo": REPO, "action": "list", "source": "pinned" }),
+    );
+    s.call("pr_summarize", json!({ "ref": pr }));
+}
+
+#[test]
+fn the_review_kinds_match_their_golden() {
+    assert_golden(
+        "review_kinds",
+        &run_twice_with("gh-review-md", review_kinds),
+    );
 }
 
 /// `text` with the kit's `<DIFF_HASH>` placeholder filled in.
@@ -149,7 +255,6 @@ fn thread(id: &str, text: &str) -> Value {
     })
 }
 
-/// A question, a note and a finding in `bucket`.
 /// A reply id with its clock digits as `<millis>`: `q-1795…-0` reads
 /// `q-<millis>-0`, so the prefix and the sequence stay in the golden.
 fn clock_digits_masked(id: &str) -> String {
@@ -165,8 +270,8 @@ fn clock_digits_masked(id: &str) -> String {
     )
 }
 
-/// The thread fixtures, and PR #575's diff as the bucket's `diff-tmp`, so
-/// the replies' and reads' diff hash is the real one.
+/// A question, a note and a finding in `bucket`, and PR #575's diff as its
+/// `diff-tmp`, so the replies and reads carry the real diff hash.
 fn seed_feedback(bucket: &Path) {
     let diff = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/contract/gh/pr-575.diff");
     std::fs::create_dir_all(bucket).expect("bucket dir");
