@@ -1106,7 +1106,7 @@
     "arguments": {
       "action": "pin",
       "ref": "VilfredSikker/easy-review#575",
-      "title": "Remove a line"
+      "title": "CI: run on pull requests into staging"
     },
     "reply": {
       "content": [
@@ -1135,7 +1135,7 @@
                 "high_risk_files": []
               },
               "saved_at_ms": "<clock>",
-              "title": "Remove a line",
+              "title": "CI: run on pull requests into staging",
               "tour": {
                 "created_at": "2026-01-01T00:00:00Z",
                 "diff_hash": "c24f0c10ea8cc3c6ca4fd98072123cb7b69c56552e9da03ff0fcb18929bb5094",
@@ -1209,7 +1209,7 @@
                   "high_risk_files": []
                 },
                 "saved_at_ms": "<clock>",
-                "title": "Remove a line",
+                "title": "CI: run on pull requests into staging",
                 "tour": {
                   "created_at": "2026-01-01T00:00:00Z",
                   "diff_hash": "c24f0c10ea8cc3c6ca4fd98072123cb7b69c56552e9da03ff0fcb18929bb5094",

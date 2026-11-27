@@ -82,6 +82,23 @@ fn tour_example() -> Value {
     })
 }
 
+/// The REVIEW.md body the fixture's response carries, after its headers.
+fn review_md_body() -> String {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/contract/gh-review-md/review-md-main.txt");
+    let response = std::fs::read_to_string(fixture).expect("REVIEW.md fixture");
+    let (_, body) = response.split_once("\r\n\r\n").expect("headers end");
+    body.to_string()
+}
+
+/// The file the kit names at `review_md_path`, as an agent reads it.
+fn read_review_md(kit: &Value) -> String {
+    let path = kit["kit"]["review_md_path"]
+        .as_str()
+        .expect("review_md_path");
+    std::fs::read_to_string(path).expect("review-md.md")
+}
+
 /// A review-kind kit with a REVIEW.md, every sidecar uploaded, then the
 /// pinned row and the summary that read them. Its fake `gh` serves PR #575
 /// with a REVIEW.md on its base (`tests/contract/gh-review-md/`).
@@ -95,6 +112,14 @@ fn review_kinds(s: &mut Scenario) {
         .as_str()
         .expect("diff_hash")
         .to_string();
+    assert_eq!(
+        read_review_md(&kit),
+        format!(
+            "REVIEW.md files from the base branch (main). Each applies to files under its folder.\n\n## REVIEW.md\n\n{}\n\n",
+            review_md_body().trim()
+        ),
+        "the file at kit.review_md_path holds the fixture's REVIEW.md"
+    );
     let examples = |at: usize| kit["artifact_specs"]["specs"][at]["examples"].clone();
     let triage = examples(0);
     s.call(
@@ -125,7 +150,7 @@ fn review_kinds(s: &mut Scenario) {
     );
     s.call(
         "pr_saved",
-        json!({ "ref": pr, "action": "pin", "title": "Remove a line" }),
+        json!({ "ref": pr, "action": "pin", "title": "CI: run on pull requests into staging" }),
     );
     s.call(
         "pr_saved",
