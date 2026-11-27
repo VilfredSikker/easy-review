@@ -57,3 +57,66 @@ fn every_headless_function_is_one_mcp_calls_or_one_it_needs() {
         );
     }
 }
+
+/// The struct literal `text` starts with, up to its matching brace.
+fn literal(text: &str) -> &str {
+    let mut depth = 0usize;
+    for (at, c) in text.char_indices() {
+        match c {
+            '{' => depth += 1,
+            '}' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return text.get(..=at).unwrap_or(text);
+                }
+            }
+            _ => {}
+        }
+    }
+    text
+}
+
+/// Question and note replies have one writer (ADR 0075): outside tests, one
+/// place gives a row a parent. That counts a `PrivateAnnotation` literal whose
+/// `in_reply_to` is set (`in_reply_to: …` other than `None`, or the
+/// shorthand `in_reply_to,`), and any `x.in_reply_to = …` other than `None`.
+#[test]
+fn one_writer_builds_question_and_note_replies() {
+    let test_file = |path: &PathBuf| {
+        let name = path.to_string_lossy();
+        name.ends_with("tests.rs") || name.ends_with("test_support.rs") || name.contains("tests/")
+    };
+    let files: Vec<PathBuf> = ["er-engine/src", "er-service/src", "er-mcp/src"]
+        .iter()
+        .flat_map(|dir| rust_files(&crates().join(dir)))
+        .filter(|path| !test_file(path))
+        .collect();
+    let mut writers = Vec::new();
+    for file in files {
+        let code = code_of(&read(&file));
+        let code = code.as_str();
+        for (at, _) in code.match_indices("PrivateAnnotation {") {
+            let row = literal(code.get(at..).unwrap_or_default());
+            let sets_parent = row.lines().map(str::trim_start).any(|line| {
+                (line.starts_with("in_reply_to:") && !line.starts_with("in_reply_to: None"))
+                    || line.starts_with("in_reply_to,")
+                    || line == "in_reply_to"
+            });
+            if sets_parent && !code.get(..at).unwrap_or_default().ends_with("struct ") {
+                writers.push(file.display().to_string());
+            }
+        }
+        let flat: String = code.split_whitespace().collect::<Vec<_>>().join(" ");
+        for (at, _) in flat.match_indices(".in_reply_to = ") {
+            let value = flat.get(at + ".in_reply_to = ".len()..).unwrap_or_default();
+            if !value.starts_with("None") {
+                writers.push(file.display().to_string());
+            }
+        }
+    }
+    assert_eq!(writers.len(), 1, "reply rows are built in {writers:?}");
+    assert!(
+        writers[0].ends_with("headless/pr_review_feedback.rs"),
+        "{writers:?}"
+    );
+}
