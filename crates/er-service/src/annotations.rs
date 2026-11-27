@@ -19,6 +19,10 @@ use er_store::{ArtifactStore, Loaded, Scope};
 use crate::actor::WorkspaceDeps;
 use crate::content::ContentPatch;
 use crate::handle::WorkspaceError;
+use crate::headless::pr_review_feedback::{
+    resolve_thread_row, write_thread_reply, ReplyAnchor, ReplyPlace, ResolveOutcome, ThreadKind,
+    ThreadReply,
+};
 use crate::protocol::{AnnotationKind, AnnotationTarget, TabContext};
 
 /// A write's answer and what it stored, for the actor to patch the tabs that
@@ -163,6 +167,49 @@ fn parent_document_anchor(
         })
 }
 
+const fn thread_kind(kind: CommentType) -> Option<ThreadKind> {
+    match kind {
+        CommentType::Question => Some(ThreadKind::Question),
+        CommentType::Note => Some(ThreadKind::Note),
+        CommentType::GitHubComment => None,
+    }
+}
+
+/// A question or note reply, anchored on the diff this effect fetched and
+/// written by the thread writer MCP shares (ADR 0075).
+fn write_reply(
+    ctx: &TabContext,
+    input: &AnnotationInput<'_>,
+    parent_id: &str,
+    kind: ThreadKind,
+) -> Written<String> {
+    let (hunk_index, anchor) = annotations::resolve_anchor(input);
+    let line_end = annotations::normalize_line_end(anchor.line_start, input.line_num_end);
+    let id = annotations::take_comment_id(input.client_id.clone(), kind.prefix());
+    let payload = write_thread_reply(ThreadReply {
+        er_dir: &ctx.er_dir,
+        kind,
+        parent_id,
+        id: id.clone(),
+        text: input.text,
+        author: input.attribution.author.as_deref().unwrap_or("You"),
+        diff_hash: input.branch_diff_hash,
+        anchor: ReplyAnchor::Resolved(Box::new(ReplyPlace {
+            file: input.file.to_string(),
+            hunk_index,
+            anchor,
+            line_end,
+            side: input.side.unwrap_or("RIGHT").to_string(),
+            anchor_status: "original".to_string(),
+            relocated_at_hash: input.diff_hash.to_string(),
+            finding_ref: input.finding_ref.clone(),
+            ai_action: input.attribution.ai_action.clone(),
+        })),
+    })
+    .map_err(|error| failed("write the annotation", error))?;
+    Ok((id, sidecar(&ctx.er_dir, payload)))
+}
+
 #[expect(
     clippy::too_many_arguments,
     reason = "the parameters are the command's explicit fields"
@@ -211,6 +258,9 @@ fn add_private(
         er_dir: &ctx.er_dir,
         comments_dir: &ctx.comments_dir,
     };
+    if let (Some(parent_id), Some(thread)) = (input.reply_to.as_deref(), thread_kind(kind)) {
+        return write_reply(ctx, &input, parent_id, thread);
+    }
     let written = annotations::write_annotation(&store, &input)
         .map_err(|error| failed("write the annotation", error))?;
     let dir = match written.payload {
@@ -545,52 +595,25 @@ pub(crate) fn delete_thread(ctx: &TabContext, id: &str) -> Written<String> {
 pub(crate) fn resolve_thread(ctx: &TabContext, id: &str) -> Written<String> {
     let store = store_registry::store();
     let id_owned = id.to_string();
-    let q_scope = bucket_scope(&ctx.er_dir)?;
-    if let Ok(Loaded::Found(stored)) = ai::annotation_store::load_questions(&store, &q_scope) {
-        if stored.value.questions.iter().any(|q| q.id == id) {
-            let mut patch = ContentPatch::Several(Vec::new());
-            if stored
-                .value
-                .questions
-                .iter()
-                .any(|q| q.id == id && !q.resolved)
-            {
-                let updated =
-                    ai::annotation_store::update_questions(&store, &q_scope, move |current| {
-                        let mut questions = current
-                            .ok_or_else(|| anyhow::anyhow!("the questions file vanished"))?;
-                        if let Some(row) = questions.questions.iter_mut().find(|q| q.id == id_owned)
-                        {
-                            row.resolved = true;
-                        }
-                        Ok::<_, anyhow::Error>(questions)
-                    })
-                    .map_err(|error| failed("resolve the question", error))?;
-                patch = sidecar(&ctx.er_dir, WrittenPayload::Questions(updated.value));
+    for (kind, what) in [
+        (ThreadKind::Question, "question"),
+        (ThreadKind::Note, "note"),
+    ] {
+        let outcome = resolve_thread_row(&ctx.er_dir, kind, id, false)
+            .map_err(|error| failed(&format!("resolve the {what}"), error))?;
+        if let ResolveOutcome::Resolved { updated, .. } = outcome {
+            let scope = bucket_scope(&ctx.er_dir)?;
+            let path = match kind {
+                ThreadKind::Question => {
+                    ai::annotation_store::path_of::<ai::ErQuestions>(&store, &scope)
+                }
+                ThreadKind::Note => ai::annotation_store::path_of::<ai::ErNotes>(&store, &scope),
             }
-            let path = ai::annotation_store::path_of::<ai::ErQuestions>(&store, &q_scope)
-                .map_err(|error| failed("resolve the questions path", error))?;
-            return Ok((path.to_string_lossy().into_owned(), patch));
-        }
-    }
-    if let Ok(Loaded::Found(stored)) = ai::annotation_store::load_notes(&store, &q_scope) {
-        if stored.value.notes.iter().any(|n| n.id == id) {
-            let mut patch = ContentPatch::Several(Vec::new());
-            if stored.value.notes.iter().any(|n| n.id == id && !n.resolved) {
-                let updated =
-                    ai::annotation_store::update_notes(&store, &q_scope, move |current| {
-                        let mut notes =
-                            current.ok_or_else(|| anyhow::anyhow!("the notes file vanished"))?;
-                        if let Some(row) = notes.notes.iter_mut().find(|n| n.id == id_owned) {
-                            row.resolved = true;
-                        }
-                        Ok::<_, anyhow::Error>(notes)
-                    })
-                    .map_err(|error| failed("resolve the note", error))?;
-                patch = sidecar(&ctx.er_dir, WrittenPayload::Notes(updated.value));
-            }
-            let path = ai::annotation_store::path_of::<ai::ErNotes>(&store, &q_scope)
-                .map_err(|error| failed("resolve the notes path", error))?;
+            .map_err(|error| failed(&format!("resolve the {what}s path"), error))?;
+            let patch = updated.map_or_else(
+                || ContentPatch::Several(Vec::new()),
+                |payload| sidecar(&ctx.er_dir, payload),
+            );
             return Ok((path.to_string_lossy().into_owned(), patch));
         }
     }

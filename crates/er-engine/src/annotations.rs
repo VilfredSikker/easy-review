@@ -10,7 +10,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, bail, Result};
 use er_store::{ArtifactStore, Scope};
 
 use crate::ai::{self, CommentType};
@@ -221,7 +221,7 @@ pub struct WrittenAnnotation {
 
 /// Resolve the anchor a question or note submit stores: an explicit document
 /// anchor wins, then the parent thread's, then the diff line.
-fn resolve_anchor(input: &AnnotationInput<'_>) -> (Option<usize>, LineAnchor) {
+pub fn resolve_anchor(input: &AnnotationInput<'_>) -> (Option<usize>, LineAnchor) {
     let explicit = input
         .document_anchor
         .clone()
@@ -259,6 +259,9 @@ pub fn write_annotation(
 
     match input.kind {
         CommentType::Question | CommentType::Note => {
+            if is_reply {
+                bail!("question and note replies go through er-service's thread writer");
+            }
             let (hunk_index, anchor) = resolve_anchor(input);
             let annotation = ai::PrivateAnnotation {
                 id: id.clone(),
@@ -278,7 +281,7 @@ pub fn write_annotation(
                 hunk_header: anchor.hunk_header,
                 anchor_status: "original".to_string(),
                 relocated_at_hash: input.diff_hash.to_string(),
-                in_reply_to: input.reply_to.clone(),
+                in_reply_to: None,
                 author,
                 promoted_to: None,
                 finding_ref: input.finding_ref.clone(),
