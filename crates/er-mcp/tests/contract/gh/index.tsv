@@ -1,0 +1,11 @@
+# Calls the fake gh answers, one per line, tab-separated:
+# <fixture file> <exit code> <each argument after gh, as er-mcp passes it>
+# Each fixture is real gh's stdout for that call, captured as is with
+# `gh <arguments> > <fixture>`. The --include captures then went through
+# `grep -v -i -E '^X-(Accepted-)?Oauth-'`, which drops the capturing account's
+# token headers and keeps every other byte, the CRLF header endings included.
+pr-575-refs.txt	0	pr	view	575	--repo	VilfredSikker/easy-review	--json	baseRefName,headRefName	--jq	[.baseRefName, .headRefName] | @tsv
+pr-575-size.json	0	pr	view	575	--repo	VilfredSikker/easy-review	--json	additions,deletions,changedFiles	--jq	{additions: .additions, deletions: .deletions, files: .changedFiles}
+review-md-main.txt	1	api	--include	repos/VilfredSikker/easy-review/contents/REVIEW.md?ref=main	-H	Accept: application/vnd.github.raw+json
+pr-575.diff	0	pr	diff	575	--repo	VilfredSikker/easy-review
+pr-for-branch-ci-staging-prs.json	0	pr	view	--json	number,headRepository

@@ -3,7 +3,7 @@
 Stdio [Model Context Protocol](https://modelcontextprotocol.io) server (MCP **2026-07-28**).
 Thin REST API over `er-engine` — use **skills** for workflows.
 
-## MCP tools (12)
+## MCP tools (13)
 
 | Tool | Purpose |
 |------|---------|
@@ -20,6 +20,22 @@ Thin REST API over `er-engine` — use **skills** for workflows.
 | `pr_feedback_reply` | Reply (`type`: question \| note \| finding) |
 | `pr_feedback_resolve` | Resolve a question or note thread (`type`: question \| note) |
 | `pr_saved` | Pin / unpin / list saved PRs and artifacts |
+
+## Stability policy
+
+Installed skills call these tools by name, so the contract only grows:
+
+- No tool is renamed or removed.
+- Arguments and output keys are only added, and an added argument is optional.
+- `diff-tmp` on disk and the `bucket_path` and `diff_tmp_path` keys are part of
+  the contract.
+- A breaking change ships as a new tool name beside the old one for a release.
+- The server version follows the workspace version and becomes 1.0.0 with the
+  1.0.0 release; the skills keep their own `metadata.version`.
+
+`crates/er-mcp/tests/contract.rs` holds this: it drives the built binary over
+stdio and compares `tools/list` and each tool's reply with the goldens beside
+it. A change to a golden is a change to the contract and is reviewed as one.
 
 ## Universal `ref` targeting
 
