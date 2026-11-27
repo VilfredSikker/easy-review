@@ -6,6 +6,7 @@
 pub mod app_owner;
 pub mod gh_status_cache;
 pub mod inbox;
+pub mod meta_refresh;
 pub mod pr_cache;
 pub mod projects;
 pub mod sidebar;
