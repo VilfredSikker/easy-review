@@ -1,0 +1,396 @@
+[
+  {
+    "arguments": {
+      "limit": 2,
+      "repo": "VilfredSikker/easy-review"
+    },
+    "reply": {
+      "content": [
+        {
+          "json": {
+            "count": 2,
+            "filter": null,
+            "project": null,
+            "prs": [
+              {
+                "pr": {
+                  "additions": 15,
+                  "author": "VilfredSikker",
+                  "base_ref": "main",
+                  "changed_files": 1,
+                  "checks_state": null,
+                  "deletions": 1,
+                  "head_ref": "fix/ci-apt-update",
+                  "is_draft": false,
+                  "labels": [],
+                  "merge_state_status": "BLOCKED",
+                  "mergeable": "MERGEABLE",
+                  "my_latest_review_state": null,
+                  "number": 295,
+                  "production_lines": null,
+                  "review_decision": "REVIEW_REQUIRED",
+                  "review_requested_of_me": false,
+                  "reviewers": [],
+                  "state": "OPEN",
+                  "title": "Refresh apt lists before installing the Tauri libraries",
+                  "updated_at": "2026-10-28T13:01:38Z",
+                  "url": "https://github.com/VilfredSikker/easy-review/pull/295"
+                },
+                "priority_score": 85,
+                "reasons": [
+                  "ready to review",
+                  "size=Xsmall (16 lines total)"
+                ],
+                "size_bucket": "xsmall",
+                "status": "ready_to_review",
+                "total_lines": 16
+              },
+              {
+                "pr": {
+                  "additions": 121,
+                  "author": "VilfredSikker",
+                  "base_ref": "main",
+                  "changed_files": 2,
+                  "checks_state": null,
+                  "deletions": 1,
+                  "head_ref": "chore/release-skill",
+                  "is_draft": false,
+                  "labels": [],
+                  "merge_state_status": "BLOCKED",
+                  "mergeable": "MERGEABLE",
+                  "my_latest_review_state": null,
+                  "number": 232,
+                  "production_lines": null,
+                  "review_decision": "REVIEW_REQUIRED",
+                  "review_requested_of_me": false,
+                  "reviewers": [],
+                  "state": "OPEN",
+                  "title": "chore: track a release skill under .claude/skills",
+                  "updated_at": "2026-09-18T23:28:25Z",
+                  "url": "https://github.com/VilfredSikker/easy-review/pull/232"
+                },
+                "priority_score": 50,
+                "reasons": [
+                  "ready to review",
+                  "size=Medium (122 lines total)"
+                ],
+                "size_bucket": "medium",
+                "status": "ready_to_review",
+                "total_lines": 122
+              }
+            ],
+            "repo": "VilfredSikker/easy-review",
+            "sort": "priority"
+          },
+          "type": "text"
+        }
+      ],
+      "isError": false,
+      "resultType": "complete"
+    },
+    "tool": "prs_query"
+  },
+  {
+    "arguments": {
+      "limit": 2,
+      "repo": "VilfredSikker/easy-review",
+      "sort": "updated"
+    },
+    "reply": {
+      "content": [
+        {
+          "json": {
+            "count": 2,
+            "filter": null,
+            "project": null,
+            "prs": [
+              {
+                "pr": {
+                  "additions": 1299,
+                  "author": "VilfredSikker",
+                  "base_ref": "release/v1.0.0",
+                  "changed_files": 6,
+                  "checks_state": null,
+                  "deletions": 1,
+                  "head_ref": "epic/p78-mcp-contract",
+                  "is_draft": false,
+                  "labels": [],
+                  "merge_state_status": "CLEAN",
+                  "mergeable": "MERGEABLE",
+                  "my_latest_review_state": null,
+                  "number": 794,
+                  "production_lines": null,
+                  "review_decision": null,
+                  "review_requested_of_me": false,
+                  "reviewers": [],
+                  "state": "OPEN",
+                  "title": "[P78a] Freeze the MCP tools/list contract over the built binary",
+                  "updated_at": "2026-11-26T08:20:49Z",
+                  "url": "https://github.com/VilfredSikker/easy-review/pull/794"
+                },
+                "priority_score": 0,
+                "reasons": [
+                  "ready to review",
+                  "size=Xlarge (1300 lines total)"
+                ],
+                "size_bucket": "xlarge",
+                "status": "ready_to_review",
+                "total_lines": 1300
+              },
+              {
+                "pr": {
+                  "additions": 394,
+                  "author": "VilfredSikker",
+                  "base_ref": "release/v1.0.0",
+                  "changed_files": 11,
+                  "checks_state": null,
+                  "deletions": 65,
+                  "head_ref": "epic/fu-765-refusal-dwell",
+                  "is_draft": false,
+                  "labels": [],
+                  "merge_state_status": "UNKNOWN",
+                  "mergeable": "UNKNOWN",
+                  "my_latest_review_state": null,
+                  "number": 793,
+                  "production_lines": null,
+                  "review_decision": null,
+                  "review_requested_of_me": false,
+                  "reviewers": [],
+                  "state": "OPEN",
+                  "title": "[FU-765] A long notice behind a held refusal keeps its own dwell; two release-note lines",
+                  "updated_at": "2026-11-26T08:11:41Z",
+                  "url": "https://github.com/VilfredSikker/easy-review/pull/793"
+                },
+                "priority_score": 25,
+                "reasons": [
+                  "ready to review",
+                  "size=Large (459 lines total)"
+                ],
+                "size_bucket": "large",
+                "status": "ready_to_review",
+                "total_lines": 459
+              }
+            ],
+            "repo": "VilfredSikker/easy-review",
+            "sort": "updated"
+          },
+          "type": "text"
+        }
+      ],
+      "isError": false,
+      "resultType": "complete"
+    },
+    "tool": "prs_query"
+  },
+  {
+    "arguments": {
+      "filter": "review_debt",
+      "limit": 2,
+      "repo": "VilfredSikker/easy-review"
+    },
+    "reply": {
+      "content": [
+        {
+          "json": {
+            "count": 0,
+            "filter": "review_debt",
+            "project": null,
+            "prs": [],
+            "repo": "VilfredSikker/easy-review",
+            "sort": "priority"
+          },
+          "type": "text"
+        }
+      ],
+      "isError": false,
+      "resultType": "complete"
+    },
+    "tool": "prs_query"
+  },
+  {
+    "arguments": {
+      "cross_repo": true,
+      "limit": 2
+    },
+    "reply": {
+      "content": [
+        {
+          "json": {
+            "limit": 2,
+            "projects_scanned": 1,
+            "prs": [
+              {
+                "pr": {
+                  "additions": 15,
+                  "author": "VilfredSikker",
+                  "base_ref": "main",
+                  "changed_files": 1,
+                  "checks_state": null,
+                  "deletions": 1,
+                  "head_ref": "fix/ci-apt-update",
+                  "is_draft": false,
+                  "labels": [],
+                  "merge_state_status": "BLOCKED",
+                  "mergeable": "MERGEABLE",
+                  "my_latest_review_state": null,
+                  "number": 295,
+                  "production_lines": null,
+                  "review_decision": "REVIEW_REQUIRED",
+                  "review_requested_of_me": false,
+                  "reviewers": [],
+                  "state": "OPEN",
+                  "title": "Refresh apt lists before installing the Tauri libraries",
+                  "updated_at": "2026-10-28T13:01:38Z",
+                  "url": "https://github.com/VilfredSikker/easy-review/pull/295"
+                },
+                "priority_score": 85,
+                "project": "easy-review",
+                "reasons": [
+                  "ready to review",
+                  "size=Xsmall (16 lines total)"
+                ],
+                "repo": "VilfredSikker/easy-review",
+                "size_bucket": "xsmall",
+                "status": "ready_to_review",
+                "total_lines": 16
+              },
+              {
+                "pr": {
+                  "additions": 121,
+                  "author": "VilfredSikker",
+                  "base_ref": "main",
+                  "changed_files": 2,
+                  "checks_state": null,
+                  "deletions": 1,
+                  "head_ref": "chore/release-skill",
+                  "is_draft": false,
+                  "labels": [],
+                  "merge_state_status": "BLOCKED",
+                  "mergeable": "MERGEABLE",
+                  "my_latest_review_state": null,
+                  "number": 232,
+                  "production_lines": null,
+                  "review_decision": "REVIEW_REQUIRED",
+                  "review_requested_of_me": false,
+                  "reviewers": [],
+                  "state": "OPEN",
+                  "title": "chore: track a release skill under .claude/skills",
+                  "updated_at": "2026-09-18T23:28:25Z",
+                  "url": "https://github.com/VilfredSikker/easy-review/pull/232"
+                },
+                "priority_score": 50,
+                "project": "easy-review",
+                "reasons": [
+                  "ready to review",
+                  "size=Medium (122 lines total)"
+                ],
+                "repo": "VilfredSikker/easy-review",
+                "size_bucket": "medium",
+                "status": "ready_to_review",
+                "total_lines": 122
+              }
+            ]
+          },
+          "type": "text"
+        }
+      ],
+      "isError": false,
+      "resultType": "complete"
+    },
+    "tool": "prs_query"
+  },
+  {
+    "arguments": {
+      "include_hotspots": true,
+      "ref": "VilfredSikker/easy-review#575"
+    },
+    "reply": {
+      "content": [
+        {
+          "json": {
+            "bucket_path": "<root>/storage/repos/vilfredsikker-easy-review-42b93a89/prs/pr-575",
+            "hotspots": [],
+            "number": 575,
+            "production_lines": 6,
+            "project": null,
+            "repo": "VilfredSikker/easy-review",
+            "stats": {
+              "docs": {
+                "additions": 0,
+                "deletions": 0,
+                "files": 0
+              },
+              "generated": {
+                "additions": 0,
+                "deletions": 0,
+                "files": 0
+              },
+              "production": {
+                "additions": 3,
+                "deletions": 3,
+                "files": 1
+              },
+              "storybook": {
+                "additions": 0,
+                "deletions": 0,
+                "files": 0
+              },
+              "test": {
+                "additions": 0,
+                "deletions": 0,
+                "files": 0
+              },
+              "total": {
+                "additions": 3,
+                "deletions": 3,
+                "files": 1
+              }
+            },
+            "total_lines": 6
+          },
+          "type": "text"
+        }
+      ],
+      "isError": false,
+      "resultType": "complete"
+    },
+    "tool": "pr_stats"
+  },
+  {
+    "arguments": {
+      "numbers": [
+        575,
+        600
+      ],
+      "repo": "VilfredSikker/easy-review"
+    },
+    "reply": {
+      "content": [
+        {
+          "json": {
+            "project": null,
+            "prs": [
+              {
+                "number": 575,
+                "production_files": 1,
+                "production_lines": 6,
+                "total_lines": 6
+              },
+              {
+                "number": 600,
+                "production_files": 1,
+                "production_lines": 6,
+                "total_lines": 6
+              }
+            ],
+            "repo": "VilfredSikker/easy-review"
+          },
+          "type": "text"
+        }
+      ],
+      "isError": false,
+      "resultType": "complete"
+    },
+    "tool": "pr_stats"
+  }
+]
