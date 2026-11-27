@@ -1,0 +1,88 @@
+{
+  // The target structure of release/v1.0.0, from docs/plans/plan-clean-slate-architecture.md §3.1–3.3.
+  // Read by er-arch-extract. A file belongs to the first part whose paths match it.
+  "name": "easy-review 1.0.0",
+  "description": "Front ends send commands to er-service, which owns the state and reaches the outside through four adapters over a pure core. er-engine is being drained into them.",
+  "layers": ["Front ends", "Service", "Transitional", "Adapters", "Core"],
+  "groups": [
+    { "id": "desktop", "name": "desktop", "layer": "Front ends", "layers": ["UI", "Backend"],
+      "description": "The main product (plan decision). One window, one subscriber." }
+  ],
+  "parts": [
+    { "id": "er-tui", "layer": "Front ends", "paths": ["crates/er-tui/**"] },
+    { "id": "er-mcp", "layer": "Front ends", "paths": ["crates/er-mcp/**"] },
+    { "id": "desktop-ui", "group": "desktop", "layer": "UI", "paths": ["desktop-ui/**"],
+      "description": "Svelte front end on the er-protocol wire types." },
+    { "id": "er-desktop", "group": "desktop", "layer": "Backend", "paths": ["crates/er-desktop/**"],
+      "description": "Tauri adapter between the UI and er-service." },
+    { "id": "er-crap", "layer": "Front ends", "kind": "tool", "paths": ["crates/er-crap/**"] },
+    { "id": "er-lint-gate", "layer": "Front ends", "kind": "tool", "paths": ["crates/er-lint-gate/**"] },
+    { "id": "repo-tooling", "name": "repo tooling", "layer": "Front ends", "kind": "tool",
+      "paths": ["docs/**", "npm/**", "tools/**", "tests/**", "scripts/**", ".claude/**"] },
+
+    { "id": "er-service", "layer": "Service", "paths": ["crates/er-service/**"],
+      "description": "The Workspace actor, use cases and workflows." },
+    { "id": "er-engine", "layer": "Transitional", "paths": ["crates/er-engine/**"],
+      "description": "Not in the target. Its contents move to er-service, the adapters and er-core phase by phase." },
+
+    { "id": "er-git", "layer": "Adapters", "paths": ["crates/er-git/**"] },
+    { "id": "er-github", "layer": "Adapters", "paths": ["crates/er-github/**"] },
+    { "id": "er-store", "layer": "Adapters", "paths": ["crates/er-store/**"] },
+    { "id": "er-agent", "layer": "Adapters", "paths": ["crates/er-agent/**"] },
+
+    { "id": "er-core", "layer": "Core", "paths": ["crates/er-core/**"],
+      "description": "Domain types and pure rules. No IO." },
+    { "id": "er-protocol", "layer": "Core", "paths": ["crates/er-protocol/**"],
+      "description": "Command, Event, Resource and ErError wire types, with generated TypeScript." }
+  ],
+  "rules": {
+    // §3.1: front ends translate between people and the service. Wire types come from er-protocol.
+    // er-core is left out on purpose so its use from front ends shows up; add it here if that is intended.
+    "allowed": {
+      "er-tui": ["er-service", "er-protocol"],
+      "er-mcp": ["er-service", "er-protocol"],
+      "er-desktop": ["er-service", "er-protocol", "desktop-ui"],
+      "desktop-ui": ["er-desktop"]
+    },
+    // §3.3: every external effect goes through a trait in the adapter row.
+    "ports": {
+      "process:git": "er-git",
+      "process:gh": "er-github",
+      "disk": "er-store"
+    },
+    // §3.1: each adapter does exactly one kind of IO.
+    "independent": ["er-git", "er-github", "er-store", "er-agent"],
+    "exceptions": [
+      { "from": "er-desktop", "to": "desktop-ui", "kind": "event", "why": "§3.1 and ADR 0011: events and resources are pushed up to the UI on purpose." }
+    ]
+  },
+  "nonFunctional": {
+    "test": [],
+    "generated": ["desktop-ui/src/lib/protocol/generated/**"],
+    "dev": ["desktop-ui/src/lib/dev/**", "desktop-ui/src/lib/stories/**"],
+    "tooling": ["docs/**", "npm/**", "tools/**", "scripts/**", ".claude/**", "crates/er-protocol/src/bin/**"]
+  },
+  "decisions": [
+    { "ref": "Plan §3.2", "title": "er-protocol is the wire contract", "door": "one", "why": "Both sides are generated from it, so a change reaches every command and resource at once." },
+    { "ref": "Plan §3.3", "title": "Every outside effect goes through a port", "door": "two", "why": "Git, GitHub, the store and agents sit behind traits, so the tool behind each can be swapped." },
+    { "ref": "Plan decision", "title": "In-process service, no daemon", "door": "two", "why": "The service is a library behind commands. It could move to its own process without changing its callers." },
+    { "ref": "Plan decision", "title": "No migration of old data", "door": "one", "why": "The new store starts empty. There is no way back to old artifacts." },
+    { "ref": "ADR 0031", "title": "Agents write sidecar files", "door": "one", "why": "The file format is read and written by tools outside this repo." },
+    { "ref": "ADR 0011", "title": "Push a revision, do not poll", "door": "two", "why": "One event path, with a timer only as a safety net." }
+  ],
+  "flows": [
+    { "name": "A reviewer marks a file reviewed", "steps": [
+      ["desktop-ui", "er-desktop", "sends a typed command", "ipc"],
+      ["er-desktop", "er-service", "hands it to the Workspace", "call"],
+      ["er-service", "er-store", "asks the store to write", "call"],
+      ["er-store", "x-disk", "writes the artifact atomically", "fs"],
+      ["er-desktop", "desktop-ui", "pushes resource changed", "event"] ] },
+    { "name": "Run an AI review", "steps": [
+      ["desktop-ui", "er-desktop", "sends a command", "ipc"],
+      ["er-desktop", "er-service", "starts the review workflow", "call"],
+      ["er-service", "er-agent", "submits a job", "call"],
+      ["er-agent", "x-proc-other", "takes a slot and starts the agent CLI", "spawn"],
+      ["x-proc-other", "x-disk", "the agent writes sidecar files", "fs"],
+      ["x-disk", "er-store", "the store reads and validates them", "fs"] ] }
+  ]
+}
