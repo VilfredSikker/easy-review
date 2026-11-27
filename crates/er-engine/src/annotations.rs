@@ -451,6 +451,33 @@ diff --git a/src/a.rs b/src/a.rs
         }
     }
 
+    /// Question and note replies have one writer, in er-service (ADR 0075):
+    /// this one refuses them and writes nothing.
+    #[test]
+    fn a_question_or_note_reply_is_refused_and_writes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let dir_text = dir.path().to_string_lossy().into_owned();
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let store = crate::store_registry::store();
+            let files = parse_diff(RAW);
+            for kind in [CommentType::Question, CommentType::Note] {
+                let mut reply = input(&dir_text, &files, kind, None);
+                reply.reply_to = Some("q-root".to_string());
+                let refused = super::write_annotation(&store, &reply).map(|written| written.id);
+                assert!(refused.is_err(), "a reply was written: {refused:?}");
+            }
+            let scope = er_store::Scope::dir(&dir_text).unwrap();
+            assert!(matches!(
+                crate::ai::annotation_store::load_questions(&store, &scope).unwrap(),
+                Loaded::Absent
+            ));
+            assert!(matches!(
+                crate::ai::annotation_store::load_notes(&store, &scope).unwrap(),
+                Loaded::Absent
+            ));
+        });
+    }
+
     #[test]
     fn a_client_id_survives_every_kind_of_write() {
         let dir = tempfile::tempdir().unwrap();

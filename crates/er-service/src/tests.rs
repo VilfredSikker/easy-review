@@ -387,20 +387,32 @@ diff --git a/src/b.rs b/src/b.rs
                 },
                 Duration::from_secs(5),
             )?;
+            let store = er_engine::store_registry::store();
+            let scope = er_store::Scope::dir(&bucket)?;
+            let questions = || -> anyhow::Result<er_engine::ai::ErQuestions> {
+                match er_engine::ai::annotation_store::load_questions(&store, &scope)? {
+                    er_store::Loaded::Found(stored) => Ok(stored.value),
+                    _ => anyhow::bail!("questions were not written"),
+                }
+            };
+            assert_eq!(
+                questions()?.diff_hash,
+                er_engine::ai::compute_diff_hash(RAW),
+                "the effect stores the file against the diff it fetched"
+            );
+            let prepared = "diff --git a/src/a.rs b/src/a.rs\n+prepared\n";
+            std::fs::write(std::path::Path::new(&bucket).join("diff-tmp"), prepared)?;
             let mcp = crate::headless::pr_review_feedback::reply_to_question_in_dir(
                 &bucket, "q-parent", "Because.", None,
             )?;
-
-            let store = er_engine::store_registry::store();
-            let scope = er_store::Scope::dir(&bucket)?;
-            let er_store::Loaded::Found(stored) =
-                er_engine::ai::annotation_store::load_questions(&store, &scope)?
-            else {
-                anyhow::bail!("questions were not written");
-            };
+            let stored = questions()?;
+            assert_eq!(
+                stored.diff_hash,
+                er_engine::ai::compute_diff_hash(prepared),
+                "MCP stores the file against the prepared diff-tmp"
+            );
             let row = |id: &str| {
                 stored
-                    .value
                     .questions
                     .iter()
                     .find(|q| q.id == id)

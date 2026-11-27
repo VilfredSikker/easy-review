@@ -76,8 +76,10 @@ fn literal(text: &str) -> &str {
     text
 }
 
-/// Question and note replies have one writer (ADR 0075): of all the
-/// `PrivateAnnotation` rows built outside tests, one sets `in_reply_to`.
+/// Question and note replies have one writer (ADR 0075): outside tests, one
+/// place gives a row a parent. That counts a `PrivateAnnotation` literal whose
+/// `in_reply_to` is set (`in_reply_to: …` other than `None`, or the
+/// shorthand `in_reply_to,`), and any `x.in_reply_to = …` other than `None`.
 #[test]
 fn one_writer_builds_question_and_note_replies() {
     let test_file = |path: &PathBuf| {
@@ -95,10 +97,19 @@ fn one_writer_builds_question_and_note_replies() {
         let code = code.as_str();
         for (at, _) in code.match_indices("PrivateAnnotation {") {
             let row = literal(code.get(at..).unwrap_or_default());
-            let sets_parent = row.lines().any(|line| {
-                line.trim_start().starts_with("in_reply_to:") && !line.contains("in_reply_to: None")
+            let sets_parent = row.lines().map(str::trim_start).any(|line| {
+                (line.starts_with("in_reply_to:") && !line.starts_with("in_reply_to: None"))
+                    || line.starts_with("in_reply_to,")
+                    || line == "in_reply_to"
             });
             if sets_parent && !code.get(..at).unwrap_or_default().ends_with("struct ") {
+                writers.push(file.display().to_string());
+            }
+        }
+        let flat: String = code.split_whitespace().collect::<Vec<_>>().join(" ");
+        for (at, _) in flat.match_indices(".in_reply_to = ") {
+            let value = flat.get(at + ".in_reply_to = ".len()..).unwrap_or_default();
+            if !value.starts_with("None") {
                 writers.push(file.display().to_string());
             }
         }
