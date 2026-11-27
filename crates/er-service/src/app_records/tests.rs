@@ -72,34 +72,35 @@ fn service_sources() -> Vec<(String, String)> {
 
 /// Inside er-service the owner is the one writer of the projects record and
 /// the one saver of the inbox: no other module calls the record's writers,
-/// the engine's, or the inbox's save, so none can write and skip the
-/// publish. `projects.rs` holds the record's writers and calls the engine's.
+/// the engine's, or the inbox's save, by path or by a name it imports, so
+/// none can write and skip the publish. `projects.rs` holds the record's
+/// writers and calls the engine's.
 #[test]
 fn only_the_owner_writes_the_projects_record_and_saves_the_inbox() {
     let owned = [
-        "projects::ensure_remote_project(",
-        "projects::delete_project(",
-        "projects::reorder_projects(",
-        "projects::save_pr(",
-        "projects::unsave_pr(",
-        "projects::sync_projects_from_refs(",
-        "projects::auto_register(",
-        "projects::dismiss_pr(",
-        "projects::undismiss_pr(",
-        "projects::track_pr(",
-        "projects::untrack_pr(",
-        "projects::add_tracked_branch(",
-        "projects::remove_tracked_branch(",
-        "projects::set_active(",
-        "projects::patch_project_review_settings(",
-        "inbox::save_inbox_state(",
+        ("projects", "ensure_remote_project"),
+        ("projects", "delete_project"),
+        ("projects", "reorder_projects"),
+        ("projects", "save_pr"),
+        ("projects", "unsave_pr"),
+        ("projects", "sync_projects_from_refs"),
+        ("projects", "auto_register"),
+        ("projects", "dismiss_pr"),
+        ("projects", "undismiss_pr"),
+        ("projects", "track_pr"),
+        ("projects", "untrack_pr"),
+        ("projects", "add_tracked_branch"),
+        ("projects", "remove_tracked_branch"),
+        ("projects", "set_active"),
+        ("projects", "patch_project_review_settings"),
+        ("inbox", "save_inbox_state"),
     ];
     let engine = [
-        "projects_pins::update",
-        "projects_pins::pin_pr",
-        "projects_pins::unpin_pr",
-        "projects_pins::ensure_project_for_remote",
-        "projects_pins::resolve_project_for_pin",
+        ("projects_pins", "update"),
+        ("projects_pins", "pin_pr"),
+        ("projects_pins", "unpin_pr"),
+        ("projects_pins", "ensure_project_for_remote"),
+        ("projects_pins", "resolve_project_for_pin"),
     ];
     for (path, text) in service_sources() {
         if path == "app_records/app_owner.rs" {
@@ -107,8 +108,31 @@ fn only_the_owner_writes_the_projects_record_and_saves_the_inbox() {
         }
         let writers = owned.iter();
         let writers = writers.chain(engine.iter().filter(|_| path != "app_records/projects.rs"));
-        for writer in writers {
-            assert!(!text.contains(writer), "{path} writes a record ({writer})");
+        for (module, name) in writers {
+            let call = format!("{module}::{name}");
+            assert!(!text.contains(&call), "{path} writes a record ({call})");
+            let imports = imported(&text, module);
+            assert!(
+                !imports.iter().any(|imported| imported == name),
+                "{path} imports a record's writer ({call})"
+            );
         }
     }
+}
+
+/// The names the `use` items of `text` that name `module::` import,
+/// braced lists included.
+fn imported(text: &str, module: &str) -> Vec<String> {
+    let path = format!("{module}::");
+    text.split("use ")
+        .skip(1)
+        .filter_map(|rest| rest.split_once(';').map(|(item, _)| item))
+        .filter(|item| item.contains(&path))
+        .flat_map(|item| {
+            item.split(|c: char| !(c.is_alphanumeric() || c == '_'))
+                .filter(|word| !word.is_empty())
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .collect()
 }
