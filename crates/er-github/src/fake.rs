@@ -4,7 +4,7 @@ use crate::actions::{PrAction, RepoMergeSettings};
 use crate::error::GhError;
 use crate::pending_review::PendingReview;
 use crate::review::ReviewBatchEntry;
-use crate::types::ThreadAddressingSummary;
+use crate::types::{QueuePr, ThreadAddressingSummary};
 use crate::GitHub;
 use crate::{
     BranchPrProbe, CheckRun, CreatedComment, GhNotification, GitHubComment, IssueComment,
@@ -107,6 +107,7 @@ struct FakeState {
     pr_checks_remote: Option<Result<Vec<CheckRun>, GhError>>,
     pr_checks_state_remote: Option<Result<&'static str, GhError>>,
     pr_thread_addressing_remote: Option<Result<ThreadAddressingSummary, GhError>>,
+    pr_list_queue: Option<Result<Vec<QueuePr>, GhError>>,
 }
 
 impl FakeState {
@@ -657,6 +658,12 @@ impl FakeGitHub {
         value: Result<ThreadAddressingSummary, GhError>,
     ) -> Self {
         self.lock().pr_thread_addressing_remote = Some(value);
+        self
+    }
+
+    #[must_use]
+    pub fn with_pr_list_queue(self, value: Result<Vec<QueuePr>, GhError>) -> Self {
+        self.lock().pr_list_queue = Some(value);
         self
     }
 }
@@ -1639,6 +1646,21 @@ impl GitHub for FakeGitHub {
         .pr_thread_addressing_remote
         .clone()
         .unwrap_or_else(|| Err(unscripted("pr_thread_addressing_remote")))
+    }
+
+    fn pr_list_queue(
+        &self,
+        owner: &str,
+        repo: &str,
+        state: &str,
+        limit: usize,
+    ) -> Result<Vec<QueuePr>, GhError> {
+        self.record(format!(
+            "pr_list_queue(owner={owner:?}, repo={repo:?}, state={state:?}, limit={limit:?})"
+        ))
+        .pr_list_queue
+        .clone()
+        .unwrap_or_else(|| Err(unscripted("pr_list_queue")))
     }
 }
 

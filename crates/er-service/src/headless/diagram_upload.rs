@@ -1,26 +1,27 @@
 //! Prepare/list/upload PR Mermaid diagrams for MCP clients.
 //!
-//! Parallel to [`crate::sidecar_upload`] (triage/review/tour), but diagrams
-//! don't fit [`crate::sidecar_upload::SidecarKind`]'s fixed-filename-per-kind
+//! Parallel to [`er_engine::sidecar_upload`] (triage/review/tour), but diagrams
+//! don't fit [`er_engine::sidecar_upload::SidecarKind`]'s fixed-filename-per-kind
 //! model: presets overwrite in place (`<kind>.json`) while `custom` diagrams
 //! accumulate under timestamped ids, so a bucket can hold any number of
 //! `diagrams/*.json` files. This module owns that variable-id upload path;
-//! [`crate::ai::diagrams`] owns the sidecar shape and validation itself.
+//! [`er_engine::ai::diagrams`] owns the sidecar shape and validation itself.
 //!
 //! Flow: [`prepare_diagram_kit`] writes shared `diff-tmp` + a prompt for one
 //! kind; the MCP client (the reviewing agent itself — no subprocess spawn)
 //! authors the diagram JSON; [`upload_diagram`] validates and stores it.
 
-use crate::ai::diagrams::{
+use anyhow::{bail, Context, Result};
+use er_engine::ai::diagrams::{
     diagram_output_file, diagram_sidecar_path, is_safe_diagram_id, is_valid_diagram_kind,
     persist_diagram_json, DIAGRAM_KIND_CUSTOM,
 };
-use crate::ai::prompts::build_diagram_prompt_mcp;
-use crate::ai::{compute_diff_hash, load_diagrams, prepared_diff::diff_tmp_hash, ErDiagram};
-use crate::github::owner_repo_storage_slug;
-use crate::sidecar_upload::prepare_pr_diff_tmp;
-use crate::storage::resolve_managed_root_for_pr_bucket;
-use anyhow::{bail, Context, Result};
+use er_engine::ai::prompts::build_diagram_prompt_mcp;
+use er_engine::ai::{compute_diff_hash, load_diagrams, prepared_diff::diff_tmp_hash, ErDiagram};
+use er_engine::github::owner_repo_storage_slug;
+use er_engine::ports::Ports;
+use er_engine::sidecar_upload::prepare_pr_diff_tmp;
+use er_engine::storage::resolve_managed_root_for_pr_bucket;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -44,6 +45,7 @@ pub struct PreparedDiagramKit {
 
 /// Fetch the PR diff into managed storage and return a prompt for one diagram kind.
 pub fn prepare_diagram_kit(
+    ports: &Ports,
     owner: &str,
     repo: &str,
     pr: u64,
@@ -59,8 +61,8 @@ pub fn prepare_diagram_kit(
         bail!("kind=custom requires a non-empty prompt");
     }
 
-    let (er_dir, diff_tmp_path) = prepare_pr_diff_tmp(owner, repo, pr, ignore_globs, None)?;
-    let diff = crate::ai::prepared_diff::read_diff_tmp(&er_dir)
+    let (er_dir, diff_tmp_path) = prepare_pr_diff_tmp(ports, owner, repo, pr, ignore_globs, None)?;
+    let diff = er_engine::ai::prepared_diff::read_diff_tmp(&er_dir)
         .map_err(|error| anyhow::anyhow!("{error}"))?;
     let diff_hash = compute_diff_hash(&diff);
     let output_file = diagram_output_file(kind);
@@ -129,6 +131,7 @@ pub struct DiagramUpload<'a> {
 /// Resolve the PR bucket (optionally refresh `diff-tmp`), validate the
 /// diagram JSON against the current diff hash, and atomically write it.
 pub fn upload_diagram(
+    ports: &Ports,
     owner: &str,
     repo: &str,
     pr: u64,
@@ -150,17 +153,17 @@ pub fn upload_diagram(
     validate_output_id(kind, id)?;
 
     let er_dir = if refresh_diff {
-        prepare_pr_diff_tmp(owner, repo, pr, &[], None)?.0
+        prepare_pr_diff_tmp(ports, owner, repo, pr, &[], None)?.0
     } else {
         let er_dir = resolve_er_dir(owner, repo, pr);
         let diff_path = Path::new(&er_dir).join("diff-tmp");
         if !diff_path.exists() {
-            prepare_pr_diff_tmp(owner, repo, pr, &[], None)?.0
+            prepare_pr_diff_tmp(ports, owner, repo, pr, &[], None)?.0
         } else {
             er_dir
         }
     };
-    let diff = crate::ai::prepared_diff::read_diff_tmp(&er_dir)
+    let diff = er_engine::ai::prepared_diff::read_diff_tmp(&er_dir)
         .map_err(|error| anyhow::anyhow!("{error}"))?;
     let expected_hash = compute_diff_hash(&diff);
 
@@ -193,7 +196,7 @@ mod tests {
 
     fn with_storage_root<T>(f: impl FnOnce() -> T) -> T {
         let root = tempfile::tempdir().unwrap();
-        crate::storage::with_test_storage_root(root.path(), f)
+        er_engine::storage::with_test_storage_root(root.path(), f)
     }
 
     fn write_diff_tmp(er_dir: &str, diff: &str) -> String {
@@ -216,7 +219,16 @@ mod tests {
     #[test]
     fn prepare_rejects_custom_without_prompt() {
         with_storage_root(|| {
-            let err = prepare_diagram_kit("acme", "widgets", 1, "custom", None, &[]).unwrap_err();
+            let err = prepare_diagram_kit(
+                &Ports::for_test(),
+                "acme",
+                "widgets",
+                1,
+                "custom",
+                None,
+                &[],
+            )
+            .unwrap_err();
             assert!(err.to_string().contains("requires a non-empty prompt"));
         });
     }
@@ -230,6 +242,7 @@ mod tests {
 
             let body = r#"{"version":1,"diff_hash":"stale","kind":"subsystems","title":"T","prompt":"","mermaid":"flowchart TD\n  A-->B"}"#;
             let result = upload_diagram(
+                &Ports::for_test(),
                 "acme",
                 "widgets",
                 5,
@@ -259,6 +272,7 @@ mod tests {
             let er_dir = resolve_er_dir("acme", "widgets", 6);
             write_diff_tmp(&er_dir, "diff --git a/x b/x\n+hi\n");
             let err = upload_diagram(
+                &Ports::for_test(),
                 "acme",
                 "widgets",
                 6,
@@ -284,6 +298,7 @@ mod tests {
                 r#"{{"version":1,"diff_hash":"{hash}","kind":"custom","title":"T","prompt":"ignored","mermaid":"flowchart TD\n  A-->B"}}"#
             );
             upload_diagram(
+                &Ports::for_test(),
                 "acme",
                 "widgets",
                 7,
@@ -297,6 +312,7 @@ mod tests {
             )
             .unwrap();
             upload_diagram(
+                &Ports::for_test(),
                 "acme",
                 "widgets",
                 7,
@@ -336,6 +352,7 @@ mod tests {
                 r#"{{"version":1,"diff_hash":"{hash}","kind":"flows","title":"T","prompt":"","mermaid":"flowchart TD\n  A-->B"}}"#
             );
             upload_diagram(
+                &Ports::for_test(),
                 "acme",
                 "widgets",
                 8,

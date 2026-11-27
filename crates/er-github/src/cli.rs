@@ -783,6 +783,16 @@ impl GitHub for CliGitHub {
     ) -> Result<ThreadAddressingSummary, GhError> {
         CliGitHub::pr_thread_addressing_remote(self, owner, repo, pr)
     }
+
+    fn pr_list_queue(
+        &self,
+        owner: &str,
+        repo: &str,
+        state: &str,
+        limit: usize,
+    ) -> Result<Vec<crate::QueuePr>, GhError> {
+        CliGitHub::pr_list_queue(self, owner, repo, state, limit)
+    }
 }
 
 /// `gh api graphql` with string variables (`-f`, so a numeric repo name stays

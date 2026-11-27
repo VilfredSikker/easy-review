@@ -484,6 +484,14 @@ pub trait GitHub: Send + Sync {
         repo: &str,
         pr: u64,
     ) -> Result<ThreadAddressingSummary, GhError>;
+    /// The review queue's PR rows for one repo and state (`gh pr list`).
+    fn pr_list_queue(
+        &self,
+        owner: &str,
+        repo: &str,
+        state: &str,
+        limit: usize,
+    ) -> Result<Vec<QueuePr>, GhError>;
 }
 
 /// The prefix the old free functions put in front of gh's reason, kept so
@@ -495,7 +503,7 @@ pub(crate) fn with_prefix(prefix: &str, error: GhError) -> anyhow::Error {
 /// [`with_prefix`] for a sentence that names the PR or size, and for errors
 /// that already read on their own: a spawn failure or a local sentence passes
 /// through unchanged, as it did before.
-pub(crate) fn with_gh_sentence(prefix: impl std::fmt::Display, error: GhError) -> anyhow::Error {
+pub fn with_gh_sentence(prefix: impl std::fmt::Display, error: GhError) -> anyhow::Error {
     match error {
         GhError::Local { .. }
         | GhError::NotInstalled

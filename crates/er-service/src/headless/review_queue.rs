@@ -396,33 +396,6 @@ pub fn filter_failing_ci(prs: &[QueuePr], limit: usize) -> Vec<RankedPr> {
     ranked
 }
 
-/// How to open a PR in Easy Review (no OS deep-link yet — instructions + URLs).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct OpenInEasyReview {
-    pub owner: String,
-    pub repo: String,
-    pub number: u64,
-    pub github_url: String,
-    pub desktop_hint: String,
-    pub tui_command: String,
-    pub note: String,
-}
-
-pub fn open_in_easy_review(owner: &str, repo: &str, number: u64) -> OpenInEasyReview {
-    OpenInEasyReview {
-        owner: owner.to_string(),
-        repo: repo.to_string(),
-        number,
-        github_url: format!("https://github.com/{owner}/{repo}/pull/{number}"),
-        desktop_hint: format!(
-            "In Easy Review Desktop: open project for {owner}/{repo}, then open PR #{number} from the sidebar (or paste the GitHub URL)."
-        ),
-        tui_command: format!("er --pr {number}   # run inside a clone of {owner}/{repo}"),
-        note: "No er:// deep-link handler exists yet; use the desktop open-PR flow or the TUI --pr flag."
-            .into(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
