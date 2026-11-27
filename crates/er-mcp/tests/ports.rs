@@ -3,64 +3,66 @@
 //! handle, in er-mcp, in er-service's `headless` module, or in the
 //! `sidecar_upload` functions MCP calls.
 
-use std::path::Path;
+#[path = "../../er-service/tests/support/source_scan.rs"]
+mod source_scan;
 
-/// The source of `path` up to its inline test module.
-fn code(path: &Path) -> String {
-    let text = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
-    text.split("#[cfg(test)]")
-        .next()
-        .unwrap_or_default()
-        .to_string()
+use std::path::{Path, PathBuf};
+
+use source_scan::{code_of, functions, mentions, read, rust_files};
+
+fn crates() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("..")
 }
 
-fn rust_files(dir: &Path) -> Vec<std::path::PathBuf> {
-    let mut files: Vec<_> = std::fs::read_dir(dir)
-        .unwrap_or_else(|e| panic!("{}: {e}", dir.display()))
-        .map(|entry| {
-            entry
-                .unwrap_or_else(|e| panic!("{}: {e}", dir.display()))
-                .path()
-        })
-        .filter(|path| path.extension().is_some_and(|ext| ext == "rs"))
+/// Every free function in er-github, or in er-engine's `github` module,
+/// that builds the default handle inside: calling one bypasses the ports.
+fn wrappers() -> Vec<String> {
+    let mut files = rust_files(&crates().join("er-github/src"));
+    files.push(crates().join("er-engine/src/github.rs"));
+    let mut names: Vec<String> = files
+        .iter()
+        .flat_map(|file| functions(&code_of(&read(file))))
+        .filter(|(_, body)| mentions(body, "default_handle") > 0)
+        .map(|(name, _)| name)
         .collect();
-    files.sort();
-    files
+    names.push("default_handle".to_string());
+    names.sort();
+    names.dedup();
+    names
 }
-
-/// Each place that names one of these builds a handle the server did not
-/// pass in.
-const OUTSIDE_THE_PORTS: [&str; 7] = [
-    "default_handle()",
-    "Ports::cli()",
-    "gh_pr_title(",
-    "gh_pr_list_queue(",
-    "gh_pr_checks_state_remote(",
-    "gh_pr_thread_addressing_remote(",
-    "gh_pr_diff_remote(",
-];
 
 #[test]
 fn mcp_reaches_gh_and_git_only_through_its_ports() {
-    let crates = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
-    let mut files = rust_files(&crates.join("er-mcp/src"));
-    files.extend(rust_files(&crates.join("er-service/src/headless")));
-    files.push(crates.join("er-engine/src/sidecar_upload.rs"));
-    for file in files {
-        let code = code(&file);
-        for needle in OUTSIDE_THE_PORTS {
-            let allowed =
-                usize::from(needle == "Ports::cli()" && file.ends_with("er-mcp/src/server.rs"));
-            assert!(
-                code.matches(needle).count() <= allowed,
-                "{} names {needle}",
-                file.display()
-            );
-        }
+    let wrappers = wrappers();
+    for known in [
+        "gh_pr_title",
+        "get_pr_info",
+        "gh_current_login",
+        "gh_open_pr_number_for_head",
+    ] {
         assert!(
-            !code.contains("gh_pr_metadata_remote("),
-            "{} names gh_pr_metadata_remote",
-            file.display()
+            wrappers.iter().any(|name| name == known),
+            "{known} is not found as a wrapper"
+        );
+    }
+    let mut files = rust_files(&crates().join("er-mcp/src"));
+    files.extend(rust_files(&crates().join("er-service/src/headless")));
+    files.push(crates().join("er-service/src/headless.rs"));
+    files.push(crates().join("er-engine/src/sidecar_upload.rs"));
+    for file in files {
+        let code = code_of(&read(&file));
+        let named = |what: &str| format!("{} names {what}", file.display());
+        for name in &wrappers {
+            assert_eq!(mentions(&code, name), 0, "{}", named(name));
+        }
+        for handle in ["CliGitHub", "CliGit"] {
+            assert_eq!(mentions(&code, handle), 0, "{}", named(handle));
+        }
+        let allowed = usize::from(file.ends_with("er-mcp/src/server.rs"));
+        assert!(
+            code.matches("Ports::cli()").count() <= allowed,
+            "{}",
+            named("Ports::cli()")
         );
     }
 }

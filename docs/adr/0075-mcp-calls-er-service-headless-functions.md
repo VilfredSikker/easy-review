@@ -31,6 +31,8 @@ on a handle built anywhere else.
 
 ## Consequences
 
+- ADDENDUM-07 decision 9 is done: the use cases MCP calls now live in
+  er-service, next to the ones the workspace runs.
 - MCP's tools can be tested with scripted ports: the queue's PR list joined
   the `GitHub` trait for this.
 - The contract goldens in `crates/er-mcp/tests/contract/goldens/` hold what
