@@ -1,8 +1,8 @@
 //! Read the Easy Review projects record from the app store.
 
 use anyhow::{Context, Result};
-use er_engine::pr_resolve::{self, ProjectHint, ResolvePrRefInput, ResolvedPrRef};
 use er_engine::projects_pins::{ProjectRecord, ProjectsFile};
+use er_service::headless::pr_resolve::{self, ProjectHint, ResolvePrRefInput, ResolvedPrRef};
 
 /// The `projects_list` tool description. The macro needs an expression it can
 /// read, so the description lives here and the test below pins its wording.
@@ -43,11 +43,14 @@ pub struct PrTargetInput<'a> {
     pub number: Option<u64>,
 }
 
-pub fn resolve_pr_target(input: &PrTargetInput<'_>) -> Result<ResolvedPr> {
+pub fn resolve_pr_target(
+    ports: &er_engine::ports::Ports,
+    input: &PrTargetInput<'_>,
+) -> Result<ResolvedPr> {
     let file = load_projects();
     let hints = project_hints(&file);
     pr_resolve::resolve_pr_ref(
-        &*er_engine::github::default_handle(),
+        ports,
         &ResolvePrRefInput {
             ref_str: input.ref_str,
             pr_url: input.pr_url,
@@ -109,10 +112,13 @@ mod tests {
     fn resolve_pr_from_url() {
         let dir = tempfile::tempdir().unwrap();
         er_engine::storage::with_test_storage_root(dir.path(), || {
-            let pr = resolve_pr_target(&PrTargetInput {
-                pr_url: Some("https://github.com/acme/widgets/pull/42/files"),
-                ..Default::default()
-            })
+            let pr = resolve_pr_target(
+                &er_engine::ports::Ports::for_test(),
+                &PrTargetInput {
+                    pr_url: Some("https://github.com/acme/widgets/pull/42/files"),
+                    ..Default::default()
+                },
+            )
             .unwrap();
             assert_eq!(pr.owner, "acme");
             assert_eq!(pr.repo, "widgets");
@@ -125,11 +131,14 @@ mod tests {
     fn resolve_pr_from_repo_and_number() {
         let dir = tempfile::tempdir().unwrap();
         er_engine::storage::with_test_storage_root(dir.path(), || {
-            let pr = resolve_pr_target(&PrTargetInput {
-                repo: Some("acme/widgets"),
-                number: Some(7),
-                ..Default::default()
-            })
+            let pr = resolve_pr_target(
+                &er_engine::ports::Ports::for_test(),
+                &PrTargetInput {
+                    repo: Some("acme/widgets"),
+                    number: Some(7),
+                    ..Default::default()
+                },
+            )
             .unwrap();
             assert_eq!(pr.number, 7);
             assert!(pr.bucket_path.contains("prs/pr-7"));

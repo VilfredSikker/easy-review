@@ -33,6 +33,7 @@ mod github_comments;
 mod github_sync;
 mod guard;
 mod handle;
+pub mod headless;
 mod history;
 mod host;
 mod hunks;
