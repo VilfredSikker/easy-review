@@ -1,0 +1,148 @@
+[
+  {
+    "arguments": {
+      "ref": "<root>/work"
+    },
+    "reply": {
+      "content": [
+        {
+          "json": {
+            "bucket_path": "<root>/storage/repos/vilfredsikker-easy-review-42b93a89/prs/pr-575",
+            "number": 575,
+            "owner": "VilfredSikker",
+            "pr_url": "https://github.com/VilfredSikker/easy-review/pull/575",
+            "repo": "easy-review",
+            "resolved_via": "ref_worktree"
+          },
+          "type": "text"
+        }
+      ],
+      "isError": false,
+      "resultType": "complete"
+    },
+    "tool": "pr_resolve"
+  },
+  {
+    "arguments": {
+      "ref": "VilfredSikker/easy-review"
+    },
+    "reply": {
+      "content": [
+        {
+          "json": {
+            "bucket_path": "<root>/storage/repos/vilfredsikker-easy-review-42b93a89/prs/pr-575",
+            "number": 575,
+            "owner": "VilfredSikker",
+            "pr_url": "https://github.com/VilfredSikker/easy-review/pull/575",
+            "project_name": "easy-review",
+            "repo": "easy-review",
+            "resolved_via": "ref_project_slug"
+          },
+          "type": "text"
+        }
+      ],
+      "isError": false,
+      "resultType": "complete"
+    },
+    "tool": "pr_resolve"
+  },
+  {
+    "arguments": {
+      "ref": "epic/p78-mcp-contract"
+    },
+    "reply": {
+      "content": [
+        {
+          "json": {
+            "branch": "epic/p78-mcp-contract",
+            "bucket_path": "<root>/storage/repos/vilfredsikker-easy-review-42b93a89/prs/pr-794",
+            "number": 794,
+            "owner": "VilfredSikker",
+            "pr_url": "https://github.com/VilfredSikker/easy-review/pull/794",
+            "project_name": "easy-review",
+            "repo": "easy-review",
+            "resolved_via": "ref_branch_head"
+          },
+          "type": "text"
+        }
+      ],
+      "isError": false,
+      "resultType": "complete"
+    },
+    "tool": "pr_resolve"
+  },
+  {
+    "arguments": {
+      "ref": "main"
+    },
+    "reply": {
+      "content": [
+        {
+          "json": {
+            "branch": "main",
+            "bucket_path": "<root>/storage/repos/vilfredsikker-easy-review-42b93a89/prs/pr-636",
+            "number": 636,
+            "owner": "VilfredSikker",
+            "pr_url": "https://github.com/VilfredSikker/easy-review/pull/636",
+            "project_name": "easy-review",
+            "repo": "easy-review",
+            "resolved_via": "ref_branch_head"
+          },
+          "type": "text"
+        }
+      ],
+      "isError": false,
+      "resultType": "complete"
+    },
+    "tool": "pr_resolve"
+  },
+  {
+    "arguments": {
+      "ref": "no-such-branch"
+    },
+    "reply": {
+      "content": [
+        {
+          "json": {
+            "branch": "no-such-branch",
+            "bucket_path": "<root>/storage/repos/vilfredsikker-easy-review-42b93a89/prs/pr-575",
+            "number": 575,
+            "owner": "VilfredSikker",
+            "pr_url": "https://github.com/VilfredSikker/easy-review/pull/575",
+            "project_name": "easy-review",
+            "repo": "easy-review",
+            "resolved_via": "ref_branch_worktree"
+          },
+          "type": "text"
+        }
+      ],
+      "isError": false,
+      "resultType": "complete"
+    },
+    "tool": "pr_resolve"
+  },
+  {
+    "arguments": {
+      "ref": "575"
+    },
+    "reply": {
+      "content": [
+        {
+          "json": {
+            "bucket_path": "<root>/storage/repos/vilfredsikker-easy-review-42b93a89/prs/pr-575",
+            "number": 575,
+            "owner": "VilfredSikker",
+            "pr_url": "https://github.com/VilfredSikker/easy-review/pull/575",
+            "project_name": "easy-review",
+            "repo": "easy-review",
+            "resolved_via": "ref_number"
+          },
+          "type": "text"
+        }
+      ],
+      "isError": false,
+      "resultType": "complete"
+    },
+    "tool": "pr_resolve"
+  }
+]

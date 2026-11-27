@@ -19,14 +19,18 @@ pub fn canonical_owner_repo_slug(git: &dyn er_git::Git, repo_root: &str) -> Opti
     Some(crate::storage::repo_storage_slug(&owner, &repo))
 }
 
-/// Production-vs-noise line stats for a remote PR (fetches `gh pr diff`).
+/// Production-vs-noise line stats for a remote PR (fetches `gh pr diff`
+/// through the ports).
 pub fn gh_pr_prod_diff_stats(
-    git: &dyn er_git::Git,
+    ports: &crate::ports::Ports,
     owner: &str,
     repo: &str,
     number: u64,
 ) -> anyhow::Result<crate::git::ProdDiffStats> {
-    let raw = gh_pr_diff_remote(git, owner, repo, number)?;
+    let raw = ports
+        .github
+        .pr_diff_remote(&*ports.git, owner, repo, number)
+        .map_err(|error| with_gh_sentence("Failed to get PR diff", error))?;
     Ok(crate::git::ProdDiffStats::from_raw_diff(&raw))
 }
 
