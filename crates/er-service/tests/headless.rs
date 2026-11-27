@@ -58,27 +58,6 @@ fn every_headless_function_is_one_mcp_calls_or_one_it_needs() {
     }
 }
 
-/// Every non-test Rust file under `dir`.
-fn sources(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
-    for entry in std::fs::read_dir(dir).unwrap_or_else(|e| panic!("{}: {e}", dir.display())) {
-        let path = entry
-            .unwrap_or_else(|e| panic!("{}: {e}", dir.display()))
-            .path();
-        let name = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or_default();
-        if path.is_dir() {
-            if !name.ends_with("tests") {
-                sources(&path, out);
-            }
-        } else if name.ends_with(".rs") && !name.ends_with("tests.rs") && name != "test_support.rs"
-        {
-            out.push(path);
-        }
-    }
-}
-
 /// The struct literal `text` starts with, up to its matching brace.
 fn literal(text: &str) -> &str {
     let mut depth = 0usize;
@@ -101,17 +80,19 @@ fn literal(text: &str) -> &str {
 /// `PrivateAnnotation` rows built outside tests, one sets `in_reply_to`.
 #[test]
 fn one_writer_builds_question_and_note_replies() {
-    let mut files = Vec::new();
-    for dir in ["er-engine/src", "er-service/src", "er-mcp/src"] {
-        sources(&crates().join(dir), &mut files);
-    }
+    let test_file = |path: &PathBuf| {
+        let name = path.to_string_lossy();
+        name.ends_with("tests.rs") || name.ends_with("test_support.rs") || name.contains("tests/")
+    };
+    let files: Vec<PathBuf> = ["er-engine/src", "er-service/src", "er-mcp/src"]
+        .iter()
+        .flat_map(|dir| rust_files(&crates().join(dir)))
+        .filter(|path| !test_file(path))
+        .collect();
     let mut writers = Vec::new();
     for file in files {
-        let text = read(&file);
-        let code = text
-            .split("#[cfg(test)]\nmod tests")
-            .next()
-            .unwrap_or_default();
+        let code = code_of(&read(&file));
+        let code = code.as_str();
         for (at, _) in code.match_indices("PrivateAnnotation {") {
             let row = literal(code.get(at..).unwrap_or_default());
             let sets_parent = row.lines().any(|line| {
