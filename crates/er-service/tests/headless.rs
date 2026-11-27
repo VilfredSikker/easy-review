@@ -1,7 +1,12 @@
 //! The `headless` module holds what MCP calls and nothing more (ADR 0075),
 //! and the engine no longer carries the modules that moved into it.
 
-use std::path::Path;
+#[path = "support/source_scan.rs"]
+mod source_scan;
+
+use std::path::{Path, PathBuf};
+
+use source_scan::{code_of, functions, mentions, read, rust_files};
 
 const MOVED: [&str; 5] = [
     "pr_resolve",
@@ -11,26 +16,22 @@ const MOVED: [&str; 5] = [
     "diagram_upload",
 ];
 
-fn read(path: &Path) -> String {
-    std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
-}
-
-/// The code of a module, up to its inline test module.
-fn code(path: &Path) -> String {
-    let text = read(path);
-    text.split("#[cfg(test)]")
-        .next()
-        .unwrap_or_default()
-        .to_string()
-}
-
-fn crates() -> std::path::PathBuf {
+fn crates() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("..")
+}
+
+/// The code of every file in `files`, joined.
+fn code(files: &[PathBuf]) -> String {
+    files
+        .iter()
+        .map(|file| code_of(&read(file)))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 #[test]
 fn the_engine_no_longer_declares_the_modules_mcp_moved() {
-    let lib = read(&crates().join("er-engine/src/lib.rs"));
+    let lib = code_of(&read(&crates().join("er-engine/src/lib.rs")));
     for name in MOVED {
         assert!(
             !lib.contains(&format!("mod {name}")),
@@ -39,33 +40,21 @@ fn the_engine_no_longer_declares_the_modules_mcp_moved() {
     }
 }
 
+/// A `headless` function is named in er-mcp's code (comments and tests
+/// left out), or called by another `headless` function.
 #[test]
 fn every_headless_function_is_one_mcp_calls_or_one_it_needs() {
-    let headless: Vec<String> = MOVED
-        .iter()
-        .map(|name| code(&crates().join(format!("er-service/src/headless/{name}.rs"))))
-        .collect();
-    let all_headless = headless.join("\n");
-    let mcp = std::fs::read_dir(crates().join("er-mcp/src"))
-        .expect("er-mcp sources")
-        .map(|entry| read(&entry.expect("dir entry").path()))
-        .collect::<Vec<_>>()
-        .join("\n");
-    for module in &headless {
-        for (at, _) in module.match_indices("pub fn ") {
-            let name: String = module
-                .get(at + 7..)
-                .unwrap_or_default()
-                .chars()
-                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
-                .collect();
-            let called = format!("{name}(");
-            let used_inside = all_headless.matches(&called).count() > 1;
-            assert!(
-                mcp.contains(&name) || used_inside,
-                "headless::{name} is neither called by er-mcp nor needed by what it calls"
-            );
-        }
+    let mut files = rust_files(&crates().join("er-service/src/headless"));
+    files.push(crates().join("er-service/src/headless.rs"));
+    let headless = code(&files);
+    let mcp = code(&rust_files(&crates().join("er-mcp/src")));
+    let names = functions(&headless);
+    assert!(names.len() > 20, "the scan found {} functions", names.len());
+    for (name, _) in names {
+        assert!(
+            mentions(&mcp, &name) > 0 || mentions(&headless, &name) > 1,
+            "headless::{name} is neither called by er-mcp nor needed by what it calls"
+        );
     }
 }
 
