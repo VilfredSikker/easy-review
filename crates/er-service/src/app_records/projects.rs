@@ -154,28 +154,37 @@ fn reorder_projects_in_file(file: &mut ProjectsFile, ordered_ids: &[String]) -> 
 // async) while other projects.json writers stay on the main thread, so they
 // take the `update_file` lock instead of an unguarded load-mutate-save.
 pub(crate) fn save_pr(project_id: &str, pr_number: u64, title: &str) -> anyhow::Result<()> {
+    save_pr_entry(project_id, pr_number, title).map(|_| ())
+}
+
+/// Save a PR in the project, newest first, and return the entry stored.
+fn save_pr_entry(project_id: &str, pr_number: u64, title: &str) -> anyhow::Result<SavedPrEntry> {
+    let entry = SavedPrEntry {
+        number: pr_number,
+        saved_at_ms: now_epoch_ms(),
+        title: title.to_string(),
+    };
     update_file(|file| {
         let proj = file
             .projects
             .iter_mut()
             .find(|p| p.id == project_id)
             .ok_or_else(|| anyhow::anyhow!("Project not found: {project_id}"))?;
-        let now = now_epoch_ms();
         proj.saved_prs.retain(|e| e.number != pr_number);
-        proj.saved_prs.insert(
-            0,
-            SavedPrEntry {
-                number: pr_number,
-                saved_at_ms: now,
-                title: title.to_string(),
-            },
-        );
+        proj.saved_prs.insert(0, entry.clone());
         proj.saved_prs.truncate(MAX_PR_HISTORY);
         Ok(true)
-    })
+    })?;
+    Ok(entry)
 }
 
 pub(crate) fn unsave_pr(project_id: &str, pr_number: u64) -> anyhow::Result<()> {
+    unsave_pr_entry(project_id, pr_number).map(|_| ())
+}
+
+/// Remove a saved PR; whether one was there.
+fn unsave_pr_entry(project_id: &str, pr_number: u64) -> anyhow::Result<bool> {
+    let mut removed = false;
     update_file(|file| {
         let proj = file
             .projects
@@ -184,8 +193,82 @@ pub(crate) fn unsave_pr(project_id: &str, pr_number: u64) -> anyhow::Result<()> 
             .ok_or_else(|| anyhow::anyhow!("Project not found: {project_id}"))?;
         let before = proj.saved_prs.len();
         proj.saved_prs.retain(|e| e.number != pr_number);
-        Ok(proj.saved_prs.len() != before)
-    })
+        removed = proj.saved_prs.len() != before;
+        Ok(removed)
+    })?;
+    Ok(removed)
+}
+
+/// MCP's project lookup: the project `project_id` names, or the one whose
+/// remote is `owner/repo`; `None` when there is none. Returns its id and
+/// name (the remote, for a project with no name).
+pub fn find_project(
+    project_id: Option<&str>,
+    owner: &str,
+    repo: &str,
+) -> anyhow::Result<Option<(String, String)>> {
+    let file = load();
+    if let Some(id) = project_id {
+        let project = file
+            .projects
+            .iter()
+            .find(|p| p.id == id)
+            .ok_or_else(|| anyhow::anyhow!("Project not found: {id}"))?;
+        return Ok(Some((project.id.clone(), project.name.clone())));
+    }
+    let remote = valid_remote_slug(&format!("{owner}/{repo}"))
+        .ok_or_else(|| anyhow::anyhow!("invalid GitHub remote slug: {owner}/{repo}"))?;
+    let Some(project) = file.projects.iter().find(|p| {
+        p.remote.as_deref().and_then(valid_remote_slug).as_deref() == Some(remote.as_str())
+    }) else {
+        return Ok(None);
+    };
+    if project.id.is_empty() {
+        anyhow::bail!("project for {remote} has empty id");
+    }
+    let name = if project.name.is_empty() {
+        remote
+    } else {
+        project.name.clone()
+    };
+    Ok(Some((project.id.clone(), name)))
+}
+
+/// MCP's pin: the PR saved in the project `find_project` finds, made for
+/// `owner/repo` when there is none. Returns the project's id and name and
+/// the entry stored.
+pub fn pin_pr_for_mcp(
+    project_id: Option<&str>,
+    owner: &str,
+    repo: &str,
+    number: u64,
+    title: &str,
+) -> anyhow::Result<(String, String, SavedPrEntry)> {
+    let (id, name) = match find_project(project_id, owner, repo)? {
+        Some(found) => found,
+        None => {
+            let remote = format!("{owner}/{repo}");
+            let id = ensure_remote_project(&remote)?;
+            (id, valid_remote_slug(&remote).unwrap_or(remote))
+        }
+    };
+    let entry = save_pr_entry(&id, number, title)?;
+    Ok((id, name, entry))
+}
+
+/// MCP's unpin; whether the PR was saved.
+pub fn unpin_pr_for_mcp(project_id: &str, number: u64) -> anyhow::Result<bool> {
+    unsave_pr_entry(project_id, number)
+}
+
+/// The project's saved PRs, newest first.
+pub fn saved_prs(project_id: &str) -> anyhow::Result<Vec<SavedPrEntry>> {
+    load()
+        .projects
+        .into_iter()
+        .find(|p| p.id == project_id)
+        .map(|p| p.saved_prs)
+        .ok_or_else(|| anyhow::anyhow!("Project not found: {project_id}"))
 }
 
 /// Where the projects record lives in the store, for mtime watchers.
