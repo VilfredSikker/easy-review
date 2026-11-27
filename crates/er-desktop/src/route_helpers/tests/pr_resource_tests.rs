@@ -11,10 +11,10 @@ use er_protocol::{
 use super::diff_command_tests::send;
 use super::diff_resource_tests::{fake_git, state_over, with_storage};
 use super::on_a_thread;
-use crate::app_owner::SidebarOwner;
 use crate::page_view::{GithubStatusSnapshot, PrInfo};
 use crate::resources::content_routes;
 use crate::route_helpers::DesktopState;
+use er_service::app_records::SidebarOwner;
 
 fn stack_json() -> String {
     serde_json::json!({
@@ -124,8 +124,8 @@ fn a_stored_status_moves_pr_status_at_the_next_publish() {
 
         let key = ("acme".to_string(), "widgets".to_string(), 7);
         let stored = status("Widgets");
-        let ticket = crate::gh_status_cache::begin_fetch();
-        assert!(crate::gh_status_cache::store_fetched(
+        let ticket = er_service::app_records::gh_status_cache::begin_fetch();
+        assert!(er_service::app_records::gh_status_cache::store_fetched(
             &state.gh_status_cache,
             key.clone(),
             ticket,
@@ -150,8 +150,8 @@ fn a_stored_status_moves_pr_status_at_the_next_publish() {
             snapshot
         );
 
-        let again = crate::gh_status_cache::begin_fetch();
-        assert!(crate::gh_status_cache::store_fetched(
+        let again = er_service::app_records::gh_status_cache::begin_fetch();
+        assert!(er_service::app_records::gh_status_cache::store_fetched(
             &state.gh_status_cache,
             key,
             again,

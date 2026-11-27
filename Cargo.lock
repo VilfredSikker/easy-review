@@ -1499,6 +1499,8 @@ dependencies = [
  "er-github",
  "er-protocol",
  "er-store",
+ "log",
+ "schemars 1.2.3",
  "serde",
  "serde_json",
  "tempfile",

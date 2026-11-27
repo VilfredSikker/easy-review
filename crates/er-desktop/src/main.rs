@@ -9,12 +9,14 @@ use er_desktop::browser_webview::BrowserWebviewState;
 #[cfg(test)]
 use er_desktop::comment_tick::comment_sync_recently_synced;
 use er_desktop::frame_script::FRAME_SCRIPT;
-use er_desktop::page_view::{PrInfo, ProjectMeta, WatchStatusSnapshot, WatchStatusState};
-use er_desktop::{
-    browser_proxy, browser_webview, dev_log, gh_status_cache, inbox, main_webview_policy,
-    native_notify, page_view, pr_cache, profile_log, projects, route_helpers, tabs, terminal,
-    window_placement,
+use er_desktop::page_view::{
+    PrInfo, ProjectMeta, RefreshMeta, WatchStatusSnapshot, WatchStatusState,
 };
+use er_desktop::{
+    browser_proxy, browser_webview, dev_log, main_webview_policy, native_notify, page_view,
+    profile_log, route_helpers, tabs, terminal, window_placement,
+};
+use er_service::app_records::{gh_status_cache, inbox, pr_cache, projects};
 
 /// Inject the annotation content script before `</head>` (or `</body>` as fallback).
 fn inject_script(mut html: Vec<u8>) -> Vec<u8> {
@@ -758,7 +760,7 @@ fn main() {
             .unwrap_or_default(),
     ));
     let inbox = Arc::new(Mutex::new(inbox::load_inbox_state()));
-    let app_owner = Arc::new(er_desktop::app_owner::AppOwner::new(
+    let app_owner = Arc::new(er_service::app_records::AppOwner::new(
         meta_cache,
         Arc::clone(&pr_cache),
         Arc::clone(&pr_cache_fetched_at),
@@ -801,8 +803,15 @@ fn main() {
     let (resource_wake, resource_wakes) = std::sync::mpsc::channel();
     let session = er_desktop::state::SessionClock::default();
     session.wake_with(resource_wake.clone());
+    // One task host for the desktop's runs and the actors' flows, so a flow
+    // sees the tasks writing into its bucket.
+    let tasks = {
+        let clock = session.clock();
+        er_service::TaskHost::new(move |_| clock.bump())
+    };
+    let deps = er_service::WorkspaceDeps::new(ports.clone()).with_tasks(tasks.clone());
     let service = Arc::new(
-        er_desktop::service::ServiceState::with_revision_relay(ports.clone(), {
+        er_desktop::service::ServiceState::with_deps(deps, {
             // The revision watcher wakes the tick for this bump.
             let desktop_revision = Arc::clone(&desktop_revision);
             move |_| {
@@ -812,6 +821,7 @@ fn main() {
         .with_resource_wake(resource_wake.clone()),
     );
     app_owner.set_wake(resource_wake);
+    app_owner.set_change_hook(profile_log::profile_log);
     // The registry loads the saved tabs and issues every tab key.
     tabs::restore(
         &view_arc,
@@ -858,10 +868,7 @@ fn main() {
         session: session.clone(),
         live_jobs: Default::default(),
         live_tabs: Default::default(),
-        tasks: {
-            let clock = session.clock();
-            er_service::TaskHost::new(move |_| clock.bump())
-        },
+        tasks,
     };
     let state = desktop.clone();
     er_desktop::app_owner::startup::read_inbox_prefs_from_settings(&desktop);
@@ -1133,22 +1140,15 @@ fn main() {
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
 
-        #[expect(
-            clippy::expect_used,
-            reason = "a worker thread that cannot build its runtime has nothing to fall back to"
-        )]
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("failed to build tokio runtime");
         let run_refresh = || {
             let refresh = bg_state.begin_pr_list_refresh();
-            let failed = rt.block_on(bg_owner.refresh_prs(Arc::clone(&bg_github)));
+            let failed = bg_owner.refresh_prs(Arc::clone(&bg_github));
             let prefs = er_desktop::app_owner::startup::inbox_prefs(&bg_state);
             let handles = route_helpers::InboxRefreshHandles {
                 pr_cache: &bg_cache,
                 gh_user: &bg_gh_user,
                 inbox: &bg_inbox,
+                app_owner: &bg_owner,
                 desktop_revision: &bg_desktop_rev,
                 app_handle: &bg_handle,
             };
@@ -1164,13 +1164,13 @@ fn main() {
         // list lights up quickly. The full multi-remote sweep follows.
         if let Some(active_remote) = pr_cache::active_project_remote() {
             let refresh = bg_state.begin_pr_list_refresh();
-            let success =
-                rt.block_on(bg_owner.refresh_remote_prs(Arc::clone(&bg_github), &active_remote));
+            let success = bg_owner.refresh_remote_prs(Arc::clone(&bg_github), &active_remote);
             let prefs = er_desktop::app_owner::startup::inbox_prefs(&bg_state);
             let handles = route_helpers::InboxRefreshHandles {
                 pr_cache: &bg_cache,
                 gh_user: &bg_gh_user,
                 inbox: &bg_inbox,
+                app_owner: &bg_owner,
                 desktop_revision: &bg_desktop_rev,
                 app_handle: &bg_handle,
             };

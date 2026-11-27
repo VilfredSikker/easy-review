@@ -92,7 +92,7 @@ pub fn run_on_tab(
     result.map_err(refused)?;
     let remote = format!("{owner}/{repo}");
     let owner = &*desktop.app_owner;
-    let (version, _) = crate::app_owner::SidebarOwner::pr_status(owner, &remote, number);
+    let (version, _) = er_service::app_records::SidebarOwner::pr_status(owner, &remote, number);
     Ok(er_protocol::Ack {
         changed: vec![er_protocol::ResourceChanged {
             key: er_protocol::ResourceKey::PrStatus { remote, number },
@@ -255,7 +255,9 @@ fn refresh_status_now(state: &DesktopState, owner: &str, repo: &str, number: u64
         repo,
         number,
     ) {
-        crate::gh_status_cache::save_persisted_gh_status_cache(&state.gh_status_cache);
+        er_service::app_records::gh_status_cache::save_persisted_gh_status_cache(
+            &state.gh_status_cache,
+        );
     }
 }
 

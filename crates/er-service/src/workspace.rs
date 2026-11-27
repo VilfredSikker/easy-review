@@ -7,7 +7,8 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::fmt;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
+use std::thread::JoinHandle;
 
 use er_engine::ai::review_flow::ReviewFlow;
 use er_engine::arena::{ArenaProgressState, RunStatus};
@@ -168,6 +169,9 @@ pub(crate) struct WorkspaceState {
     closed_order: VecDeque<TabKey>,
     /// The sequence of the last reviewed patch applied, per bucket.
     marks_seq: HashMap<String, u64>,
+    /// The last watched-file write sent, which the next one waits for. Only
+    /// the actor swaps it, so the lock is never contended.
+    watched_write: Mutex<Option<JoinHandle<()>>>,
 }
 
 /// How many closed keys the workspace remembers for the loads still in flight.
@@ -181,7 +185,21 @@ impl WorkspaceState {
             closed: HashSet::new(),
             closed_order: VecDeque::new(),
             marks_seq: HashMap::new(),
+            watched_write: Mutex::new(None),
         }
+    }
+
+    /// Records the newest watched-file write and answers the one sent
+    /// before it.
+    pub(crate) fn chain_watched_write(
+        &self,
+        next: Option<JoinHandle<()>>,
+    ) -> Option<JoinHandle<()>> {
+        let mut last = self
+            .watched_write
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        std::mem::replace(&mut *last, next)
     }
 
     pub(crate) fn view(&self) -> &WorkspaceView {

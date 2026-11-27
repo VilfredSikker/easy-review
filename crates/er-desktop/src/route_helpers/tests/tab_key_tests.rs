@@ -160,7 +160,7 @@ fn every_kind_keeps_one_key_through_open_duplicate_and_replace() {
 
 /// A project on `root` that tracks the remote.
 fn register_project(root: &str) {
-    let record = crate::projects::ProjectRecord {
+    let record = er_service::app_records::projects::ProjectRecord {
         id: "widgets".to_string(),
         name: "widgets".to_string(),
         root_path: root.to_string(),
@@ -172,7 +172,7 @@ fn register_project(root: &str) {
         Ok(true)
     });
     assert!(saved.is_ok(), "{saved:?}");
-    crate::projects::invalidate_load_cache();
+    er_service::app_records::projects::invalidate_load_cache();
 }
 
 /// A descriptor that no longer builds: a local PR with no PR number.

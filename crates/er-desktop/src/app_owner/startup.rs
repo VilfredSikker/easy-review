@@ -102,7 +102,8 @@ pub fn flush_pending_notifications(state: &DesktopState) {
 /// restore the App holds only its startup tab, and once the tabs follow the
 /// registry the App's lock belongs to the follower.
 pub fn register_open_projects(state: &DesktopState) {
-    use crate::projects::{self, TabProjectRef};
+    use er_service::app_records::projects::{self, TabProjectRef};
+    let owner = &state.app_owner;
 
     let view = state.service.app_registry().tabs_view();
     let refs: Vec<TabProjectRef> = view
@@ -111,14 +112,14 @@ pub fn register_open_projects(state: &DesktopState) {
         .map(|tab| TabProjectRef::from_descriptor(&tab.descriptor))
         .collect();
     let (github, git) = (&*state.ports.github, &*state.ports.git);
-    projects::sync_projects_from_refs(github, git, &refs);
+    owner.sync_projects_from_refs(github, git, &refs);
     if projects::load().projects.is_empty() {
         if let Some(tab) = view.active_entry() {
             let root = &tab.descriptor.repo_root;
             if !root.is_empty() {
-                let _ = projects::auto_register(github, git, root);
+                let _ = owner.auto_register(github, git, root);
             }
         }
     }
-    state.app_owner.publish();
+    owner.publish();
 }

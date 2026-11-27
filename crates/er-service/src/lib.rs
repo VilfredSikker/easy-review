@@ -18,6 +18,7 @@ mod ai_extras;
 mod ai_labels;
 mod annotations;
 mod annotations_resource;
+pub mod app_records;
 mod app_registry;
 pub mod arena;
 mod ask_context;

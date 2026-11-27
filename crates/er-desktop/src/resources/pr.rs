@@ -17,10 +17,10 @@ use er_service::{pr_resource, pr_version, resolve_tab_key, TabEntry};
 use super::content_routes;
 use super::diff::{listed, published, Published};
 use super::tabs::Routed;
-use crate::app_owner::SidebarOwner;
 use crate::route_helpers;
 use crate::service::actor_key;
 use crate::state::DesktopState;
+use er_service::app_records::SidebarOwner;
 
 /// `wire`'s PR card and stack at the version its PR section was published at.
 pub fn pr(desktop: &DesktopState, wire: er_protocol::TabKey) -> Result<(u64, Resource), ErError> {
