@@ -93,7 +93,8 @@ fn warm_target(desktop: &DesktopState) -> Option<(String, String)> {
 /// cache the snapshot reads, as the warm it replaces did.
 fn hold_worktrees(desktop: &DesktopState, root: &str, base: &str) {
     let (github, git) = (&*desktop.ports.github, &*desktop.ports.git);
-    let rows = crate::page_view::build_worktrees(github, git, root, base, root);
+    let rows =
+        er_service::app_records::meta_refresh::build_worktrees(github, git, root, base, root);
     let open: BTreeSet<String> = desktop
         .service
         .app_registry()

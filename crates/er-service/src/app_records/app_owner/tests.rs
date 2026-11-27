@@ -5,7 +5,7 @@ use er_protocol::{ResourceChanged, ResourceKey, ResourceVersion};
 
 use super::{AppOwner, SidebarOwner};
 use crate::app_records::projects::{self, ProjectRecord, ProjectsFile};
-use crate::app_records::sidebar::{BranchInfo, PrInfo, ProjectMeta};
+use crate::app_records::sidebar::PrInfo;
 
 fn project(id: &str, root: &str, remote: Option<&str>) -> ProjectRecord {
     ProjectRecord {
@@ -36,26 +36,22 @@ fn owner() -> AppOwner {
     )
 }
 
-/// What a refresh reads for `project` from a repository on `main` with
-/// `feature` beside it.
-fn refresh(owner: &AppOwner, project: &str) {
-    let branch = |name: &str, is_current| BranchInfo {
-        name: name.into(),
-        upstream: Some(format!("origin/{name}")),
-        is_current,
-        is_merged: false,
-        worktree_path: None,
-        pr_number: None,
-    };
-    owner.refresh_meta_with(|meta| {
-        let seeded = ProjectMeta {
-            current_branch: "main".into(),
-            local_branches: vec![branch("main", true), branch("feature", false)],
-            auto_branches: Vec::new(),
-        };
-        lock(meta).insert(project.into(), seeded);
-        true
-    });
+/// A repository on `main` with `feature` beside it, and `worktrees` checked out.
+fn git(worktrees: Vec<er_git::Worktree>) -> er_git::FakeGit {
+    er_git::FakeGit::default()
+        .with_current_branch(Ok("main".into()))
+        .with_rev_parse_verify(Ok(Some("0".repeat(40))))
+        .with_list_worktrees(Ok(worktrees))
+        .with_for_each_ref(Ok("main|origin/main\nfeature|origin/feature\n".into()))
+        .with_branch_merged(Ok(String::new()))
+}
+
+fn feature_worktree() -> er_git::Worktree {
+    er_git::Worktree {
+        path: "/src/a-feature".into(),
+        branch: "feature".into(),
+        head: "1".repeat(40),
+    }
 }
 
 fn branches_key(project: &str) -> ResourceKey {
@@ -75,6 +71,45 @@ fn version(owner: &AppOwner, key: &ResourceKey) -> u64 {
 fn in_storage(test: impl FnOnce()) {
     let tmp = tempfile::tempdir().unwrap();
     er_engine::storage::with_test_storage_root(tmp.path(), test);
+}
+
+/// A refresh that gives one project's branch a worktree moves that
+/// project's branches and nothing else. The cache's fingerprint counts
+/// branches and does not see the change, so a version that followed it
+/// would stay put.
+#[test]
+fn a_refresh_moves_only_the_branches_it_changed() {
+    in_storage(|| {
+        save(&ProjectsFile {
+            projects: vec![project("a", "/src/a", None), project("b", "/src/b", None)],
+            active_id: Some("a".into()),
+        });
+        let owner = owner();
+        owner.refresh_meta(&git(Vec::new()), "");
+        let before = owner.versions();
+        assert_eq!(before.len(), 3, "{before:?}");
+
+        let fingerprint_moved = owner.refresh_project_meta(&git(vec![feature_worktree()]), "a");
+        assert!(
+            !fingerprint_moved,
+            "the fixture must change what the fingerprint ignores"
+        );
+
+        let moved: Vec<ResourceKey> = owner
+            .versions()
+            .into_iter()
+            .filter(|entry| !before.contains(entry))
+            .map(|(key, _)| key)
+            .collect();
+        assert_eq!(moved, vec![branches_key("a")]);
+        let (_, branches) = owner.branches("a");
+        let feature = branches
+            .local_branches
+            .iter()
+            .find(|branch| branch.name == "feature")
+            .expect("feature is tracked");
+        assert_eq!(feature.worktree_path.as_deref(), Some("/src/a-feature"));
+    });
 }
 
 /// A publish over unchanged sources stamps nothing and answers nothing.
@@ -104,7 +139,7 @@ fn a_project_that_returns_never_repeats_a_version() {
         };
         save(&file);
         let owner = owner();
-        refresh(&owner, "a");
+        owner.refresh_meta(&git(Vec::new()), "");
         let first = version(&owner, &branches_key("a"));
 
         save(&ProjectsFile::default());
@@ -140,7 +175,7 @@ fn a_branch_carries_its_open_pr_number() {
             active_id: None,
         });
         let owner = owner();
-        refresh(&owner, "a");
+        owner.refresh_meta(&git(Vec::new()), "");
         lock(&owner.pr_cache).insert("acme/a".into(), vec![pr(7, "feature", "someone")]);
         let changed = owner.publish();
         let stamped = |key: ResourceKey| ResourceChanged {

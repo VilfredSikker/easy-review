@@ -6,7 +6,6 @@ use tauri_plugin_notification::NotificationExt;
 
 use crate::page_view::{
     CheckSummary, GhCommentSummary, GhReviewSummary, GhUser, GithubStatusSnapshot, PrInfo,
-    RefreshMeta,
 };
 use crate::resources::content_routes;
 pub use crate::state::DesktopState;

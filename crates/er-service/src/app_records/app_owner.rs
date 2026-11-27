@@ -30,6 +30,7 @@ use er_protocol::{
 };
 
 use crate::app_records::inbox::{InboxHandle, InboxState};
+use crate::app_records::meta_refresh;
 use crate::app_records::pr_cache::{self, PrCacheFetchedAtMap, PrCacheMap};
 use crate::app_records::projects::{
     self, ProjectRecord, ProjectReviewSettingsPatch, ProjectsFile, TabProjectRef,
@@ -87,7 +88,8 @@ pub struct AppOwner {
     published: Mutex<Published>,
     /// Wakes the resource relay after a publish that moved a version.
     wake: Mutex<Option<Sender<()>>>,
-    /// Hears each PR-list fetch and sweep, with its kind and fields.
+    /// Hears each PR-list fetch and sweep and each metadata refresh, with
+    /// its kind and fields.
     change_hook: OnceLock<Box<ChangeHook>>,
 }
 
@@ -144,8 +146,9 @@ impl AppOwner {
         *lock(&self.wake) = Some(wake);
     }
 
-    /// Has `hook` hear each PR-list fetch and sweep the owner runs, with its
-    /// kind and fields; the desktop logs them. The first call wins.
+    /// Has `hook` hear each PR-list fetch and sweep and each metadata refresh
+    /// the owner runs, with its kind and fields; the desktop logs them. The
+    /// first call wins.
     pub fn set_change_hook(&self, hook: impl Fn(&str, &[(&str, String)]) + Send + Sync + 'static) {
         let _ = self.change_hook.set(Box::new(hook));
     }
@@ -190,10 +193,19 @@ impl AppOwner {
         crate::app_records::inbox::save_inbox_state(&self.inbox);
     }
 
-    /// Runs `refresh` over the metadata cache, then publishes. Answers what
-    /// `refresh` answers: whether the cache's fingerprint moved.
-    pub fn refresh_meta_with(&self, refresh: impl FnOnce(&MetaCache) -> bool) -> bool {
-        let moved = refresh(&self.meta);
+    /// Refreshes every project's metadata, then publishes. Answers whether
+    /// the cache's fingerprint moved, which the snapshot's revision follows.
+    pub fn refresh_meta(&self, git: &dyn Git, active_root: &str) -> bool {
+        let hook = self.change_hook();
+        let moved = meta_refresh::refresh_meta_cache(git, active_root, &self.meta, hook);
+        self.publish();
+        moved
+    }
+
+    /// Refreshes one project's metadata, then publishes.
+    pub fn refresh_project_meta(&self, git: &dyn Git, project_id: &str) -> bool {
+        let hook = self.change_hook();
+        let moved = meta_refresh::refresh_meta_cache_for_project(git, project_id, &self.meta, hook);
         self.publish();
         moved
     }

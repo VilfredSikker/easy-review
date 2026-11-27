@@ -14,7 +14,7 @@ use er_service::AppCommand;
 
 use super::{git_fixture_command, review_flow_test_state, ReviewFlowTestDir};
 use crate::app_owner::startup::{meta_refresh_interval, register_open_projects};
-use crate::page_view::{PrInfo, RefreshMeta};
+use crate::page_view::PrInfo;
 use crate::resources::content_routes;
 use crate::resources::{self, relay, tick, Watched};
 use crate::route_helpers::DesktopState;
@@ -256,8 +256,13 @@ fn the_tick_serves_the_active_tab_worktrees_as_build_worktrees_lists_them() {
             panic!("{:?}", fetched.value);
         };
         let ports = &state.ports;
-        let listed =
-            crate::page_view::build_worktrees(&*ports.github, &*ports.git, &root, "main", &root);
+        let listed = er_service::app_records::meta_refresh::build_worktrees(
+            &*ports.github,
+            &*ports.git,
+            &root,
+            "main",
+            &root,
+        );
         let listed: Vec<_> = listed
             .into_iter()
             .map(|w| {
