@@ -1,7 +1,7 @@
 # er-mcp — Easy Review MCP server
 
 Stdio [Model Context Protocol](https://modelcontextprotocol.io) server (MCP **2026-07-28**).
-Thin REST API over `er-engine` — use **skills** for workflows.
+Thin REST API over er-service's `headless` functions — use **skills** for workflows.
 
 ## MCP tools (13)
 
@@ -133,6 +133,9 @@ Setup: [docs/guide/mcp.html](../../docs/guide/mcp.html).
 
 ## Architecture
 
-- Ranking, diff stats, sidecar I/O live in `er-engine`.
-- `pr_resolve` lives in `er-engine::pr_resolve`.
-- `er-mcp` is a thin `rmcp` stdio wrapper.
+- PR resolution, ranking, the sidecar summary, diagrams and the feedback
+  reader and writers live in er-service's `headless` module
+  (`crates/er-service/src/headless.rs`); MCP calls them and starts no actor
+  (ADR 0075).
+- Saved PRs are read and written through the projects owner in er-service.
+- `er-mcp` depends on er-service alone, and is a thin `rmcp` stdio wrapper.

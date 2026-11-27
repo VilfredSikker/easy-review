@@ -1,7 +1,8 @@
-//! MCP reaches `gh` and git through the `Ports` its server holds, so a
-//! test can script them. This scan fails on a call that builds its own
-//! handle, in er-mcp, in er-service's `headless` module, or in the
-//! `sidecar_upload` functions MCP calls.
+//! MCP runs on er-service. It reaches `gh` and git through the `Ports` its
+//! server holds, so a test can script them; its manifest names no workspace
+//! crate but er-service and er-protocol; it starts no workspace actor; and it
+//! leaves the projects record to the owner in er-service. These scans read
+//! code with comments and test items left out.
 
 #[path = "../../er-service/tests/support/source_scan.rs"]
 mod source_scan;
@@ -64,5 +65,87 @@ fn mcp_reaches_gh_and_git_only_through_its_ports() {
             "{}",
             named("Ports::cli()")
         );
+    }
+}
+
+/// er-mcp's code outside tests, one file per entry.
+fn mcp_sources() -> Vec<(PathBuf, String)> {
+    rust_files(&crates().join("er-mcp/src"))
+        .into_iter()
+        .map(|file| {
+            let code = code_of(&read(&file));
+            (file, code)
+        })
+        .collect()
+}
+
+/// The workspace crates er-mcp's `[dependencies]` names; dev-dependencies
+/// are exempt.
+#[test]
+fn er_mcp_depends_on_er_service_alone() {
+    let manifest = read(&crates().join("er-mcp/Cargo.toml"));
+    let table = manifest
+        .split("\n[")
+        .find(|section| section.starts_with("dependencies]"))
+        .expect("a [dependencies] table");
+    let workspace: Vec<&str> = table
+        .lines()
+        .filter(|line| line.contains("path = \"../"))
+        .filter_map(|line| line.split_whitespace().next())
+        .collect();
+    assert!(
+        workspace
+            .iter()
+            .all(|name| ["er-service", "er-protocol"].contains(name)),
+        "er-mcp's [dependencies] names {workspace:?}"
+    );
+    assert!(workspace.contains(&"er-service"), "{workspace:?}");
+}
+
+/// MCP calls er-service's functions and starts no actor (ADR 0075).
+#[test]
+fn mcp_starts_no_actor() {
+    for (file, code) in mcp_sources() {
+        assert!(
+            !code.contains("er_service::spawn"),
+            "{} starts an actor (er_service::spawn)",
+            file.display()
+        );
+        for name in [
+            "WorkspaceDeps",
+            "WorkspaceHandle",
+            "ServiceHost",
+            "AppOwner",
+            "SidebarOwner",
+        ] {
+            assert_eq!(
+                mentions(&code, name),
+                0,
+                "{} starts an actor ({name})",
+                file.display()
+            );
+        }
+    }
+}
+
+/// The projects record has one writer, the owner in er-service: MCP reads
+/// and pins through it and writes no record itself.
+#[test]
+fn mcp_writes_no_projects_record_itself() {
+    for (file, code) in mcp_sources() {
+        for writer in [
+            "projects_pins",
+            "projects.json",
+            "ProjectsFile>()",
+            "fs::write",
+            "File::create",
+            "OpenOptions",
+        ] {
+            assert!(
+                !code.contains(writer),
+                "{} writes the projects record itself ({writer})",
+                file.display()
+            );
+        }
     }
 }

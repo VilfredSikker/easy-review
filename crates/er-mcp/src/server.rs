@@ -1,17 +1,11 @@
-//! MCP tool surface for Easy Review — thin REST API over er-engine.
+//! MCP tool surface for Easy Review — thin REST API over er-service's
+//! `headless` functions.
 
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use er_engine::git::ProdDiffStats;
-use er_engine::github::{gh_pr_prod_diff_stats, with_gh_sentence};
-use er_engine::ports::Ports;
-use er_engine::projects_pins::{self, PinnedPr};
-use er_engine::sidecar_upload::artifact_specs_for_dir;
-use er_engine::sidecar_upload::{
-    prepare_review_kit, upload_pr_artifacts, SidecarKind, UploadArtifactsRequest,
-};
+use er_service::app_records::projects::{self as projects_owner, SavedPrEntry};
 use er_service::headless::diagram_upload::{
     list_diagrams, prepare_diagram_kit, upload_diagram, DiagramUpload,
 };
@@ -25,6 +19,10 @@ use er_service::headless::review_queue::{
 };
 use er_service::headless::sidecar_summary::{
     list_repo_pr_artifacts, present_kinds, summarize_pr_sidecars,
+};
+use er_service::headless::{
+    artifact_specs_for_dir, gh_pr_prod_diff_stats, prepare_review_kit, upload_pr_artifacts,
+    with_gh_sentence, Ports, ProdDiffStats, SidecarKind, UploadArtifactsRequest,
 };
 use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
@@ -308,7 +306,7 @@ fn query_repo_args(target: &PrRefFields) -> (Option<&str>, Option<&str>) {
     if let Some((left, _)) = raw.split_once('#').or_else(|| raw.split_once('!')) {
         return (Some(left), target.project_id.as_deref());
     }
-    if er_engine::github::parse_github_pr_url(raw).is_some() {
+    if er_service::headless::parse_github_pr_url(raw).is_some() {
         return (None, target.project_id.as_deref());
     }
     if raw.contains('/') && !raw.starts_with('/') && !raw.starts_with('~') {
@@ -322,7 +320,7 @@ fn fetch_pr_title(ports: &Ports, owner: &str, repo: &str, number: u64) -> Option
 }
 
 fn pinned_sidecar_json(
-    entry: &PinnedPr,
+    entry: &SavedPrEntry,
     summary: &er_service::headless::sidecar_summary::PrSidecarSummary,
 ) -> serde_json::Value {
     json!({
@@ -1269,13 +1267,17 @@ impl ErMcp {
 
         let ports = self.ports.clone();
         let result = tokio::task::spawn_blocking(move || {
-            let (project_id, project_name) =
-                projects_pins::resolve_project_for_pin(project_id_arg.as_deref(), &owner, &name)?;
             let title = title_arg
                 .filter(|t| !t.trim().is_empty())
                 .or_else(|| fetch_pr_title(&ports, &owner, &name, number))
                 .unwrap_or_default();
-            let pinned = projects_pins::pin_pr(&project_id, number, &title)?;
+            let (project_id, project_name, pinned) = projects_owner::pin_pr_for_mcp(
+                project_id_arg.as_deref(),
+                &owner,
+                &name,
+                number,
+                &title,
+            )?;
             let summary = summarize_pr_sidecars(&owner, &name, number);
             Ok::<_, anyhow::Error>((project_id, project_name, owner, name, pinned, summary))
         })
@@ -1301,11 +1303,11 @@ impl ErMcp {
 
         let result = tokio::task::spawn_blocking(move || {
             let Some((project_id, project_name)) =
-                projects_pins::resolve_project_for_list(project_id_arg.as_deref(), &owner, &name)?
+                projects_owner::find_project(project_id_arg.as_deref(), &owner, &name)?
             else {
                 return Ok((None, None, owner, name, false));
             };
-            let removed = projects_pins::unpin_pr(&project_id, number)?;
+            let removed = projects_owner::unpin_pr_for_mcp(&project_id, number)?;
             Ok::<_, anyhow::Error>((Some(project_id), Some(project_name), owner, name, removed))
         })
         .await
@@ -1340,12 +1342,12 @@ impl ErMcp {
         };
 
         let result = tokio::task::spawn_blocking(move || {
-            let project =
-                projects_pins::resolve_project_for_list(project_id_arg.as_deref(), &owner, &name)?;
+            let project = projects_owner::find_project(project_id_arg.as_deref(), &owner, &name)?;
             let (project_id, project_name, pinned_set, pinned_rows) = match project {
                 Some((id, pname)) => {
-                    let pinned = projects_pins::list_pinned(&id)?;
-                    let set = projects_pins::pinned_numbers(&id);
+                    let pinned = projects_owner::saved_prs(&id)?;
+                    let set: std::collections::HashSet<u64> =
+                        pinned.iter().map(|entry| entry.number).collect();
                     let rows: Vec<_> = pinned
                         .iter()
                         .map(|entry| {

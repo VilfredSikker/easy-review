@@ -5,7 +5,7 @@ use std::path::Path;
 
 #[test]
 fn the_mcp_registry_has_every_shared_kind_including_session() {
-    let registry = er_engine::store_registry::registry();
+    let registry = er_service::headless::store_registry();
     for (file, kind) in er_engine::store_registry::expected_kinds() {
         assert_eq!(registry.kind_for(Path::new(file)), Some(*kind), "{file}");
     }
@@ -16,7 +16,7 @@ fn the_mcp_registry_has_every_shared_kind_including_session() {
 
 #[test]
 fn the_mcp_registry_does_not_claim_desktop_kinds() {
-    let registry = er_engine::store_registry::registry();
+    let registry = er_service::headless::store_registry();
     for file in ["gh-status-cache.json", "inbox.json", "pr-cache.json"] {
         assert_eq!(registry.kind_for(Path::new(file)), None, "{file}");
     }
