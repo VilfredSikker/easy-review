@@ -349,6 +349,98 @@ diff --git a/src/b.rs b/src/b.rs
         Ok((dir, bucket.to_string_lossy().into_owned()))
     }
 
+    /// The two reply callers, pinned side by side (P80.1b, option B). For one
+    /// anchored parent on the old side across two lines, the workspace effect
+    /// re-reads the anchor from the diff it fetched, on the new side and one
+    /// line; MCP fetches nothing and copies the parent's row.
+    #[test]
+    fn a_service_reply_re_anchors_and_an_mcp_reply_copies_its_parent() -> anyhow::Result<()> {
+        let (dir, bucket) = temp_bucket()?;
+        er_engine::storage::with_process_test_storage_root(dir.path(), || -> anyhow::Result<()> {
+            er_engine::test_support::write_sidecar_json::<er_engine::ai::ErQuestions>(
+                std::path::Path::new(&bucket),
+                serde_json::json!({
+                    "version": 1,
+                    "diff_hash": "parent-hash",
+                    "questions": [{
+                        "id": "q-parent",
+                        "timestamp": "2026-01-01T00:00:00Z",
+                        "file": "src/a.rs",
+                        "hunk_index": 0,
+                        "line_start": 2,
+                        "line_end": 3,
+                        "line_content": "a-old",
+                        "text": "Why?",
+                        "side": "LEFT",
+                        "hunk_header": "@@ -1,2 +1,2 @@",
+                        "relocated_at_hash": "parent-hash",
+                        "finding_ref": "f-1",
+                    }],
+                }),
+            );
+            actor(RAW).send_and_wait_with(
+                Command::ReplyToThread {
+                    context: context(&bucket, "/repo"),
+                    parent_id: "q-parent".to_string(),
+                    body: "Because.".to_string(),
+                    client_id: Some("q-service".to_string()),
+                },
+                Duration::from_secs(5),
+            )?;
+            let mcp = crate::headless::pr_review_feedback::reply_to_question_in_dir(
+                &bucket, "q-parent", "Because.", None,
+            )?;
+
+            let store = er_engine::store_registry::store();
+            let scope = er_store::Scope::dir(&bucket)?;
+            let er_store::Loaded::Found(stored) =
+                er_engine::ai::annotation_store::load_questions(&store, &scope)?
+            else {
+                anyhow::bail!("questions were not written");
+            };
+            let row = |id: &str| {
+                stored
+                    .value
+                    .questions
+                    .iter()
+                    .find(|q| q.id == id)
+                    .cloned()
+                    .ok_or_else(|| anyhow::anyhow!("no row {id}"))
+            };
+            let (service, mcp) = (row("q-service")?, row(&mcp.id)?);
+            for reply in [&service, &mcp] {
+                assert_eq!(reply.in_reply_to.as_deref(), Some("q-parent"));
+                assert_eq!(reply.file, "src/a.rs");
+                assert_eq!(reply.hunk_index, Some(0));
+                assert_eq!(reply.line_start, Some(2));
+                assert_eq!(reply.text, "Because.");
+            }
+            assert_eq!(
+                (service.side.as_str(), service.line_end),
+                ("RIGHT", None),
+                "the effect re-anchors on the new side, one line"
+            );
+            assert_eq!(
+                (mcp.side.as_str(), mcp.line_end),
+                ("LEFT", Some(3)),
+                "MCP copies the parent's side and range"
+            );
+            assert_eq!(service.line_content, "a-new");
+            assert_eq!(mcp.line_content, "a-old");
+            assert_eq!(
+                (service.author.as_str(), service.finding_ref.as_deref()),
+                ("You", None)
+            );
+            assert_eq!(
+                (mcp.author.as_str(), mcp.finding_ref.as_deref()),
+                ("agent", Some("f-1"))
+            );
+            assert_eq!(service.relocated_at_hash, "diff-hash");
+            assert_eq!(mcp.relocated_at_hash, "parent-hash");
+            Ok(())
+        })
+    }
+
     #[test]
     fn toggle_reviewed_uses_the_named_path_and_the_diff_hash() -> anyhow::Result<()> {
         let dir = tempfile::tempdir()?;
