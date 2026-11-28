@@ -1,35 +1,28 @@
-//! The browser annotation writes on the flag path. The desktop is the one
-//! writer of `ui-annotations.json` and its screenshots, so these stay desktop
-//! writes; each names the tab and view the page painted, as the other
-//! annotation writes do, and writes the bucket of that tab's content,
-//! `context.er_dir`. The GitHub-comment bucket, `context.comments_dir`, is a
-//! PR tab's other bucket and never holds them.
+//! The browser annotation writes. Each names the tab and view the page
+//! painted, as the other annotation writes do, and goes to that tab's
+//! workspace as a command whose effect writes the bucket of the tab's
+//! content, `context.er_dir` (ADR 0067). The GitHub-comment bucket,
+//! `context.comments_dir`, is a PR tab's other bucket and never holds them.
 
 use er_protocol::{
-    Ack, AnchorUpdate, Command, ErError, ErErrorKind, NewUiAnnotation, PaintedView,
-    ResourceChanged, ResourceKey, ResourceVersion,
+    Ack, Command, ErError, ErErrorKind, NewUiAnnotation, PaintedView, ResourceChanged, ResourceKey,
+    ResourceVersion,
 };
+use er_service::ui_annotations::{self as service, UiAnnotationWrite};
+use er_service::Reply;
 
 use super::content_routes;
 use super::tabs::Routed;
-use crate::route_helpers;
 use crate::state::DesktopState;
-
-/// A write in a view bucket, answering the id or path it created.
-type BucketWrite<'a> = Box<dyn FnOnce(&str) -> Result<Option<String>, String> + 'a>;
 
 /// Applies `command` when it is a browser annotation write.
 pub fn apply(desktop: &DesktopState, command: Command) -> Routed {
-    let (tab, view, write): (_, _, BucketWrite<'_>) = match command {
+    let (tab, view, write) = match command {
         Command::AddUiAnnotation {
             tab,
             view,
             annotation,
-        } => (
-            tab,
-            view,
-            Box::new(move |dir| add(dir, *annotation).map(Some)),
-        ),
+        } => (tab, view, added(*annotation)),
         Command::SaveAnnotationScreenshot {
             tab,
             view,
@@ -38,13 +31,11 @@ pub fn apply(desktop: &DesktopState, command: Command) -> Routed {
         } => (
             tab,
             view,
-            Box::new(move |dir| screenshot(dir, &id, &data_url).map(Some)),
+            Ok(UiAnnotationWrite::Screenshot { id, data_url }),
         ),
-        Command::DeleteUiAnnotation { tab, view, id } => (
-            tab,
-            view,
-            Box::new(move |dir| route_helpers::delete_ui_annotation_in(dir, &id).map(|()| None)),
-        ),
+        Command::DeleteUiAnnotation { tab, view, id } => {
+            (tab, view, Ok(UiAnnotationWrite::Delete { id }))
+        }
         Command::ClearUiAnnotationsForPage {
             tab,
             view,
@@ -52,45 +43,54 @@ pub fn apply(desktop: &DesktopState, command: Command) -> Routed {
         } => (
             tab,
             view,
-            Box::new(move |dir| {
-                route_helpers::clear_ui_annotations_in(dir, Some(&page_url)).map(|()| None)
+            Ok(UiAnnotationWrite::Clear {
+                page_url: Some(page_url),
             }),
         ),
-        Command::ClearUiAnnotations { tab, view } => (
-            tab,
-            view,
-            Box::new(|dir| route_helpers::clear_ui_annotations_in(dir, None).map(|()| None)),
-        ),
-        Command::UpdateUiAnnotationAnchors { tab, view, updates } => (
-            tab,
-            view,
-            Box::new(move |dir| anchors(dir, updates).map(|()| None)),
-        ),
+        Command::ClearUiAnnotations { tab, view } => {
+            (tab, view, Ok(UiAnnotationWrite::Clear { page_url: None }))
+        }
+        Command::UpdateUiAnnotationAnchors { tab, view, updates } => {
+            let updates = updates
+                .into_iter()
+                .map(|update| service::AnchorUpdate {
+                    id: update.id,
+                    fresh: update.fresh,
+                    new_box: update.new_box,
+                })
+                .collect();
+            (tab, view, Ok(UiAnnotationWrite::Anchors(updates)))
+        }
         other => return Routed::Other(other),
     };
-    Routed::Applied(written(desktop, tab, &view, write))
+    Routed::Applied(
+        write
+            .map_err(refused)
+            .and_then(|write| written(desktop, tab, &view, write)),
+    )
 }
 
-/// Writes in the view bucket of `wire`'s content, when it still shows
-/// `view`, then moves `ui_annotations` and answers it at its new version.
-/// The whole of it runs under `ui_annotations_io`, so two writes sent
-/// together land one after the other.
+/// Sends `write` to the workspace of `wire`'s content, when it still shows
+/// `view`, and answers `ui_annotations(tab)` at the version the write
+/// published.
 fn written(
     desktop: &DesktopState,
     wire: er_protocol::TabKey,
     view: &PaintedView,
-    write: BucketWrite<'_>,
+    write: UiAnnotationWrite,
 ) -> Result<Ack, ErError> {
-    let _writing = desktop
-        .ui_annotations_io
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let key = er_service::resolve_tab_key(&desktop.service.app_registry().tabs_view(), wire)?;
-    let (content, _) = content_routes::keyed_content(desktop, key, Some(view)).map_err(refused)?;
-    let created = write(&content.context.er_dir).map_err(refused)?;
-    desktop.ui_annotations.bump();
-    crate::profile_log::bump_desktop_revision(&desktop.desktop_revision, "ui_annotation_write");
-    let version = super::annotations::ui_version(desktop, &content);
+    let (reply, tab) = content_routes::write_on_key(desktop, key, Some(view), |content| {
+        Ok(er_service::Command::WriteUiAnnotations {
+            context: content.context.clone(),
+            write,
+        })
+    })
+    .map_err(refused)?;
+    let Reply::UiAnnotationsWritten { created } = reply else {
+        return Err(refused(format!("unexpected reply: {reply:?}")));
+    };
+    let version = super::annotations::ui_annotations_version(desktop, key, &tab);
     Ok(Ack {
         changed: vec![ResourceChanged {
             key: ResourceKey::UiAnnotations { tab: wire },
@@ -100,14 +100,14 @@ fn written(
     })
 }
 
-fn add(dir: &str, annotation: NewUiAnnotation) -> Result<String, String> {
+fn added(annotation: NewUiAnnotation) -> Result<UiAnnotationWrite, String> {
     let dom_context = annotation
         .dom_context_json
         .as_deref()
         .map(serde_json::from_str)
         .transpose()
         .map_err(|e| format!("The DOM context is not JSON: {e}"))?;
-    let new = route_helpers::NewUiAnnotation {
+    Ok(UiAnnotationWrite::Add(Box::new(service::NewUiAnnotation {
         url: annotation.url,
         selector: annotation.selector,
         bbox: annotation.bbox,
@@ -117,26 +117,7 @@ fn add(dir: &str, annotation: NewUiAnnotation) -> Result<String, String> {
         element_context: annotation.element_context,
         dom_context,
         id: annotation.client_id,
-    };
-    route_helpers::write_ui_annotation(dir, new)
-}
-
-fn screenshot(dir: &str, id: &str, data_url: &str) -> Result<String, String> {
-    let bytes = route_helpers::decode_data_url_png(data_url)
-        .ok_or_else(|| "The screenshot is not a PNG data URL".to_string())?;
-    route_helpers::save_annotation_screenshot_in(dir, id, &bytes).map(|(path, _)| path)
-}
-
-fn anchors(dir: &str, updates: Vec<AnchorUpdate>) -> Result<(), String> {
-    let updates: Vec<route_helpers::AnchorUpdate> = updates
-        .into_iter()
-        .map(|update| route_helpers::AnchorUpdate {
-            id: update.id,
-            fresh: update.fresh,
-            new_box: update.new_box,
-        })
-        .collect();
-    route_helpers::apply_anchor_updates(dir, &updates).map_err(|e| e.to_string())
+    })))
 }
 
 fn refused(message: String) -> ErError {

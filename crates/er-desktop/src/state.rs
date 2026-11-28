@@ -34,13 +34,6 @@ pub struct DesktopState {
     /// Threads with an in-flight `ask_ai` subprocess. Snapshot reads this
     /// to render a synthetic "…thinking" reply until the real reply lands.
     pub pending_ai_replies: AiReplyJobs,
-    /// The desktop's writes to the tabs' browser annotations.
-    pub ui_annotations: WriteClock,
-    /// Held by each flag-path write to `ui-annotations.json` from its view
-    /// check to its bump. Each write loads the file and saves it whole, and
-    /// `er_send` runs commands side by side, so without it two writes sent
-    /// together each save over the other's change.
-    pub ui_annotations_io: Arc<Mutex<()>>,
     /// Per-PR GitHub status (review decision, mergeable, checks, etc).
     /// Populated by a background thread on a 60s cadence and on explicit refresh.
     pub gh_status_cache: GhStatusCache,

@@ -685,7 +685,7 @@ pub fn watched(desktop: &DesktopState) -> BTreeMap<Watched, u64> {
             .iter()
             .filter_map(|entry| {
                 let content = desktop.service.content(entry.key, &entry.descriptor)?;
-                let version = super::annotations::ui_version(desktop, &content);
+                let version = er_service::ui_annotations_version(&content);
                 let annotations = er_service::annotations_version(&content);
                 Some([
                     (Watched::UiAnnotations(entry.key), version),
