@@ -29,6 +29,7 @@ schemars = "1"
 # reaches the engine only through er-service.
 er-engine = { path = "../er-engine", default-features = false, features = ["test-support"] }
 tempfile = "3"
+toml.workspace = true
 
 [lints]
 workspace = true

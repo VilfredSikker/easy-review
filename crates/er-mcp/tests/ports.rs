@@ -79,27 +79,81 @@ fn mcp_sources() -> Vec<(PathBuf, String)> {
         .collect()
 }
 
-/// The workspace crates er-mcp's `[dependencies]` names; dev-dependencies
-/// are exempt.
+/// Each table cargo builds er-mcp's code with: `[dependencies]`,
+/// `[build-dependencies]` and their `[target.<cfg>.…]` forms. The
+/// dev-dependency tables are left out.
+fn non_dev_dependency_tables(manifest: &toml::Table) -> Vec<&toml::Table> {
+    let mut tables = dependency_tables_in(manifest);
+    if let Some(targets) = manifest.get("target").and_then(toml::Value::as_table) {
+        for target in targets.values().filter_map(toml::Value::as_table) {
+            tables.extend(dependency_tables_in(target));
+        }
+    }
+    tables
+}
+
+fn dependency_tables_in(table: &toml::Table) -> Vec<&toml::Table> {
+    ["dependencies", "build-dependencies", "build_dependencies"]
+        .iter()
+        .filter_map(|kind| table.get(*kind)?.as_table())
+        .collect()
+}
+
+/// The package name of every workspace member.
+fn workspace_packages() -> Vec<String> {
+    let root: toml::Table = read(&crates().join("../Cargo.toml"))
+        .parse()
+        .expect("the workspace manifest parses");
+    let members = root
+        .get("workspace")
+        .and_then(|workspace| workspace.get("members"))
+        .and_then(toml::Value::as_array)
+        .expect("the workspace lists its members");
+    members
+        .iter()
+        .filter_map(toml::Value::as_str)
+        .map(|member| {
+            let manifest: toml::Table = read(&crates().join("..").join(member).join("Cargo.toml"))
+                .parse()
+                .expect("a member manifest parses");
+            manifest
+                .get("package")
+                .and_then(|package| package.get("name"))
+                .and_then(toml::Value::as_str)
+                .expect("a member names its package")
+                .to_string()
+        })
+        .collect()
+}
+
+/// er-mcp's code reaches no workspace crate but er-service and er-protocol.
+/// Every non-dev table counts, under the package's real name, so a
+/// `package = "…"` rename does not hide one.
 #[test]
 fn er_mcp_depends_on_er_service_alone() {
-    let manifest = read(&crates().join("er-mcp/Cargo.toml"));
-    let table = manifest
-        .split("\n[")
-        .find(|section| section.starts_with("dependencies]"))
-        .expect("a [dependencies] table");
-    let workspace: Vec<&str> = table
-        .lines()
-        .filter(|line| line.contains("path = \"../"))
-        .filter_map(|line| line.split_whitespace().next())
+    let manifest: toml::Table = read(&crates().join("er-mcp/Cargo.toml"))
+        .parse()
+        .expect("er-mcp's manifest parses");
+    let workspace = workspace_packages();
+    assert!(workspace.iter().any(|name| name == "er-engine"), "{workspace:?}");
+    let named: Vec<String> = non_dev_dependency_tables(&manifest)
+        .into_iter()
+        .flatten()
+        .map(|(key, spec)| {
+            spec.get("package")
+                .and_then(toml::Value::as_str)
+                .unwrap_or(key.as_str())
+                .to_string()
+        })
+        .filter(|name| workspace.contains(name))
         .collect();
     assert!(
-        workspace
+        named
             .iter()
-            .all(|name| ["er-service", "er-protocol"].contains(name)),
-        "er-mcp's [dependencies] names {workspace:?}"
+            .all(|name| ["er-service", "er-protocol"].contains(&name.as_str())),
+        "er-mcp's code depends on {named:?}"
     );
-    assert!(workspace.contains(&"er-service"), "{workspace:?}");
+    assert!(named.iter().any(|name| name == "er-service"), "{named:?}");
 }
 
 /// MCP calls er-service's functions and starts no actor (ADR 0075).
@@ -138,7 +192,10 @@ fn mcp_writes_no_projects_record_itself() {
             "projects.json",
             "ProjectsFile>()",
             "fs::write",
+            "fs::rename",
+            "fs::copy",
             "File::create",
+            "File::options",
             "OpenOptions",
         ] {
             assert!(
