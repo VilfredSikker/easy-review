@@ -18,9 +18,9 @@ import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
-const VERSION = '2026.11.27';
+const VERSION = '2026.11.28';
 const SELF = (() => { try { return createHash('sha256').update(fs.readFileSync(fileURLToPath(import.meta.url))).digest('hex').slice(0, 10); } catch { return 'unknown'; } })();
-const FEATURES = ['imports', 'processes', 'network', 'files', 'service-sdks', 'tauri-commands', 'tauri-events', 'tests-inline', 'generated-headers', 'entry-points', 'undeclared-modules', 'name-mentions', 'auto-tooling', 'model-validation', 'change'];
+const FEATURES = ['imports', 'processes', 'network', 'files', 'service-sdks', 'tauri-commands', 'tauri-events', 'tests-inline', 'generated-headers', 'entry-points', 'undeclared-modules', 'name-mentions', 'auto-tooling', 'model-validation', 'change', 'script-entries', 'import-meta-glob'];
 
 const argv = process.argv.slice(2);
 const opt = (name) => { const i = argv.indexOf(name); if (i < 0) return null; const v = argv[i + 1]; argv.splice(i, 2); return v; };
@@ -64,7 +64,9 @@ const MODEL = modelPath ? readJson(modelPath) : null;
 if (modelPath && !MODEL) { console.error(`Could not parse ${modelPath}. It must be JSON (comments allowed).`); process.exit(1); }
 const warnings = [];
 
-const globRe = (g) => { let s = ''; for (let i = 0; i < g.length; i++) { const c = g[i]; if (c === '*') { if (g[i + 1] === '*') { if (g[i + 2] === '/') { s += '(?:.*/)?'; i += 2; } else { s += '.*'; i++; } } else s += '[^/]*'; } else if (c === '?') s += '[^/]'; else s += c.replace(/[.+^${}()|[\]\\]/g, '\\$&'); } return new RegExp('^' + s + '(/.*)?$'); };
+const globRe = (g, exact) => { let s = ''; for (let i = 0; i < g.length; i++) { const c = g[i]; if (c === '*') { if (g[i + 1] === '*') { if (g[i + 2] === '/') { s += '(?:.*/)?'; i += 2; } else { s += '.*'; i++; } } else s += '[^/]*'; } else if (c === '?') s += '[^/]'; else s += c.replace(/[.+^${}()|[\]\\]/g, '\\$&'); } return new RegExp('^' + s + (exact ? '$' : '(/.*)?$')); };
+// {a,b} alternatives, expanded before matching (globRe treats braces as literal text)
+const expandBraces = (g) => { const m = g.match(/\{([^{}]*)\}/); return m ? m[1].split(',').flatMap((x) => expandBraces(g.slice(0, m.index) + x + g.slice(m.index + m[0].length))) : [g]; };
 const anyGlob = (globs) => { const rs = (globs || []).map(globRe); return (p) => rs.some((r) => r.test(p)); };
 
 mark("non-functional");
@@ -72,16 +74,20 @@ mark("non-functional");
 const NF = MODEL && MODEL.nonFunctional ? MODEL.nonFunctional : {};
 const userNf = { test: anyGlob(NF.test), generated: anyGlob(NF.generated), dev: anyGlob(NF.dev), tooling: anyGlob(NF.tooling) };
 const RX = {
-  test: /(^|\/)(tests?|__tests__|spec|specs|e2e|__mocks__|fixtures?|testdata|test[-_]utils|test[-_]support|testing)(\/|$)|\.(test|spec)\.[a-z]+$|_test\.(go|py)$|(^|\/)test_[^/]*\.py$|(^|\/)conftest\.py$|_tests?\.rs$|(^|\/)tests?\.rs$|golden/,
+  test: /(^|\/)(tests?|__tests__|spec|specs|e2e|__mocks__|fixtures?|testdata|test[-_]utils|test[-_]support|testing)(\/|$)|\.(test|spec)\.[a-z]+$|[-.]fixtures\.[a-z]+$|-test-utils\.[a-z]+$|\.types\.svelte$|_test\.(go|py)$|(^|\/)test_[^/]*\.py$|(^|\/)conftest\.py$|_tests?\.rs$|(^|\/)tests?\.rs$|golden/,
   generated: /(^|\/)(generated|__generated__|gen|autogen)(\/|$)|\.(gen|generated|pb)\.[a-z]+$|_pb2(_grpc)?\.py$|\.pb\.go$|\.d\.ts$/,
-  dev: /\.stories\.[a-z]+$|(^|\/)(stories|storybook|\.storybook|playgrounds?|examples?|demos?|benches|benchmarks?|sandbox)(\/|$)/,
-  tooling: /(^|\/)(scripts|tools|tooling|\.github|ci)(\/|$)|(^|\/)[\w.-]+\.config\.(js|ts|mjs|cjs)$|(^|\/)(gulpfile|gruntfile|webpack\.[\w.]+|rollup\.[\w.]+|babel\.config)\.(js|ts|mjs|cjs)$|(^|\/)(setup|noxfile|fabfile|tasks)\.py$|(^|\/)build\.rs$/,
+  dev: /\.stories\.[a-z]+$|-story-data\.[a-z]+$|(^|\/)(stories|storybook|\.storybook|playgrounds?|examples?|demos?|benches|benchmarks?|sandbox)(\/|$)/,
+  tooling: /(^|\/)\.github(\/|$)|(^|\/)[\w.-]+\.config\.(js|ts|mjs|cjs)$|(^|\/)(gulpfile|gruntfile|webpack\.[\w.]+|rollup\.[\w.]+|babel\.config)\.(js|ts|mjs|cjs)$|(^|\/)(setup|noxfile|fabfile|tasks)\.py$|(^|\/)build\.rs$/,
 };
+// A scripts/ or tools/ folder is build tooling, except under src/, where the name is the code's own
+// word (an MCP server's tools/, say) and production code imports it.
+const TOOL_DIRS = new Set(['scripts', 'tools', 'tooling', 'ci']);
+const toolingDir = (rel) => { const s = rel.split('/'); for (let k = 0; k < s.length - 1; k++) { if (s[k] === 'src') return false; if (TOOL_DIRS.has(s[k])) return true; } return false; };
 const category = (f) => {
   for (const k of ['test', 'generated', 'dev', 'tooling']) if (userNf[k](f.rel)) return k;
   if (/^\s*(\/\/|#|\/\*)[^\n]*(@generated|Code generated|DO NOT EDIT|this file (?:was|is) (?:auto-?)?generated|auto-?generated (?:file|code|by))/im.test(f.text.slice(0, 600))) return 'generated';
   for (const k of ['test', 'generated', 'dev', 'tooling']) if (RX[k].test(f.rel)) return k;
-  return '';
+  return toolingDir(f.rel) ? 'tooling' : '';
 };
 F.forEach((f) => {
   f.cat = category(f);
@@ -109,6 +115,17 @@ for (const m of manifests) {
 }
 
 mark("build");
+// ── files a package.json script runs, with the script's name: [file, script name]. Every one is an entry
+// point; the build tooling step below takes those whose script is a build, generate, seed or similar step.
+const TOOL_STEPS = new Set(['gen', 'codegen', 'generate', 'build', 'lint', 'format', 'fmt', 'check', 'typecheck', 'migrate', 'seed', 'release', 'deploy', 'prepare', 'postinstall']);
+const scriptRuns = [];
+for (const m of manifests.filter((x) => /package\.json$/.test(x))) {
+  const j = readJson(path.join(ROOT, m)) || {}, d = dirOf(m);
+  for (const [name, cmd] of Object.entries(j.scripts || {})) for (const w of String(cmd).split(/\s+|&&|\|\||[;|]/)) {
+    const tok = w.replace(/^['"]|['"]$/g, ''); if (!CODE.test(tok)) continue;
+    const rel = path.posix.normalize(path.posix.join(d, tok)); if (fileSet.has(rel)) scriptRuns.push([rel, name]);
+  }
+}
 // ── build tooling by convention: code generators in a library crate, xtask crates, and files that
 // package.json runs from a build, lint, codegen, migration or release script
 let AUTO_TOOLING = 0;
@@ -118,13 +135,7 @@ let AUTO_TOOLING = 0;
     const hasLib = fileSet.has(c.src + '/lib.rs');
     for (const f of F) { if (hasLib && f.rel.startsWith(c.src + '/bin/') && /gen|codegen|export|schema|bindings|xtask/i.test(path.posix.basename(f.rel))) auto.add(f.rel); if (/(^|\/)xtask$/.test(c.dir) && f.rel.startsWith(c.dir + '/')) auto.add(f.rel); }
   }
-  for (const m of manifests.filter((x) => /package\.json$/.test(x))) {
-    const j = readJson(path.join(ROOT, m)) || {}, d = dirOf(m);
-    for (const [name, cmd] of Object.entries(j.scripts || {})) {
-      if (!/^(gen|codegen|generate|build|lint|format|fmt|check|typecheck|migrate|seed|release|deploy|prepare|postinstall)|:(gen|codegen|generate|build|lint|check|migrate|seed)$/.test(name)) continue;
-      for (const mm of String(cmd).matchAll(/(?:node|tsx|ts-node|bun|deno run|python3?|vite-node)\s+(?:-[-\w=]+\s+)*([\w./-]+\.(?:m?[jt]s|cjs|py))/g)) { const rel = path.posix.normalize(path.posix.join(d, mm[1])); if (fileSet.has(rel)) auto.add(rel); }
-    }
-  }
+  for (const [rel, name] of scriptRuns) if (name.split(/[^a-z0-9]+/i).some((w) => TOOL_STEPS.has(w.toLowerCase()))) auto.add(rel);
   F.forEach((f) => { if (!f.cat && auto.has(f.rel)) { f.cat = 'tooling'; f.nf = f.lines; f.t0 = 0; AUTO_TOOLING++; } });
 }
 
@@ -256,6 +267,18 @@ function expandUse(s) { s = s.replace(/\s+/g, ''); const out = []; (function go(
 // JS/TS: tsconfig paths, svelte $lib, workspace packages
 const tsconfigs = all.filter((p) => !SKIP.test(p) && /(^|\/)(tsconfig|jsconfig)(\.[\w-]+)?\.json$/.test(p)).map((p) => { const j = readJson(path.join(ROOT, p)) || {}; const co = j.compilerOptions || {}; return { dir: dirOf(p), base: co.baseUrl || '.', paths: co.paths || {} }; }).filter((t) => Object.keys(t.paths).length);
 const svelteDirs = all.filter((p) => /(^|\/)svelte\.config\.(js|ts|mjs|cjs)$/.test(p)).map(dirOf);
+// import.meta.glob('./x/*.ts') and its array form: every file the patterns match is an import. A leading /
+// is the Vite root (the folder with vite.config or svelte.config); aliases such as $lib are not followed.
+const viteDirs = all.filter((p) => /(^|\/)(vite|vitest|svelte)\.config\.(js|ts|mjs|cjs|mts)$/.test(p)).map(dirOf);
+const globHits = new Map();
+const resolveGlob = (rel, pats) => {
+  const key = dirOf(rel) + '\0' + pats.join('\0'); if (globHits.has(key)) return globHits.get(key);
+  const abs = (p) => p.startsWith('/') ? path.posix.join(near(viteDirs, rel) ?? '', p.slice(1)) : p.startsWith('.') ? path.posix.join(dirOf(rel), p) : null;
+  const pos = [], neg = [];
+  for (const p of pats) { const neg1 = p.startsWith('!'), a = abs(neg1 ? p.slice(1) : p); if (a == null) continue; for (const g of expandBraces(a)) (neg1 ? neg : pos).push(globRe(path.posix.normalize(g), true)); }
+  const hits = pos.length ? rels.filter((r) => pos.some((x) => x.test(r)) && !neg.some((x) => x.test(r))).map((r) => fileSet.get(r)) : [];
+  globHits.set(key, hits); return hits;
+};
 const JS_EXT = ['', '.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs', '.svelte', '.vue', '.svelte.ts', '.svelte.js'];
 const findFile = (base) => { base = path.posix.normalize(base).replace(/^\.\//, ''); const cands = []; for (const e of JS_EXT) cands.push(base + e); for (const e of JS_EXT.slice(1)) cands.push(base + '/index' + e); if (/\.(js|jsx|mjs|cjs)$/.test(base)) { const s = base.replace(/\.(js|jsx|mjs|cjs)$/, ''); for (const e of ['.ts', '.tsx', '.mts', '.cts']) cands.push(s + e); } for (const c of cands) if (fileSet.has(c)) return fileSet.get(c); return null; };
 const near = (list, rel) => list.filter((d) => d === '' || rel.startsWith(d + '/')).sort((a, b) => b.length - a.length)[0];
@@ -362,6 +385,10 @@ function scanFile(f, i) {
       const spec = m[2] || m[3] || m[4]; const to = resolveJs(f.rel, spec); if (to == null) { const svc = !spec.startsWith('.') && sdkOf(spec); if (svc) add(i, svc, 'net', spec, at(m.index)); continue; } const L = at(m.index);
       const names = (m[1] || '').replace(/[{}]/g, ',').split(',').map((s) => s.trim().split(/\s+as\s+/)[0].replace(/^type\s+/, '')).filter((s) => s && s !== '*');
       (names.length ? names.slice(0, 6) : [path.posix.basename(spec)]).forEach((nm) => add(i, to, 'import', nm, L));
+    }
+    for (const m of C.matchAll(/\bimport\.meta\.glob(?:<[^>]*>)?\(\s*(\[[^\]]*\]|'[^'\n]*'|"[^"\n]*"|`[^`$]*`)/g)) {
+      const pats = [...m[1].matchAll(/'([^'\n]*)'|"([^"\n]*)"|`([^`$]*)`/g)].map((x) => x[1] ?? x[2] ?? x[3]), L = at(m.index);
+      for (const to of resolveGlob(f.rel, pats)) add(i, to, 'import', 'import.meta.glob', L);
     }
     const usesCp = /['"](node:)?child_process['"]|['"]execa['"]|@tauri-apps\/(plugin-shell|api\/shell)/.test(T), usesFs = /['"](node:)?fs(\/promises)?['"]|['"]fs-extra['"]/.test(T), tauri = /@tauri-apps\/api/.test(T), electron = /ipcRenderer/.test(T);
     eachLine((ln, L) => {
@@ -486,8 +513,9 @@ const entries = new Set();
     if (f.lang === 'rust' && (/(^|\/)src\/(main|lib)\.rs$/.test(f.rel) || /(^|\/)(build\.rs|src\/bin\/[^/]+\.rs)$/.test(f.rel) || /(^|\/)(tests|benches|examples)\/[^/]+\.rs$/.test(f.rel))) entries.add(i);
     if (f.lang === 'go' && /^\s*package\s+main\b/m.test(f.code)) entries.add(i);
     if (f.lang === 'python' && (b === '__main__.py' || /^if\s+__name__\s*==\s*['"]__main__['"]/m.test(f.text) || b === 'manage.py' || b === 'wsgi.py' || b === 'asgi.py')) entries.add(i);
-    if (f.lang === 'js' && (/(^|\/)(routes|pages|app)\/.*(\+(page|layout|server|error)|page|layout|route|loading|error)(\.[\w]+)*\.(svelte|tsx?|jsx?|vue)$/.test(f.rel) || /(^|\/)(hooks\.(server|client)|service-worker|sw)\.(ts|js)$/.test(f.rel))) entries.add(i);
+    if (f.lang === 'js' && (/(^|\/)(routes|pages|app)\/.*(\+(page|layout|server|error)(@[^/.]*)?|page|layout|route|loading|error)(\.[\w]+)*\.(svelte|tsx?|jsx?|vue)$/.test(f.rel) || /(^|\/)(hooks\.(server|client)|service-worker|sw)\.(ts|js)$/.test(f.rel))) entries.add(i);
   });
+  for (const [rel] of scriptRuns) entries.add(fileSet.get(rel));
   for (const p of all.filter((x) => /\.html$/.test(x) && !SKIP.test(x))) { const t = read(p); for (const m of t.matchAll(/<script[^>]*\bsrc=["']([^"']+)["']/g)) tryJs(dirOf(p), m[1].startsWith('/') ? m[1].slice(1) : m[1]); }
   for (const m of manifests.filter((x) => /package\.json$/.test(x))) { const j = readJson(path.join(ROOT, m)) || {}, d = dirOf(m); [j.main, j.module, j.source, j.browser, typeof j.bin === 'string' ? j.bin : null, ...(j.bin && typeof j.bin === 'object' ? Object.values(j.bin) : [])].forEach((s) => tryJs(d, s)); if (j.exports) JSON.stringify(j.exports).replace(/"(\.\/[^"]+)"/g, (_, s) => { tryJs(d, s); return ''; }); }
   for (const p of all.filter((x) => /(^|\/)(vite|vitest|svelte|astro|nuxt|next|webpack|rollup)\.config\.(js|ts|mjs|cjs)$/.test(x))) { const t = read(p); for (const m of t.matchAll(/['"](\.?\/?[\w./-]+\.(ts|tsx|js|jsx|svelte|vue))['"]/g)) tryJs(dirOf(p), m[1]); }
