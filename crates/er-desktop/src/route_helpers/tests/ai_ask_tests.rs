@@ -128,7 +128,7 @@ pub(super) fn jobs(state: &DesktopState) -> Jobs {
     }
 }
 
-fn pending(state: &DesktopState) -> Vec<String> {
+pub(super) fn pending(state: &DesktopState) -> Vec<String> {
     jobs(state)
         .ai_replies
         .into_iter()
@@ -136,7 +136,7 @@ fn pending(state: &DesktopState) -> Vec<String> {
         .collect()
 }
 
-fn ask(state: &DesktopState, tab: TabKey, thread: &str) -> Ack {
+pub(super) fn ask(state: &DesktopState, tab: TabKey, thread: &str) -> Ack {
     let command = Command::AskAi {
         tab: wire(tab),
         thread_id: thread.to_string(),

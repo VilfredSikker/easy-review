@@ -13,7 +13,7 @@ use er_protocol::{Command, Resource, ResourceKey, TaskJob};
 use er_service::test_support::{open_gate, Agent};
 use er_service::WorkspaceDeps;
 
-use super::ai_ask_tests::jobs;
+use super::ai_ask_tests::{ask, jobs, pending, question};
 use super::arena_resource_tests::{bucket, local_ports, open, wait_until};
 use super::diff_command_tests::send;
 use super::diff_resource_tests::{fake_ports, opened, raw_diff, with_storage};
@@ -274,6 +274,39 @@ fn a_finished_importance_run_refilters_the_loaded_tabs_on_its_repo() {
         // The review still runs on the gated agent: end it before the
         // storage goes, so it frees the process's one slot.
         release(&state, &agent);
+    });
+}
+
+/// An ask stays off the task host (ADR 0074). One made while a review runs
+/// under a cap of one and a tour waits adds no task row and moves
+/// no queued row; its reply is pending in `jobs`' card set instead.
+#[test]
+fn an_ask_stays_off_the_task_host() {
+    with_storage(|dir| {
+        let (state, agent) = tasking(dir, 1);
+        let tab = open(&state, dir.path(), "a");
+        let asked = question(&state, &tab);
+        let _running = queued(&state, dir.path(), "review");
+        let waiting = queued(&state, dir.path(), "tour");
+        let rows = |state: &DesktopState| -> Vec<(String, String)> {
+            tasks(state)
+                .into_iter()
+                .map(|row| (row.id, row.status))
+                .collect()
+        };
+        let before = rows(&state);
+        assert_eq!(before.len(), 2, "{before:?}");
+        assert_eq!(
+            row(&state, &waiting).map(|row| row.status),
+            Some("queued".to_string())
+        );
+
+        ask(&state, tab.0, &asked);
+        assert_eq!(pending(&state), std::slice::from_ref(&asked));
+        assert_eq!(rows(&state), before, "the ask entered the task host");
+
+        release(&state, &agent);
+        wait_until("the ask to land", || pending(&state).is_empty());
     });
 }
 

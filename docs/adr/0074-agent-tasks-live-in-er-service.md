@@ -45,8 +45,6 @@ agent.
   next plan, never the caller.
 - Card asks (Ask AI, Validate, Elaborate and the AI-assisted finding reply)
   are planned and run in er-service too (`crates/er-service/src/card_asks.rs`),
-  each on a thread of its own and off the task host's queue: an ask takes no
-  queue position and shows no task row. Like every agent spawn it runs
-  through `JobRunner` in the background workload, so it takes a slot from the
-  pool (ADR 0021). The front end hands over the tab and its hooks, and reads
-  the pending replies for `jobs`.
+  each on a thread of its own. An ask stays off the task host: it takes no
+  queue position and shows no task row. The front end hands over the tab and
+  its hooks, and reads the pending replies for `jobs`.
