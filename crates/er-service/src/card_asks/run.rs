@@ -113,6 +113,28 @@ pub fn validate(
     ask_thread(hooks, replies, tab, thread_id, prompt, None)
 }
 
+/// The AI-assisted reply on a finding: an ask in the finding's thread, which
+/// the caller has just created or found (`ReplyToFinding` with
+/// `ai_assist`). The prompt leads with the finding's title and description,
+/// then `body`, or the default ask when it is empty.
+pub fn ask_on_finding_thread(
+    hooks: &AskHooks,
+    replies: &AiReplyJobs,
+    tab: &AskedTab,
+    root_id: String,
+    finding: (&str, &str),
+    body: &str,
+) -> Result<(), String> {
+    let (title, description) = finding;
+    let prompt = if body.trim().is_empty() {
+        DEFAULT_ASK_AI_PROMPT
+    } else {
+        body
+    };
+    let prompt = format!("Finding: {title}\n\n{description}\n\n---\n\n{prompt}");
+    ask_thread(hooks, replies, tab, root_id, prompt, Some(AI_ACTION_ASK))
+}
+
 /// The tab's content with the finding's file parsed, so the finding's line
 /// content reads its hunks. A stub is parsed on the tab's actor, the one
 /// parse path, within its reply bound.

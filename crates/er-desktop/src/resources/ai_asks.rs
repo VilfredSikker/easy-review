@@ -10,11 +10,10 @@
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
-use er_engine::ai::AI_ACTION_ASK;
 use er_protocol::{
     Ack, Command, ErError, ErErrorKind, PaintedView, ResourceChanged, ResourceKey, ResourceVersion,
 };
-use er_service::card_asks::{context, run, AskHooks, AskedTab, DEFAULT_ASK_AI_PROMPT};
+use er_service::card_asks::{context, run, AskHooks, AskedTab};
 use er_service::Reply;
 
 use super::content_routes;
@@ -205,21 +204,15 @@ pub fn ask_on_finding(
     let Reply::FindingReplied { root_id, .. } = reply else {
         return Err(refused(format!("unexpected reply: {reply:?}")));
     };
-    let prompt = if body.trim().is_empty() {
-        DEFAULT_ASK_AI_PROMPT
-    } else {
-        body.as_str()
-    };
-    let prompt = format!("Finding: {title}\n\n{description}\n\n---\n\n{prompt}");
     // The content the write published holds the thread it created.
     let tab = crate::arena_service::tab(desktop, Some(er_service::wire_tab_key(tab.entry.key)))?;
-    run::ask_thread(
+    run::ask_on_finding_thread(
         &hooks(desktop),
         &desktop.pending_ai_replies,
         &asked(&tab),
         root_id.clone(),
-        prompt,
-        Some(AI_ACTION_ASK),
+        (&title, &description),
+        &body,
     )
     .map_err(refused)?;
     Ok(root_id)
