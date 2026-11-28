@@ -7,10 +7,7 @@ use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::line_commits_cache::LineCommitsCache;
-use crate::page_view::{
-    GhStatusCache, GhUser, PendingAiReplies, PendingAiReply, PrInfo, WatchStatusSnapshot,
-    WatchStatusState,
-};
+use crate::page_view::{GhStatusCache, GhUser, PrInfo, WatchStatusSnapshot, WatchStatusState};
 use er_service::app_records::inbox::InboxHandle;
 
 #[derive(Clone)]
@@ -33,7 +30,7 @@ pub struct DesktopState {
     pub terminals: Arc<Mutex<HashMap<String, crate::terminal::PtySession>>>,
     /// Threads with an in-flight `ask_ai` subprocess. Snapshot reads this
     /// to render a synthetic "…thinking" reply until the real reply lands.
-    pub pending_ai_replies: AiReplyJobs,
+    pub pending_ai_replies: er_service::card_asks::AiReplyJobs,
     /// The desktop's writes to the tabs' browser annotations.
     pub ui_annotations: WriteClock,
     /// Held by each flag-path write to `ui-annotations.json` from its view
@@ -282,49 +279,6 @@ impl WriteClock {
         self.revision.fetch_add(1, Ordering::AcqRel);
         if let Some(wake) = self.wake.get() {
             let _ = wake.send(());
-        }
-    }
-}
-
-/// The in-flight ask-AI replies, by thread id or `finding:<id>`: what
-/// `jobs` serves. Every insert and removal goes through here and moves the
-/// clock, so no writer leaves the page on a stale "…thinking" reply.
-#[derive(Clone, Default)]
-pub struct AiReplyJobs {
-    replies: PendingAiReplies,
-    pub clock: WriteClock,
-}
-
-impl AiReplyJobs {
-    pub fn new(clock: WriteClock) -> Self {
-        Self {
-            replies: Arc::default(),
-            clock,
-        }
-    }
-
-    /// The map the snapshot joins into its threads and findings.
-    pub fn replies(&self) -> &PendingAiReplies {
-        &self.replies
-    }
-
-    pub fn insert(&self, key: String, reply: PendingAiReply) {
-        if let Ok(mut replies) = self.replies.lock() {
-            replies.insert(key, reply);
-        }
-        self.clock.bump();
-    }
-
-    /// Removes each key that is pending; moves the clock when one was.
-    pub fn remove<'a>(&self, keys: impl IntoIterator<Item = &'a str>) {
-        let mut removed = false;
-        if let Ok(mut replies) = self.replies.lock() {
-            for key in keys {
-                removed |= replies.remove(key).is_some();
-            }
-        }
-        if removed {
-            self.clock.bump();
         }
     }
 }

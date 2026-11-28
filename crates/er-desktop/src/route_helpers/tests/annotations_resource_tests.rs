@@ -14,10 +14,10 @@ use er_service::TabContent;
 
 use super::diff_resource_tests::{fake_git, listed, raw_diff, state_over, with_storage};
 use super::ReviewFlowTestDir;
-use crate::page_view::PendingAiReply;
 use crate::resources::content_routes;
 use crate::resources::{self, relay, tick, Watched};
 use crate::route_helpers::DesktopState;
+use er_service::card_asks::PendingAiReply;
 
 const WAIT: Duration = Duration::from_secs(10);
 

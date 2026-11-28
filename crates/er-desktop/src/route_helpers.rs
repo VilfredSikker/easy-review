@@ -9,8 +9,6 @@ use crate::page_view::{
 };
 use crate::resources::content_routes;
 pub use crate::state::DesktopState;
-#[cfg(test)]
-use er_engine::card_job::{run_card_ai_subprocess, CardAiInvocation};
 use er_engine::config::InboxConfig;
 use er_service::app_records::inbox::{
     inbox_item_from_notification, inbox_items_from_pr_transition, is_review_edge_kind, InboxHandle,
@@ -18,96 +16,6 @@ use er_service::app_records::inbox::{
 };
 use er_service::app_records::projects::{self, normalize_remote_slug};
 use er_service::app_records::AppOwner;
-
-pub(crate) const DEFAULT_ASK_AI_PROMPT: &str =
-    "Elaborate on this and answer any question directly.";
-
-/// Per-card validation: check whether a comment, question, or finding still holds.
-pub(crate) const VALIDATE_CARD_AI_PROMPT: &str = r#"Validate whether this review note is still accurate against the current code context provided.
-
-Use Read / grep / rg in the repository (see system context for repo_root and diff excerpt) before concluding. Up to ~10 reads for this finding; cite file:line evidence.
-
-Reply in markdown with:
-1. **Verdict**: Confirmed | Outdated | Needs context | Unclear
-2. **Evidence**: What in the code supports your verdict (cite file:line when possible)
-3. **Recommendation**: What the reviewer should do next
-
-Be concise. If the concern is already addressed in the current diff, say so clearly."#;
-
-/// One-click Ask AI on a question: investigate and answer. "Validate" does not
-/// fit a question — there is nothing to confirm or refute.
-const ANSWER_QUESTION_AI_PROMPT: &str = r#"Answer and elaborate on this review question against the current code.
-
-Use Read / grep / rg in the repository (see system context for repo_root and diff excerpt) before answering. Up to ~10 reads; cite file:line evidence.
-
-Reply in markdown with:
-1. **Answer**: A direct answer to the question.
-2. **Details**: Relevant context from the code (cite file:line when possible).
-3. **Follow-ups**: Anything the reviewer should double-check or decide.
-
-Be concise and concrete."#;
-
-/// One-click Ask AI on a note. A note is an instruction for a coding agent, so
-/// the useful answer is whether the change is right and what it would touch —
-/// not the change itself, which stays the agent's job once the note is sent.
-const ANSWER_NOTE_AI_PROMPT: &str = r#"Assess this review note against the current code. The note is an instruction the reviewer intends to hand to a coding agent.
-
-Use Read / grep / rg in the repository (see system context for repo_root and diff excerpt) before answering. Up to ~10 reads; cite file:line evidence. Do not edit any file.
-
-Reply in markdown with:
-1. **Assessment**: Whether the requested change is right, and why.
-2. **Details**: What the change would touch (cite file:line when possible).
-3. **Risks**: Anything that could break, or that the note leaves undecided.
-
-Be concise and concrete."#;
-
-/// Elaborate on a question: rewrite it, do not answer it. A terse question
-/// written mid-review ("why fetch-depth?") only makes sense next to the line it
-/// sits on; the rewrite has to survive export and being read by someone, or
-/// some agent, who never saw that line.
-const ELABORATE_QUESTION_AI_PROMPT: &str = r#"Rewrite this review question so it stands on its own, without the diff beside it.
-
-Use Read / grep / rg in the repository (see system context for repo_root and diff excerpt) to learn what the question refers to. Up to ~10 reads.
-
-The rewritten question must:
-- name the file and the lines or symbol it is about;
-- state the relevant facts from the code that make the question worth asking;
-- say what a good answer has to settle.
-
-Do not answer the question. Keep the reviewer's intent and tone; do not add concerns they did not raise.
-Reply with only the rewritten question in markdown — no preamble, no heading."#;
-
-/// Elaborate on a note: rewrite it into an instruction a coding agent can carry
-/// out without the review open. Same reason as the question variant; the note
-/// variant names the change and its outcome instead of what to settle.
-const ELABORATE_NOTE_AI_PROMPT: &str = r#"Rewrite this review note into a self-contained instruction for a coding agent that will not see the diff.
-
-Use Read / grep / rg in the repository (see system context for repo_root and diff excerpt) to learn what the note refers to. Up to ~10 reads. Do not edit any file.
-
-The instruction must:
-- name the file and the lines, job, function or other symbol to change;
-- state the exact change to make;
-- state the expected outcome, and anything that must stay unchanged when the note implies it.
-
-Keep the reviewer's intent; do not widen the change beyond what the note asks.
-Reply with only the instruction in markdown — no preamble, no heading."#;
-
-/// The prompt for a one-click AI action on a question or note, keyed on the
-/// thread id prefix the stores use (`q-` question, `n-` note). `None` for any
-/// other thread: Ask AI and Elaborate act on the private stores only.
-pub(crate) fn card_action_prompt(thread_id: &str, ai_action: &str) -> Option<&'static str> {
-    let is_note = thread_id.starts_with("n-");
-    if !is_note && !thread_id.starts_with("q-") {
-        return None;
-    }
-    match (ai_action, is_note) {
-        (er_engine::ai::AI_ACTION_ELABORATE, false) => Some(ELABORATE_QUESTION_AI_PROMPT),
-        (er_engine::ai::AI_ACTION_ELABORATE, true) => Some(ELABORATE_NOTE_AI_PROMPT),
-        (er_engine::ai::AI_ACTION_ASK, false) => Some(ANSWER_QUESTION_AI_PROMPT),
-        (er_engine::ai::AI_ACTION_ASK, true) => Some(ANSWER_NOTE_AI_PROMPT),
-        _ => None,
-    }
-}
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ReviewRevisionSummary {
@@ -1753,20 +1661,6 @@ pub(crate) fn note_prompt(
     Ok((prompt, toast))
 }
 
-/// The model a card ask runs: the one picked, else the agent's.
-pub(crate) fn card_model(picked: Option<String>, agent_model: String) -> Option<String> {
-    picked.or_else(|| (!agent_model.trim().is_empty()).then_some(agent_model))
-}
-
-/// Where a card ask's progress lines go: the card UI has no log panel, so
-/// they go to the debug log, drained on their own thread while the job
-/// blocks.
-pub(crate) fn card_progress() -> er_engine::card_job::ProgressSink {
-    Arc::new(|line: &str| {
-        log::debug!("card ai: {line}");
-    })
-}
-
 // ── PR URL open ──────────────────────────────────────────────────────────────
 
 fn find_project_id_for_remote(file: &projects::ProjectsFile, remote_slug: &str) -> Option<String> {
@@ -2878,7 +2772,6 @@ mod tests {
     mod annotations_resource_tests;
     mod arena_resource_tests;
     mod arena_wire_tests;
-    mod ask_context_tests;
     mod content_route_tests;
     mod diff_command_tests;
     mod diff_resource_tests;
@@ -2918,30 +2811,6 @@ mod tests {
 
         assert_eq!(text.matches("git for-each-ref failed").count(), 1, "{text}");
         assert!(text.contains("fatal: not a git repository"), "{text}");
-    }
-
-    #[test]
-    fn card_action_prompt_picks_the_kind_and_action() {
-        use er_engine::ai::{AI_ACTION_ASK, AI_ACTION_ELABORATE};
-        assert_eq!(
-            card_action_prompt("q-1", AI_ACTION_ELABORATE),
-            Some(ELABORATE_QUESTION_AI_PROMPT)
-        );
-        assert_eq!(
-            card_action_prompt("n-1", AI_ACTION_ELABORATE),
-            Some(ELABORATE_NOTE_AI_PROMPT)
-        );
-        assert_eq!(
-            card_action_prompt("q-1", AI_ACTION_ASK),
-            Some(ANSWER_QUESTION_AI_PROMPT)
-        );
-        assert_eq!(
-            card_action_prompt("n-1", AI_ACTION_ASK),
-            Some(ANSWER_NOTE_AI_PROMPT)
-        );
-        // GitHub comments are shared, so the one-click private actions skip them.
-        assert_eq!(card_action_prompt("c-1", AI_ACTION_ELABORATE), None);
-        assert_eq!(card_action_prompt("q-1", "unknown"), None);
     }
 
     fn send_note_params<'a>(
@@ -3006,16 +2875,6 @@ mod tests {
         assert!(send_note_blocked(false, Some("/repo-wt"), "/repo")
             .unwrap_err()
             .contains("/repo-wt"));
-    }
-
-    #[test]
-    fn elaborate_prompts_rewrite_rather_than_answer() {
-        for prompt in [ELABORATE_QUESTION_AI_PROMPT, ELABORATE_NOTE_AI_PROMPT] {
-            assert!(prompt.starts_with("Rewrite"));
-            assert!(prompt.contains("Reply with only"));
-        }
-        assert!(ELABORATE_QUESTION_AI_PROMPT.contains("Do not answer"));
-        assert!(ELABORATE_NOTE_AI_PROMPT.contains("Do not edit any file"));
     }
 
     struct ReviewFlowTestDir(tempfile::TempDir);
@@ -3292,10 +3151,6 @@ mod tests {
         }
     }
 
-    fn with_fake_claude<R>(value: &str, f: impl FnOnce() -> R) -> R {
-        er_engine::test_support::with_var("ER_FAKE_CLAUDE", value, f)
-    }
-
     #[test]
     fn resolve_review_scope_accepts_pr_diff_mode() {
         let mode = DiffMode::PrDiff;
@@ -3387,70 +3242,6 @@ mod tests {
             freshness_from_hint(&hint),
             "a changed head_oid alone must change the freshness"
         );
-    }
-
-    #[test]
-    fn card_ai_subprocess_honors_fake_sentinel_ok() {
-        let inv = CardAiInvocation {
-            command: "claude".into(),
-            args: vec![],
-            work_dir: "/tmp".into(),
-            is_claude_compatible: true,
-            uses_stream_json: false,
-            env: vec![],
-            // These go through ER_FAKE_CLAUDE and never reach the spawn.
-            timeout: std::time::Duration::from_mins(15),
-            slot_cap: 3,
-            slot_ceiling: 6,
-        };
-        let body = with_fake_claude("ok", || {
-            run_card_ai_subprocess(&inv, "ctx", "prompt", Some("sonnet"), None)
-        });
-        assert_eq!(body.as_str(), "mocked ok");
-    }
-
-    #[test]
-    fn card_ai_subprocess_honors_fake_sentinel_fail() {
-        let inv = CardAiInvocation {
-            command: "claude".into(),
-            args: vec![],
-            work_dir: "/tmp".into(),
-            is_claude_compatible: true,
-            uses_stream_json: false,
-            env: vec![],
-            // These go through ER_FAKE_CLAUDE and never reach the spawn.
-            timeout: std::time::Duration::from_mins(15),
-            slot_cap: 3,
-            slot_ceiling: 6,
-        };
-        let body = with_fake_claude("fail", || {
-            run_card_ai_subprocess(&inv, "ctx", "prompt", Some("sonnet"), None)
-        });
-        assert!(
-            body.as_str().starts_with("Pending — invoke via CLI"),
-            "expected fallback message, got: {}",
-            body.as_str()
-        );
-    }
-
-    #[test]
-    fn card_ai_subprocess_returns_custom_sentinel_value() {
-        let inv = CardAiInvocation {
-            command: "claude".into(),
-            args: vec![],
-            work_dir: "/tmp".into(),
-            is_claude_compatible: true,
-            uses_stream_json: false,
-            env: vec![],
-            // These go through ER_FAKE_CLAUDE and never reach the spawn.
-            timeout: std::time::Duration::from_mins(15),
-            slot_cap: 3,
-            slot_ceiling: 6,
-        };
-        let body = with_fake_claude("custom-response-text", || {
-            run_card_ai_subprocess(&inv, "ctx", "prompt", Some("sonnet"), None)
-        });
-        assert_eq!(body.as_str(), "custom-response-text");
     }
 
     fn github_pr_json() -> &'static [u8] {

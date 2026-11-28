@@ -6,20 +6,18 @@ use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use er_engine::ports::Ports;
 use er_engine::tab_identity::DiffMode;
 use er_engine::tabs_record::{TabDescriptor, TabKind};
 use er_engine::TabKey;
-use er_service::{TabContent, WorkspaceDeps};
 
-use super::arena_resource_tests::wait_until;
-use super::diff_resource_tests::with_storage;
-use super::{review_flow_test_state, ReviewFlowTestDir};
-use crate::ask_context::{finding_ask, AskTab};
-use crate::resources::content_routes;
-use crate::route_helpers::DesktopState;
-use crate::service::ServiceState;
+use super::context::{content_ask_tab, finding_ask, AskTab};
+use super::run::{parsed_for_finding, AskHooks, AskedTab};
+use crate::actor::WorkspaceDeps;
+use crate::protocol::Command;
+use crate::{TabContent, WorkspaceHandle};
 
 const HEAD: &str = "\
 diff --git a/src/a.rs b/src/a.rs
@@ -92,62 +90,96 @@ fn ports(raw: &str) -> Ports {
     Ports::with_git(git)
 }
 
-fn repo(dir: &ReviewFlowTestDir) -> String {
-    let root = dir.path().join("repo");
+/// Runs `test` with a storage root every effect thread sees.
+fn with_storage(test: impl FnOnce(&Path)) {
+    let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+    er_engine::storage::with_process_test_storage_root(dir.path().join("storage"), || {
+        test(dir.path());
+    });
+}
+
+fn repo(dir: &Path) -> String {
+    let root = dir.join("repo");
     std::fs::create_dir_all(&root).unwrap_or_else(|e| panic!("repo: {e}"));
     root.to_string_lossy().into_owned()
 }
 
+fn tab_of(kind: TabKind, repo: &str) -> TabDescriptor {
+    TabDescriptor {
+        kind,
+        repo_root: repo.to_string(),
+        branch: None,
+        pr_owner: None,
+        pr_repo: None,
+        pr_number: None,
+        pr_head_ref: None,
+        base_ref: None,
+        extra: serde_json::Map::new(),
+    }
+}
+
 /// A local branch view of `topic`, which no checkout has.
 fn branch_view(repo: &str) -> TabDescriptor {
-    let mut tab = content_routes::working_tab(repo.to_string());
-    tab.kind = TabKind::LocalBranch;
-    tab.branch = Some("topic".to_string());
-    tab
+    TabDescriptor {
+        branch: Some("topic".to_string()),
+        ..tab_of(TabKind::LocalBranch, repo)
+    }
 }
 
-/// A state whose workspace reads `ports`.
-fn service_state(dir: &ReviewFlowTestDir, ports: &Ports) -> DesktopState {
-    let mut state = review_flow_test_state(dir);
-    state.ports = ports.clone();
-    let deps = WorkspaceDeps::new(ports.clone());
-    let config = dir.path().join("settings").join("config.toml");
-    state.service = Arc::new(ServiceState::with_deps(deps, |_| {}).with_config_path(config));
-    state
-}
-
-/// The tab opened in the registry and loaded, then switched to `mode`.
+/// The tab loaded on an actor of its own, then switched to `mode`.
 fn content_tab(
-    state: &DesktopState,
+    ports: &Ports,
     descriptor: &TabDescriptor,
     mode: Option<DiffMode>,
-) -> (TabKey, Arc<TabContent>) {
-    let opened = content_routes::open(state, descriptor.clone(), false);
-    assert!(opened.is_ok(), "{opened:?}");
-    let key = state
-        .service
-        .app_registry()
-        .tabs_view()
-        .active
-        .unwrap_or_else(|| panic!("no active tab"));
-    wait_until("the content", || {
-        state.service.content(key, descriptor).is_some()
-    });
+) -> (WorkspaceHandle, TabKey, Arc<TabContent>) {
+    let handle = crate::spawn(WorkspaceDeps::new(ports.clone()));
+    let key = TabKey::next();
+    let load = Command::LoadTab {
+        key,
+        tab: descriptor.clone(),
+        mode: None,
+    };
+    let loaded = handle.send_and_wait_with(load, Duration::from_secs(10));
+    assert!(loaded.is_ok(), "{loaded:?}");
     if let Some(mode) = mode {
-        let moved = content_routes::set_tab_mode(state, key, mode.git_mode(), mode, None);
+        let switch = Command::SetDiffMode {
+            key,
+            mode,
+            pr_number: None,
+        };
+        let moved = handle.send_and_wait_with(switch, Duration::from_secs(10));
         assert!(moved.is_ok(), "{moved:?}");
-        wait_until("the switch", || {
-            state
-                .service
-                .content(key, descriptor)
-                .is_some_and(|c| c.tab.mode == mode)
-        });
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while handle.view().tab(key).is_none_or(|c| c.tab.mode != mode) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the switch to {mode:?}"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
     }
-    let content = state
-        .service
-        .content(key, descriptor)
+    let content = handle
+        .view()
+        .tab(key)
+        .cloned()
         .unwrap_or_else(|| panic!("no content"));
-    (key, content)
+    (handle, key, content)
+}
+
+/// An ask's hooks over one actor: commands go to it, content comes from its
+/// published view.
+fn hooks(handle: &WorkspaceHandle, ports: &Ports) -> AskHooks {
+    let (sender, reader) = (handle.clone(), handle.clone());
+    AskHooks {
+        ports: ports.clone(),
+        config: Arc::default(),
+        send: Arc::new(move |_, command| {
+            sender.send_and_wait_with(command, Duration::from_secs(10))
+        }),
+        content: Arc::new(move |key, _| reader.view().tab(key).cloned()),
+        notify: Arc::new(|_| {}),
+        landed: Arc::new(|_| {}),
+    }
 }
 
 /// The rows of an ask's context that every view sets.
@@ -169,15 +201,14 @@ fn a_history_ask_reads_no_raw_diff() {
     with_storage(|dir| {
         let ports = ports(HEAD);
         let repo = repo(dir);
-        let descriptor = content_routes::working_tab(repo.clone());
-        let state = service_state(dir, &ports);
-        let (_, content) = content_tab(&state, &descriptor, Some(DiffMode::History));
+        let descriptor = tab_of(TabKind::Working, &repo);
+        let (_, _, content) = content_tab(&ports, &descriptor, Some(DiffMode::History));
         assert!(
             !content.diff.meta.raw.is_empty(),
             "the content shows no commit"
         );
 
-        let on = shown(&crate::ai_ask::content_ask_tab(&state, &content));
+        let on = shown(&content_ask_tab(&ports, &content));
         assert_eq!(on.0, repo);
         assert_eq!(on.4, None);
     });
@@ -192,8 +223,7 @@ fn a_history_ask_on_an_unchecked_out_branch_reads_no_diff() {
         let ports = ports(HEAD);
         let repo = repo(dir);
         let descriptor = branch_view(&repo);
-        let state = service_state(dir, &ports);
-        let (_, content) = content_tab(&state, &descriptor, Some(DiffMode::History));
+        let (_, _, content) = content_tab(&ports, &descriptor, Some(DiffMode::History));
         let id = content.tab.identity();
         assert!(id.checkout_root.is_none(), "the branch has a checkout");
         assert!(er_engine::review_flow_driver::cached_diff_matches_scope(
@@ -205,7 +235,7 @@ fn a_history_ask_on_an_unchecked_out_branch_reads_no_diff() {
             "the content shows no commit"
         );
 
-        assert_eq!(er_service::ask_raw_diff(&state.ports, &content), None);
+        assert_eq!(crate::ask_raw_diff(&ports, &content), None);
     });
 }
 
@@ -218,14 +248,13 @@ fn a_finding_ask_on_a_stub_reads_its_line_content() {
         assert!(raw.len() > 200_000, "the fixture is not lazy");
         let ports = ports(&raw);
         let repo = repo(dir);
-        let descriptor = content_routes::working_tab(repo.clone());
-        let bucket = er_service::descriptor_bucket(&*ports.git, &descriptor)
-            .unwrap_or_else(|e| panic!("{e}"));
+        let descriptor = tab_of(TabKind::Working, &repo);
+        let bucket =
+            crate::descriptor_bucket(&*ports.git, &descriptor).unwrap_or_else(|e| panic!("{e}"));
         write_review(Path::new(&bucket), &raw);
         let path = "gen/f300.rs";
 
-        let state = service_state(dir, &ports);
-        let (key, content) = content_tab(&state, &descriptor, None);
+        let (handle, key, content) = content_tab(&ports, &descriptor, None);
         assert!(content.diff.meta.lazy, "the content is not lazy");
         assert!(
             content
@@ -237,20 +266,26 @@ fn a_finding_ask_on_a_stub_reads_its_line_content() {
         );
         // The page asks the content for the file it shows.
         let first = content.diff.files[0].path.clone();
-        let parse = er_service::Command::ParseFiles {
+        let parse = Command::ParseFiles {
             key,
             paths: vec![first],
             expand: false,
         };
-        let parsed = state
-            .service
-            .send(&crate::service::actor_key(&descriptor), parse);
+        let parsed = handle.send_and_wait_with(parse, Duration::from_secs(10));
         assert!(parsed.is_ok(), "{parsed:?}");
-        let tab = crate::arena_service::tab(&state, Some(er_service::wire_tab_key(key)))
-            .unwrap_or_else(|e| panic!("{e:?}"));
-        let content = crate::ai_ask::parsed_for_finding(&state, &tab, "f-1");
-        let on = finding_ask(crate::ai_ask::content_ask_tab(&state, &content), "f-1")
-            .unwrap_or_else(|e| panic!("{e}"));
+        let tab = AskedTab {
+            key,
+            workspace: String::new(),
+            descriptor: descriptor.clone(),
+            content: handle
+                .view()
+                .tab(key)
+                .cloned()
+                .unwrap_or_else(|| panic!("no content")),
+        };
+        let content = parsed_for_finding(&hooks(&handle, &ports), &tab, "f-1");
+        let on =
+            finding_ask(content_ask_tab(&ports, &content), "f-1").unwrap_or_else(|e| panic!("{e}"));
 
         assert!(on.line_content.is_some(), "the ask read no line content");
     });
@@ -262,7 +297,7 @@ fn a_finding_ask_on_a_stub_reads_its_line_content() {
 #[test]
 fn an_unhashed_diff_is_fetched_again() {
     with_storage(|dir| {
-        let repo = dir.path().join("live");
+        let repo = dir.join("live");
         std::fs::create_dir_all(&repo).unwrap_or_else(|e| panic!("{e}"));
         for args in [
             &["init", "-q", "-b", "main"][..],
@@ -278,10 +313,10 @@ fn an_unhashed_diff_is_fetched_again() {
         std::fs::write(repo.join("tracked.rs"), "two\n").unwrap_or_else(|e| panic!("{e}"));
 
         let ports = Ports::cli();
-        let descriptor = content_routes::working_tab(repo.to_string_lossy().into_owned());
-        let handle = er_service::spawn(WorkspaceDeps::new(ports.clone()));
+        let descriptor = tab_of(TabKind::Working, &repo.to_string_lossy());
+        let handle = crate::spawn(WorkspaceDeps::new(ports.clone()));
         let key = TabKey::next();
-        let load = er_service::Command::LoadTab {
+        let load = Command::LoadTab {
             key,
             tab: descriptor,
             mode: Some(DiffMode::Unstaged),
@@ -311,12 +346,11 @@ fn an_unhashed_diff_is_fetched_again() {
             "{fresh:?}"
         );
 
-        assert_eq!(er_service::ask_raw_diff(&ports, &content), fresh);
+        assert_eq!(crate::ask_raw_diff(&ports, &content), fresh);
     });
 }
 
 // A fixture repo the test spawns git in, as a test may.
-#[cfg(test)]
 fn git(repo: &Path, args: &[&str]) {
     let output = std::process::Command::new("git")
         .args(args)

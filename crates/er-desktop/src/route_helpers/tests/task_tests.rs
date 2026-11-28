@@ -92,7 +92,7 @@ fn queued(state: &DesktopState, dir: &Path, kind: &str) -> String {
 /// A task of `kind` on `branch`, on a bucket under `dir`.
 fn launch(state: &DesktopState, dir: &Path, kind: &str, branch: &str) -> er_service::Launch {
     let config = crate::arena_service::config(state);
-    let (provider_id, model_id, effort) = crate::ai_ask::selection(&config);
+    let (provider_id, model_id, effort) = er_service::card_asks::run::selection(&config);
     let bucket = dir.join("bucket");
     std::fs::create_dir_all(&bucket).unwrap_or_else(|e| panic!("bucket: {e}"));
     er_service::Launch {

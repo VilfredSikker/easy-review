@@ -15,10 +15,10 @@ use serde_json::json;
 
 use super::annotation_write_tests::{annotations, view};
 use super::diff_command_tests::{send, with_tab};
-use crate::page_view::PendingAiReply;
 use crate::resources::send::{apply, Effects};
 use crate::service::actor_key;
 use crate::state::DesktopState;
+use er_service::card_asks::PendingAiReply;
 
 /// A review with a finding that has a response and a linked GitHub thread,
 /// a checklist, triage and a diagram, in `key`'s buckets, read into its AI

@@ -191,7 +191,7 @@ fn a_saved_pick_runs_the_next_ask() {
 
         let thread = asked.clone();
         let started = super::on_a_thread(&state, "the ask", move |state| {
-            crate::ai_ask::ask(state, None, thread, "Explain".into())
+            crate::resources::ai_asks::ask(state, None, thread, "Explain".into())
         });
         assert!(started.is_ok(), "{:?}", started.map(drop));
 
@@ -216,8 +216,9 @@ fn an_ask_and_a_validation_land_their_answers() {
 
         let thread = asked.clone();
         let started = super::on_a_thread(&state, "the asks", move |state| {
-            let asked = crate::ai_ask::ask(state, None, thread, "Explain".into());
-            let validated = crate::ai_ask::validate(state, None, None, Some("f-1".into()));
+            let asked = crate::resources::ai_asks::ask(state, None, thread, "Explain".into());
+            let validated =
+                crate::resources::ai_asks::validate(state, None, None, Some("f-1".into()));
             (asked.is_ok(), validated.is_ok())
         });
         assert_eq!(started, (true, true), "an ask did not start");
@@ -293,7 +294,7 @@ fn an_ai_assisted_finding_reply_creates_the_thread() {
         write_finding(&state, &tab, &bucket);
 
         let replied = super::on_a_thread(&state, "the finding reply", |state| {
-            crate::ai_ask::ask_on_finding(
+            crate::resources::ai_asks::ask_on_finding(
                 state,
                 None,
                 None,
@@ -424,7 +425,16 @@ fn a_late_answer_lands_in_the_view_the_ask_was_made_on() {
 /// view, so none waits on the App lock or reads its session pick.
 #[test]
 fn the_ask_module_names_no_app() {
-    for (name, source) in [("ai_ask.rs", include_str!("../../ai_ask.rs"))] {
+    for (name, source) in [
+        (
+            "er-service card_asks/run.rs",
+            include_str!("../../../../er-service/src/card_asks/run.rs"),
+        ),
+        (
+            "resources/ai_asks.rs",
+            include_str!("../../resources/ai_asks.rs"),
+        ),
+    ] {
         for app in [
             "er_engine::app::App",
             "AppState",
@@ -434,5 +444,41 @@ fn the_ask_module_names_no_app() {
         ] {
             assert!(!source.contains(app), "{name} names {app}");
         }
+    }
+}
+
+/// The card asks are planned and run in er-service (ADR 0074): no desktop
+/// module plans or runs a card job itself.
+#[test]
+fn no_desktop_module_plans_a_card_ask() {
+    fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
+        for entry in std::fs::read_dir(dir).unwrap_or_else(|e| panic!("{e}")) {
+            let path = entry.unwrap_or_else(|e| panic!("{e}")).path();
+            if path.is_dir() {
+                walk(&path, out);
+            } else if path.extension().is_some_and(|ext| ext == "rs") {
+                out.push(path);
+            }
+        }
+    }
+    // Built at run time, so this test's own source does not match it.
+    let needle = ["card", "_job"].concat();
+    let mut files = Vec::new();
+    walk(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+        &mut files,
+    );
+    for file in files {
+        let source = std::fs::read_to_string(&file).unwrap_or_else(|e| panic!("{e}"));
+        let code: String = source
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            !code.contains(&needle),
+            "{} plans a card ask ({needle})",
+            file.display()
+        );
     }
 }

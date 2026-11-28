@@ -207,20 +207,6 @@ pub fn github_reviewers(
 
 // ── Builder ──────────────────────────────────────────────────────────────────
 
-/// Map of `thread_id -> PendingAiReply`. Used to render a synthetic "…thinking"
-/// reply on threads where an AI subprocess is currently running.
-pub type PendingAiReplies = Arc<Mutex<HashMap<String, PendingAiReply>>>;
-
-/// One AI subprocess answering a thread or finding.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PendingAiReply {
-    pub started_at_ms: u64,
-    /// Which action is running (`AI_ACTION_ASK` / `AI_ACTION_ELABORATE`); the
-    /// placeholder carries it so the card can say "Elaborating" before the
-    /// rewrite lands, rather than guessing from the thread.
-    pub ai_action: Option<&'static str>,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
