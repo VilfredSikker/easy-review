@@ -178,17 +178,24 @@ if (MODEL && Array.isArray(MODEL.parts) && MODEL.parts.length) {
     if (sub.size < 2) break;
     const prev = partOf; partOf = (rel) => { const p = prev(rel); if (p !== big) return p; const rest = rel.slice(big.length + 1).split('/'); return rest.length > 1 ? `${big}/${rest[0]}` : `${big} (files)`; };
   }
-  // SvelteKit: each route group (src/routes/(app), src/routes/api, …) and each src/lib/server folder is a part
+  // SvelteKit: each route group (src/routes/(app)) and src/routes/api is a part, and so is each src/lib/server
+  // folder of 10 or more code files. Other route folders, small server folders and loose files go to "<dir> (other)".
   for (const d of all.filter((p) => /(^|\/)svelte\.config\.(js|ts|mjs|cjs)$/.test(p)).map(dirOf)) {
     const pre = d ? d + '/' : '', routes = pre + 'src/routes', server = pre + 'src/lib/server';
     if (!rels.some((r) => r.startsWith(routes + '/'))) continue;
-    const prev = partOf; partOf = (rel) => { for (const r of [routes, server]) if (rel.startsWith(r + '/')) { const rest = rel.slice(r.length + 1).split('/'); return rest.length > 1 ? `${r}/${rest[0]}` : `${r} (files)`; } return prev(rel); };
+    const nIn = new Map(); for (const r of rels) if (r.startsWith(server + '/')) { const s = r.slice(server.length + 1).split('/'); if (s.length > 1) nIn.set(s[0], (nIn.get(s[0]) || 0) + 1); }
+    const own = (r, seg) => r === routes ? seg.startsWith('(') || seg === 'api' : (nIn.get(seg) || 0) >= 10;
+    const prev = partOf; partOf = (rel) => { for (const r of [routes, server]) if (rel.startsWith(r + '/')) { const rest = rel.slice(r.length + 1).split('/'); return rest.length > 1 && own(r, rest[0]) ? `${r}/${rest[0]}` : `${r} (other)`; } return prev(rel); };
   }
   const ids = new Set(F.map((f) => partOf(f.rel)));
   // cap the number of parts
-  if (ids.size > 28) { const sizes = new Map(); F.forEach((f) => { const p = partOf(f.rel); sizes.set(p, (sizes.get(p) || 0) + f.lines); }); const keep = new Set([...sizes.entries()].sort((a, b) => b[1] - a[1]).slice(0, 27).map((x) => x[0])); const prev = partOf; partOf = (rel) => { const p = prev(rel); return keep.has(p) ? p : '(small folders)'; }; }
+  if (ids.size > 28) { const sizes = new Map(); F.forEach((f) => { const p = partOf(f.rel); sizes.set(p, (sizes.get(p) || 0) + f.lines); }); const fn = new Map(); F.forEach((f) => { const p = partOf(f.rel); fn.set(p, (fn.get(p) || 0) + f.lines - f.nf); });
+    // keep the parts with the most functional code, so tests and tooling fold before production folders do
+    const keep = new Set([...sizes.entries()].sort((a, b) => fn.get(b[0]) - fn.get(a[0]) || b[1] - a[1] || (a[0] < b[0] ? -1 : 1)).slice(0, 27).map((x) => x[0])); const prev = partOf; partOf = (rel) => { const p = prev(rel); return keep.has(p) ? p : '(small folders)'; }; }
   const raw = [...new Set(F.map((f) => partOf(f.rel)))];
-  partsMeta = raw.map((p) => ({ id: slug(p), name: pkgDirs.get(p) || p, paths: [p.startsWith('(') ? '' : p.replace(/ \(files\)$/, '/*') + (p.endsWith('(files)') ? '' : '/**')] }));
+  // "<dir> (other)" lists what it holds, so the draft's paths do not swallow the sibling parts
+  const otherPaths = (p) => { const b = p.slice(0, -' (other)'.length); return [...new Set(F.filter((f) => partOf(f.rel) === p).map((f) => { const s = f.rel.slice(b.length + 1).split('/'); return s.length > 1 ? `${b}/${s[0]}/**` : `${b}/*${path.posix.extname(f.rel)}`; }))].sort(); };
+  partsMeta = raw.map((p) => ({ id: slug(p), name: pkgDirs.get(p) || p, paths: p.endsWith(' (other)') ? otherPaths(p) : [p.startsWith('(') ? '' : p.replace(/ \(files\)$/, '/*') + (p.endsWith('(files)') ? '' : '/**')] }));
   const prev = partOf; partOf = (rel) => slug(prev(rel));
 }
 F.forEach((f) => { f.part = partOf(f.rel); });
