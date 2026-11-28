@@ -18,9 +18,9 @@ import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
-const VERSION = '2026.11.28';
+const VERSION = '2026.11.28.2';
 const SELF = (() => { try { return createHash('sha256').update(fs.readFileSync(fileURLToPath(import.meta.url))).digest('hex').slice(0, 10); } catch { return 'unknown'; } })();
-const FEATURES = ['imports', 'processes', 'network', 'files', 'service-sdks', 'tauri-commands', 'tauri-events', 'tests-inline', 'generated-headers', 'entry-points', 'undeclared-modules', 'name-mentions', 'auto-tooling', 'model-validation', 'change', 'script-entries', 'import-meta-glob'];
+const FEATURES = ['imports', 'processes', 'network', 'files', 'service-sdks', 'tauri-commands', 'tauri-events', 'tests-inline', 'generated-headers', 'entry-points', 'undeclared-modules', 'name-mentions', 'auto-tooling', 'model-validation', 'change', 'script-entries', 'import-meta-glob', 'framework-parts', 'knip-entries', 'tables'];
 
 const argv = process.argv.slice(2);
 const opt = (name) => { const i = argv.indexOf(name); if (i < 0) return null; const v = argv[i + 1]; argv.splice(i, 2); return v; };
@@ -147,7 +147,8 @@ let AUTO_TOOLING = 0;
 
 mark("parts");
 // ── parts ───────────────────────────────────────────────────────────────────
-const slug = (s) => s.replace(/^\(|\)$/g, '').replace(/[^\w.-]+/g, '·').replace(/^·|·$/g, '') || 'root';
+// A SvelteKit route group keeps its parentheses apart from a same-named folder: src/routes/(auth) → src·routes·auth-group
+const slug = (s) => s.replace(/\/\(([^/()]*)\)/g, '/$1-group').replace(/^\(|\)$/g, '').replace(/[^\w.-]+/g, '·').replace(/^·|·$/g, '') || 'root';
 let partOf, partsMeta = [], partSource;
 if (MODEL && Array.isArray(MODEL.parts) && MODEL.parts.length) {
   partSource = 'declared';
@@ -177,11 +178,24 @@ if (MODEL && Array.isArray(MODEL.parts) && MODEL.parts.length) {
     if (sub.size < 2) break;
     const prev = partOf; partOf = (rel) => { const p = prev(rel); if (p !== big) return p; const rest = rel.slice(big.length + 1).split('/'); return rest.length > 1 ? `${big}/${rest[0]}` : `${big} (files)`; };
   }
+  // SvelteKit: each route group (src/routes/(app)) and src/routes/api is a part, and so is each src/lib/server
+  // folder of 10 or more code files. Other route folders, small server folders and loose files go to "<dir> (other)".
+  for (const d of all.filter((p) => /(^|\/)svelte\.config\.(js|ts|mjs|cjs)$/.test(p)).map(dirOf)) {
+    const pre = d ? d + '/' : '', routes = pre + 'src/routes', server = pre + 'src/lib/server';
+    if (!rels.some((r) => r.startsWith(routes + '/'))) continue;
+    const nIn = new Map(); for (const r of rels) if (r.startsWith(server + '/')) { const s = r.slice(server.length + 1).split('/'); if (s.length > 1) nIn.set(s[0], (nIn.get(s[0]) || 0) + 1); }
+    const own = (r, seg) => r === routes ? seg.startsWith('(') || seg === 'api' : (nIn.get(seg) || 0) >= 10;
+    const prev = partOf; partOf = (rel) => { for (const r of [routes, server]) if (rel.startsWith(r + '/')) { const rest = rel.slice(r.length + 1).split('/'); return rest.length > 1 && own(r, rest[0]) ? `${r}/${rest[0]}` : `${r} (other)`; } return prev(rel); };
+  }
   const ids = new Set(F.map((f) => partOf(f.rel)));
   // cap the number of parts
-  if (ids.size > 28) { const sizes = new Map(); F.forEach((f) => { const p = partOf(f.rel); sizes.set(p, (sizes.get(p) || 0) + f.lines); }); const keep = new Set([...sizes.entries()].sort((a, b) => b[1] - a[1]).slice(0, 27).map((x) => x[0])); const prev = partOf; partOf = (rel) => { const p = prev(rel); return keep.has(p) ? p : '(small folders)'; }; }
+  if (ids.size > 28) { const sizes = new Map(); F.forEach((f) => { const p = partOf(f.rel); sizes.set(p, (sizes.get(p) || 0) + f.lines); }); const fn = new Map(); F.forEach((f) => { const p = partOf(f.rel); fn.set(p, (fn.get(p) || 0) + f.lines - f.nf); });
+    // keep the parts with the most functional code, so tests and tooling fold before production folders do
+    const keep = new Set([...sizes.entries()].sort((a, b) => fn.get(b[0]) - fn.get(a[0]) || b[1] - a[1] || (a[0] < b[0] ? -1 : 1)).slice(0, 27).map((x) => x[0])); const prev = partOf; partOf = (rel) => { const p = prev(rel); return keep.has(p) ? p : '(small folders)'; }; }
   const raw = [...new Set(F.map((f) => partOf(f.rel)))];
-  partsMeta = raw.map((p) => ({ id: slug(p), name: pkgDirs.get(p) || p, paths: [p.startsWith('(') ? '' : p.replace(/ \(files\)$/, '/*') + (p.endsWith('(files)') ? '' : '/**')] }));
+  // "<dir> (other)" lists what it holds, so the draft's paths do not swallow the sibling parts
+  const otherPaths = (p) => { const b = p.slice(0, -' (other)'.length); return [...new Set(F.filter((f) => partOf(f.rel) === p).map((f) => { const s = f.rel.slice(b.length + 1).split('/'); return s.length > 1 ? `${b}/${s[0]}/**` : `${b}/*${path.posix.extname(f.rel)}`; }))].sort(); };
+  partsMeta = raw.map((p) => ({ id: slug(p), name: pkgDirs.get(p) || p, paths: p.endsWith(' (other)') ? otherPaths(p) : [p.startsWith('(') ? '' : p.replace(/ \(files\)$/, '/*') + (p.endsWith('(files)') ? '' : '/**')] }));
   const prev = partOf; partOf = (rel) => slug(prev(rel));
 }
 F.forEach((f) => { f.part = partOf(f.rel); });
@@ -368,6 +382,14 @@ const SDK = [
   [/^resend$|^@sendgrid\/|^nodemailer$|^postmark$|^mailgun|^lettre$/, 'email', 'email'], [/^twilio$/, 'sms', 'Twilio'],
   [/^@sentry\/|^sentry_sdk$|^sentry$/, 'sentry', 'Sentry'], [/^posthog|^@posthog\/|^mixpanel|^@segment\//, 'analytics', 'analytics'], [/^@octokit\/|^octokit$/, 'github-api', 'GitHub API'],
 ];
+// Tables and database functions reached through supabase-js: .from('table') and .rpc('fn'). Only when a
+// package.json depends on @supabase/*, since .from('x') means other things elsewhere. When the repo has SQL,
+// a name counts only if a CREATE TABLE, VIEW or FUNCTION declares it.
+const usesSupabase = manifests.some((m) => /package\.json$/.test(m) && /"@supabase\/(supabase-js|ssr)"/.test(read(m)));
+const sqlNames = new Set();
+if (usesSupabase) for (const p of all.filter((x) => /\.sql$/.test(x) && !SKIP.test(x))) for (const m of read(p).matchAll(/\bcreate\s+(?:or\s+replace\s+)?(?:table|view|materialized\s+view|function)\s+(?:if\s+not\s+exists\s+)?(?:"?\w+"?\.)?"?(\w+)"?/gi)) sqlNames.add(m[1].toLowerCase());
+const NOT_TABLE = new Set(['storage', 'Array', 'Buffer', 'Uint8Array', 'Uint16Array', 'Uint32Array', 'Int8Array', 'Int16Array', 'Int32Array', 'Float32Array', 'Float64Array', 'Set', 'Map', 'Object', 'String', 'Readable', 'Observable', 'Iterator']);
+const tables = []; // [file, name, read | write | call, line, test]
 const sdkOf = (spec) => { for (const [re, id, name] of SDK) if (re.test(spec)) return ext('x-svc-' + id, name, 'service'); return null; };
 
 
@@ -395,6 +417,11 @@ function scanFile(f, i) {
     for (const m of C.matchAll(/\bimport\.meta\.glob(?:<[^>]*>)?\(\s*(\[[^\]]*\]|'[^'\n]*'|"[^"\n]*"|`[^`$]*`)/g)) {
       const pats = [...m[1].matchAll(/'([^'\n]*)'|"([^"\n]*)"|`([^`$]*)`/g)].map((x) => x[1] ?? x[2] ?? x[3]), L = at(m.index);
       for (const to of resolveGlob(f.rel, pats)) add(i, to, 'import', 'import.meta.glob', L);
+    }
+    if (usesSupabase && (C.includes('.from(') || C.includes('.rpc('))) for (const m of C.matchAll(/\.\s*(from|rpc)\(\s*(['"])([A-Za-z_]\w*)\2/g)) {
+      if (m[1] === 'from' && NOT_TABLE.has((C.slice(Math.max(0, m.index - 40), m.index).match(/([\w$]+)\s*$/) || [])[1])) continue; if (sqlNames.size && !sqlNames.has(m[3].toLowerCase())) continue;
+      const L = at(m.index), verb = (C.slice(m.index + m[0].length, m.index + m[0].length + 400).match(/\.\s*(select|insert|update|upsert|delete)\s*\(/) || [])[1], op = m[1] === 'rpc' ? 'call' : !verb ? 'other' : verb === 'select' ? 'read' : 'write';
+      add(i, ext('x-svc-supabase', 'Supabase', 'service'), 'net', m[3], L); if (!CUR) tables.push([i, m[3], op, L, isTestLine(f, L) ? 1 : 0]);
     }
     const usesCp = /['"](node:)?child_process['"]|['"]execa['"]|@tauri-apps\/(plugin-shell|api\/shell)/.test(T), usesFs = /['"](node:)?fs(\/promises)?['"]|['"]fs-extra['"]/.test(T), tauri = /@tauri-apps\/api/.test(T), electron = /ipcRenderer/.test(T);
     eachLine((ln, L) => {
@@ -463,7 +490,9 @@ let CHANGE = null;
       }
       for (const k of new Set([...cur.keys(), ...bas.keys()])) {
         const a = cur.get(k), b = bas.get(k), d = (a ? a.w : 0) - (b ? b.w : 0); if (!d) continue;
-        const e = d > 0 ? a : b; deps.push([i, e.to, e.kind, e.nf, d, [...e.s.entries()].sort((x, y) => y[1] - x[1]).slice(0, 3)]);
+        // the symbols whose count moved, so a new table read or import shows by name, with its delta
+        const e = a || b, sd = new Map(a ? a.s : []); if (b) for (const [s, c] of b.s) sd.set(s, (sd.get(s) || 0) - c);
+        deps.push([i, e.to, e.kind, e.nf, d, [...sd.entries()].filter((x) => x[1]).sort((x, y) => Math.abs(y[1]) - Math.abs(x[1]) || (x[0] < y[0] ? -1 : 1)).slice(0, 3)]);
       }
     }
     if (entries2.length) CHANGE = { base: baseArg || 'HEAD', mergeBase: mb, files: entries2, deps };
@@ -522,6 +551,17 @@ const entries = new Set();
     if (f.lang === 'js' && (/(^|\/)(routes|pages|app)\/.*(\+(page|layout|server|error)(@[^/.]*)?|page|layout|route|loading|error)(\.[\w]+)*\.(svelte|tsx?|jsx?|vue)$/.test(f.rel) || /(^|\/)(hooks\.(server|client)|service-worker|sw)\.(ts|js)$/.test(f.rel))) entries.add(i);
   });
   for (const [rel] of scriptRuns) entries.add(fileSet.get(rel));
+  // knip's entry globs, per workspace: what the project itself declares as entry points
+  for (const p of all.filter((x) => !SKIP.test(x) && /(^|\/)(knip\.jsonc?|\.knip\.jsonc?|package\.json)$/.test(x))) {
+    const j = readJson(path.join(ROOT, p)), k = j && (/package\.json$/.test(p) ? j.knip : j); if (!k || typeof k !== 'object') continue;
+    const sets = [['.', k.entry], ...Object.entries(k.workspaces || {}).map(([w, c]) => [w, c && c.entry])];
+    for (const [w, ent] of sets) {
+      const globs = (Array.isArray(ent) ? ent : ent ? [ent] : []).filter((x) => typeof x === 'string').map((x) => x.replace(/!$/, '')); if (!globs.length) continue;
+      const base = path.posix.join(dirOf(p), w === '.' ? '' : w), at = (g) => path.posix.normalize(path.posix.join(base, g)).replace(/^\.\//, '');
+      const pos = globs.filter((x) => !x.startsWith('!')).flatMap((x) => expandBraces(at(x))).map((x) => globRe(x, true)), neg = globs.filter((x) => x.startsWith('!')).flatMap((x) => expandBraces(at(x.slice(1)))).map((x) => globRe(x, true));
+      if (pos.length) rels.forEach((r, i) => { if (pos.some((x) => x.test(r)) && !neg.some((x) => x.test(r))) entries.add(i); });
+    }
+  }
   for (const p of all.filter((x) => /\.html$/.test(x) && !SKIP.test(x))) { const t = read(p); for (const m of t.matchAll(/<script[^>]*\bsrc=["']([^"']+)["']/g)) tryJs(dirOf(p), m[1].startsWith('/') ? m[1].slice(1) : m[1]); }
   for (const m of manifests.filter((x) => /package\.json$/.test(x))) { const j = readJson(path.join(ROOT, m)) || {}, d = dirOf(m); [j.main, j.module, j.source, j.browser, typeof j.bin === 'string' ? j.bin : null, ...(j.bin && typeof j.bin === 'object' ? Object.values(j.bin) : [])].forEach((s) => tryJs(d, s)); if (j.exports) JSON.stringify(j.exports).replace(/"(\.\/[^"]+)"/g, (_, s) => { tryJs(d, s); return ''; }); }
   for (const p of all.filter((x) => /(^|\/)(vite|vitest|svelte|astro|nuxt|next|webpack|rollup)\.config\.(js|ts|mjs|cjs)$/.test(x))) { const t = read(p); for (const m of t.matchAll(/['"](\.?\/?[\w./-]+\.(ts|tsx|js|jsx|svelte|vue))['"]/g)) tryJs(dirOf(p), m[1]); }
@@ -594,6 +634,7 @@ const out = {
   externals: [...EXT.values()],
   edges: [...E.values()].map((e) => [e.i, e.to, e.kind, e.nf, e.w, [...e.s.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5), e.l]),
   writers: [...writers.entries()].map(([i, w]) => [i, w[0], w[1]]),
+  tables,
   entries: [...entries].sort((a, b) => a - b),
   orphans,
   mentions,

@@ -8,6 +8,12 @@ No dependencies; Node 18+ or Bun. Same input gives the same output apart from `g
 
     node er-arch-extract.mjs <repo> -o out.er-arch.json [--model architecture.json] [--base <ref>] [--timings]
 
+## Who finds the patterns
+
+The extractor writes facts only: files, categories, edges, outside systems, entries, parts, tables. er Map
+(`er-map.html`) labels the patterns (layered, service layer, hub, facade, ports, tangles) in the browser
+from those facts, in `patterns()` and `proposals()`.
+
 ## How er Map reads the output
 
 A file is **unused** when nothing imports it and it is not an entry point. It is
@@ -36,14 +42,51 @@ wrong category on an importer makes everything it imports look test-only.
 4. SvelteKit layout resets (`+page@.svelte`, `+page@(group).svelte`) are
    entry points.
 
+## Added in 2026.11.28.2
+
+- SvelteKit apps (a `svelte.config` beside `src/routes`) get one inferred part per route group, one for
+  `src/routes/api`, and one per `src/lib/server` folder of 10 or more code files. The rest goes to
+  `src/routes (other)` and `src/lib/server (other)`, whose draft paths list what they hold. A group's id
+  ends in `-group`, so `src/routes/(auth)` and `src/routes/auth` stay apart.
+- Past 28 inferred parts, the parts with the least functional code fold into "small folders" first, so tests
+  and tooling fold before production folders.
+- knip's `entry` globs (`knip.json`, `knip.jsonc`, package.json `"knip"`, and each workspace's) are entry points.
+- `tables`: `[file, name, read | write | call | other, line, test]` for supabase-js `.from('t')` and
+  `.rpc('fn')`, and a `net` edge to Supabase with the name as its symbol. Only when a package.json
+  depends on `@supabase/supabase-js` or `@supabase/ssr`; when the repo has SQL, only names it creates.
+  `storage.from`, `Buffer.from` and similar are skipped. er Map ignores the `tables` list.
+- `change.deps` symbols are the ones whose count moved, with the delta, so a new table read shows by name.
+
+## Checking er Map
+
+`er-map.html` loads `data.js` (its built-in snapshots), which is not committed, so the page fails on its
+own. A headless run serves an empty `data.js`, calls `useImport(text, false)` and `loadSnap(key)`, then
+reads `patterns(view(level))` for each of `sysLevels()` and `buildRecs()`. Use easy-review with its
+model as the control.
+
+Fixed: a `rules.ports` key `service:<name>` now maps to `x-svc-<name>`; before, the rule never matched.
+
+Open, found on ink-booking (tuned on easy-review):
+- The service-layer check counts every front-end reference that does not reach the service, including
+  imports of shared UI and foundation code.
+- The facade check wants one entry per subsystem, even where the docs name several.
+- The bridge check counts SDK calls (Supabase) as raw network access.
+- Merge suggestions ignore declared boundaries.
+- "Send outside calls through their port" shows the service-layer evidence as its reason.
+- Part names and texts from easy-review are hardcoded: "Goes around er-service", "plan §3.1", `protocol`, `layer === 3`.
+- Type-only imports count like runtime imports, in the extractor and the map.
+
 ## Known gaps
+
+- A draft with `(files)` or `(root files)` parts does not round-trip: `src/*` matches everything under
+  `src` (globs match a folder's contents too), and `(root files)` has no path. On ink-booking 1,742 files
+  move when the draft is used as the model; easy-review's draft round-trips.
 
 - A file loaded by a path string, not an import, still looks test-only. Case:
   ink-booking's `storybook-gate.ts`, which `scripts/storybook-deploy.ts` deploys
   as an Edge function.
 - `test-data.ts` and other test support files with no fixture or test-utils
   suffix still count as production code.
-- knip's `entry` globs would be a good source of entry points; not read yet.
 
 ## Checking a change
 
