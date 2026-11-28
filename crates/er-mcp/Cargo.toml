@@ -12,7 +12,6 @@ name = "er-mcp"
 path = "src/main.rs"
 
 [dependencies]
-er-engine = { path = "../er-engine", default-features = false }
 er-service = { path = "../er-service" }
 anyhow.workspace = true
 serde.workspace = true
@@ -25,10 +24,12 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 schemars = "1"
 
 [dev-dependencies]
-# The tests scope the engine's storage root per thread; that helper is behind
-# this feature, which a plain `cargo test -p er-mcp` would otherwise omit.
+# The tests scope the engine's storage root per thread and seed records with
+# the engine's test helpers; those are behind this feature. Production code
+# reaches the engine only through er-service.
 er-engine = { path = "../er-engine", default-features = false, features = ["test-support"] }
 tempfile = "3"
+toml.workspace = true
 
 [lints]
 workspace = true

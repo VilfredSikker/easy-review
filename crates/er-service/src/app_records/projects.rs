@@ -154,28 +154,46 @@ fn reorder_projects_in_file(file: &mut ProjectsFile, ordered_ids: &[String]) -> 
 // async) while other projects.json writers stay on the main thread, so they
 // take the `update_file` lock instead of an unguarded load-mutate-save.
 pub(crate) fn save_pr(project_id: &str, pr_number: u64, title: &str) -> anyhow::Result<()> {
+    save_pr_entry(project_id, pr_number, title).map(|_| ())
+}
+
+/// Save a PR in the project, newest first, and return the entry stored.
+fn save_pr_entry(project_id: &str, pr_number: u64, title: &str) -> anyhow::Result<SavedPrEntry> {
+    let entry = saved_entry(pr_number, title);
     update_file(|file| {
-        let proj = file
-            .projects
-            .iter_mut()
-            .find(|p| p.id == project_id)
-            .ok_or_else(|| anyhow::anyhow!("Project not found: {project_id}"))?;
-        let now = now_epoch_ms();
-        proj.saved_prs.retain(|e| e.number != pr_number);
-        proj.saved_prs.insert(
-            0,
-            SavedPrEntry {
-                number: pr_number,
-                saved_at_ms: now,
-                title: title.to_string(),
-            },
-        );
-        proj.saved_prs.truncate(MAX_PR_HISTORY);
+        save_in(file, project_id, &entry)?;
         Ok(true)
-    })
+    })?;
+    Ok(entry)
+}
+
+fn saved_entry(number: u64, title: &str) -> SavedPrEntry {
+    SavedPrEntry {
+        number,
+        saved_at_ms: now_epoch_ms(),
+        title: title.to_string(),
+    }
+}
+
+fn save_in(file: &mut ProjectsFile, project_id: &str, entry: &SavedPrEntry) -> anyhow::Result<()> {
+    let proj = file
+        .projects
+        .iter_mut()
+        .find(|p| p.id == project_id)
+        .ok_or_else(|| anyhow::anyhow!("Project not found: {project_id}"))?;
+    proj.saved_prs.retain(|e| e.number != entry.number);
+    proj.saved_prs.insert(0, entry.clone());
+    proj.saved_prs.truncate(MAX_PR_HISTORY);
+    Ok(())
 }
 
 pub(crate) fn unsave_pr(project_id: &str, pr_number: u64) -> anyhow::Result<()> {
+    unsave_pr_entry(project_id, pr_number).map(|_| ())
+}
+
+/// Remove a saved PR; whether one was there.
+fn unsave_pr_entry(project_id: &str, pr_number: u64) -> anyhow::Result<bool> {
+    let mut removed = false;
     update_file(|file| {
         let proj = file
             .projects
@@ -184,8 +202,98 @@ pub(crate) fn unsave_pr(project_id: &str, pr_number: u64) -> anyhow::Result<()> 
             .ok_or_else(|| anyhow::anyhow!("Project not found: {project_id}"))?;
         let before = proj.saved_prs.len();
         proj.saved_prs.retain(|e| e.number != pr_number);
-        Ok(proj.saved_prs.len() != before)
-    })
+        removed = proj.saved_prs.len() != before;
+        Ok(removed)
+    })?;
+    Ok(removed)
+}
+
+/// MCP's project lookup: the project `project_id` names, or the one whose
+/// remote is `owner/repo`; `None` when there is none. Returns its id and
+/// name (the remote, for a project with no name).
+pub fn find_project(
+    project_id: Option<&str>,
+    owner: &str,
+    repo: &str,
+) -> anyhow::Result<Option<(String, String)>> {
+    project_in(&load(), project_id, owner, repo)
+}
+
+fn project_in(
+    file: &ProjectsFile,
+    project_id: Option<&str>,
+    owner: &str,
+    repo: &str,
+) -> anyhow::Result<Option<(String, String)>> {
+    if let Some(id) = project_id {
+        let project = file
+            .projects
+            .iter()
+            .find(|p| p.id == id)
+            .ok_or_else(|| anyhow::anyhow!("Project not found: {id}"))?;
+        return Ok(Some((project.id.clone(), project.name.clone())));
+    }
+    let remote = valid_remote_slug(&format!("{owner}/{repo}"))
+        .ok_or_else(|| anyhow::anyhow!("invalid GitHub remote slug: {owner}/{repo}"))?;
+    let Some(project) = file.projects.iter().find(|p| {
+        p.remote.as_deref().and_then(valid_remote_slug).as_deref() == Some(remote.as_str())
+    }) else {
+        return Ok(None);
+    };
+    if project.id.is_empty() {
+        anyhow::bail!("project for {remote} has empty id");
+    }
+    let name = if project.name.is_empty() {
+        remote
+    } else {
+        project.name.clone()
+    };
+    Ok(Some((project.id.clone(), name)))
+}
+
+/// MCP's pin: the PR saved in the project `find_project` finds, made for
+/// `owner/repo` when there is none. Returns the project's id and name and
+/// the entry stored. The lookup, the creation and the save share one write,
+/// so the project named is the one the PR was saved in.
+pub fn pin_pr_for_mcp(
+    project_id: Option<&str>,
+    owner: &str,
+    repo: &str,
+    number: u64,
+    title: &str,
+) -> anyhow::Result<(String, String, SavedPrEntry)> {
+    let entry = saved_entry(number, title);
+    let mut pinned = None;
+    update_file(|file| {
+        let (id, name) = match project_in(file, project_id, owner, repo)? {
+            Some(found) => found,
+            None => {
+                let remote = format!("{owner}/{repo}");
+                let id = ensure_remote_project_in_file(file, &remote)?;
+                (id, valid_remote_slug(&remote).unwrap_or(remote))
+            }
+        };
+        save_in(file, &id, &entry)?;
+        pinned = Some((id, name));
+        Ok(true)
+    })?;
+    let (id, name) = pinned.ok_or_else(|| anyhow::anyhow!("the pin wrote nothing"))?;
+    Ok((id, name, entry))
+}
+
+/// MCP's unpin; whether the PR was saved.
+pub fn unpin_pr_for_mcp(project_id: &str, number: u64) -> anyhow::Result<bool> {
+    unsave_pr_entry(project_id, number)
+}
+
+/// The project's saved PRs, newest first.
+pub fn saved_prs(project_id: &str) -> anyhow::Result<Vec<SavedPrEntry>> {
+    load()
+        .projects
+        .into_iter()
+        .find(|p| p.id == project_id)
+        .map(|p| p.saved_prs)
+        .ok_or_else(|| anyhow::anyhow!("Project not found: {project_id}"))
 }
 
 /// Where the projects record lives in the store, for mtime watchers.
@@ -1285,6 +1393,51 @@ mod tests {
             resolve_repo_remote(&*ports.github, &*ports.git, root.to_str().unwrap()).as_deref(),
             Some("er-test-no-such-org-zz9/no-such-repo")
         );
+    }
+
+    /// MCP's pin looks up its project and saves the PR in one write. A writer
+    /// that lands while the pin waits for the lock is seen: the pin names the
+    /// project that writer made and adds no second one.
+    #[test]
+    fn mcp_pin_names_the_project_a_writer_made_while_it_waited() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().to_path_buf();
+        let writer = PROJECTS_IO.lock().unwrap_or_else(|e| e.into_inner());
+        let pin_root = root.clone();
+        let pin = std::thread::spawn(move || {
+            er_engine::storage::with_test_storage_root(pin_root.as_path(), || {
+                pin_pr_for_mcp(None, "owner", "repo", 7, "Pinned").unwrap()
+            })
+        });
+        // Time for the pin to reach the lock. A lookup made outside the lock
+        // runs in this window and finds no project.
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        er_engine::storage::with_test_storage_root(root.as_path(), || {
+            let mut mine = local_project("mine", Some("owner/repo"));
+            mine.name = "Mine".to_string();
+            let key = er_engine::store_registry::app_key::<ProjectsFile>().unwrap();
+            er_engine::store_registry::store()
+                .write_durable(
+                    &key,
+                    &ProjectsFile {
+                        projects: vec![mine],
+                        active_id: None,
+                    },
+                )
+                .unwrap();
+        });
+        invalidate_load_cache();
+        drop(writer);
+
+        let (id, name, entry) = pin.join().unwrap();
+        assert_eq!((id.as_str(), name.as_str()), ("mine", "Mine"));
+        assert_eq!(entry.number, 7);
+        er_engine::storage::with_test_storage_root(root.as_path(), || {
+            let file = load();
+            let ids: Vec<&str> = file.projects.iter().map(|p| p.id.as_str()).collect();
+            assert_eq!(ids, ["mine"]);
+            assert_eq!(file.projects[0].saved_prs[0].number, 7);
+        });
     }
 
     /// A pin that lands while a desktop writer is running must survive the

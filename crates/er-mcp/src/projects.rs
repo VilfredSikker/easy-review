@@ -1,7 +1,7 @@
 //! Read the Easy Review projects record from the app store.
 
 use anyhow::{Context, Result};
-use er_engine::projects_pins::{ProjectRecord, ProjectsFile};
+use er_service::app_records::projects::{ProjectRecord, ProjectsFile};
 use er_service::headless::pr_resolve::{self, ProjectHint, ResolvePrRefInput, ResolvedPrRef};
 
 /// The `projects_list` tool description. The macro needs an expression it can
@@ -9,7 +9,7 @@ use er_service::headless::pr_resolve::{self, ProjectHint, ResolvePrRefInput, Res
 pub const PROJECTS_LIST_DESCRIPTION: &str = "List Easy Review projects from the app store.";
 
 pub fn load_projects() -> ProjectsFile {
-    er_engine::projects_pins::load()
+    er_service::app_records::projects::load()
 }
 
 pub fn project_hints(file: &ProjectsFile) -> Vec<ProjectHint> {
@@ -26,7 +26,7 @@ pub fn project_hints(file: &ProjectsFile) -> Vec<ProjectHint> {
 
 /// Normalize `owner/repo` or a GitHub URL into `(owner, repo)`.
 pub fn parse_repo_slug(remote: &str) -> Result<(String, String)> {
-    er_engine::github::RepoSlug::parse(remote)
+    er_service::headless::RepoSlug::parse(remote)
         .map(|slug| (slug.owner, slug.repo))
         .with_context(|| format!("invalid repo slug: {remote}"))
 }
@@ -44,7 +44,7 @@ pub struct PrTargetInput<'a> {
 }
 
 pub fn resolve_pr_target(
-    ports: &er_engine::ports::Ports,
+    ports: &er_service::headless::Ports,
     input: &PrTargetInput<'_>,
 ) -> Result<ResolvedPr> {
     let file = load_projects();
