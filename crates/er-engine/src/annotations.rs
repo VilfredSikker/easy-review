@@ -10,7 +10,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, bail, Result};
 use er_store::{ArtifactStore, Scope};
 
 use crate::ai::{self, CommentType};
@@ -221,7 +221,7 @@ pub struct WrittenAnnotation {
 
 /// Resolve the anchor a question or note submit stores: an explicit document
 /// anchor wins, then the parent thread's, then the diff line.
-fn resolve_anchor(input: &AnnotationInput<'_>) -> (Option<usize>, LineAnchor) {
+pub fn resolve_anchor(input: &AnnotationInput<'_>) -> (Option<usize>, LineAnchor) {
     let explicit = input
         .document_anchor
         .clone()
@@ -259,6 +259,9 @@ pub fn write_annotation(
 
     match input.kind {
         CommentType::Question | CommentType::Note => {
+            if is_reply {
+                bail!("question and note replies go through er-service's thread writer");
+            }
             let (hunk_index, anchor) = resolve_anchor(input);
             let annotation = ai::PrivateAnnotation {
                 id: id.clone(),
@@ -278,7 +281,7 @@ pub fn write_annotation(
                 hunk_header: anchor.hunk_header,
                 anchor_status: "original".to_string(),
                 relocated_at_hash: input.diff_hash.to_string(),
-                in_reply_to: input.reply_to.clone(),
+                in_reply_to: None,
                 author,
                 promoted_to: None,
                 finding_ref: input.finding_ref.clone(),
@@ -446,6 +449,33 @@ diff --git a/src/a.rs b/src/a.rs
             er_dir: dir,
             comments_dir: dir,
         }
+    }
+
+    /// Question and note replies have one writer, in er-service (ADR 0075):
+    /// this one refuses them and writes nothing.
+    #[test]
+    fn a_question_or_note_reply_is_refused_and_writes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let dir_text = dir.path().to_string_lossy().into_owned();
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let store = crate::store_registry::store();
+            let files = parse_diff(RAW);
+            for kind in [CommentType::Question, CommentType::Note] {
+                let mut reply = input(&dir_text, &files, kind, None);
+                reply.reply_to = Some("q-root".to_string());
+                let refused = super::write_annotation(&store, &reply).map(|written| written.id);
+                assert!(refused.is_err(), "a reply was written: {refused:?}");
+            }
+            let scope = er_store::Scope::dir(&dir_text).unwrap();
+            assert!(matches!(
+                crate::ai::annotation_store::load_questions(&store, &scope).unwrap(),
+                Loaded::Absent
+            ));
+            assert!(matches!(
+                crate::ai::annotation_store::load_notes(&store, &scope).unwrap(),
+                Loaded::Absent
+            ));
+        });
     }
 
     #[test]
