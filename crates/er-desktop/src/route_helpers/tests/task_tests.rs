@@ -302,8 +302,8 @@ fn an_ask_stays_off_the_task_host() {
         );
 
         ask(&state, tab.0, &asked);
-        assert_eq!(pending(&state), std::slice::from_ref(&asked));
         assert_eq!(rows(&state), before, "the ask entered the task host");
+        assert_eq!(pending(&state), std::slice::from_ref(&asked));
 
         release(&state, &agent);
         wait_until("the ask to land", || pending(&state).is_empty());
