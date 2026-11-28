@@ -22,6 +22,7 @@ pub mod app_records;
 mod app_registry;
 pub mod arena;
 mod ask_context;
+pub mod card_asks;
 mod content;
 mod diff_resource;
 mod effect;

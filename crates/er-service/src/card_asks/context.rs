@@ -1,11 +1,12 @@
-//! What a card ask sends the AI and where its answer lands, built by one rule
-//! from either reader of a tab: the App's tab with the flag off, a tab's
-//! published content with it on. Only the inputs differ, so the two paths
-//! cannot drift apart on what a prompt says.
+//! What a card ask sends the AI and where its answer lands, built from a
+//! tab's published content.
 
 use er_engine::ai::{AiState, CommentType, PrivateAnnotation};
 use er_engine::card_ai_context::{build_card_ai_system_context, CardAiContextParams};
 use er_engine::git::DiffFile;
+use er_engine::ports::Ports;
+
+use crate::content::TabContent;
 
 /// What an ask reads from its tab.
 pub struct AskTab<'a> {
@@ -17,6 +18,31 @@ pub struct AskTab<'a> {
     pub files: Vec<DiffFile>,
     pub raw_diff: Option<String>,
     pub ai: &'a AiState,
+}
+
+/// What an ask reads from a tab's content: the diff a review of its view
+/// reads, and the checkout, or a remote tab's bucket, as the provider's
+/// directory.
+pub fn content_ask_tab<'a>(ports: &Ports, content: &'a TabContent) -> AskTab<'a> {
+    let tab = &content.tab;
+    AskTab {
+        repo_root: &tab.repo_root,
+        base_branch: &tab.base_branch,
+        current_branch: &tab.current_branch,
+        work_dir: if tab.identity().is_remote() {
+            content.context.er_dir.clone()
+        } else {
+            tab.repo_root.clone()
+        },
+        files: content
+            .diff
+            .files
+            .iter()
+            .map(|f| DiffFile::clone(f))
+            .collect(),
+        raw_diff: crate::ask_raw_diff(ports, content),
+        ai: &content.ai.state,
+    }
 }
 
 /// Where a thread ask's answer lands: a reply in the thread, on its line.

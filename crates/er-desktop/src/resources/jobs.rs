@@ -1,5 +1,6 @@
 //! `jobs`: the work in flight the page shows while it runs. Its parts are
-//! the ask-AI replies being written, which `AiReplyJobs` holds and counts;
+//! the ask-AI replies being written, which er-service's `AiReplyJobs` holds
+//! and counts;
 //! the arena runs, review flows and background tasks, which er-service's
 //! job-rows builder reads from the published views and the task host; the
 //! sidebar triage requests, which the task host's clock counts; and whether a
@@ -87,7 +88,7 @@ fn counted(
     flows: &[ReviewFlowJob],
 ) -> u64 {
     desktop.live_jobs.observe(arena_runs);
-    desktop.pending_ai_replies.clock.revision()
+    desktop.pending_ai_replies.revision()
         + desktop.live_jobs.observe_flows(flows)
         + tasks_revision
         + desktop.pr_list_clock.revision()

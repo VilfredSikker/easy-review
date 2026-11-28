@@ -16,10 +16,10 @@ use er_service::AppCommand;
 use super::diff_command_tests::{send, with_tab};
 use super::diff_resource_tests::{fake_ports, state_over, with_storage};
 use super::watcher_tests::{canonical, git};
-use crate::page_view::PendingAiReply;
 use crate::resources::content_routes;
 use crate::route_helpers::DesktopState;
 use crate::service::actor_key;
+use er_service::card_asks::PendingAiReply;
 
 pub(super) fn annotations(state: &DesktopState, key: TabKey) -> (u64, Annotations) {
     let tab = er_service::wire_tab_key(key);

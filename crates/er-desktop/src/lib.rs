@@ -1,4 +1,3 @@
-pub mod ai_ask;
 /// The desktop's side of the app owner, which lives in er-service: the
 /// startup steps that read `DesktopState`, and the tests of that wiring.
 pub mod app_owner {
@@ -9,7 +8,6 @@ pub mod app_owner {
     }
 }
 pub mod arena_service;
-pub mod ask_context;
 pub mod auto_triage;
 pub mod browser_proxy;
 pub mod browser_webview;
