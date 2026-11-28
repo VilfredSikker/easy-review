@@ -9,3 +9,11 @@ pr-575-size.json	0	pr	view	575	--repo	VilfredSikker/easy-review	--json	additions
 review-md-main.txt	1	api	--include	repos/VilfredSikker/easy-review/contents/REVIEW.md?ref=main	-H	Accept: application/vnd.github.raw+json
 pr-575.diff	0	pr	diff	575	--repo	VilfredSikker/easy-review
 pr-for-branch-ci-staging-prs.json	0	pr	view	--json	number,headRepository
+pr-head-epic-p78-mcp-contract.json	0	pr	list	--repo	VilfredSikker/easy-review	--head	epic/p78-mcp-contract	--state	open	--limit	10	--json	number,isDraft
+pr-head-main.json	0	pr	list	--repo	VilfredSikker/easy-review	--head	main	--state	open	--limit	10	--json	number,isDraft
+queue-open-100.json	0	pr	list	--repo	VilfredSikker/easy-review	--state	open	--limit	100	--json	number,title,headRefName,baseRefName,state,isDraft,author,reviewRequests,reviewDecision,mergeable,mergeStateStatus,additions,deletions,changedFiles,updatedAt,labels,url,latestReviews
+queue-open-50.json	0	pr	list	--repo	VilfredSikker/easy-review	--state	open	--limit	50	--json	number,title,headRefName,baseRefName,state,isDraft,author,reviewRequests,reviewDecision,mergeable,mergeStateStatus,additions,deletions,changedFiles,updatedAt,labels,url,latestReviews
+pr-600-size.json	0	pr	view	600	--repo	VilfredSikker/easy-review	--json	additions,deletions,changedFiles	--jq	{additions: .additions, deletions: .deletions, files: .changedFiles}
+pr-600.diff	0	pr	diff	600	--repo	VilfredSikker/easy-review
+pr-head-no-such-branch.json	0	pr	list	--repo	VilfredSikker/easy-review	--head	no-such-branch	--state	open	--limit	10	--json	number,isDraft
+api-user-login.txt	0	api	--include	user	--jq	.login

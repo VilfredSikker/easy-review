@@ -1,9 +1,11 @@
 //! Compact summaries of managed triage / review / tour sidecars for MCP tooling.
 
-use crate::ai::{load_tour_sidecar, load_triage_review, ErReview, ErTour, RiskLevel, TriageReview};
-use crate::github::owner_repo_storage_slug;
-use crate::sidecar_upload::SidecarKind;
-use crate::storage::{pr_bucket_dir, storage_root};
+use er_engine::ai::{
+    load_tour_sidecar, load_triage_review, ErReview, ErTour, RiskLevel, TriageReview,
+};
+use er_engine::github::owner_repo_storage_slug;
+use er_engine::sidecar_upload::SidecarKind;
+use er_engine::storage::{pr_bucket_dir, storage_root};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -57,13 +59,13 @@ pub struct TourSummary {
 }
 
 fn load_er_review(er_dir: &Path) -> Option<ErReview> {
-    crate::store_registry::read_found::<ErReview>(er_dir.to_str()?, ())
+    er_engine::store_registry::read_found::<ErReview>(er_dir.to_str()?, ())
 }
 
 fn summarize_triage(t: &TriageReview) -> TriageSummary {
     TriageSummary {
         first_impression: t.first_impression.clone(),
-        primary: crate::ai::verdict_primary_str(&t.verdict.primary).to_string(),
+        primary: er_engine::ai::verdict_primary_str(&t.verdict.primary).to_string(),
         confidence: t.verdict.confidence.clone(),
         rationale: t.verdict.rationale.clone(),
         approx_risk: t.diff_stats.approx_risk.as_str().to_string(),
@@ -304,7 +306,7 @@ pub fn summarize_pr_bucket(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ai::{TriageDiffStats, TriagePriorityFile, TriageVerdict, TriageVerdictPrimary};
+    use er_engine::ai::{TriageDiffStats, TriagePriorityFile, TriageVerdict, TriageVerdictPrimary};
     use std::collections::HashMap;
 
     #[test]
@@ -321,7 +323,7 @@ mod tests {
     #[test]
     fn summarize_reads_triage_review_and_tour() {
         let dir = tempfile::tempdir().unwrap();
-        crate::storage::with_test_storage_root(dir.path(), || {
+        er_engine::storage::with_test_storage_root(dir.path(), || {
             let bucket = dir.path();
 
             let triage = TriageReview {
@@ -349,12 +351,12 @@ mod tests {
                 reach: Default::default(),
                 sensitive: Default::default(),
             };
-            crate::test_support::write_sidecar(bucket, &triage);
+            er_engine::test_support::write_sidecar(bucket, &triage);
 
             let mut files = HashMap::new();
             files.insert(
                 "src/a.rs".into(),
-                crate::ai::ErFileReview {
+                er_engine::ai::ErFileReview {
                     risk: RiskLevel::High,
                     risk_reason: "".into(),
                     summary: "".into(),
@@ -370,7 +372,7 @@ mod tests {
                 files,
                 file_hashes: HashMap::new(),
             };
-            crate::test_support::write_sidecar(bucket, &review);
+            er_engine::test_support::write_sidecar(bucket, &review);
 
             let tour = ErTour {
                 version: 1,
@@ -378,7 +380,7 @@ mod tests {
                 created_at: "2026-01-01T00:00:00Z".into(),
                 title: "Tour: widgets".into(),
                 overview: "Start with core".into(),
-                pillars: vec![crate::ai::TourPillar {
+                pillars: vec![er_engine::ai::TourPillar {
                     id: "p1".into(),
                     title: "Core".into(),
                     description: "main path".into(),
@@ -386,7 +388,7 @@ mod tests {
                     importance: 90,
                     summary: String::new(),
                     foundation: true,
-                    files: vec![crate::ai::TourFile {
+                    files: vec![er_engine::ai::TourFile {
                         path: "src/a.rs".into(),
                         reason: "entry".into(),
                         finding_ids: vec![],
@@ -394,7 +396,7 @@ mod tests {
                     }],
                 }],
             };
-            crate::test_support::write_sidecar(bucket, &tour);
+            er_engine::test_support::write_sidecar(bucket, &tour);
 
             let summary = summarize_pr_bucket("acme", "widgets", 3, bucket);
             assert_eq!(
@@ -418,7 +420,7 @@ mod tests {
     #[test]
     fn list_repo_pr_artifacts_finds_triage_and_tour_only() {
         let dir = tempfile::tempdir().unwrap();
-        crate::storage::with_test_storage_root(dir.path(), || {
+        er_engine::storage::with_test_storage_root(dir.path(), || {
             let prs = dir.path();
 
             let empty = prs.join("pr-1");
@@ -447,7 +449,7 @@ mod tests {
                 reach: Default::default(),
                 sensitive: Default::default(),
             };
-            crate::test_support::write_sidecar(&with_triage, &triage);
+            er_engine::test_support::write_sidecar(&with_triage, &triage);
 
             let with_tour = prs.join("pr-20");
             std::fs::create_dir_all(&with_tour).unwrap();
@@ -459,7 +461,7 @@ mod tests {
                 overview: "o".into(),
                 pillars: vec![],
             };
-            crate::test_support::write_sidecar(&with_tour, &tour);
+            er_engine::test_support::write_sidecar(&with_tour, &tour);
 
             // Questions-only bucket should not appear.
             let questions_only = prs.join("pr-30");

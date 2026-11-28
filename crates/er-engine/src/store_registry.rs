@@ -61,7 +61,7 @@ fn register_ai_kinds(registry: &mut Registry) -> Result<(), er_store::StoreError
 ///
 /// Absent and unreadable both read as `None`: a sidecar an agent wrote badly is
 /// skipped, never a load failure.
-pub(crate) fn read_found<T: Artifact>(er_dir: &str, slot: T::Slot) -> Option<T> {
+pub fn read_found<T: Artifact>(er_dir: &str, slot: T::Slot) -> Option<T> {
     if er_dir.is_empty() {
         return None;
     }

@@ -5,8 +5,9 @@ use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-use crate::github::{owner_repo_storage_slug, parse_github_pr_url, parse_remote_url};
-use crate::storage;
+use er_engine::github::{owner_repo_storage_slug, parse_github_pr_url, parse_remote_url};
+use er_engine::ports::Ports;
+use er_engine::storage;
 
 /// Easy Review project entry used when resolving `owner/repo` or active project.
 #[derive(Debug, Clone)]
@@ -45,16 +46,13 @@ pub struct ResolvePrRefInput<'a> {
 }
 
 /// Resolve a PR target from explicit fields and/or a single `ref` string.
-pub fn resolve_pr_ref(
-    github: &dyn er_github::GitHub,
-    input: &ResolvePrRefInput<'_>,
-) -> Result<ResolvedPrRef> {
+pub fn resolve_pr_ref(ports: &Ports, input: &ResolvePrRefInput<'_>) -> Result<ResolvedPrRef> {
     if let Some(url) = input.pr_url.map(str::trim).filter(|s| !s.is_empty()) {
         return resolve_from_pr_url(url, None, "pr_url");
     }
 
     if let Some(raw) = input.ref_str.map(str::trim).filter(|s| !s.is_empty()) {
-        return resolve_ref_string(github, raw, input);
+        return resolve_ref_string(ports, raw, input);
     }
 
     let number = input
@@ -70,7 +68,7 @@ pub fn resolve_pr_ref(
 }
 
 fn resolve_ref_string(
-    github: &dyn er_github::GitHub,
+    ports: &Ports,
     raw: &str,
     input: &ResolvePrRefInput<'_>,
 ) -> Result<ResolvedPrRef> {
@@ -81,8 +79,8 @@ fn resolve_ref_string(
     if let Some(path) = expand_path(raw) {
         if path.is_dir() || path.is_file() {
             if let Some(path_str) = path.to_str() {
-                if let Ok(repo_root) = crate::ports::Ports::cli().git.repo_root_at(path_str) {
-                    return resolve_from_worktree(github, &repo_root, None, "ref_worktree");
+                if let Ok(repo_root) = ports.git.repo_root_at(path_str) {
+                    return resolve_from_worktree(ports, &repo_root, None, "ref_worktree");
                 }
             }
         }
@@ -96,7 +94,7 @@ fn resolve_ref_string(
         if let Some(project) = find_project_for_slug(input.projects, &owner, &repo) {
             let repo_root = project.root_path.clone();
             let project_name = Some(project.name.clone());
-            return resolve_from_worktree(github, &repo_root, project_name, "ref_project_slug");
+            return resolve_from_worktree(ports, &repo_root, project_name, "ref_project_slug");
         }
         // `feature/auth` is a branch, not owner/repo — try branch lookup before failing.
         if let Ok((gh_owner, gh_repo, project_name, _repo_root)) = resolve_repo_with_root(
@@ -105,7 +103,10 @@ fn resolve_ref_string(
             input.projects,
             input.active_project_id,
         ) {
-            if let Some(number) = github.open_pr_number_for_head(&gh_owner, &gh_repo, raw)? {
+            if let Some(number) = ports
+                .github
+                .open_pr_number_for_head(&gh_owner, &gh_repo, raw)?
+            {
                 return finish(
                     &gh_owner,
                     &gh_repo,
@@ -140,7 +141,7 @@ fn resolve_ref_string(
         input.projects,
         input.active_project_id,
     )?;
-    if let Some(number) = github.open_pr_number_for_head(&owner, &repo, raw)? {
+    if let Some(number) = ports.github.open_pr_number_for_head(&owner, &repo, raw)? {
         return finish(
             &owner,
             &repo,
@@ -150,7 +151,7 @@ fn resolve_ref_string(
             "ref_branch_head",
         );
     }
-    if let Ok((o, r, n)) = github.get_pr_info(&*crate::ports::Ports::cli().git, &repo_root) {
+    if let Ok((o, r, n)) = ports.github.get_pr_info(&*ports.git, &repo_root) {
         return finish(
             &o,
             &r,
@@ -166,6 +167,35 @@ fn resolve_ref_string(
     )
 }
 
+/// The current checkout's branch and its PR, for `bucket=local`: the bucket
+/// is the branch's local bucket, not the PR's shared one.
+pub fn resolve_local_branch(ports: &Ports) -> Result<ResolvedPrRef> {
+    let repo_root = ports.git.repo_root_cwd()?;
+    let branch = ports.git.current_branch(&repo_root)?;
+    if branch.is_empty() || branch == "HEAD" {
+        bail!("bucket=local requires a checked-out branch, not a detached HEAD");
+    }
+    let (owner, repo, number) = ports
+        .github
+        .get_pr_info(&*ports.git, &repo_root)
+        .map_err(|e| {
+            anyhow::anyhow!("bucket=local could not resolve the current branch PR: {e}")
+        })?;
+    let bucket_path = storage::local_branch_bucket_dir(&*ports.git, &repo_root, &branch)
+        .to_string_lossy()
+        .into_owned();
+    Ok(ResolvedPrRef {
+        owner: owner.clone(),
+        repo: repo.clone(),
+        number,
+        pr_url: format!("https://github.com/{owner}/{repo}/pull/{number}"),
+        bucket_path,
+        branch: Some(branch),
+        project_name: None,
+        resolved_via: "local_branch".to_string(),
+    })
+}
+
 fn resolve_from_pr_url(
     url: &str,
     project_name: Option<String>,
@@ -176,13 +206,13 @@ fn resolve_from_pr_url(
 }
 
 fn resolve_from_worktree(
-    github: &dyn er_github::GitHub,
+    ports: &Ports,
     repo_root: &str,
     project_name: Option<String>,
     via: &str,
 ) -> Result<ResolvedPrRef> {
     let (owner, repo, number) =
-        github.get_pr_info(&*crate::ports::Ports::cli().git, repo_root).with_context(|| {
+        ports.github.get_pr_info(&*ports.git, repo_root).with_context(|| {
         format!("no open PR for current branch in {repo_root} — checkout the PR branch or pass a PR URL")
     })?;
     finish(&owner, &repo, number, project_name, None, via)
@@ -299,7 +329,7 @@ fn parse_repo_slug_pair(s: &str) -> Option<(String, String)> {
     if s.contains(':') {
         return None;
     }
-    crate::github::RepoSlug::parse(s).map(|slug| (slug.owner, slug.repo))
+    er_engine::github::RepoSlug::parse(s).map(|slug| (slug.owner, slug.repo))
 }
 
 fn parse_repo_number(s: &str) -> Option<(String, String, u64)> {
@@ -349,7 +379,7 @@ mod tests {
     #[test]
     fn resolve_pr_url_via_ref() {
         let dir = tempfile::tempdir().unwrap();
-        crate::storage::with_test_storage_root(dir.path(), || {
+        er_engine::storage::with_test_storage_root(dir.path(), || {
             let input = ResolvePrRefInput {
                 ref_str: Some("https://github.com/acme/widgets/pull/42/files"),
                 pr_url: None,
@@ -359,7 +389,7 @@ mod tests {
                 projects: &empty_projects(),
                 active_project_id: None,
             };
-            let pr = resolve_pr_ref(&crate::github::FakeGitHub::default(), &input).unwrap();
+            let pr = resolve_pr_ref(&Ports::for_test(), &input).unwrap();
             assert_eq!(pr.owner, "acme");
             assert_eq!(pr.repo, "widgets");
             assert_eq!(pr.number, 42);
@@ -370,7 +400,7 @@ mod tests {
     #[test]
     fn resolve_repo_number_hash() {
         let dir = tempfile::tempdir().unwrap();
-        crate::storage::with_test_storage_root(dir.path(), || {
+        er_engine::storage::with_test_storage_root(dir.path(), || {
             let input = ResolvePrRefInput {
                 ref_str: Some("acme/widgets#7"),
                 pr_url: None,
@@ -380,7 +410,7 @@ mod tests {
                 projects: &empty_projects(),
                 active_project_id: None,
             };
-            let pr = resolve_pr_ref(&crate::github::FakeGitHub::default(), &input).unwrap();
+            let pr = resolve_pr_ref(&Ports::for_test(), &input).unwrap();
             assert_eq!(pr.number, 7);
             assert_eq!(pr.resolved_via, "ref_repo_number");
         });

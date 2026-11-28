@@ -11,7 +11,7 @@ use std::path::Path;
 
 use er_engine::ai::{ErNotes, ErQuestions, ErReview};
 use er_engine::test_support::write_sidecar_json;
-use harness::{assert_golden, mask_root, run_twice, Mcp, Scenario, SEEDED_AT};
+use harness::{assert_golden, mask_root, run_twice, run_twice_with, Mcp, Scenario, SEEDED_AT};
 use serde_json::{json, Value};
 
 /// The PR the `gh` fixtures were captured from.
@@ -59,6 +59,183 @@ fn a_gh_call_with_no_fixture_fails_the_scenario() {
         .map(|message| *message)
         .unwrap_or_default();
     assert!(message.contains("called gh with no fixture"), "{message}");
+}
+
+/// A project for the fixture repo, rooted at the child's working dir (a
+/// checkout of the fixture PR's head branch), made the active project.
+fn seed_project(s: &Scenario) {
+    let work = s.root().join("work");
+    git(&work, &["init", "-q", "-b", "ci/staging-prs"]);
+    git(
+        &work,
+        &[
+            "remote",
+            "add",
+            "origin",
+            "https://github.com/VilfredSikker/easy-review.git",
+        ],
+    );
+    git(&work, &["commit", "-q", "--allow-empty", "-m", "head"]);
+    let root_path = work.to_string_lossy().into_owned();
+    er_engine::storage::with_test_storage_root(s.root().join("storage"), || {
+        er_engine::projects_pins::update(|file| {
+            file.projects.push(er_engine::projects_pins::ProjectRecord {
+                id: "easy-review".into(),
+                name: "easy-review".into(),
+                root_path,
+                remote: Some(REPO.into()),
+                ..Default::default()
+            });
+            file.active_id = Some("easy-review".into());
+            Ok(true)
+        })
+    })
+    .expect("seed the project");
+}
+
+/// The review queue, ranked three ways and across projects.
+fn queue_and_stats(s: &mut Scenario) {
+    seed_project(s);
+    s.call("prs_query", json!({ "repo": REPO, "limit": 2 }));
+    s.call(
+        "prs_query",
+        json!({ "repo": REPO, "sort": "updated", "limit": 2 }),
+    );
+    s.call(
+        "prs_query",
+        json!({ "repo": REPO, "filter": "review_debt", "limit": 2 }),
+    );
+    s.call("prs_query", json!({ "cross_repo": true, "limit": 2 }));
+    s.call("pr_stats", json!({ "ref": PR, "include_hotspots": true }));
+    s.call("pr_stats", json!({ "repo": REPO, "numbers": [575, 600] }));
+}
+
+/// The `pr_resolve` forms that ask `gh`, and the bare number.
+fn resolve_forms(s: &mut Scenario) {
+    seed_project(s);
+    let work = s.root().join("work").to_string_lossy().into_owned();
+    s.call("pr_resolve", json!({ "ref": work }));
+    s.call("pr_resolve", json!({ "ref": REPO }));
+    s.call("pr_resolve", json!({ "ref": "epic/p78-mcp-contract" }));
+    s.call("pr_resolve", json!({ "ref": "main" }));
+    s.call("pr_resolve", json!({ "ref": "no-such-branch" }));
+    s.call("pr_resolve", json!({ "ref": "575" }));
+}
+
+#[test]
+fn the_queue_and_stats_match_their_golden() {
+    assert_golden("queue_and_stats", &run_twice(queue_and_stats));
+}
+
+#[test]
+fn the_gh_resolve_forms_match_their_golden() {
+    assert_golden("resolve_forms", &run_twice(resolve_forms));
+}
+
+/// The tour example the kit offers, as `pr_guide` prepare returns it.
+fn tour_example() -> Value {
+    json!({
+        "version": 1,
+        "diff_hash": "<DIFF_HASH>",
+        "created_at": "2026-01-01T00:00:00Z",
+        "title": "Tour: Example change",
+        "overview": "Start with the foundation types, then the UI.",
+        "pillars": [{
+            "id": "p-1",
+            "title": "Foundation",
+            "summary": "Core types other files depend on",
+            "description": "Core types other files depend on.",
+            "order": 0,
+            "importance": 90,
+            "foundation": true,
+            "files": [{ "path": "src/types.rs", "reason": "Shared model", "finding_ids": [] }],
+        }],
+    })
+}
+
+/// The REVIEW.md body the fixture's response carries, after its headers.
+fn review_md_body() -> String {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/contract/gh-review-md/review-md-main.txt");
+    let response = std::fs::read_to_string(fixture).expect("REVIEW.md fixture");
+    let (_, body) = response.split_once("\r\n\r\n").expect("headers end");
+    body.to_string()
+}
+
+/// The file the kit names at `review_md_path`, as an agent reads it.
+fn read_review_md(kit: &Value) -> String {
+    let path = kit["kit"]["review_md_path"]
+        .as_str()
+        .expect("review_md_path");
+    std::fs::read_to_string(path).expect("review-md.md")
+}
+
+/// A review-kind kit with a REVIEW.md, every sidecar uploaded, then the
+/// pinned row and the summary that read them. Its fake `gh` serves PR #575
+/// with a REVIEW.md on its base (`tests/contract/gh-review-md/`).
+fn review_kinds(s: &mut Scenario) {
+    let pr = PR;
+    let kit = s.call(
+        "pr_prepare",
+        json!({ "ref": pr, "kinds": ["triage", "review"] }),
+    );
+    let hash = kit["kit"]["diff_hash"]
+        .as_str()
+        .expect("diff_hash")
+        .to_string();
+    assert_eq!(
+        read_review_md(&kit),
+        format!(
+            "REVIEW.md files from the base branch (main). Each applies to files under its folder.\n\n## REVIEW.md\n\n{}\n\n",
+            review_md_body().trim()
+        ),
+        "the file at kit.review_md_path holds the fixture's REVIEW.md"
+    );
+    let examples = |at: usize| kit["artifact_specs"]["specs"][at]["examples"].clone();
+    let triage = examples(0);
+    s.call(
+        "pr_upload",
+        json!({ "ref": pr, "kind": "triage", "files": { "triage.json": with_hash(&triage["triage.json"], &hash) } }),
+    );
+    let review = examples(1);
+    let files: serde_json::Map<String, Value> = ["review.json", "order.json", "checklist.json"]
+        .iter()
+        .map(|name| {
+            (
+                name.to_string(),
+                Value::String(with_hash(&review[*name], &hash)),
+            )
+        })
+        .chain(std::iter::once((
+            "summary.md".to_string(),
+            review["summary.md"].clone(),
+        )))
+        .collect();
+    s.call(
+        "pr_upload",
+        json!({ "ref": pr, "kind": "review", "files": files }),
+    );
+    s.call(
+        "pr_guide",
+        json!({ "ref": pr, "action": "upload", "files": { "tour.json": with_hash(&tour_example(), &hash) } }),
+    );
+    s.call(
+        "pr_saved",
+        json!({ "ref": pr, "action": "pin", "title": "CI: run on pull requests into staging" }),
+    );
+    s.call(
+        "pr_saved",
+        json!({ "repo": REPO, "action": "list", "source": "pinned" }),
+    );
+    s.call("pr_summarize", json!({ "ref": pr }));
+}
+
+#[test]
+fn the_review_kinds_match_their_golden() {
+    assert_golden(
+        "review_kinds",
+        &run_twice_with("gh-review-md", review_kinds),
+    );
 }
 
 /// `text` with the kit's `<DIFF_HASH>` placeholder filled in.
@@ -149,7 +326,6 @@ fn thread(id: &str, text: &str) -> Value {
     })
 }
 
-/// A question, a note and a finding in `bucket`.
 /// A reply id with its clock digits as `<millis>`: `q-1795…-0` reads
 /// `q-<millis>-0`, so the prefix and the sequence stay in the golden.
 fn clock_digits_masked(id: &str) -> String {
@@ -165,8 +341,8 @@ fn clock_digits_masked(id: &str) -> String {
     )
 }
 
-/// The thread fixtures, and PR #575's diff as the bucket's `diff-tmp`, so
-/// the replies' and reads' diff hash is the real one.
+/// A question, a note and a finding in `bucket`, and PR #575's diff as its
+/// `diff-tmp`, so the replies and reads carry the real diff hash.
 fn seed_feedback(bucket: &Path) {
     let diff = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/contract/gh/pr-575.diff");
     std::fs::create_dir_all(bucket).expect("bucket dir");
@@ -362,4 +538,22 @@ fn a_listed_call_whose_fixture_is_missing_fails_the_scenario() {
         message.contains("pr view 7 --repo acme/widgets"),
         "{message}"
     );
+}
+
+/// MCP's reply copies its parent's row and fetches no diff: with no fixture
+/// listed, any `gh` call it made would fail the scenario.
+#[test]
+fn a_feedback_reply_calls_no_gh() {
+    let fixtures = tempfile::tempdir().expect("fixtures dir");
+    let mut mcp = Mcp::start_with_fixtures(fixtures.path());
+    let pr = mcp.call("pr_resolve", json!({ "ref": PR }));
+    let pr: Value = serde_json::from_str(pr["content"][0]["text"].as_str().expect("text"))
+        .expect("pr_resolve JSON");
+    seed_feedback(Path::new(pr["bucket_path"].as_str().expect("bucket_path")));
+    let reply = mcp.call(
+        "pr_feedback_reply",
+        json!({ "ref": PR, "type": "question", "id": "q-seed", "text": "Because." }),
+    );
+    assert_eq!(reply["isError"], json!(false), "{reply}");
+    mcp.finish();
 }

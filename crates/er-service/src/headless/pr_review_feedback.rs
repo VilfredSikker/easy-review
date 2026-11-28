@@ -8,13 +8,13 @@ use std::path::Path;
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 
-use crate::ai::{
+use er_engine::ai::annotation_store;
+use er_engine::ai::{
     append_finding_response, compute_diff_hash, load_ai_state, ErNotes, ErQuestions, Finding,
     PrivateAnnotation, RiskLevel,
 };
-use crate::github::owner_repo_storage_slug;
-use crate::storage::resolve_managed_root_for_pr_bucket;
-use crate::sync::chrono_now;
+use er_engine::annotations::{LineAnchor, WrittenPayload};
+use er_engine::sync::chrono_now;
 
 /// Slim finding row for MCP / API consumers (merged review + experts + professor).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -32,7 +32,7 @@ pub struct PrFindingItem {
     pub confidence: String,
     pub resolved: bool,
     pub outside_diff: bool,
-    pub responses: Vec<crate::ai::AiResponse>,
+    pub responses: Vec<er_engine::ai::AiResponse>,
     /// `review`, `professor`, or `expert:<id>`.
     pub source: String,
 }
@@ -64,9 +64,10 @@ pub struct PrFeedbackResolve {
     pub already_resolved: bool,
 }
 
+#[cfg(test)]
 fn resolve_pr_er_dir(owner: &str, repo: &str, pr: u64) -> Result<String> {
-    let slug = owner_repo_storage_slug(owner, repo);
-    let er_dir = resolve_managed_root_for_pr_bucket(&slug, pr).er_dir();
+    let slug = er_engine::github::owner_repo_storage_slug(owner, repo);
+    let er_dir = er_engine::storage::resolve_managed_root_for_pr_bucket(&slug, pr).er_dir();
     if er_dir.is_empty() {
         bail!("failed to resolve managed PR storage for {owner}/{repo}#{pr}");
     }
@@ -84,7 +85,9 @@ fn pr_diff_hash(er_dir: &str) -> String {
             return compute_diff_hash(&content);
         }
     }
-    if let Some(review) = crate::store_registry::read_found::<crate::ai::ErReview>(er_dir, ()) {
+    if let Some(review) =
+        er_engine::store_registry::read_found::<er_engine::ai::ErReview>(er_dir, ())
+    {
         if !review.diff_hash.is_empty() {
             return review.diff_hash;
         }
@@ -93,14 +96,14 @@ fn pr_diff_hash(er_dir: &str) -> String {
         return String::new();
     };
     if let Ok(er_store::Loaded::Found(stored)) =
-        crate::ai::annotation_store::load_questions(&store, &scope)
+        er_engine::ai::annotation_store::load_questions(&store, &scope)
     {
         if !stored.value.diff_hash.is_empty() {
             return stored.value.diff_hash;
         }
     }
     if let Ok(er_store::Loaded::Found(stored)) =
-        crate::ai::annotation_store::load_notes(&store, &scope)
+        er_engine::ai::annotation_store::load_notes(&store, &scope)
     {
         if !stored.value.diff_hash.is_empty() {
             return stored.value.diff_hash;
@@ -124,18 +127,18 @@ const fn severity_label(level: RiskLevel) -> &'static str {
 /// Reads the finding's `lens`. `category` holds a defect kind, not the
 /// producer, so it is the wrong field for this.
 fn finding_source(lens: &str) -> String {
-    if lens == crate::ai::PROFESSOR_ID {
+    if lens == er_engine::ai::PROFESSOR_ID {
         "professor".to_string()
     } else if lens.starts_with("expert:") {
         lens.to_string()
-    } else if crate::ai::expert_by_id(lens).is_some() {
+    } else if er_engine::ai::expert_by_id(lens).is_some() {
         format!("expert:{lens}")
     } else {
         "review".to_string()
     }
 }
 
-fn collect_findings(review: &crate::ai::ErReview) -> Vec<PrFindingItem> {
+fn collect_findings(review: &er_engine::ai::ErReview) -> Vec<PrFindingItem> {
     let mut out = Vec::new();
     for (file, fr) in &review.files {
         for f in &fr.findings {
@@ -174,14 +177,14 @@ fn finding_to_item(file: &str, f: &Finding) -> PrFindingItem {
 /// The store and bucket scope for one review bucket.
 fn store_for(er_dir: &str) -> Result<(er_store::ArtifactStore, er_store::Scope)> {
     Ok((
-        crate::store_registry::store(),
+        er_engine::store_registry::store(),
         er_store::Scope::dir(er_dir)?,
     ))
 }
 
 fn load_questions(er_dir: &str) -> Result<ErQuestions> {
     let (store, scope) = store_for(er_dir)?;
-    match crate::ai::annotation_store::load_questions(&store, &scope)? {
+    match er_engine::ai::annotation_store::load_questions(&store, &scope)? {
         er_store::Loaded::Found(stored) => Ok(stored.value),
         er_store::Loaded::Absent => Ok(ErQuestions {
             version: 1,
@@ -189,7 +192,7 @@ fn load_questions(er_dir: &str) -> Result<ErQuestions> {
             questions: Vec::new(),
         }),
         er_store::Loaded::Unreadable(reason) => {
-            let path = crate::ai::annotation_store::path_of::<ErQuestions>(&store, &scope)?;
+            let path = er_engine::ai::annotation_store::path_of::<ErQuestions>(&store, &scope)?;
             bail!("parse corrupt annotation at {}: {reason:?}", path.display())
         }
     }
@@ -197,7 +200,7 @@ fn load_questions(er_dir: &str) -> Result<ErQuestions> {
 
 fn load_notes(er_dir: &str) -> Result<ErNotes> {
     let (store, scope) = store_for(er_dir)?;
-    match crate::ai::annotation_store::load_notes(&store, &scope)? {
+    match er_engine::ai::annotation_store::load_notes(&store, &scope)? {
         er_store::Loaded::Found(stored) => Ok(stored.value),
         er_store::Loaded::Absent => Ok(ErNotes {
             version: 1,
@@ -205,7 +208,7 @@ fn load_notes(er_dir: &str) -> Result<ErNotes> {
             notes: Vec::new(),
         }),
         er_store::Loaded::Unreadable(reason) => {
-            let path = crate::ai::annotation_store::path_of::<ErNotes>(&store, &scope)?;
+            let path = er_engine::ai::annotation_store::path_of::<ErNotes>(&store, &scope)?;
             bail!("parse corrupt annotation at {}: {reason:?}", path.display())
         }
     }
@@ -224,106 +227,6 @@ fn validate_parent_thread<'a>(
         bail!("reply to the top-level {kind} id, not a reply (flat threads)");
     }
     Ok(parent)
-}
-
-fn append_question_reply(
-    er_dir: &str,
-    parent: &PrivateAnnotation,
-    text: &str,
-    author: &str,
-) -> Result<String> {
-    let diff_hash = pr_diff_hash(er_dir);
-    let id = crate::ai::annotation_store::new_annotation_id("q-");
-    let reply = PrivateAnnotation {
-        id: id.clone(),
-        timestamp: chrono_now(),
-        file: parent.file.clone(),
-        hunk_index: parent.hunk_index,
-        line_start: parent.line_start,
-        line_end: parent.line_end,
-        line_content: parent.line_content.clone(),
-        text: text.to_string(),
-        resolved: false,
-        stale: false,
-        context_before: parent.context_before.clone(),
-        context_after: parent.context_after.clone(),
-        old_line_start: parent.old_line_start,
-        side: parent.side.clone(),
-        hunk_header: parent.hunk_header.clone(),
-        anchor_status: parent.anchor_status.clone(),
-        relocated_at_hash: parent.relocated_at_hash.clone(),
-        in_reply_to: Some(parent.id.clone()),
-        author: author.to_string(),
-        promoted_to: None,
-        finding_ref: parent.finding_ref.clone(),
-        ai_action: None,
-    };
-
-    let (store, scope) = store_for(er_dir)?;
-    let path = crate::ai::annotation_store::path_of::<ErQuestions>(&store, &scope)?;
-    let message = format!("{} is missing or unreadable", path.display());
-    crate::ai::annotation_store::update_questions(&store, &scope, move |current| {
-        let mut questions = current.context(message)?;
-        // Record the new diff hash whenever we have one or none is stored yet
-        // (assigning an equal value is a no-op, so the inequality guard adds nothing).
-        if questions.diff_hash.is_empty() || !diff_hash.is_empty() {
-            questions.diff_hash = diff_hash;
-        }
-        questions.questions.push(reply);
-        Ok::<_, anyhow::Error>(questions)
-    })
-    .map_err(|error| anyhow::anyhow!("{error}"))?;
-    Ok(id)
-}
-
-fn append_note_reply(
-    er_dir: &str,
-    parent: &PrivateAnnotation,
-    text: &str,
-    author: &str,
-) -> Result<String> {
-    let diff_hash = pr_diff_hash(er_dir);
-    let id = crate::ai::annotation_store::new_annotation_id("n-");
-    let reply = PrivateAnnotation {
-        id: id.clone(),
-        timestamp: chrono_now(),
-        file: parent.file.clone(),
-        hunk_index: parent.hunk_index,
-        line_start: parent.line_start,
-        line_end: parent.line_end,
-        line_content: parent.line_content.clone(),
-        text: text.to_string(),
-        resolved: false,
-        stale: false,
-        context_before: parent.context_before.clone(),
-        context_after: parent.context_after.clone(),
-        old_line_start: parent.old_line_start,
-        side: parent.side.clone(),
-        hunk_header: parent.hunk_header.clone(),
-        anchor_status: parent.anchor_status.clone(),
-        relocated_at_hash: parent.relocated_at_hash.clone(),
-        in_reply_to: Some(parent.id.clone()),
-        author: author.to_string(),
-        promoted_to: None,
-        finding_ref: parent.finding_ref.clone(),
-        ai_action: None,
-    };
-
-    let (store, scope) = store_for(er_dir)?;
-    let path = crate::ai::annotation_store::path_of::<ErNotes>(&store, &scope)?;
-    let message = format!("{} is missing or unreadable", path.display());
-    crate::ai::annotation_store::update_notes(&store, &scope, move |current| {
-        let mut notes = current.context(message)?;
-        // Record the new diff hash whenever we have one or none is stored yet
-        // (assigning an equal value is a no-op, so the inequality guard adds nothing).
-        if notes.diff_hash.is_empty() || !diff_hash.is_empty() {
-            notes.diff_hash = diff_hash;
-        }
-        notes.notes.push(reply);
-        Ok::<_, anyhow::Error>(notes)
-    })
-    .map_err(|error| anyhow::anyhow!("{error}"))?;
-    Ok(id)
 }
 
 /// Resolve sets `resolved` on the root only, so a reply under a resolved root
@@ -391,17 +294,6 @@ pub fn get_review_feedback_in_dir(
     })
 }
 
-/// Read questions, notes, and merged AI findings from the managed PR bucket.
-pub fn get_pr_review_feedback(
-    owner: &str,
-    repo: &str,
-    number: u64,
-    include_resolved: bool,
-) -> Result<PrReviewFeedback> {
-    let er_dir = resolve_pr_er_dir(owner, repo, number)?;
-    get_review_feedback_in_dir(owner, repo, number, &er_dir, None, include_resolved)
-}
-
 /// Reply to a top-level question thread in a review bucket.
 pub fn reply_to_question_in_dir(
     er_dir: &str,
@@ -415,25 +307,12 @@ pub fn reply_to_question_in_dir(
     let questions = load_questions(er_dir)?;
     let parent = validate_parent_thread(&questions.questions, question_id, "question")?;
     let author = author.unwrap_or("agent");
-    let id = append_question_reply(er_dir, parent, text, author)?;
+    let id = mcp_reply(er_dir, ThreadKind::Question, &parent.id, text, author)?;
     Ok(PrFeedbackReply {
         id,
         kind: "question".to_string(),
         parent_id: Some(question_id.to_string()),
     })
-}
-
-/// Reply to a top-level question thread in the managed PR bucket.
-pub fn reply_to_pr_question(
-    owner: &str,
-    repo: &str,
-    number: u64,
-    question_id: &str,
-    text: &str,
-    author: Option<&str>,
-) -> Result<PrFeedbackReply> {
-    let er_dir = resolve_pr_er_dir(owner, repo, number)?;
-    reply_to_question_in_dir(&er_dir, question_id, text, author)
 }
 
 /// Reply to a top-level note thread in a review bucket.
@@ -449,25 +328,12 @@ pub fn reply_to_note_in_dir(
     let notes = load_notes(er_dir)?;
     let parent = validate_parent_thread(&notes.notes, note_id, "note")?;
     let author = author.unwrap_or("agent");
-    let id = append_note_reply(er_dir, parent, text, author)?;
+    let id = mcp_reply(er_dir, ThreadKind::Note, &parent.id, text, author)?;
     Ok(PrFeedbackReply {
         id,
         kind: "note".to_string(),
         parent_id: Some(note_id.to_string()),
     })
-}
-
-/// Reply to a top-level note thread in the managed PR bucket.
-pub fn reply_to_pr_note(
-    owner: &str,
-    repo: &str,
-    number: u64,
-    note_id: &str,
-    text: &str,
-    author: Option<&str>,
-) -> Result<PrFeedbackReply> {
-    let er_dir = resolve_pr_er_dir(owner, repo, number)?;
-    reply_to_note_in_dir(&er_dir, note_id, text, author)
 }
 
 /// Append a validation / follow-up reply on an AI finding in a review bucket.
@@ -487,84 +353,367 @@ pub fn reply_to_finding_in_dir(
     })
 }
 
-/// Append a validation / follow-up reply on an AI finding in the managed PR bucket.
-pub fn reply_to_pr_finding(
-    owner: &str,
-    repo: &str,
-    number: u64,
-    finding_id: &str,
-    text: &str,
-) -> Result<PrFeedbackReply> {
-    let er_dir = resolve_pr_er_dir(owner, repo, number)?;
-    reply_to_finding_in_dir(&er_dir, finding_id, text)
-}
-
-/// Mark the top-level thread `id` resolved. Returns whether it already was.
-fn mark_thread_resolved(items: &mut [PrivateAnnotation], id: &str, kind: &str) -> Result<bool> {
-    let root = items
-        .iter_mut()
-        .find(|q| q.id == id)
-        .with_context(|| format!("{kind} not found: {id}"))?;
-    if root.in_reply_to.is_some() {
-        bail!("resolve the top-level {kind} id, not a reply (flat threads)");
-    }
-    let already_resolved = root.resolved;
-    root.resolved = true;
-    Ok(already_resolved)
-}
-
 /// Resolve a top-level question thread in a review bucket. Same write as the
 /// Resolve action in Desktop and the TUI: the root's `resolved` flag, nothing deleted.
 pub fn resolve_question_in_dir(er_dir: &str, question_id: &str) -> Result<PrFeedbackResolve> {
-    let mut questions = load_questions(er_dir)?;
-    let already_resolved = mark_thread_resolved(&mut questions.questions, question_id, "question")?;
-    if !already_resolved {
-        let (store, scope) = store_for(er_dir)?;
-        let path = crate::ai::annotation_store::path_of::<ErQuestions>(&store, &scope)?;
-        let message = format!("{} is missing or unreadable", path.display());
-        let id = question_id.to_string();
-        crate::ai::annotation_store::update_questions(&store, &scope, move |current| {
-            let mut questions = current.context(message)?;
-            mark_thread_resolved(&mut questions.questions, &id, "question")?;
-            Ok::<_, anyhow::Error>(questions)
-        })
-        .map_err(|error| anyhow::anyhow!("{error}"))?;
-    }
-    Ok(PrFeedbackResolve {
-        id: question_id.to_string(),
-        kind: "question".to_string(),
-        already_resolved,
-    })
+    mcp_resolve(er_dir, ThreadKind::Question, question_id)
 }
 
 /// Resolve a top-level note thread in a review bucket.
 pub fn resolve_note_in_dir(er_dir: &str, note_id: &str) -> Result<PrFeedbackResolve> {
-    let mut notes = load_notes(er_dir)?;
-    let already_resolved = mark_thread_resolved(&mut notes.notes, note_id, "note")?;
-    if !already_resolved {
-        let (store, scope) = store_for(er_dir)?;
-        let path = crate::ai::annotation_store::path_of::<ErNotes>(&store, &scope)?;
-        let message = format!("{} is missing or unreadable", path.display());
-        let id = note_id.to_string();
-        crate::ai::annotation_store::update_notes(&store, &scope, move |current| {
-            let mut notes = current.context(message)?;
-            mark_thread_resolved(&mut notes.notes, &id, "note")?;
-            Ok::<_, anyhow::Error>(notes)
-        })
-        .map_err(|error| anyhow::anyhow!("{error}"))?;
+    mcp_resolve(er_dir, ThreadKind::Note, note_id)
+}
+
+/// MCP's reply: copied from the parent row, no diff fetched.
+fn mcp_reply(
+    er_dir: &str,
+    kind: ThreadKind,
+    parent_id: &str,
+    text: &str,
+    author: &str,
+) -> Result<String> {
+    let id = er_engine::ai::annotation_store::new_annotation_id(kind.prefix());
+    write_thread_reply(ThreadReply {
+        er_dir,
+        kind,
+        parent_id,
+        id: id.clone(),
+        text,
+        author,
+        diff_hash: &pr_diff_hash(er_dir),
+        anchor: ReplyAnchor::FromParent,
+    })?;
+    Ok(id)
+}
+
+/// MCP's resolve: roots only, and a missing thread is an error.
+fn mcp_resolve(er_dir: &str, kind: ThreadKind, id: &str) -> Result<PrFeedbackResolve> {
+    let label = kind.label();
+    match resolve_thread_row(er_dir, kind, id, true)? {
+        ResolveOutcome::NotFound => bail!("{label} not found: {id}"),
+        ResolveOutcome::Unreadable(message) => bail!(message),
+        ResolveOutcome::Resolved {
+            already_resolved, ..
+        } => Ok(PrFeedbackResolve {
+            id: id.to_string(),
+            kind: label.to_string(),
+            already_resolved,
+        }),
     }
-    Ok(PrFeedbackResolve {
-        id: note_id.to_string(),
-        kind: "note".to_string(),
-        already_resolved,
+}
+
+/// A question thread or a note thread: the two private stores a reply or a
+/// resolve writes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThreadKind {
+    Question,
+    Note,
+}
+
+impl ThreadKind {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Question => "question",
+            Self::Note => "note",
+        }
+    }
+
+    /// The id prefix of the kind's rows.
+    pub const fn prefix(self) -> &'static str {
+        match self {
+            Self::Question => "q-",
+            Self::Note => "n-",
+        }
+    }
+}
+
+/// Where a reply row stands: its file, line and the anchor around it.
+pub struct ReplyPlace {
+    pub file: String,
+    pub hunk_index: Option<usize>,
+    pub anchor: LineAnchor,
+    pub line_end: Option<usize>,
+    pub side: String,
+    pub anchor_status: String,
+    pub relocated_at_hash: String,
+    pub finding_ref: Option<String>,
+    pub ai_action: Option<String>,
+}
+
+impl ReplyPlace {
+    /// The parent row's place, copied whole.
+    fn of(parent: &PrivateAnnotation) -> Self {
+        Self {
+            file: parent.file.clone(),
+            hunk_index: parent.hunk_index,
+            anchor: LineAnchor {
+                line_start: parent.line_start,
+                line_content: parent.line_content.clone(),
+                context_before: parent.context_before.clone(),
+                context_after: parent.context_after.clone(),
+                old_line_start: parent.old_line_start,
+                hunk_header: parent.hunk_header.clone(),
+            },
+            line_end: parent.line_end,
+            side: parent.side.clone(),
+            anchor_status: parent.anchor_status.clone(),
+            relocated_at_hash: parent.relocated_at_hash.clone(),
+            finding_ref: parent.finding_ref.clone(),
+            ai_action: None,
+        }
+    }
+}
+
+/// Where a reply takes its place from (ADR 0075). Each caller keeps the rows
+/// it wrote before the two writers became one.
+pub enum ReplyAnchor {
+    /// Copy the parent row, which must still be in the file. MCP fetches no
+    /// diff, so this is all it knows.
+    FromParent,
+    /// A place the workspace effect resolved against the diff it fetched. A
+    /// missing file is started, and its diff hash is always replaced.
+    Resolved(Box<ReplyPlace>),
+}
+
+/// One question or note reply to write.
+pub struct ThreadReply<'a> {
+    pub er_dir: &'a str,
+    pub kind: ThreadKind,
+    pub parent_id: &'a str,
+    pub id: String,
+    pub text: &'a str,
+    pub author: &'a str,
+    /// The diff hash the file is stored against.
+    pub diff_hash: &'a str,
+    pub anchor: ReplyAnchor,
+}
+
+/// The reply row, built from its place.
+fn reply_row(reply: &ThreadReply<'_>, rows: &[PrivateAnnotation]) -> Result<PrivateAnnotation> {
+    let copied;
+    let place = match &reply.anchor {
+        ReplyAnchor::Resolved(place) => place,
+        ReplyAnchor::FromParent => {
+            let parent = rows
+                .iter()
+                .find(|row| row.id == reply.parent_id)
+                .with_context(|| {
+                    format!("{} not found: {}", reply.kind.label(), reply.parent_id)
+                })?;
+            copied = ReplyPlace::of(parent);
+            &copied
+        }
+    };
+    Ok(PrivateAnnotation {
+        id: reply.id.clone(),
+        timestamp: chrono_now(),
+        file: place.file.clone(),
+        hunk_index: place.hunk_index,
+        line_start: place.anchor.line_start,
+        line_end: place.line_end,
+        line_content: place.anchor.line_content.clone(),
+        text: reply.text.to_string(),
+        resolved: false,
+        stale: false,
+        context_before: place.anchor.context_before.clone(),
+        context_after: place.anchor.context_after.clone(),
+        old_line_start: place.anchor.old_line_start,
+        side: place.side.clone(),
+        hunk_header: place.anchor.hunk_header.clone(),
+        anchor_status: place.anchor_status.clone(),
+        relocated_at_hash: place.relocated_at_hash.clone(),
+        in_reply_to: Some(reply.parent_id.to_string()),
+        author: reply.author.to_string(),
+        promoted_to: None,
+        finding_ref: place.finding_ref.clone(),
+        ai_action: place.ai_action.clone(),
     })
+}
+
+/// The file's diff hash after a reply: always the reply's for a resolved
+/// place; for a copied one, only when the reply has one or the file has none.
+fn stored_diff_hash(current: &mut String, reply: &ThreadReply<'_>) {
+    let replace = match reply.anchor {
+        ReplyAnchor::Resolved(_) => true,
+        ReplyAnchor::FromParent => current.is_empty() || !reply.diff_hash.is_empty(),
+    };
+    if replace {
+        *current = reply.diff_hash.to_string();
+    }
+}
+
+/// The one writer of question and note replies, for MCP and the workspace
+/// effects alike. Returns the stored file.
+pub fn write_thread_reply(reply: ThreadReply<'_>) -> Result<WrittenPayload> {
+    let (store, scope) = store_for(reply.er_dir)?;
+    let starts = matches!(reply.anchor, ReplyAnchor::Resolved(_));
+    match reply.kind {
+        ThreadKind::Question => {
+            let path = annotation_store::path_of::<ErQuestions>(&store, &scope)?;
+            let missing = format!("{} is missing or unreadable", path.display());
+            let updated = annotation_store::update_questions(&store, &scope, |current| {
+                let mut file = match current {
+                    Some(file) => file,
+                    None if starts => ErQuestions {
+                        version: 1,
+                        diff_hash: String::new(),
+                        questions: Vec::new(),
+                    },
+                    None => bail!(missing),
+                };
+                let row = reply_row(&reply, &file.questions)?;
+                stored_diff_hash(&mut file.diff_hash, &reply);
+                file.questions.push(row);
+                Ok::<_, anyhow::Error>(file)
+            })
+            .map_err(|error| anyhow::anyhow!("{error}"))?;
+            Ok(WrittenPayload::Questions(updated.value))
+        }
+        ThreadKind::Note => {
+            let path = annotation_store::path_of::<ErNotes>(&store, &scope)?;
+            let missing = format!("{} is missing or unreadable", path.display());
+            let updated = annotation_store::update_notes(&store, &scope, |current| {
+                let mut file = match current {
+                    Some(file) => file,
+                    None if starts => ErNotes {
+                        version: 1,
+                        diff_hash: String::new(),
+                        notes: Vec::new(),
+                    },
+                    None => bail!(missing),
+                };
+                let row = reply_row(&reply, &file.notes)?;
+                stored_diff_hash(&mut file.diff_hash, &reply);
+                file.notes.push(row);
+                Ok::<_, anyhow::Error>(file)
+            })
+            .map_err(|error| anyhow::anyhow!("{error}"))?;
+            Ok(WrittenPayload::Notes(updated.value))
+        }
+    }
+}
+
+/// What a resolve found.
+pub enum ResolveOutcome {
+    /// No file, or no row with the id.
+    NotFound,
+    /// The file is there but cannot be read; the message says where.
+    Unreadable(String),
+    /// The row is resolved; `updated` is the stored file, or none when it
+    /// already was and nothing was written.
+    Resolved {
+        already_resolved: bool,
+        updated: Option<WrittenPayload>,
+    },
+}
+
+/// Mark the row `id` resolved. With `roots_only`, a reply id is refused.
+fn mark_resolved(
+    rows: &mut [PrivateAnnotation],
+    kind: ThreadKind,
+    id: &str,
+    roots_only: bool,
+) -> Result<Option<bool>> {
+    let Some(row) = rows.iter_mut().find(|row| row.id == id) else {
+        return Ok(None);
+    };
+    if roots_only && row.in_reply_to.is_some() {
+        bail!(
+            "resolve the top-level {} id, not a reply (flat threads)",
+            kind.label()
+        );
+    }
+    let already_resolved = row.resolved;
+    row.resolved = true;
+    Ok(Some(already_resolved))
+}
+
+/// The one writer of question and note resolves, for MCP (`roots_only`) and
+/// the workspace effect. Nothing is deleted.
+pub fn resolve_thread_row(
+    er_dir: &str,
+    kind: ThreadKind,
+    id: &str,
+    roots_only: bool,
+) -> Result<ResolveOutcome> {
+    let (store, scope) = store_for(er_dir)?;
+    let unreadable = |path: std::path::PathBuf, reason: &dyn std::fmt::Debug| {
+        format!("parse corrupt annotation at {}: {reason:?}", path.display())
+    };
+    let id_owned = id.to_string();
+    match kind {
+        ThreadKind::Question => {
+            let path = annotation_store::path_of::<ErQuestions>(&store, &scope)?;
+            let mut file = match annotation_store::load_questions(&store, &scope)? {
+                er_store::Loaded::Found(stored) => stored.value,
+                er_store::Loaded::Absent => return Ok(ResolveOutcome::NotFound),
+                er_store::Loaded::Unreadable(reason) => {
+                    return Ok(ResolveOutcome::Unreadable(unreadable(path, &reason)))
+                }
+            };
+            let Some(already_resolved) = mark_resolved(&mut file.questions, kind, id, roots_only)?
+            else {
+                return Ok(ResolveOutcome::NotFound);
+            };
+            if already_resolved {
+                return Ok(ResolveOutcome::Resolved {
+                    already_resolved,
+                    updated: None,
+                });
+            }
+            let missing = format!("{} is missing or unreadable", path.display());
+            let updated = annotation_store::update_questions(&store, &scope, move |current| {
+                let mut file = current.context(missing)?;
+                mark_resolved(&mut file.questions, kind, &id_owned, roots_only)?
+                    .with_context(|| format!("{} not found: {id_owned}", kind.label()))?;
+                Ok::<_, anyhow::Error>(file)
+            })
+            .map_err(|error| anyhow::anyhow!("{error}"))?;
+            Ok(ResolveOutcome::Resolved {
+                already_resolved,
+                updated: Some(WrittenPayload::Questions(updated.value)),
+            })
+        }
+        ThreadKind::Note => {
+            let path = annotation_store::path_of::<ErNotes>(&store, &scope)?;
+            let mut file = match annotation_store::load_notes(&store, &scope)? {
+                er_store::Loaded::Found(stored) => stored.value,
+                er_store::Loaded::Absent => return Ok(ResolveOutcome::NotFound),
+                er_store::Loaded::Unreadable(reason) => {
+                    return Ok(ResolveOutcome::Unreadable(unreadable(path, &reason)))
+                }
+            };
+            let Some(already_resolved) = mark_resolved(&mut file.notes, kind, id, roots_only)?
+            else {
+                return Ok(ResolveOutcome::NotFound);
+            };
+            if already_resolved {
+                return Ok(ResolveOutcome::Resolved {
+                    already_resolved,
+                    updated: None,
+                });
+            }
+            let missing = format!("{} is missing or unreadable", path.display());
+            let updated = annotation_store::update_notes(&store, &scope, move |current| {
+                let mut file = current.context(missing)?;
+                mark_resolved(&mut file.notes, kind, &id_owned, roots_only)?
+                    .with_context(|| format!("{} not found: {id_owned}", kind.label()))?;
+                Ok::<_, anyhow::Error>(file)
+            })
+            .map_err(|error| anyhow::anyhow!("{error}"))?;
+            Ok(ResolveOutcome::Resolved {
+                already_resolved,
+                updated: Some(WrittenPayload::Notes(updated.value)),
+            })
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ai::{Confidence, ErFileReview, ErReview, Finding};
-    use crate::test_support::write_sidecar;
+    use er_engine::ai::{Confidence, ErFileReview, ErReview, Finding};
+    use er_engine::test_support::write_sidecar;
     use std::collections::HashMap;
 
     /// The source label comes from `lens`, which holds the flat producer
@@ -584,7 +733,7 @@ mod tests {
 
     fn with_storage_root<F: FnOnce()>(f: F) {
         let dir = tempfile::tempdir().unwrap();
-        crate::storage::with_test_storage_root(dir.path(), f);
+        er_engine::storage::with_test_storage_root(dir.path(), f);
     }
 
     fn sample_question(id: &str) -> PrivateAnnotation {
@@ -614,6 +763,33 @@ mod tests {
         }
     }
 
+    /// MCP resolves roots only; the workspace effect may resolve any row.
+    #[test]
+    fn an_mcp_resolve_refuses_a_reply_id() {
+        with_storage_root(|| {
+            let er_dir = resolve_pr_er_dir("acme", "widgets", 4).unwrap();
+            std::fs::create_dir_all(&er_dir).unwrap();
+            let mut reply = sample_question("q-reply");
+            reply.in_reply_to = Some("q-root".into());
+            let qs = ErQuestions {
+                version: 1,
+                diff_hash: "hash".into(),
+                questions: vec![sample_question("q-root"), reply],
+            };
+            write_sidecar(Path::new(&er_dir), &qs);
+
+            let refused = resolve_question_in_dir(&er_dir, "q-reply").unwrap_err();
+            assert!(refused.to_string().contains("not a reply"), "{refused}");
+            let ResolveOutcome::Resolved {
+                already_resolved, ..
+            } = resolve_thread_row(&er_dir, ThreadKind::Question, "q-reply", false).unwrap()
+            else {
+                panic!("the workspace resolve found no row");
+            };
+            assert!(!already_resolved);
+        });
+    }
+
     #[test]
     fn get_and_reply_roundtrip() {
         with_storage_root(|| {
@@ -626,15 +802,16 @@ mod tests {
             };
             write_sidecar(Path::new(&er_dir), &qs);
 
-            let feedback = get_pr_review_feedback("acme", "widgets", 5, true).unwrap();
+            let feedback =
+                get_review_feedback_in_dir("acme", "widgets", 5, &er_dir, None, true).unwrap();
             assert_eq!(feedback.questions.len(), 1);
             assert!(feedback.findings.is_empty());
 
-            let reply =
-                reply_to_pr_question("acme", "widgets", 5, "q-root", "Because.", None).unwrap();
+            let reply = reply_to_question_in_dir(&er_dir, "q-root", "Because.", None).unwrap();
             assert_eq!(reply.kind, "question");
 
-            let feedback = get_pr_review_feedback("acme", "widgets", 5, true).unwrap();
+            let feedback =
+                get_review_feedback_in_dir("acme", "widgets", 5, &er_dir, None, true).unwrap();
             assert_eq!(feedback.questions.len(), 2);
             assert_eq!(feedback.questions[1].in_reply_to.as_deref(), Some("q-root"));
             assert_eq!(feedback.questions[1].author, "agent");
@@ -692,8 +869,9 @@ mod tests {
             };
             write_sidecar(Path::new(&er_dir), &review);
 
-            reply_to_pr_finding("acme", "widgets", 6, "f1", "Confirmed.").unwrap();
-            let feedback = get_pr_review_feedback("acme", "widgets", 6, true).unwrap();
+            reply_to_finding_in_dir(&er_dir, "f1", "Confirmed.").unwrap();
+            let feedback =
+                get_review_feedback_in_dir("acme", "widgets", 6, &er_dir, None, true).unwrap();
             assert_eq!(feedback.findings.len(), 1);
             assert_eq!(feedback.findings[0].responses[0].text, "Confirmed.");
         });

@@ -24,6 +24,7 @@ er-github = { path = "../er-github" }
 # The wire types the resource builders answer in (ADR 0067).
 er-protocol = { path = "../er-protocol" }
 anyhow.workspace = true
+dirs.workspace = true
 log = "0.4"
 # The app records' persisted files derive their schema for the store.
 schemars.workspace = true
