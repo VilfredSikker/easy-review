@@ -212,7 +212,7 @@ const PL = [
   avoid: 'When there is exactly one call site and no tests need a fake: the SDK call is fine where it is.',
   cost: 'A thin layer to maintain as the outside API grows.',
   door: 'two', doorWhy: 'Call sites move behind it one at a time.',
-  need: 'The same outside system reached from several parts. On ink-booking, Supabase is reached from five parts.',
+  need: 'The same outside system is reached from several parts, so its SDK, errors and retries are handled in several places.',
   have: 'Ports check: each outside system reached from exactly one part. Bridge check: one part carries 80% of a kind of traffic out of a subsystem.',
   lean: 'One gateway is the cheapest structure that makes an outside dependency replaceable.',
   rel: ['ports-adapters', 'anti-corruption-layer', 'adapter', 'circuit-breaker'],
@@ -743,3 +743,45 @@ const PL_LEAN = {
 const PL_BY = Object.fromEntries(PL.map(p => [p.id, p]));
 /* detector id on the map → library entries */
 const PL_DET = {}; PL.forEach(p => (p.det || []).forEach(d => { (PL_DET[d] = PL_DET[d] || []).push(p.id); }));
+
+/* Roles and rules: what makes a pattern checkable once it is placed on real parts.
+   roles: [key, label, many]. rules: t = 'no' (no dependency from → to) · 'only' (only `who` may reach `to`) · 'has' (this edge must exist)
+   · 'noup' (no dependency points up among `in`) · 'acyclic' (no loop among `in`). Dependencies are every edge kind except events. */
+const PL_ROLES = {
+  'facade': { roles: [['callers', 'Callers', 1], ['facade', 'Facade', 0], ['subsystem', 'Subsystem', 1]], rules: [
+    { t: 'no', from: 'callers', to: 'subsystem', why: '{callers} reach {subsystem} only through {facade}' },
+    { t: 'has', from: 'callers', to: 'facade', why: '{callers} use {facade}' },
+    { t: 'no', from: 'subsystem', to: 'callers', why: '{subsystem} does not depend on its callers' }] },
+  'gateway': { roles: [['callers', 'Callers', 1], ['gateway', 'Gateway', 0], ['outside', 'Outside system', 0]], rules: [
+    { t: 'only', who: 'gateway', to: 'outside', why: 'Only {gateway} reaches {outside}' },
+    { t: 'has', from: 'gateway', to: 'outside', why: '{gateway} talks to {outside}' }] },
+  'anti-corruption-layer': { roles: [['inside', 'Your model', 1], ['acl', 'Translation layer', 0], ['foreign', 'Foreign system', 0]], rules: [
+    { t: 'only', who: 'acl', to: 'foreign', why: 'Only {acl} touches {foreign}' },
+    { t: 'no', from: 'foreign', to: 'inside', why: '{foreign} knows nothing of {inside}' }] },
+  'service-layer': { roles: [['front', 'Front ends', 1], ['service', 'Service layer', 0], ['below', 'Domain and data', 1]], rules: [
+    { t: 'no', from: 'front', to: 'below', why: '{front} go through {service}, not straight to {below}' },
+    { t: 'has', from: 'front', to: 'service', why: '{front} call {service}' },
+    { t: 'no', from: 'below', to: 'service', why: '{below} does not call back up into {service}' }] },
+  'ports-adapters': { roles: [['core', 'Core', 1], ['adapters', 'Adapters', 1], ['outside', 'Outside systems', 1]], rules: [
+    { t: 'no', from: 'core', to: 'outside', why: '{core} never reaches {outside} directly' },
+    { t: 'no', from: 'core', to: 'adapters', why: 'Dependencies point inward: {adapters} depend on {core}, not the reverse' }] },
+  'layered': { roles: [['parts', 'Parts', 1]], rules: [{ t: 'noup', in: 'parts', why: 'No dependency among {parts} points up' }] },
+  'acyclic': { roles: [['parts', 'Parts', 1]], rules: [{ t: 'acyclic', in: 'parts', why: '{parts} form no loop' }] },
+  'shared-kernel': { roles: [['users', 'Users', 1], ['kernel', 'Kernel', 0]], rules: [
+    { t: 'no', from: 'kernel', to: 'users', why: '{kernel} depends on none of its users' },
+    { t: 'has', from: 'users', to: 'kernel', why: '{users} share {kernel}' }] },
+  'single-writer': { roles: [['owner', 'Owner', 0], ['store', 'State', 0], ['others', 'Everyone else', 1]], rules: [
+    { t: 'only', who: 'owner', to: 'store', why: 'Only {owner} writes {store}' },
+    { t: 'has', from: 'others', to: 'owner', why: '{others} send requests to {owner}' }] },
+  'separated-interface': { roles: [['user', 'Lower part', 0], ['iface', 'Interface', 0], ['impl', 'Implementation', 0]], rules: [
+    { t: 'no', from: 'user', to: 'impl', why: '{user} calls {iface}, not {impl}' },
+    { t: 'has', from: 'impl', to: 'iface', why: '{impl} implements {iface}' }] },
+  'composition-root': { roles: [['root', 'Composition root', 0], ['parts', 'Parts it wires', 1]], rules: [
+    { t: 'no', from: 'parts', to: 'root', why: 'Nothing depends on {root}' }] },
+  'mediator': { roles: [['mediator', 'Mediator', 0], ['colleagues', 'Colleagues', 1]], rules: [
+    { t: 'no', from: 'colleagues', to: 'colleagues', why: '{colleagues} talk through {mediator}, not to each other' }] },
+  'command': { roles: [['upper', 'Upper part', 0], ['lower', 'Lower part', 0]], rules: [
+    { t: 'no', from: 'lower', to: 'upper', why: '{lower} talks back to {upper} only with events' }] },
+  'strangler-fig': { roles: [['router', 'Router', 0], ['legacy', 'Legacy', 1], ['replacement', 'Replacement', 1]], rules: [
+    { t: 'has', from: 'router', to: 'replacement', why: '{router} sends traffic to {replacement}' }] },
+};

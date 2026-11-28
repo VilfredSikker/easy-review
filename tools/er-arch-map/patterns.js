@@ -80,8 +80,8 @@ const PL_STL = { holds: 'Holds', partly: 'Partly', against: 'Against the grain',
 /* ───────── rendering ───────── */
 function renderPatterns() {
   const el = $('pat'); if (!el) return;
-  const tabs = [['lib', 'Library'], ['lean', 'Lean lens'], ['build', 'Builder'], ['src', 'Sources']];
-  const head = `<div class="pl-top"><div class="seg" role="group" aria-label="Patterns section">${tabs.map(t => `<button type="button" data-pltab="${t[0]}" aria-pressed="${LIB.tab === t[0]}">${t[1]}</button>`).join('')}</div><span class="note">${LIB.tab === 'build' ? 'Draw the architecture you want. Claude can draw with you.' : `${PL.length} patterns · checked against ${esc(S.label || 'this repo')} ${esc(S.ver || '')}`}</span></div>`;
+  const tabs = [['lib', 'Library'], ['lean', 'Lean lens'], ['src', 'Sources'], ['build', 'Blank canvas']];
+  const head = `<div class="pl-top"><div class="seg" role="group" aria-label="Patterns section">${tabs.map(t => `<button type="button" data-pltab="${t[0]}" aria-pressed="${LIB.tab === t[0]}">${t[1]}</button>`).join('')}</div><span class="note">${LIB.tab === 'build' ? 'Design a system that does not exist yet. To design on your code, use Map › Diagram.' : `${PL.length} patterns · checked against ${esc(S.label || 'this repo')} ${esc(S.ver || '')}`}</span></div>`;
   if (LIB.tab === 'build') { el.innerHTML = head + '<div id="bld" class="bld"></div>'; el.classList.add('pl-full'); if (typeof renderBuilder === 'function') renderBuilder($('bld')); return; }
   el.classList.remove('pl-full');
   el.innerHTML = head + (LIB.tab === 'lean' ? leanPage() : LIB.tab === 'src' ? srcPage() : libPage());
@@ -107,7 +107,7 @@ function docOf(p, found) {
       <div class="row" style="margin-top:6px">${p.anti ? '<span class="stt s-against">Anti-pattern</span>' : ''}<span class="stt s-${p.door === 'one' ? 'against' : 'holds'}" title="${esc(p.doorWhy || '')}">${p.door === 'one' ? 'One-way door' : 'Two-way door'}</span>${f.length ? `<span class="stt s-${worstSt(f)}">Found here · ${PL_STL[worstSt(f)]}</span>` : ''}</div>
       <p class="pl-sum">${esc(p.sum)}</p></header>
     <figure class="pl-fig">${plDiagram(p.dg, { label: p.name })}${plLegend(p.dg)}</figure>
-    <div class="row pl-acts"><button type="button" class="openbtn" data-plstamp="${p.id}">Stamp it in the builder</button><button type="button" class="openbtn" data-plask="${p.id}">Ask Claude where it fits</button></div>
+    <div class="row pl-acts"><button type="button" class="openbtn" data-plstamp="${p.id}">${PL_ROLES[p.id] ? 'Place it on the map' : 'Stamp it on the map'}</button><button type="button" class="openbtn" data-plask="${p.id}">Ask Claude where it fits</button></div>
     <div class="pl-grid">${sec('How it works', p.how, 'wide')}${sec('How information flows', p.flow)}${sec(p.door === 'one' ? 'One-way door' : 'Two-way door', p.doorWhy)}${sec('Use it when', p.use)}${sec(p.anti ? 'Get out of it' : 'Overkill when', p.avoid)}${sec('What it costs', p.cost)}${sec('Lean check', p.lean, 'lean')}${sec('You may need it when', p.need)}${sec('How the map sees it', p.have)}${here}
     ${(p.rel || []).length || (p.vs || []).length ? `<section class="pl-sec wide"><h3>Related</h3><div class="kinds">${chips(p.rel)}</div>${(p.vs || []).length ? `<h3 style="margin-top:10px">Alternatives and tensions</h3><div class="kinds">${chips(p.vs)}</div>` : ''}</section>` : ''}
     <section class="pl-sec wide"><h3>Sources</h3><ul class="pl-src">${p.src.map(srcLine).join('')}</ul></section></div>`;
@@ -135,9 +135,11 @@ document.addEventListener('click', ev => {
   if ((el = q('[data-lib]'))) { ev.stopPropagation(); LIB.id = el.dataset.lib; LIB.tab = 'lib'; if (state.mode !== 'pat') { state.mode = 'pat'; render(); } else renderPatterns(); const d = $('pldoc'); if (d) d.scrollTop = 0; return; }
   if ((el = q('[data-pltab]'))) { LIB.tab = el.dataset.pltab; renderPatterns(); return; }
   if ((el = q('[data-plfilter]'))) { LIB.filter = el.dataset.plfilter; renderPatterns(); return; }
-  if ((el = q('[data-plstamp]'))) { LIB.tab = 'build'; LIB.pendingStamp = el.dataset.plstamp; renderPatterns(); return; }
-  if ((el = q('[data-plask]'))) { LIB.tab = 'build'; LIB.pendingAsk = el.dataset.plask; renderPatterns(); return; }
+  if ((el = q('[data-plstamp]'))) { LIB.pendingStamp = el.dataset.plstamp; plToDiagram(); return; }
+  if ((el = q('[data-plask]'))) { LIB.pendingAsk = el.dataset.plask; plToDiagram(); return; }
+  if ((el = q('[data-view]'))) { ev.stopPropagation(); state.view = el.dataset.view; try { localStorage.setItem('er-map-view', state.view); } catch (_) {} state.sel = null; if (typeof B !== 'undefined') B.ctxKey = ''; render(); return; }
 }, true);
+function plToDiagram() { state.mode = 'map'; state.view = 'dgm'; try { localStorage.setItem('er-map-view', 'dgm'); } catch (_) {} if (typeof B !== 'undefined') B.ctxKey = ''; render(); }
 document.addEventListener('input', ev => { if (ev.target.id === 'plq') { LIB.q = ev.target.value; const pos = ev.target.selectionStart; renderPatterns(); const i = $('plq'); if (i) { i.focus(); i.setSelectionRange(pos, pos); } } });
 
 /* ───────── styles ───────── */

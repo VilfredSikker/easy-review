@@ -363,6 +363,7 @@ svg.focus path.e.hl.pat:not(.break){stroke:var(--tx);opacity:.8;marker-end:none}
     <div class="mark" aria-hidden="true">er</div>
     <div class="seg" role="group" aria-label="View" id="modeSeg"></div>
     <nav class="crumbs" id="crumbs" aria-label="Zoom level"></nav>
+    <div class="seg" role="group" aria-label="Show this level as" id="viewSeg"></div>
     <div class="grow"></div>
     <div class="find"><input id="find" list="parts" placeholder="Find a part…" aria-label="Find a part by name"><datalist id="parts"></datalist></div>
     <label class="funcl" id="funcLbl"><input type="checkbox" id="funcTgl" checked> Functional code only</label>
@@ -372,6 +373,7 @@ svg.focus path.e.hl.pat:not(.break){stroke:var(--tx);opacity:.8;marker-end:none}
   <div class="arch" id="plan" hidden></div>
   <div class="arch" id="rec" hidden></div>
   <div id="pat" hidden></div>
+  <div id="dgm" hidden></div>
   <div class="main" id="main">
     <aside class="read" id="read" aria-label="Reading of this level"></aside>
     <section class="stagewrap" aria-label="System map">
@@ -406,7 +408,7 @@ svg.focus path.e.hl.pat:not(.break){stroke:var(--tx);opacity:.8;marker-end:none}
 /* ───────── model ───────── */
 const $ = id => document.getElementById(id);
 let byId = {}, S, cache = new Map();
-const state = { snap: 'main', path: '', pr: null, sel: null, hover: null, full: false, show: 'problems', mode: 'map', flow: null, func: true };
+const state = { snap: 'main', path: '', pr: null, sel: null, hover: null, full: false, show: 'problems', mode: 'map', flow: null, func: true, view: (() => { try { return localStorage.getItem('er-map-view') === 'dgm' ? 'dgm' : 'map'; } catch (_) { return 'map'; } })() };
 let WI = null, PROPS = [], BAD = new Set(), SIM = null;
 function simDiff(before, v) { const live = (m, k) => m.get(k) && m.get(k).w > 0, removed = [...before.values()].filter(i => i.w > 0 && !live(v.items, i.key)), added = [...v.items.values()].filter(i => i.w > 0 && !live(before, i.key)); return { removed, added, addedKeys: new Set(added.map(i => i.key)), parts: v.V.children.filter(c => c.virtual) }; }
 
@@ -740,8 +742,10 @@ function edgePath(it) {
 }
 
 function render() {
-  $('main').hidden = state.mode !== 'map'; $('arch').hidden = state.mode !== 'arch'; $('plan').hidden = state.mode !== 'plan'; $('rec').hidden = state.mode !== 'rec'; $('pat').hidden = state.mode !== 'pat'; $('prctl').hidden = $('funcLbl').hidden = document.querySelector('.find').hidden = state.mode === 'pat';
+  const dgmOn = state.mode === 'map' && state.view === 'dgm';
+  $('main').hidden = state.mode !== 'map' || dgmOn; $('dgm').hidden = !dgmOn; $('arch').hidden = state.mode !== 'arch'; $('plan').hidden = state.mode !== 'plan'; $('rec').hidden = state.mode !== 'rec'; $('pat').hidden = state.mode !== 'pat'; $('funcLbl').hidden = state.mode === 'pat'; $('prctl').hidden = document.querySelector('.find').hidden = state.mode === 'pat' || dgmOn;
   if (state.mode !== 'map') { VW = view(state.path, state.pr); PT = patterns(VW); renderChrome(); if (state.mode === 'arch') renderArch(); else if (state.mode === 'rec') renderRec(); else if (state.mode === 'pat') renderPatterns(); else renderPlan(); return; }
+  if (dgmOn) { VW = view(state.path, state.pr); PT = patterns(VW); renderChrome(); renderDiagram($('dgm')); return; }
   WI = baseline();
   VW = view(state.path, state.pr); PT = patterns(VW); VW.order = exOrder();
   SIM = WI ? simDiff(WI.items, VW) : null;
@@ -826,6 +830,7 @@ function render() {
     const A = clip(s, sy), B = clip(t, ty), mx = .25 * A[0] + .5 * qx + .25 * B[0], my = .25 * A[1] + .5 * qy + .25 * B[1];
     tg.push(`<path class="flowline ${st[3]}" d="M${A[0]},${A[1]} Q${qx},${qy} ${B[0]},${B[1]}"/><g class="fnum"><circle cx="${mx}" cy="${my}" r="9.5"/><text x="${mx}" y="${my + 3.6}" text-anchor="middle">${i + 1}</text></g>`);
   }); }
+  if (typeof dsMapTags === 'function') tg.push(dsMapTags(L, state.path));
   svg.querySelector('#tags').innerHTML = tg.join('');
   applyFocus(); renderChrome();
 }
@@ -1078,8 +1083,9 @@ function renderChrome() {
   $('funcLbl').title = nfNote(); $('nfNote').textContent = nfNote();
   $('modeSeg').innerHTML = [['map', 'Map'], ['arch', 'Architecture'], ['plan', 'Plan'], ['rec', 'Recommend'], ['pat', 'Patterns']].map(m => `<button type="button" data-mode="${m[0]}" aria-pressed="${state.mode === m[0]}" style="font-family:var(--sans);font-size:13px">${m[1]}</button>`).join('');
   document.querySelectorAll('#showSeg button').forEach(x => x.setAttribute('aria-pressed', x.dataset.show === state.show));
-  if (state.mode !== 'map') return;
-  renderRead(); renderInsp();
+  $('viewSeg').hidden = state.mode !== 'map'; { const dn = typeof dsDoc === 'function' ? (dsDoc().levels[state.path] ? 1 : 0) : 0; $('viewSeg').innerHTML = [['map', 'Map'], ['dgm', 'Diagram']].map(v => `<button type="button" data-view="${v[0]}" aria-pressed="${state.view === v[0]}" style="font-family:var(--sans);font-size:12.5px">${v[1]}${v[0] === 'dgm' && dn ? ' <span style="color:var(--accent)">●</span>' : ''}</button>`).join(''); }
+  if (state.mode !== 'map' || state.view === 'dgm') return;
+  renderRead(); renderInsp(); if (typeof dsReadBanner === 'function') dsReadBanner();
 }
 function patBox() {
   const s = state.sel, p = s && s.type === 'set' && s.pid ? PT.list.find(x => x.id === s.pid) : null, x = 0;
@@ -1570,7 +1576,7 @@ document.addEventListener('click', ev => {
   const t = ev.target, q = s => t.closest(s);
   let el;
   if ((el = q('[data-snap]'))) { if (el.dataset.snap !== state.snap && SNAPS[el.dataset.snap]) { delPending = null; loadSnap(el.dataset.snap); } return; }
-  if ((el = q('[data-crumb]'))) { zoomOutTo(el.dataset.crumb); return; }
+  if ((el = q('[data-crumb]'))) { if (state.view === 'dgm' && state.mode === 'map') { bGoLevel(el.dataset.crumb); return; } zoomOutTo(el.dataset.crumb); return; }
   if ((el = q('[data-close]'))) { state.sel = null; renderChrome(); markSel(); applyFocus(); return; }
   if ((el = q('[data-jump]'))) { const key = el.dataset.jkey; jumpTo(el.dataset.jump, () => { state.sel = { type: 'edge', key }; renderChrome(); applyFocus(); }); return; }
   if ((el = q('[data-pat]'))) { const p = PT.list.find(x => x.id === el.dataset.pat); if (!p) return; state.sel = state.sel && state.sel.pid === p.id ? null : { type: 'set', pid: p.id, nodes: p.nodes, keys: p.keys }; renderChrome(); markSel(); applyFocus(); $('read').scrollTop = 0; return; }
