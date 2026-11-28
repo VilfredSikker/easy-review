@@ -137,6 +137,7 @@ p{margin:0;color:var(--tx2);text-wrap:pretty}
 .grp{display:flex;flex-direction:column;gap:2px}
 .grp-h{display:flex;justify-content:space-between;gap:8px;align-items:baseline;font-size:12.5px;color:var(--tx);font-weight:600;padding:4px 8px;border-radius:6px;border:0;background:none;cursor:pointer;text-align:left;width:100%}
 .grp-h:hover{background:var(--bg1)}
+[hidden]{display:none!important}
 .grp-h span{color:var(--tx3);font:500 11.5px var(--mono)}
 .ex{display:grid;grid-template-columns:18px 1fr auto;gap:0 10px;align-items:center;padding:5px 8px 5px 0;border:1px solid transparent;border-radius:6px;background:none;cursor:pointer;text-align:left;width:100%}
 .ex:hover{background:var(--bg1)}
@@ -336,7 +337,10 @@ svg.focus path.e.hl.pat:not(.break){stroke:var(--tx);opacity:.8;marker-end:none}
 .dropveil{position:fixed;inset:0;z-index:40;display:grid;place-items:center;background:color-mix(in srgb,var(--accent) 14%,var(--ground));border:3px dashed var(--accent);font:600 18px var(--sans);color:var(--tx);pointer-events:none}
 :focus-visible{outline:2px solid var(--accent);outline-offset:1px;border-radius:4px}
 @media (max-width:900px){
-  .frame{grid-template-columns:1fr;grid-template-rows:auto;height:auto;min-height:100%;overflow:visible}
+  .frame{grid-template-columns:minmax(0,1fr);grid-template-rows:auto;height:auto;min-height:100%;overflow:visible}
+  .top .seg{max-width:100%;min-width:0;overflow-x:auto}
+  .top .seg button{padding:4px 7px}
+  .app{grid-template-columns:minmax(0,1fr)}
   .snav{position:sticky;top:env(safe-area-inset-top,0px);z-index:6;height:auto}
   .snav.collapsed .snfoot{display:block}
   .snav.collapsed .snfoot button{padding:5px}
@@ -367,6 +371,7 @@ svg.focus path.e.hl.pat:not(.break){stroke:var(--tx);opacity:.8;marker-end:none}
   <div class="arch" id="arch" hidden></div>
   <div class="arch" id="plan" hidden></div>
   <div class="arch" id="rec" hidden></div>
+  <div id="pat" hidden></div>
   <div class="main" id="main">
     <aside class="read" id="read" aria-label="Reading of this level"></aside>
     <section class="stagewrap" aria-label="System map">
@@ -394,6 +399,9 @@ svg.focus path.e.hl.pat:not(.break){stroke:var(--tx);opacity:.8;marker-end:none}
 <div class="dropveil" id="dropVeil" hidden><div>Drop the .er-arch.json file to map it</div></div>
 
 <script src="data.js"></script>
+<script src="pattern-lib.js"></script>
+<script src="patterns.js"></script>
+<script src="builder.js"></script>
 <script>
 /* ───────── model ───────── */
 const $ = id => document.getElementById(id);
@@ -732,8 +740,8 @@ function edgePath(it) {
 }
 
 function render() {
-  $('main').hidden = state.mode !== 'map'; $('arch').hidden = state.mode !== 'arch'; $('plan').hidden = state.mode !== 'plan'; $('rec').hidden = state.mode !== 'rec';
-  if (state.mode !== 'map') { VW = view(state.path, state.pr); PT = patterns(VW); renderChrome(); if (state.mode === 'arch') renderArch(); else if (state.mode === 'rec') renderRec(); else renderPlan(); return; }
+  $('main').hidden = state.mode !== 'map'; $('arch').hidden = state.mode !== 'arch'; $('plan').hidden = state.mode !== 'plan'; $('rec').hidden = state.mode !== 'rec'; $('pat').hidden = state.mode !== 'pat'; $('prctl').hidden = $('funcLbl').hidden = document.querySelector('.find').hidden = state.mode === 'pat';
+  if (state.mode !== 'map') { VW = view(state.path, state.pr); PT = patterns(VW); renderChrome(); if (state.mode === 'arch') renderArch(); else if (state.mode === 'rec') renderRec(); else if (state.mode === 'pat') renderPatterns(); else renderPlan(); return; }
   WI = baseline();
   VW = view(state.path, state.pr); PT = patterns(VW); VW.order = exOrder();
   SIM = WI ? simDiff(WI.items, VW) : null;
@@ -1068,7 +1076,7 @@ function renderChrome() {
   $('prSel').innerHTML = '<option value="">No overlay</option>' + S.prs.map(p => `<option value="${p.id}" ${state.pr && state.pr.id === p.id ? 'selected' : ''}>${p.real ? '● ' : 'Sample · '}${esc(p.title)}</option>`).join('');
   $('prctl').classList.toggle('on', !!state.pr); $('prClear').hidden = !state.pr;
   $('funcLbl').title = nfNote(); $('nfNote').textContent = nfNote();
-  $('modeSeg').innerHTML = [['map', 'Map'], ['arch', 'Architecture'], ['plan', 'Plan'], ['rec', 'Recommend']].map(m => `<button type="button" data-mode="${m[0]}" aria-pressed="${state.mode === m[0]}" style="font-family:var(--sans);font-size:13px">${m[1]}</button>`).join('');
+  $('modeSeg').innerHTML = [['map', 'Map'], ['arch', 'Architecture'], ['plan', 'Plan'], ['rec', 'Recommend'], ['pat', 'Patterns']].map(m => `<button type="button" data-mode="${m[0]}" aria-pressed="${state.mode === m[0]}" style="font-family:var(--sans);font-size:13px">${m[1]}</button>`).join('');
   document.querySelectorAll('#showSeg button').forEach(x => x.setAttribute('aria-pressed', x.dataset.show === state.show));
   if (state.mode !== 'map') return;
   renderRead(); renderInsp();
@@ -1076,7 +1084,7 @@ function renderChrome() {
 function patBox() {
   const s = state.sel, p = s && s.type === 'set' && s.pid ? PT.list.find(x => x.id === s.pid) : null, x = 0;
   if (!p || state.ring) return '';
-  return `<div class="stack whatif" style="border-color:var(--tx2);font-size:12.5px;color:var(--tx2)"><span class="row"><b>${esc(p.name)}</b><span class="st s-${p.st}" style="font:600 10px var(--sans);letter-spacing:.06em;text-transform:uppercase">${ST[p.st]}</span></span><span>${esc(p.ev)}</span><span style="color:var(--tx)"><b>What is highlighted.</b> ${esc(SEE[p.id.split(':')[0]] || '')}</span><span class="note">How this is decided: ${esc(WHY[p.id.split(':')[0]] || '')}</span><button type="button" class="linkbtn" data-close style="text-align:left">Clear the highlight</button></div>`;
+  return `<div class="stack whatif" style="border-color:var(--tx2);font-size:12.5px;color:var(--tx2)"><span class="row"><b>${esc(p.name)}</b><span class="st s-${p.st}" style="font:600 10px var(--sans);letter-spacing:.06em;text-transform:uppercase">${ST[p.st]}</span></span><span>${esc(p.ev)}</span><span style="color:var(--tx)"><b>What is highlighted.</b> ${esc(SEE[p.id.split(':')[0]] || '')}</span><span class="note">How this is decided: ${esc(WHY[p.id.split(':')[0]] || '')}</span><span class="row">${libLink(p.id)}<button type="button" class="linkbtn" data-close style="text-align:left">Clear the highlight</button></span></div>`;
 }
 
 /* ───────── architecture sheet: the system read in system-design terms ───────── */
@@ -1154,7 +1162,7 @@ function renderArch() {
   el.innerHTML = `<div class="sheet">
     <header><div class="eyebrow">Architecture · ${esc(S.label)} ${esc(S.ver)}</div><h1 class="lead">${esc(A.auto ? autoStyle(lay, tN, hubs) : A.style)}</h1><p class="para">${esc(A.auto ? autoPara() : A.para)}</p><p class="note" style="margin-top:8px">${esc(nfNote())}${S.imported ? (S.extractor ? ` Extracted with er-arch-extract ${esc(S.extractor.version)} (${esc(S.extractor.sha)}).` : ' Made by an older er-arch-extract: run the current one again for entry points, service SDKs, build tooling, model checks and changes.') : ''}</p>${sim ? '<p style="color:var(--sanc);margin-top:10px">This page includes your what-if changes. <button type="button" class="linkbtn" data-resetall>Back to today</button></p>' : ''}</header>
     <div class="glance"><div><b>${fmt(byId[''].loc)}</b><span>lines in ${leafs.length} parts, ${levels.length} levels deep</span></div><div><b>${new Set(CR.flatMap(r => [r.pa, r.pb])).size}</b><span>processes and stores that exchange messages</span></div><div><b style="color:${tN ? 'var(--break)' : 'var(--good)'}">${tN}</b><span>tangle${tN === 1 ? '' : 's'} of parts that reach each other in a circle</span></div><div><b>${cheap} / ${leafs.length}</b><span>parts with two or fewer dependents: cheap to change</span></div></div>
-    <section><h2>Patterns, system-wide</h2><p class="sub">Each row is checked against the references in the code. Statuses marked from a document say so in the text.</p><div class="tblwrap"><table><thead><tr><th>Pattern</th><th>Status</th><th>What the code shows</th><th></th></tr></thead><tbody>${rows.map(r => `<tr><td style="min-width:200px"><b>${esc(r.name)}</b><br><span class="note">${esc(r.what)}</span></td><td><span ${stc(r.st)} ${r.st === 'absent' ? '' : ''}>${r.st === 'absent' ? '<span class="stt">Absent</span>' : /to avoid/.test(r.name) && r.st === 'holds' ? 'Avoided' : STL[r.st]}</span></td><td>${esc(r.ev)}</td><td><button type="button" class="linkbtn" data-archjump="${esc(r.level)}" data-pid="${esc(r.pid)}" style="white-space:nowrap">Show on map</button></td></tr>`).join('')}</tbody></table></div></section>
+    <section><h2>Patterns, system-wide</h2><p class="sub">Each row is checked against the references in the code. Statuses marked from a document say so in the text.</p><div class="tblwrap"><table><thead><tr><th>Pattern</th><th>Status</th><th>What the code shows</th><th></th></tr></thead><tbody>${rows.map(r => `<tr><td style="min-width:200px"><b>${esc(r.name)}</b><br><span class="note">${esc(r.what)}</span><br>${libLink(r.pid || r.name, 'Read about it')}</td><td><span ${stc(r.st)} ${r.st === 'absent' ? '' : ''}>${r.st === 'absent' ? '<span class="stt">Absent</span>' : /to avoid/.test(r.name) && r.st === 'holds' ? 'Avoided' : STL[r.st]}</span></td><td>${esc(r.ev)}</td><td><button type="button" class="linkbtn" data-archjump="${esc(r.level)}" data-pid="${esc(r.pid)}" style="white-space:nowrap">Show on map</button></td></tr>`).join('')}</tbody></table></div></section>
     <section><h2>Messages between processes</h2><p class="sub">Everything here runs on one machine, but each crossing below behaves like a network call: it can be slow, fail, or arrive out of order. "Shared library" is the code linked into each app; calls into it are ordinary function calls and are not listed.</p><div class="tblwrap"><table><thead><tr><th>From → to</th><th>How</th><th>Sites</th><th>Sent from</th><th>What that means</th></tr></thead><tbody>${CR.map(r => `<tr><td><b>${pname(r.pa)}</b> → <b>${pname(r.pb)}</b></td><td style="white-space:nowrap">${KIND_NAT[r.kind][0]}</td><td class="num">${r.w.toLocaleString()}</td><td class="num" style="color:${r.src.size > 3 ? 'var(--bend)' : 'inherit'}">${r.src.size} part${r.src.size > 1 ? 's' : ''}</td><td>${KIND_NAT[r.kind][1]}</td></tr>`).join('')}</tbody></table></div></section>
     <div class="two">
       <section><h2>State and who writes it</h2><p class="sub">State with one writer is easy to reason about. State with many needs locks, merges or luck.</p><div class="tblwrap"><table><thead><tr><th>State</th><th>Shape</th><th>How it is kept</th></tr></thead><tbody>${A.state.map(s => `<tr><td><b>${esc(s[0])}</b></td><td><span class="stt s-${s[2]}">${esc(s[1])}</span></td><td>${esc(fill(s[3]))}</td></tr>`).join('')}${W && !W.length ? '<tr><td><b>Files on disk</b></td><td><span class="stt s-holds">No writers</span></td><td>No code in the repo writes files. State lives elsewhere: a database or a service, reached over the network.</td></tr>' : ''}${W && W.length ? `<tr><td><b>Files on disk</b></td><td><span class="stt s-${W[0][1] / wTot >= .8 ? 'holds' : 'against'}">${W[0][1] / wTot >= .8 ? 'Single writer' : 'Many writers'}</span></td><td>${W.length} parts have code that creates, writes, renames or removes files${state.func ? '' : ' (tests included)'}.<div class="wbar" style="margin-top:8px">${W.slice(0, 7).map(x => `<span class="mono" style="overflow-wrap:anywhere">${esc(fullName(x[0]))}</span><span class="br"><i style="width:${x[1] / W[0][1] * 100}%"></i></span><span class="n">${x[1]}</span>`).join('')}</div></td></tr>` : W ? '' : '<tr><td colspan="3" class="note">Counting write sites…</td></tr>'}</tbody></table></div></section>
@@ -1219,7 +1227,7 @@ function renderPlan() {
   const P = PLAN = buildPlan(), el = $('plan'), last = P.phases.length ? P.phases[P.phases.length - 1].after : P.base, n = P.flat.length;
   const stat = (o, prev) => `<span class="pill2">back-references <b>${prev.b} → ${o.b}</b></span><span class="pill2">rule bends <b>${prev.r} → ${o.r}</b></span><span class="pill2">tangles <b>${prev.t} → ${o.t}</b></span>`;
   const step = s => { const d = s.ev;
-    return `<div class="pstep"><div class="t"><span class="n">${s.i + 1}</span><b>${esc(s.title)}</b><span class="sz">${s.size}</span><span class="badge declared">${esc(s.pattern)}</span>${s.it ? `<span class="note mono">${s.it.w} reference${s.it.w > 1 ? 's' : ''} · ${esc(fullName(s.level))}</span>` : `<span class="note mono">${esc(fullName(s.level))}</span>`}</div>
+    return `<div class="pstep"><div class="t"><span class="n">${s.i + 1}</span><b>${esc(s.title)}</b><span class="sz">${s.size}</span>${plFind(s.pattern) ? `<button type="button" class="badge declared" data-lib="${plFind(s.pattern).id}" style="cursor:pointer;background:none">${esc(s.pattern)} →</button>` : `<span class="badge declared">${esc(s.pattern)}</span>`}${s.it ? `<span class="note mono">${s.it.w} reference${s.it.w > 1 ? 's' : ''} · ${esc(fullName(s.level))}</span>` : `<span class="note mono">${esc(fullName(s.level))}</span>`}</div>
       <div class="cols"><div class="stack"><h3>Why</h3><p>${esc(s.why || '')}</p><h3>What to do</h3><p style="color:var(--tx)">${esc(s.how)}</p></div>
       <div class="stack"><h3>Where</h3>${d && d.n ? `<div class="evrow">${d.FF.slice(0, 4).map(f => `<span>${esc(f[0])}:${f[1][1].join(',')}</span><span>×${f[1][0]}</span>`).join('')}</div>${d.FF.length > 4 ? `<p class="note">and ${d.FF.length - 4} more files</p>` : ''}<p class="note">Names: ${esc(d.SS.slice(0, 5).map(x => x[0]).join(', '))}</p>` : `<p class="note">${s.kind === 'build' ? 'Callers are listed on the map: use "Show on the map".' : S.ev ? 'No site-level record for this one. Open it on the map to see what it is made of.' : 'Loading the references…'}</p>`}<h3>Done when</h3><p>${esc(s.done)}</p></div></div>
       <div class="act"><button type="button" class="openbtn" data-planshow="${s.i}">Show on the map</button>${s.spec ? `<button type="button" class="openbtn" data-plantry="${s.i}">Try it on the map</button>` : ''}<button type="button" class="openbtn" data-issue="${s.i}">Write it as an issue</button></div><div data-issuebox="${s.i}" hidden></div></div>`; };
@@ -1227,7 +1235,7 @@ function renderPlan() {
   el.innerHTML = `<div class="sheet"><header><div class="eyebrow">Plan · ${esc(S.label)} ${esc(S.ver)}</div><h1 class="lead">${n ? `${n} steps, in ${P.phases.length} phases, from today to a clean structure` : 'Nothing to do: no exceptions at any level'}</h1>
     <p class="para">Every exception the map finds becomes one step: what to change, in which files, how big it is, and how to tell it is done. Steps are ordered so that small ones go first and structures exist before anything moves onto them. The numbers after each phase come from simulating its steps on the map.</p>
     <p class="note" style="margin-top:8px">${esc(nfNote())} Issue text follows this repo's convention: markdown with a Status line, for <span class="mono">.scratch/&lt;feature-slug&gt;/</span>.</p>
-    <div class="row" style="margin-top:14px">${stat(last, P.base)}${n ? '<button type="button" class="openbtn" data-issue="all">Write the whole plan as issues</button>' : ''}</div><div data-issuebox="all" hidden class="pstep" style="margin-top:12px"></div></header>
+    <div class="row" style="margin-top:14px">${stat(last, P.base)}${n ? '<button type="button" class="openbtn" data-issue="all">Write the whole plan as issues</button>' : ''}</div><div data-issuebox="all" hidden class="pstep" style="margin-top:12px"></div></header>${typeof bldPlanHtml === 'function' ? bldPlanHtml() : ''}
     ${P.phases.map((p, i) => { const html = `<section class="phase"><div class="phase-h"><span class="no">${i + 1}</span><div class="stack" style="gap:2px;max-width:62ch"><h2>${esc(p.name)} <span class="note" style="font-weight:400">· ${p.steps.length} step${p.steps.length > 1 ? 's' : ''}</span></h2><p>${esc(p.why)}</p></div><div class="after">${stat(p.after, prev)}</div></div>${p.steps.map(step).join('')}</section>`; prev = p.after; return html; }).join('')}
   </div>`;
 }
@@ -1481,7 +1489,7 @@ function recIssue(x) {
 function renderRec() {
   const el = $('rec'); el.innerHTML = '<div class="sheet"><p class="note">Working out recommendations…</p></div>';
   const R = RECS = buildRecs(), all = R.intro.concat(R.remove), I = R.intro.length;
-  const card = (x, i) => `<div class="pstep"><div class="t"><b>${esc(x.title)}</b><span class="badge ${x.kind === 'introduce' ? 'declared' : ''}">${esc(x.pattern)}</span>${x.level != null && !x.files ? `<span class="note mono">${esc(fullName(x.level || ''))}</span>` : ''}</div>
+  const card = (x, i) => `<div class="pstep"><div class="t"><b>${esc(x.title)}</b>${plFind(x.pattern) ? `<button type="button" class="badge ${x.kind === 'introduce' ? 'declared' : ''}" data-lib="${plFind(x.pattern).id}" style="cursor:pointer;background:none">${esc(x.pattern)} →</button>` : `<span class="badge ${x.kind === 'introduce' ? 'declared' : ''}">${esc(x.pattern)}</span>`}${x.level != null && !x.files ? `<span class="note mono">${esc(fullName(x.level || ''))}</span>` : ''}</div>
     <div class="cols"><div class="stack"><h3>Why</h3><p>${esc(x.why || '')}</p>${x.how && x.how !== x.why ? `<h3>What to do</h3><p style="color:var(--tx)">${esc(x.how)}</p>` : ''}</div>
     <div class="stack"><h3>${x.kind === 'introduce' ? 'What it buys' : 'What it saves'}</h3><div class="row">${x.spread ? `<span class="pill2">${esc(x.spread[0])} <b>${x.spread[1]} → ${x.spread[2]}</b></span>` : ''}${x.sim && !x.absorbs && (x.gain || !x.spread) ? `<span class="pill2">exceptions <b>${x.gain > 0 ? '−' + x.gain : x.gain < 0 ? '+' + -x.gain : '±0'}</b></span>` : ''}${x.sim ? `<span class="pill2">references that move <b style="color:var(--tx)">${x.cost}</b></span>` : ''}${x.value ? `<span class="pill2"><b style="color:var(--tx)">${esc(x.value)}</b></span>` : ''}${x.parts && x.parts.length ? `<span class="pill2">new part <b style="color:var(--tx)">${esc(x.parts.join(', '))}</b></span>` : ''}</div>
       ${x.files ? `<div class="evrow">${x.files.map(f => `<span>${esc(f.path)}${f.note && f.note[1] ? ` <span class="note">· name also in ${esc(f.note[2].map(p => p.split('/').pop()).join(', '))}${f.note[1] > 3 ? ' …' : ''}</span>` : ''}</span><span>${f.lines}</span>`).join('')}</div>` : ''}
