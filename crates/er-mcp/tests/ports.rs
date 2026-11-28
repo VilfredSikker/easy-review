@@ -100,6 +100,10 @@ fn dependency_tables_in(table: &toml::Table) -> Vec<&toml::Table> {
 }
 
 /// The package name of every workspace member.
+#[expect(
+    clippy::expect_used,
+    reason = "a test helper: a manifest it cannot read fails the test"
+)]
 fn workspace_packages() -> Vec<String> {
     let root: toml::Table = read(&crates().join("../Cargo.toml"))
         .parse()
@@ -135,7 +139,10 @@ fn er_mcp_depends_on_er_service_alone() {
         .parse()
         .expect("er-mcp's manifest parses");
     let workspace = workspace_packages();
-    assert!(workspace.iter().any(|name| name == "er-engine"), "{workspace:?}");
+    assert!(
+        workspace.iter().any(|name| name == "er-engine"),
+        "{workspace:?}"
+    );
     let named: Vec<String> = non_dev_dependency_tables(&manifest)
         .into_iter()
         .flatten()
