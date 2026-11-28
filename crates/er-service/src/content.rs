@@ -28,6 +28,7 @@ use crate::ai_extras::AiExtras;
 use crate::freshness::Freshness;
 use crate::protocol::TabContext;
 use crate::tab_pr::still_reads;
+use crate::ui_annotations::{UiRows, UiSection};
 
 /// One open tab's content.
 #[derive(Clone)]
@@ -50,6 +51,8 @@ pub struct TabContent {
     /// History's commits once the tab has shown History, carried across
     /// loads in the other views as the App keeps them.
     pub history: Option<Arc<HistorySection>>,
+    /// The browser annotations in the view bucket.
+    pub ui: Arc<UiSection>,
 }
 
 /// How far origin has moved past what the tab shows. A probe's post moves
@@ -136,6 +139,11 @@ impl TabContent {
                 value: loaded.freshness,
             }),
             history: loaded.history,
+            ui: Arc::new(UiSection {
+                revision,
+                seq: loaded.ui.seq,
+                rows: Arc::new(loaded.ui.rows),
+            }),
         }
     }
 
@@ -305,6 +313,7 @@ impl fmt::Debug for TabContent {
             .field("ai", &self.ai.revision)
             .field("pr", &self.pr.revision)
             .field("freshness", &self.freshness.revision)
+            .field("ui", &self.ui.revision)
             .finish_non_exhaustive()
     }
 }
@@ -554,6 +563,8 @@ pub(crate) struct LoadedTab {
     pub cleared: usize,
     /// The sequence the clear's save took, when it saved.
     pub marks_seq: Option<u64>,
+    /// The browser annotations in the view bucket.
+    pub ui: UiRows,
 }
 
 pub(crate) struct LoadedDiff {
@@ -660,6 +671,14 @@ pub(crate) enum ContentPatch {
         since: usize,
         more: Vec<CommitInfo>,
     },
+    /// The browser annotations a write saved in `er_dir`. `seq` was taken
+    /// under the bucket's lock, so a write that finishes late, or a load read
+    /// before it, leaves the rows of a newer one.
+    Ui {
+        er_dir: String,
+        rows: Vec<er_engine::ai::UiAnnotation>,
+        seq: u64,
+    },
     /// The tab closed: its content leaves the view.
     Dropped {
         key: TabKey,
@@ -741,7 +760,8 @@ pub(crate) fn lifecycle_keys(
         | ContentPatch::BranchPr { .. }
         | ContentPatch::History { .. }
         | ContentPatch::Sidecar { .. }
-        | ContentPatch::Reviewed { .. } => {}
+        | ContentPatch::Reviewed { .. }
+        | ContentPatch::Ui { .. } => {}
     }
 }
 
@@ -782,6 +802,7 @@ pub(crate) fn check(
         | ContentPatch::BranchPr { .. }
         | ContentPatch::Sidecar { .. }
         | ContentPatch::Reviewed { .. }
+        | ContentPatch::Ui { .. }
         | ContentPatch::Dropped { .. } => Ok(()),
     }
 }
@@ -843,10 +864,16 @@ pub(crate) fn apply(
             let held = tabs.get(&key).and_then(|content| content.pr.stack.clone());
             loaded.pr.stack =
                 held.filter(|read| still_reads(&loaded.tab, loaded.pr.overview.as_ref(), read));
-            tabs.insert(
-                key,
-                Arc::new(TabContent::from_loaded(key, *loaded, revision)),
-            );
+            // Rows a write saved after this load read its bucket stay.
+            let newer_rows = tabs.get(&key).map(|content| &content.ui).filter(|held| {
+                held.seq > loaded.ui.seq && tabs[&key].context.er_dir == loaded.context.er_dir
+            });
+            let newer_rows = newer_rows.cloned();
+            let mut content = TabContent::from_loaded(key, *loaded, revision);
+            if let Some(held) = newer_rows {
+                content.ui = held;
+            }
+            tabs.insert(key, Arc::new(content));
             cleared
         }
         ContentPatch::Parsed {
@@ -970,6 +997,21 @@ pub(crate) fn apply(
                     }));
                 }
                 *content = Arc::new(next);
+            }
+            0
+        }
+        ContentPatch::Ui { er_dir, rows, seq } => {
+            let rows = Arc::new(rows);
+            for content in tabs.values_mut() {
+                if content.context.er_dir == er_dir && content.ui.seq < seq {
+                    let mut next = TabContent::clone(content);
+                    next.ui = Arc::new(UiSection {
+                        revision,
+                        seq,
+                        rows: Arc::clone(&rows),
+                    });
+                    *content = Arc::new(next);
+                }
             }
             0
         }

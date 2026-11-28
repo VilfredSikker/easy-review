@@ -42,6 +42,8 @@ pub struct WorkspaceDeps {
     /// The app's task host. A review flow reads it to see the host tasks
     /// that write into its bucket (#764).
     tasks: Option<crate::tasks::TaskHost>,
+    /// The browser annotations' write lock per bucket.
+    ui_locks: crate::ui_annotations::BucketLocks,
 }
 
 impl WorkspaceDeps {
@@ -54,6 +56,7 @@ impl WorkspaceDeps {
             )),
             app_registry: None,
             tasks: None,
+            ui_locks: crate::ui_annotations::BucketLocks::default(),
         }
     }
 
@@ -92,6 +95,10 @@ impl WorkspaceDeps {
 
     pub(crate) fn jobs(&self) -> Option<Arc<dyn JobSink>> {
         self.jobs.clone()
+    }
+
+    pub(crate) fn ui_locks(&self) -> &crate::ui_annotations::BucketLocks {
+        &self.ui_locks
     }
 
     /// The retry state a GitHub comment create keeps between attempts. Effects
@@ -627,6 +634,19 @@ fn handle_command(
             spawn_effect(tx, reply, move || {
                 crate::annotations::update_thread_message(&context, &id, &body)
                     .map(|(path, patch)| Effected::patched(Reply::ThreadChanged { path }, patch))
+            });
+        }
+        Command::WriteUiAnnotations { context, write } => {
+            if !context_matches(state, &context) {
+                return refuse_stale(reply);
+            }
+            let deps = deps.clone();
+            spawn_effect(tx, reply, move || {
+                crate::ui_annotations::write(&deps, &context.er_dir, write).map(
+                    |(created, patch)| {
+                        Effected::patched(Reply::UiAnnotationsWritten { created }, patch)
+                    },
+                )
             });
         }
         Command::DeleteThread { context, id } => {

@@ -533,7 +533,7 @@ fn the_content_routes_stay_within_the_latency_budget() -> anyhow::Result<()> {
 
 /// What a load effect would hand back for a tab with no files, built without
 /// an actor so the patch steps run on their own.
-fn loaded_tab(repo: &str) -> Box<LoadedTab> {
+pub(crate) fn loaded_tab(repo: &str) -> Box<LoadedTab> {
     Box::new(LoadedTab {
         tab: ResolvedTab {
             repo_root: repo.to_string(),
@@ -594,6 +594,7 @@ fn loaded_tab(repo: &str) -> Box<LoadedTab> {
         history: None,
         cleared: 0,
         marks_seq: None,
+        ui: crate::ui_annotations::UiRows::default(),
     })
 }
 

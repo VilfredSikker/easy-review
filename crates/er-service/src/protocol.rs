@@ -110,6 +110,11 @@ pub enum Command {
     },
     /// Delete one thread and its replies from its sidecar.
     DeleteThread { context: TabContext, id: String },
+    /// A browser annotation write in the view bucket, `context.er_dir`.
+    WriteUiAnnotations {
+        context: TabContext,
+        write: crate::ui_annotations::UiAnnotationWrite,
+    },
     /// Mark one thread resolved.
     ResolveThread { context: TabContext, id: String },
     /// Promote a question to a private note.
@@ -743,6 +748,11 @@ pub enum Reply {
     /// The sidecar a thread row was changed in.
     ThreadChanged {
         path: String,
+    },
+    /// A browser annotation write landed; the id or screenshot path it
+    /// created.
+    UiAnnotationsWritten {
+        created: Option<String>,
     },
     /// The note a question was promoted into.
     NotePromoted {

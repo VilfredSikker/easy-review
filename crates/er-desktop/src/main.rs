@@ -849,8 +849,6 @@ fn main() {
         gh_user: Arc::clone(&gh_user),
         terminals: Arc::clone(&terminals),
         pending_ai_replies: er_desktop::state::AiReplyJobs::new(session.clock()),
-        ui_annotations: session.clock(),
-        ui_annotations_io: Arc::default(),
         gh_status_cache: Arc::clone(&gh_status_cache),
         pr_list_running: Arc::default(),
         pr_list_clock: session.clock(),

@@ -574,6 +574,7 @@ pub(crate) fn load_tab(
         )
     });
     let freshness = crate::freshness::measure(git, &tab, input.tips, scope_stats.unstaged.0);
+    let ui = crate::ui_annotations::read(deps, &er_dir);
     let context = TabContext {
         er_dir,
         comments_dir,
@@ -629,6 +630,7 @@ pub(crate) fn load_tab(
         history,
         cleared,
         marks_seq,
+        ui,
     })
 }
 

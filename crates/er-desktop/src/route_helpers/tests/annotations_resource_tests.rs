@@ -178,6 +178,14 @@ fn the_view_bucket_reads_answer_the_branch_view_and_never_the_pr_bucket() {
         ];
         assert!(saved.iter().all(Result::is_ok), "{saved:?}");
         let wire = er_service::wire_tab_key(tab.0);
+        // The rows come from the tab's published content, so a file seeded
+        // after the load is read by the next one.
+        let refresh = er_protocol::Command::RefreshDiff {
+            tab: wire,
+            sync: false,
+        };
+        let refreshed = super::diff_command_tests::send(&state, "refresh_diff", refresh);
+        assert!(refreshed.is_ok(), "{refreshed:?}");
 
         let fetched = resources::fetch(&state, ResourceKey::UiAnnotations { tab: wire });
         let rows = match fetched.map(|v| v.value) {
@@ -430,24 +438,44 @@ fn a_lazy_parse_moves_no_annotations_version() {
     });
 }
 
-/// A desktop annotation write that lands while `ui_annotations(tab)` reads
-/// its rows leaves the answer under the older version, so the relay pushes
-/// the tab again and the next fetch brings the write.
+/// A browser annotation write that lands after `ui_annotations(tab)`
+/// answered moves the version past that answer, so the relay pushes the tab
+/// again and the next fetch brings the write. The rows and the version come
+/// from one published content, so no read pairs old rows with a new version.
 #[test]
-fn a_ui_annotation_write_during_the_read_is_pushed_again() {
+fn a_ui_annotation_write_after_the_read_is_pushed_again() {
     with_storage(|dir| {
         let (state, tab) = branch_view_of_a_pr(dir);
         let desktop = &state;
         let wire = er_service::wire_tab_key(tab.0);
 
-        let read = resources::annotations::ui_annotations_read(desktop, wire, |er_dir| {
-            let rows = er_engine::ai::load_ui_annotations(er_dir);
-            let saved = er_engine::ai::save_ui_annotations(er_dir, &[ui_annotation("ui-during")]);
-            assert!(saved.is_ok(), "{saved:?}");
-            desktop.ui_annotations.bump();
-            rows
-        });
-        let (answered, _) = read.unwrap_or_else(|e| panic!("{e:?}"));
+        let read = resources::fetch(desktop, ResourceKey::UiAnnotations { tab: wire });
+        let answered = read.unwrap_or_else(|e| panic!("{e:?}")).version.0;
+        let content = desktop
+            .service
+            .content(tab.0, &tab.1)
+            .expect("the branch view");
+        let write = er_service::ui_annotations::UiAnnotationWrite::Add(Box::new(
+            er_service::ui_annotations::NewUiAnnotation {
+                url: "/".into(),
+                selector: None,
+                bbox: [0.0, 0.0, 1.0, 1.0],
+                viewport: [800, 600],
+                text: "during".into(),
+                screenshot_data_url: None,
+                element_context: None,
+                dom_context: None,
+                id: Some("ui-during".into()),
+            },
+        ));
+        let written = desktop.service.send(
+            &crate::service::actor_key(&tab.1),
+            er_service::Command::WriteUiAnnotations {
+                context: content.context.clone(),
+                write,
+            },
+        );
+        assert!(written.is_ok(), "{written:?}");
         let now = resources::annotations::ui_annotations_version(desktop, tab.0, &tab.1);
         assert!(
             answered < now,

@@ -54,6 +54,7 @@ mod tab_pr;
 pub mod tasks;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
+pub mod ui_annotations;
 mod workspace;
 mod worktree;
 
@@ -100,6 +101,7 @@ pub use settings::{spawn_settings, SettingsCommand, SettingsHandle, SettingsRepl
 pub use settings_wire::{risk_resource, settings_command, settings_resource};
 pub use tab_pr::stack_source_of;
 pub use tasks::{Finished, Launch, TaskClock, TaskHooks, TaskHost};
+pub use ui_annotations::ui_annotations_version;
 pub use workspace::{LiveArenaRun, LiveReviewFlow, LoadError, WorkspaceTarget, WorkspaceView};
 
 #[cfg(test)]

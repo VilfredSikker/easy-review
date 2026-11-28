@@ -1,6 +1,6 @@
 //! The browser annotation writes on `er_send`: each names the tab and view
-//! the page painted, writes `ui-annotations.json` and the screenshots in that
-//! tab's view bucket, and moves `ui_annotations(tab)`.
+//! the page painted, has the tab's workspace write `ui-annotations.json` and
+//! the screenshots in that tab's view bucket, and moves `ui_annotations(tab)`.
 
 use std::path::Path;
 use std::sync::Barrier;
@@ -344,4 +344,50 @@ fn a_browser_annotation_painted_in_another_mode_is_refused() {
             "the stale annotation landed"
         );
     });
+}
+
+/// The workspace is the one writer of `ui-annotations.json` (ADR 0067): no
+/// desktop module outside the tests reads or saves the file itself.
+#[test]
+fn no_desktop_module_writes_ui_annotations() {
+    fn walk(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
+        for entry in std::fs::read_dir(dir).unwrap_or_else(|e| panic!("{e}")) {
+            let path = entry.unwrap_or_else(|e| panic!("{e}")).path();
+            if path.is_dir() {
+                if !path.ends_with("tests") {
+                    walk(&path, out);
+                }
+            } else if path.extension().is_some_and(|ext| ext == "rs")
+                && !path.to_string_lossy().ends_with("_tests.rs")
+            {
+                out.push(path);
+            }
+        }
+    }
+    // Built at run time, so this test's own source does not match them.
+    let names = [
+        ["save", "_ui_annotations"].concat(),
+        ["load", "_ui_annotations"].concat(),
+    ];
+    let mut files = Vec::new();
+    walk(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+        &mut files,
+    );
+    assert!(files.len() > 20, "scanned {} files", files.len());
+    for file in files {
+        let source = std::fs::read_to_string(&file).unwrap_or_else(|e| panic!("{e}"));
+        let code: String = source
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        for name in &names {
+            assert!(
+                !code.contains(name.as_str()),
+                "{} writes the browser annotations itself ({name})",
+                file.display()
+            );
+        }
+    }
 }
