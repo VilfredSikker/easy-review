@@ -1300,7 +1300,7 @@ function importArch(j) {
   const cats = { test: 0, generated: 0, dev: 0, tooling: 0 }; files.forEach(f => { if (f[4]) cats[f[4]] += f[2]; else if (f[3]) cats.test += f[3]; });
   // rules from architecture.json
   const allowed = Object.fromEntries(Object.entries(rules.allowed || {}).map(([k, v]) => [fid(k), (v || []).map(fid)]));
-  const extId = k => k === 'network' ? 'x-net' : k === 'disk' ? 'x-disk' : k === 'ipc' ? 'x-ipc' : k.startsWith('process:') ? 'x-proc-' + k.slice(8).replace(/[^\w.-]/g, '_') : k;
+  const extId = k => k === 'network' ? 'x-net' : k === 'disk' ? 'x-disk' : k === 'ipc' ? 'x-ipc' : k.startsWith('process:') ? 'x-proc-' + k.slice(8).replace(/[^\w.-]/g, '_') : k.startsWith('service:') ? 'x-svc-' + k.slice(8) : k;
   const portOf = Object.fromEntries(Object.entries(rules.ports || {}).map(([k, v]) => [extId(k), fid(v)]));
   const indep = new Set((rules.independent || []).map(fid));
   const R = [A => A.kind === 'tool' ? { verdict: 'ok' } : null];
