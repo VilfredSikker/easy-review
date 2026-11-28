@@ -74,9 +74,9 @@ mark("non-functional");
 const NF = MODEL && MODEL.nonFunctional ? MODEL.nonFunctional : {};
 const userNf = { test: anyGlob(NF.test), generated: anyGlob(NF.generated), dev: anyGlob(NF.dev), tooling: anyGlob(NF.tooling) };
 const RX = {
-  test: /(^|\/)(tests?|__tests__|spec|specs|e2e|__mocks__|fixtures?|testdata|test[-_]utils|test[-_]support|testing)(\/|$)|\.(test|spec)\.[a-z]+$|[-.]fixtures\.[a-z]+$|-test-utils\.[a-z]+$|\.types\.svelte$|_test\.(go|py)$|(^|\/)test_[^/]*\.py$|(^|\/)conftest\.py$|_tests?\.rs$|(^|\/)tests?\.rs$|golden/,
+  test: /(^|\/)(tests?|__tests__|spec|specs|e2e|__mocks__|fixtures?|testdata|test[-_]utils|test[-_]support|testing)(\/|$)|\.(test|spec)\.[a-z]+$|[-.]fixtures\.[\w.]+$|-test-utils\.[\w.]+$|\.types\.svelte$|_test\.(go|py)$|(^|\/)test_[^/]*\.py$|(^|\/)conftest\.py$|_tests?\.rs$|(^|\/)tests?\.rs$|golden/,
   generated: /(^|\/)(generated|__generated__|gen|autogen)(\/|$)|\.(gen|generated|pb)\.[a-z]+$|_pb2(_grpc)?\.py$|\.pb\.go$|\.d\.ts$/,
-  dev: /\.stories\.[a-z]+$|-story-data\.[a-z]+$|(^|\/)(stories|storybook|\.storybook|playgrounds?|examples?|demos?|benches|benchmarks?|sandbox)(\/|$)/,
+  dev: /\.stories\.[a-z]+$|-story-data\.[\w.]+$|(^|\/)(stories|storybook|\.storybook|playgrounds?|examples?|demos?|benches|benchmarks?|sandbox)(\/|$)/,
   tooling: /(^|\/)\.github(\/|$)|(^|\/)[\w.-]+\.config\.(js|ts|mjs|cjs)$|(^|\/)(gulpfile|gruntfile|webpack\.[\w.]+|rollup\.[\w.]+|babel\.config)\.(js|ts|mjs|cjs)$|(^|\/)(setup|noxfile|fabfile|tasks)\.py$|(^|\/)build\.rs$/,
 };
 // A scripts/ or tools/ folder is build tooling, except under src/, where the name is the code's own
@@ -115,15 +115,21 @@ for (const m of manifests) {
 }
 
 mark("build");
-// ── files a package.json script runs, with the script's name: [file, script name]. Every one is an entry
-// point; the build tooling step below takes those whose script is a build, generate, seed or similar step.
+// ── files a package.json script names: [file, script name, run by a runner]. Every one is an entry point.
+// The build tooling step below takes those a runner (node, bun, …) executes from a build, generate, seed or
+// similar step; a file handed to a bundler or linter (`tsup src/index.ts`) is the product, not tooling.
 const TOOL_STEPS = new Set(['gen', 'codegen', 'generate', 'build', 'lint', 'format', 'fmt', 'check', 'typecheck', 'migrate', 'seed', 'release', 'deploy', 'prepare', 'postinstall']);
+const RUNNERS = new Set(['node', 'tsx', 'ts-node', 'bun', 'deno', 'python', 'python3', 'vite-node', 'esno', 'jiti']);
 const scriptRuns = [];
 for (const m of manifests.filter((x) => /package\.json$/.test(x))) {
   const j = readJson(path.join(ROOT, m)) || {}, d = dirOf(m);
-  for (const [name, cmd] of Object.entries(j.scripts || {})) for (const w of String(cmd).split(/\s+|&&|\|\||[;|]/)) {
-    const tok = w.replace(/^['"]|['"]$/g, ''); if (!CODE.test(tok)) continue;
-    const rel = path.posix.normalize(path.posix.join(d, tok)); if (fileSet.has(rel)) scriptRuns.push([rel, name]);
+  for (const [name, cmd] of Object.entries(j.scripts || {})) for (const seg of String(cmd).split(/&&|\|\||[;|]/)) {
+    let runner = false, ran = false;
+    for (const w of seg.split(/\s+/)) {
+      const tok = w.replace(/^['"]|['"]$/g, ''); if (RUNNERS.has(tok)) runner = true; if (!CODE.test(tok)) continue;
+      const rel = path.posix.normalize(path.posix.join(d, tok)); if (!fileSet.has(rel)) continue;
+      scriptRuns.push([rel, name, runner && !ran]); if (runner) ran = true;
+    }
   }
 }
 // ── build tooling by convention: code generators in a library crate, xtask crates, and files that
@@ -135,7 +141,7 @@ let AUTO_TOOLING = 0;
     const hasLib = fileSet.has(c.src + '/lib.rs');
     for (const f of F) { if (hasLib && f.rel.startsWith(c.src + '/bin/') && /gen|codegen|export|schema|bindings|xtask/i.test(path.posix.basename(f.rel))) auto.add(f.rel); if (/(^|\/)xtask$/.test(c.dir) && f.rel.startsWith(c.dir + '/')) auto.add(f.rel); }
   }
-  for (const [rel, name] of scriptRuns) if (name.split(/[^a-z0-9]+/i).some((w) => TOOL_STEPS.has(w.toLowerCase()))) auto.add(rel);
+  for (const [rel, name, run] of scriptRuns) if (run && name.split(/[^a-z0-9]+/i).some((w) => TOOL_STEPS.has(w.toLowerCase()))) auto.add(rel);
   F.forEach((f) => { if (!f.cat && auto.has(f.rel)) { f.cat = 'tooling'; f.nf = f.lines; f.t0 = 0; AUTO_TOOLING++; } });
 }
 

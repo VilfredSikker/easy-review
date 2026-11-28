@@ -18,9 +18,10 @@ wrong category on an importer makes everything it imports look test-only.
 ## Fixed in 2026.11.28 (from the ink-booking review)
 
 1. Every code file a `package.json` script names is an entry point. It is also
-   tooling when a word of the script name is a build step (gen, build, seed, lint,
-   check, …). Commands are split into words, not matched per runner, so
-   `bun run supabase/seed-storage.ts` under `db:seed-storage` now counts.
+   tooling when a runner word (node, bun, tsx, deno, …) earlier in the same command
+   executes it and a word of the script name is a build step (gen, build, seed,
+   lint, check, …). So `bun run supabase/seed-storage.ts` under `db:seed-storage`
+   is tooling, while `tsup src/index.ts` under `build` stays product code.
 2. `src/lib/server/mcp/outputs/*.ts` were not loaded by a glob. `mcp/tools/*.ts`
    imports them, and the `tools/` folder name made those importers tooling. A
    `scripts/`, `tools/`, `tooling/` or `ci/` folder now counts as tooling only
@@ -30,7 +31,7 @@ wrong category on an importer makes everything it imports look test-only.
 3. `*-fixtures.*`, `*.fixtures.*`, `*-test-utils.*` and `*.types.svelte` are
    test; `*-story-data.*` is dev. `*.types.svelte` files are type fixtures that
    svelte-check compiles and nothing renders (ink-booking's knip config lists
-   them as entries), so they are type tests, not dead code. Only `.svelte`:
+   them as entries), which makes them type tests. Only `.svelte`:
    `database.types.ts` is imported production code.
 4. SvelteKit layout resets (`+page@.svelte`, `+page@(group).svelte`) are
    entry points.
