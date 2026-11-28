@@ -865,3 +865,15 @@ Done: main merged into release/v1.0.0 (1f0c55085), docs commit 1474662b9 pushed.
 - 2026-11-26T20:59:25.661Z #797 (P78c) fixes a14be77c checked by the coordinator; merge:  => MERGED fcb409912dd9b5f525c566de42c808ff40552206
 - 2026-11-26T21:04:59.181Z Owner paused all work. Open: P78d about to open (doc-line fix, release merge-up); P79.2a merge-up committed, tests queued on the lock, PR not open; P79.2b, P80.1a, P80.1b pushed, no PRs. Merged today: #769, #768, #794, #795, #793, #796, #797.
 - 2026-11-27T13:01:37.495Z Owner resumed (2026-11-27).
+- 2026-11-27T13:01:58.431Z Resumed: ledger pushed (69e892f97). p79-1-builder to finish P79.2a (merge release, PR); review-796 reviewing #798 (P78d) at 2f707be7.
+- 2026-11-27T13:06:38.016Z #798 (P78d) review: fix-then-merge (third-party files in history via 819c2a9de; REVIEW.md body unchecked). Ruled: fix, squash-merge #798, rebuild P80.1a/b as new branches from release: https://github.com/VilfredSikker/easy-review/issues/770#issuecomment-7219068179
+- 2026-11-27T13:23:20.135Z #798 (P78d) fixes a53a2a61 checked by the coordinator, CI green; squash-merged: MERGED 534dc0bb7acfe50464c237af9d0c488644e3d997.
+- 2026-11-27T13:41:29.698Z P80.1 rebuilt from release: #800 (P80.1a) ac417bee (1,286, CI green, mcpjam grep 0); P80.1b epic/p80-1b-reply-writer 0adae5cc pushed. Review of #800 launched. #799 CI: green.
+- 2026-11-27T13:41:39.827Z #799 (P79.2a) 1ccd2c68 CI green; review sent to review-795.
+- 2026-11-27T13:50:01.143Z #800 (P80.1a) review at ac417bee: fix-then-merge (scans stop at first #[cfg(test)] and read only MOVED files; ports scan bans 7 names; ADR 0075 misses ADDENDUM-07 decision 9). No behaviour change: new goldens pass on pre-move code. Sent to p78-builder. #799 fix 69e9453d pushed, CI pending.
+- 2026-11-27T14:03:52.083Z #799 (P79.2a) fix 69e9453d and #800 (P80.1a) fixes 8609a517 checked by the coordinator, CI green. #799:  => MERGED 609e181b4eacda8cbe86c8758eead1aa759c522c; #800:  => MERGED e012a41728c7977eee6112fe8a2909d318dea513.
+- 2026-11-27T14:17:01.105Z #801 (P80.1b) opened ea5deeb9 (623, CI green, mcpjam 0); review sent to review-800.
+- 2026-11-27T14:21:46.948Z #801 (P80.1b) review at ea5deeb9: fix-then-merge (engine refusal untested; scan misses shorthand and assignment). Rows unchanged for both callers; sent to p78-builder.
+- 2026-11-27T14:36:04.497Z #801 (P80.1b) fixes b92341dc checked by the coordinator, CI green:  => MERGED e4740675b3b114fdaeaf3e846e5c70737bd5f8dc. #774 closed.
+- 2026-11-27T14:36:17.512Z #770 (P78) closed. P80.2 (#775) assigned to p78-builder, branch epic/p80-2-mcp-on-service.
+- 2026-11-28T11:47:14.642Z 2026-11-28 — #802 (P80.2) opened at 04c407d6f, CI green; review sent to review-800. P88 (#778) assigned to p78-builder in a new clone p88 (its dependency #764 is merged; P87 waits on P79.2b). P79.2b at 7b37710c9 locally, not pushed; asked p79-1-builder for status.
