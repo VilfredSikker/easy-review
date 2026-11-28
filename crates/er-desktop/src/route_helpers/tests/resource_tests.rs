@@ -395,12 +395,20 @@ fn no_resource_module_names_the_app() {
 
 /// The asks, runs and task host outside `resources/` name nothing of the
 /// App either, which er-engine no longer has. They reach the launcher and log
-/// types through the engine's modules.
+/// types through the engine's modules. The asks are planned in er-service's
+/// `card_asks`.
 #[test]
 fn no_flag_on_host_module_names_the_engine_app() {
-    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-    for file in ["ai_ask.rs", "ask_context.rs", "runs.rs", "task_hooks.rs"] {
-        let source = std::fs::read_to_string(src.join(file)).unwrap_or_else(|e| panic!("{e}"));
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    for file in [
+        "../er-service/src/card_asks/run.rs",
+        "../er-service/src/card_asks/context.rs",
+        "src/runs.rs",
+        "src/task_hooks.rs",
+    ] {
+        let path = manifest.join(file);
+        let source =
+            std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
         assert!(
             !source.contains("er_engine::app"),
             "{file} names er_engine::app"
