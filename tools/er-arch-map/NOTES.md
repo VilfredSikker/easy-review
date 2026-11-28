@@ -44,9 +44,12 @@ wrong category on an importer makes everything it imports look test-only.
 
 ## Added in 2026.11.28.2
 
-- SvelteKit apps (a `svelte.config` beside `src/routes`) get one inferred part per route group and per
-  `src/lib/server` folder. A group's id ends in `-group`, so `src/routes/(auth)` and `src/routes/auth`
-  stay apart.
+- SvelteKit apps (a `svelte.config` beside `src/routes`) get one inferred part per route group, one for
+  `src/routes/api`, and one per `src/lib/server` folder of 10 or more code files. The rest goes to
+  `src/routes (other)` and `src/lib/server (other)`, whose draft paths list what they hold. A group's id
+  ends in `-group`, so `src/routes/(auth)` and `src/routes/auth` stay apart.
+- Past 28 inferred parts, the parts with the least functional code fold into "small folders" first, so tests
+  and tooling fold before production folders.
 - knip's `entry` globs (`knip.json`, `knip.jsonc`, package.json `"knip"`, and each workspace's) are entry points.
 - `tables`: `[file, name, read | write | call | other, line, test]` for supabase-js `.from('t')` and
   `.rpc('fn')`, and a `net` edge to Supabase with the name as its symbol. Only when a package.json
@@ -74,6 +77,10 @@ Open, found on ink-booking (tuned on easy-review):
 - Type-only imports count like runtime imports, in the extractor and the map.
 
 ## Known gaps
+
+- A draft with `(files)` or `(root files)` parts does not round-trip: `src/*` matches everything under
+  `src` (globs match a folder's contents too), and `(root files)` has no path. On ink-booking 1,742 files
+  move when the draft is used as the model; easy-review's draft round-trips.
 
 - A file loaded by a path string, not an import, still looks test-only. Case:
   ink-booking's `storybook-gate.ts`, which `scripts/storybook-deploy.ts` deploys
