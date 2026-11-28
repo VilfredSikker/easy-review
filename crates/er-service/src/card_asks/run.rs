@@ -39,6 +39,12 @@ pub struct AskedTab {
     pub content: Arc<TabContent>,
 }
 
+/// Sends a command to the actor that holds a workspace.
+pub type SendHook = Arc<dyn Fn(&str, Command) -> Result<Reply, WorkspaceError> + Send + Sync>;
+
+/// A tab's published content now.
+pub type ContentHook = Arc<dyn Fn(TabKey, &TabDescriptor) -> Option<Arc<TabContent>> + Send + Sync>;
+
 /// What a front end does for an ask. Taken per call, so er-service holds no
 /// front end's state.
 #[derive(Clone)]
@@ -46,10 +52,8 @@ pub struct AskHooks {
     pub ports: Ports,
     /// The settings view's config, read when the ask starts.
     pub config: Arc<ErConfig>,
-    /// Sends a command to the actor that holds a workspace.
-    pub send: Arc<dyn Fn(&str, Command) -> Result<Reply, WorkspaceError> + Send + Sync>,
-    /// A tab's published content now.
-    pub content: Arc<dyn Fn(TabKey, &TabDescriptor) -> Option<Arc<TabContent>> + Send + Sync>,
+    pub send: SendHook,
+    pub content: ContentHook,
     /// Tells the person.
     pub notify: Arc<dyn Fn(String) + Send + Sync>,
     /// Runs after an answer lands, with the asking tab's repo root.
