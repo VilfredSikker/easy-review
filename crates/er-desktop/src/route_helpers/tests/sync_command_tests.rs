@@ -60,7 +60,7 @@ fn project(dir: &ReviewFlowTestDir) -> (DesktopState, String) {
         "head_oid": "7".repeat(40), "state": "OPEN", "is_draft": false, "author": "me",
     });
     let pr = serde_json::from_value(pr).unwrap_or_else(|e| panic!("pr: {e}"));
-    if let Ok(mut cache) = state.pr_cache.lock() {
+    if let Ok(mut cache) = state.app_owner.pr_cache().lock() {
         cache.insert(REMOTE.into(), vec![pr]);
     }
     (state, root)

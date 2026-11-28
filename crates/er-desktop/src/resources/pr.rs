@@ -17,7 +17,6 @@ use er_service::{pr_resource, pr_version, resolve_tab_key, TabEntry};
 use super::content_routes;
 use super::diff::{listed, published, Published};
 use super::tabs::Routed;
-use crate::route_helpers;
 use crate::service::actor_key;
 use crate::state::DesktopState;
 use er_service::app_records::SidebarOwner;
@@ -64,7 +63,7 @@ pub fn pr_status(desktop: &DesktopState, remote: &str, number: u64) -> (u64, Res
 /// `pr_status`'s version: the owner's for the stored status, plus each start
 /// and end of a status fetch, which `fetching` follows.
 pub fn status_version(desktop: &DesktopState, stored: u64) -> u64 {
-    stored + desktop.status_fetch_clock.revision()
+    stored + desktop.app_owner.status_fetch_revision()
 }
 
 /// Whether a status fetch of `remote`'s PR `number` is running.
@@ -73,22 +72,18 @@ fn fetching(desktop: &DesktopState, remote: &str, number: u64) -> bool {
         return false;
     };
     let key = (owner.to_string(), repo.to_string(), number);
-    desktop
-        .gh_status_in_flight
-        .lock()
-        .is_ok_and(|in_flight| in_flight.contains(&key))
+    desktop.app_owner.status_fetching(&key)
 }
 
 /// Every status a fetch has started for, as `pr_status` keys.
 pub fn fetched_keys(desktop: &DesktopState) -> Vec<ResourceKey> {
-    let Ok(fetched) = desktop.gh_status_fetched.lock() else {
-        return Vec::new();
-    };
-    fetched
-        .iter()
+    desktop
+        .app_owner
+        .status_fetched()
+        .into_iter()
         .map(|(owner, repo, number)| ResourceKey::PrStatus {
             remote: format!("{owner}/{repo}"),
-            number: *number,
+            number,
         })
         .collect()
 }
@@ -100,7 +95,7 @@ pub fn status_key(desktop: &DesktopState, key: TabKey) -> Option<(String, String
     let tabs = desktop.service.app_registry().tabs_view();
     let entry = tabs.tabs.iter().find(|entry| entry.key == key)?;
     let content = desktop.service.content(entry.key, &entry.descriptor)?;
-    let cache = desktop.pr_cache.lock().ok()?;
+    let cache = desktop.app_owner.pr_cache().lock().ok()?;
     crate::page_view::resolve_github_status_key_for(&content.tab.identity(), &cache)
 }
 
@@ -111,7 +106,9 @@ pub fn active_status_key(desktop: &DesktopState) -> Option<(String, String, u64)
 }
 
 fn kick_status(desktop: &DesktopState, owner: String, repo: String, number: u64) {
-    route_helpers::kick_github_status_refresh(desktop, owner, repo, number);
+    desktop
+        .app_owner
+        .kick_github_status_refresh(owner, repo, number);
 }
 
 /// Applies `command` when it is a PR card command.

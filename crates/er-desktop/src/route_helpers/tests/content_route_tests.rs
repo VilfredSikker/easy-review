@@ -367,7 +367,7 @@ fn a_pr_sync_adopts_the_listed_head_and_names_its_status() {
         let tab = open_one(&state, tab);
         let mut listed = crate::page_view::minimal_pr_info(7, "t");
         listed.head_oid = "h-listed".to_string();
-        if let Ok(mut cache) = state.pr_cache.lock() {
+        if let Ok(mut cache) = state.app_owner.pr_cache().lock() {
             cache.insert("acme/widgets".to_string(), vec![listed]);
         }
 

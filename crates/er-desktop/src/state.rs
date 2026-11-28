@@ -1,16 +1,13 @@
 //! The desktop's shared state. Every field is an `Arc`, so a clone shares
 //! the state.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::line_commits_cache::LineCommitsCache;
-use crate::page_view::{
-    GhStatusCache, GhUser, PendingAiReplies, PendingAiReply, PrInfo, WatchStatusSnapshot,
-    WatchStatusState,
-};
+use crate::page_view::{PendingAiReplies, PendingAiReply, WatchStatusSnapshot, WatchStatusState};
 use er_service::app_records::inbox::InboxHandle;
 
 #[derive(Clone)]
@@ -20,14 +17,13 @@ pub struct DesktopState {
     pub service: Arc<crate::service::ServiceState>,
     /// Desktop-only view state (ADR 0068).
     pub view: crate::view_state::ViewStateHandle,
-    pub pr_cache: Arc<Mutex<HashMap<String, Vec<PrInfo>>>>,
     /// The `origin/<base>` oid a sync last fetched, keyed by
     /// "{repo_root}\0{base_short}". The page snapshot that compared it is gone,
     /// so nothing reads it now.
     pub branch_base_remote_oid: Arc<Mutex<HashMap<String, String>>>,
-    /// The sidebar's resources and the metadata cache's one writer.
+    /// The sidebar's owner: the records, the caches, and the fetches that
+    /// fill them with their bookkeeping.
     pub app_owner: Arc<er_service::app_records::AppOwner>,
-    pub gh_user: GhUser,
     /// Active PTY sessions keyed by frontend session_id (e.g. `tab-<idx>`).
     /// Dropping an entry kills its child shell via `PtySession::drop`.
     pub terminals: Arc<Mutex<HashMap<String, crate::terminal::PtySession>>>,
@@ -41,22 +37,6 @@ pub struct DesktopState {
     /// `er_send` runs commands side by side, so without it two writes sent
     /// together each save over the other's change.
     pub ui_annotations_io: Arc<Mutex<()>>,
-    /// Per-PR GitHub status (review decision, mergeable, checks, etc).
-    /// Populated by a background thread on a 60s cadence and on explicit refresh.
-    pub gh_status_cache: GhStatusCache,
-    /// Whether a PR-list refresh is running, which `jobs` shows.
-    pub pr_list_running: Arc<std::sync::atomic::AtomicBool>,
-    /// Moves when a PR-list refresh starts or ends, so `jobs` pushes it.
-    pub pr_list_clock: WriteClock,
-    /// Moves when a GitHub status fetch starts or ends, so `pr_status`
-    /// pushes it.
-    pub status_fetch_clock: WriteClock,
-    /// Keys with an in-flight gh_status fetch. Prevents duplicate concurrent fetches.
-    pub gh_status_in_flight: Arc<Mutex<HashSet<(String, String, u64)>>>,
-    /// Every key a status fetch has started for. The relay keeps watching
-    /// them after the fetch ends, so the end of a first fetch that stored
-    /// nothing still reaches the page as `fetching: false`.
-    pub gh_status_fetched: Arc<Mutex<HashSet<(String, String, u64)>>>,
     /// Monotonic counter bumped whenever background-owned durable state changes
     /// so that poll() can detect changes not visible in App state.
     pub desktop_revision: Arc<AtomicU64>,
@@ -78,69 +58,6 @@ pub struct DesktopState {
     pub live_tabs: LiveTabs,
     /// The background agent tasks the flag path runs, which `jobs` lists.
     pub tasks: er_service::TaskHost,
-}
-
-impl DesktopState {
-    /// Marks a PR-list refresh as running and moves `jobs`; None when one
-    /// already runs. The check and the mark are one lock. Dropping the guard
-    /// ends the refresh, so a panic or an early return cannot leave it on.
-    pub fn begin_pr_list_refresh(&self) -> Option<PrListRefresh> {
-        if self.pr_list_running.swap(true, Ordering::AcqRel) {
-            return None;
-        }
-        self.pr_list_clock.bump();
-        Some(PrListRefresh(self.clone()))
-    }
-
-    /// Marks the status fetch of `(owner, repo, number)` as running and
-    /// moves `pr_status`; None when it already runs. Dropping the guard ends
-    /// the fetch.
-    pub fn begin_status_fetch(&self, key: &(String, String, u64)) -> Option<StatusFetch> {
-        let added = self
-            .gh_status_in_flight
-            .lock()
-            .is_ok_and(|mut in_flight| in_flight.insert(key.clone()));
-        if !added {
-            return None;
-        }
-        if let Ok(mut fetched) = self.gh_status_fetched.lock() {
-            fetched.insert(key.clone());
-        }
-        self.status_fetch_clock.bump();
-        Some(StatusFetch {
-            desktop: self.clone(),
-            key: key.clone(),
-        })
-    }
-}
-
-/// A running PR-list refresh. Dropping it marks the refresh as done and
-/// moves `jobs`.
-#[must_use = "dropping the guard ends the refresh"]
-pub struct PrListRefresh(DesktopState);
-
-impl Drop for PrListRefresh {
-    fn drop(&mut self) {
-        self.0.pr_list_running.store(false, Ordering::Release);
-        self.0.pr_list_clock.bump();
-    }
-}
-
-/// A running status fetch. Dropping it marks the fetch as done and moves
-/// `pr_status`.
-#[must_use = "dropping the guard ends the fetch"]
-pub struct StatusFetch {
-    desktop: DesktopState,
-    key: (String, String, u64),
-}
-
-impl Drop for StatusFetch {
-    fn drop(&mut self) {
-        if let Ok(mut in_flight) = self.desktop.gh_status_in_flight.lock() {
-            in_flight.remove(&self.key);
-        }
-        self.desktop.status_fetch_clock.bump();
-    }
 }
 
 /// A count of the changes seen in the live runs and review flows `jobs`

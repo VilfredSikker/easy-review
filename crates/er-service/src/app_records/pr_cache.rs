@@ -521,9 +521,147 @@ fn parse_pr_list(stdout: &[u8]) -> Option<Vec<PrInfo>> {
     )
 }
 
+/// One PR of `remote`, fetched on its own.
+pub(crate) fn fetch_single_pr_for_remote(
+    github: &dyn er_engine::github::GitHub,
+    remote: &str,
+    pr_number: u64,
+) -> Result<PrInfo, String> {
+    #[derive(serde::Deserialize)]
+    struct RawAuthor {
+        login: Option<String>,
+    }
+    #[derive(serde::Deserialize)]
+    struct RawLogin {
+        login: String,
+    }
+    #[derive(serde::Deserialize)]
+    struct RawReviewRequest {
+        #[serde(default)]
+        login: Option<String>,
+    }
+    #[derive(serde::Deserialize)]
+    struct RawReview {
+        author: RawAuthor,
+        state: String,
+    }
+    #[derive(serde::Deserialize)]
+    struct RawPr {
+        number: u64,
+        title: String,
+        #[serde(rename = "headRefName")]
+        head_ref_name: String,
+        #[serde(default, rename = "baseRefName")]
+        base_ref_name: String,
+        #[serde(default, rename = "headRefOid")]
+        head_ref_oid: String,
+        #[serde(default, rename = "updatedAt")]
+        updated_at: String,
+        state: String,
+        #[serde(rename = "isDraft")]
+        is_draft: bool,
+        author: RawAuthor,
+        #[serde(default)]
+        assignees: Vec<RawLogin>,
+        #[serde(default, rename = "reviewRequests")]
+        review_requests: Vec<RawReviewRequest>,
+        #[serde(default, rename = "reviewDecision")]
+        review_decision: Option<String>,
+        #[serde(default, rename = "mergedAt")]
+        merged_at: Option<String>,
+        #[serde(default, rename = "latestReviews")]
+        latest_reviews: Vec<RawReview>,
+    }
+
+    let out = github
+        .pr_view_json(
+            Some(remote),
+            None,
+            pr_number,
+            "number,title,headRefName,baseRefName,headRefOid,updatedAt,state,isDraft,author,assignees,reviewRequests,reviewDecision,mergedAt,latestReviews",
+        )
+        .map_err(|e| format!("Failed to fetch PR #{pr_number} for {remote}: {e}"))?;
+    let raw: RawPr = serde_json::from_slice(&out)
+        .map_err(|e| format!("Failed to parse gh pr view output for {remote}#{pr_number}: {e}"))?;
+    let latest_reviewer_states = raw
+        .latest_reviews
+        .into_iter()
+        .filter_map(|rv| rv.author.login.map(|l| (l, rv.state)))
+        .collect();
+    Ok(PrInfo {
+        number: raw.number,
+        title: raw.title,
+        head_ref: raw.head_ref_name,
+        state: raw.state,
+        is_draft: raw.is_draft,
+        author: raw.author.login.unwrap_or_default(),
+        assignees: raw.assignees.into_iter().map(|a| a.login).collect(),
+        reviewers: raw
+            .review_requests
+            .into_iter()
+            .filter_map(|rr| rr.login)
+            .collect(),
+        checks_state: None,
+        review_decision: raw.review_decision,
+        merged_at: raw.merged_at,
+        approved_by_me: false,
+        base_ref: raw.base_ref_name,
+        head_oid: raw.head_ref_oid,
+        updated_at: raw.updated_at,
+        latest_reviewer_states,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn github_pr_json() -> &'static [u8] {
+        br#"{"number":7,"title":"Tidy up","headRefName":"feat/x","baseRefName":"main","headRefOid":"abc123","updatedAt":"2026-01-02T03:04:05Z","state":"OPEN","isDraft":false,"author":{"login":"alice"},"assignees":[{"login":"bob"}],"reviewRequests":[{"login":"carol"}],"reviewDecision":"APPROVED","mergedAt":null,"latestReviews":[{"author":{"login":"dan"},"state":"APPROVED"}]}"#
+    }
+
+    #[test]
+    fn fetch_single_pr_for_remote_parses_the_handle_output() {
+        let github = er_engine::github::FakeGitHub::default()
+            .with_pr_view_json(Ok(github_pr_json().to_vec()));
+
+        let pr = fetch_single_pr_for_remote(&github, "o/r", 7).unwrap();
+
+        assert_eq!(pr.number, 7);
+        assert_eq!(pr.title, "Tidy up");
+        assert_eq!(pr.head_ref, "feat/x");
+        assert_eq!(pr.base_ref, "main");
+        assert_eq!(pr.head_oid, "abc123");
+        assert_eq!(pr.author, "alice");
+        assert_eq!(pr.assignees, vec!["bob".to_string()]);
+        assert_eq!(pr.reviewers, vec!["carol".to_string()]);
+        assert_eq!(pr.review_decision.as_deref(), Some("APPROVED"));
+        assert_eq!(
+            pr.latest_reviewer_states,
+            vec![("dan".to_string(), "APPROVED".to_string())]
+        );
+        assert_eq!(
+            github.calls(),
+            vec![format!(
+                "pr_view_json(repo_slug=Some({:?}), dir=None, number=7, fields={:?})",
+                "o/r",
+                "number,title,headRefName,baseRefName,headRefOid,updatedAt,state,isDraft,author,assignees,reviewRequests,reviewDecision,mergedAt,latestReviews"
+            )]
+        );
+    }
+
+    #[test]
+    fn fetch_single_pr_for_remote_prefixes_a_gh_error() {
+        let github = er_engine::github::FakeGitHub::default().with_pr_view_json(Err(
+            er_engine::github::GhError::NotFound {
+                message: "nope".into(),
+            },
+        ));
+
+        let error = fetch_single_pr_for_remote(&github, "o/r", 7).unwrap_err();
+
+        assert_eq!(error, "Failed to fetch PR #7 for o/r: nope");
+    }
 
     fn make_pr(number: u64, head_ref: &str) -> PrInfo {
         PrInfo {

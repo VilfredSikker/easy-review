@@ -38,7 +38,7 @@ pub fn tick(state: &crate::state::DesktopState, synced: &mut Synced) -> Option<T
     let entry = tabs.active_entry()?;
     let pr = crate::resources::pr::status_key(desktop, entry.key)?;
     let content = desktop.service.content(entry.key, &entry.descriptor)?;
-    let head_oid = cached_head_oid(&desktop.pr_cache, &pr.0, &pr.1, pr.2);
+    let head_oid = cached_head_oid(desktop.app_owner.pr_cache(), &pr.0, &pr.1, pr.2);
     let (now, ttl) = (Instant::now(), std::time::Duration::from_secs(90));
     if comment_sync_recently_synced(synced.get(&pr), &head_oid, now, ttl) {
         return None;

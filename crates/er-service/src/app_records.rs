@@ -10,6 +10,7 @@ pub mod meta_refresh;
 pub mod pr_cache;
 pub mod projects;
 pub mod sidebar;
+pub mod status_fetch;
 
 pub use app_owner::{AppOwner, ChangeHook, SidebarOwner};
 
