@@ -64,6 +64,14 @@ from the published view (ADR 0072).
 cannot stall the page. Both front ends will call one implementation, and the
 actor's state has one writer.
 
+The browser annotations joined the actor in P90. `ui-annotations.json` and
+its screenshots were the last bucket files the desktop wrote itself, under a
+lock of its own. Each write is now a workspace command, and the tab's content
+publishes the rows. The file is no store kind, so it has no store scope lock.
+Effects run side by side, so the actor's queue does not order them either.
+The workspace therefore holds one write lock per bucket, and each write's
+effect takes it (`crates/er-service/src/ui_annotations.rs`).
+
 **Costs.** One effect thread per command in P40; a pool can come later if the
 thread cost shows up. Each repo root keeps one live actor for the process's
 lifetime; there is no eviction yet.
